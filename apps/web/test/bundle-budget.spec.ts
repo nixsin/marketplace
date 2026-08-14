@@ -9,7 +9,23 @@ const execFileAsync = promisify(execFile);
 // Content-Length of a real GET request with compression negotiated, not
 // raw file size — the same thing a real browser transfers, and the same
 // thing this session's Lighthouse audit measured as "Script transfer".
-const JS_BUDGET_BYTES = 150 * 1024;
+//
+// Raised twice, deliberately, not copy-pasted:
+//   150KB -> 160KB: adding language-switching (next-intl's client runtime
+//     + the LanguageSwitcher component) cost ~12KB, real number 154.4KB.
+//   160KB -> 172KB: making the switch instant (no server round trip on
+//     language change) required converting Header/Footer/Pagination/
+//     ProductCard from Server Components to Client Components, so they
+//     can react to client-side locale state — real number 167.3KB. This
+//     was a known, explicitly-accepted tradeoff (see conversation), not
+//     an accident: instant switching vs. shipping those components'
+//     translation logic to the client. A cheaper alternative exists
+//     (wrap only the translated text nodes in small "island" client
+//     components, keep the surrounding layout as Server Components) but
+//     was deferred as extra engineering effort for later, not done now.
+// Budget is nearly exhausted again — next addition needs to earn its
+// bytes, or that island-component optimization needs to actually happen.
+const JS_BUDGET_BYTES = 172 * 1024;
 
 async function compressedSize(url: string): Promise<number> {
   // Node's fetch (undici) transparently decompresses gzip/br bodies, and

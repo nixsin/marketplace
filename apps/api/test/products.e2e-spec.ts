@@ -1,9 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { configureApp } from '../src/app.setup';
 
 function gql(app: INestApplication<App>) {
   return (query: string, variables?: Record<string, unknown>) =>
@@ -35,7 +36,7 @@ describe('Products pagination (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+    configureApp(app);
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
@@ -119,5 +120,100 @@ describe('Products pagination (e2e)', () => {
     const res = await gql(app)(PRODUCTS_QUERY, { limit: 6 });
 
     expect(res.body.data.products.items[0].seller.name).toBe('Test Seller Co');
+  });
+});
+
+// Automates what was manually curl-verified: GraphQL-over-GET for the
+// read-only productsPaged query, specifically so it can be conditionally
+// cached (ETag/304) the way a POST request never can be under standard
+// HTTP semantics — see the comment in app.setup.ts.
+describe('GraphQL-over-GET caching (e2e)', () => {
+  let app: INestApplication<App>;
+  let prisma: PrismaService;
+
+  const QUERY =
+    'query { productsPaged(page: 1, pageSize: 2) { totalCount items { id name } } }';
+
+  beforeAll(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    app = moduleFixture.createNestApplication();
+    configureApp(app);
+    await app.init();
+
+    prisma = moduleFixture.get(PrismaService);
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "Product", "License", "User", "Organization" RESTART IDENTITY CASCADE',
+    );
+    const seller = await prisma.organization.create({
+      data: { name: 'Cache Test Co', type: 'SELLER' },
+    });
+    await prisma.product.create({
+      data: {
+        sellerId: seller.id,
+        name: 'Cached Product',
+        brand: 'B',
+        category: 'C',
+        certifications: [],
+        location: 'L',
+      },
+    });
+  });
+
+  it('rejects a GET request without the CSRF-prevention header', async () => {
+    // Confirms Apollo's CSRF protection is still active on this path —
+    // GraphQL-over-GET without proof of a real fetch()/XHR call (which
+    // enforces a CORS preflight) must stay blocked.
+    await request(app.getHttpServer())
+      .get('/graphql')
+      .query({ query: QUERY })
+      .expect(400);
+  });
+
+  it('answers GET with a cacheable Cache-Control and a real ETag', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/graphql')
+      .set('apollo-require-preflight', 'true')
+      .query({ query: QUERY })
+      .expect(200);
+
+    expect(res.headers['cache-control']).toBe(
+      'public, max-age=0, must-revalidate',
+    );
+    expect(res.headers.etag).toBeTruthy();
+    expect(res.body.data.productsPaged.items).toHaveLength(1);
+  });
+
+  it('returns 304 on a conditional re-request with a matching ETag', async () => {
+    const first = await request(app.getHttpServer())
+      .get('/graphql')
+      .set('apollo-require-preflight', 'true')
+      .query({ query: QUERY })
+      .expect(200);
+
+    await request(app.getHttpServer())
+      .get('/graphql')
+      .set('apollo-require-preflight', 'true')
+      .set('If-None-Match', first.headers.etag)
+      .query({ query: QUERY })
+      .expect(304);
+  });
+
+  it('does not override Cache-Control on POST — mutations/POST queries stay uncacheable', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/graphql')
+      .send({ query: QUERY })
+      .expect(200);
+
+    expect(res.headers['cache-control']).toBe('no-store');
   });
 });

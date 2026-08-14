@@ -27,6 +27,12 @@ export class Product {
   @Field()
   location: string;
 
+  @Field()
+  description: string;
+
+  @Field({ nullable: true })
+  imageUrl?: string;
+
   @Field(() => Organization)
   seller: Organization;
 

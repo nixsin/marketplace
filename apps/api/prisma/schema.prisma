@@ -101,6 +101,8 @@ model Product {
   deviceClass    DeviceClass?
   certifications String[]
   location       String
+  description    String       @default("")
+  imageUrl       String?
   createdAt      DateTime     @default(now())
 
   @@index([sellerId])

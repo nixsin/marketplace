@@ -1,0 +1,35 @@
+{
+  "metadata": {
+    "title": "MedInstru Market",
+    "description": "चिकित्सा एवं शल्य चिकित्सा उपकरणों के लिए B2B मार्केटप्लेस"
+  },
+  "header": {
+    "categories": "श्रेणियाँ",
+    "sellOnMedInstru": "MedInstru पर बेचें",
+    "signIn": "साइन इन करें"
+  },
+  "footer": {
+    "rights": "© {year} MedInstru Market. सर्वाधिकार सुरक्षित।",
+    "about": "हमारे बारे में",
+    "contact": "संपर्क करें",
+    "terms": "नियम एवं शर्तें",
+    "privacy": "गोपनीयता"
+  },
+  "home": {
+    "title": "विशेष लिस्टिंग",
+    "subtitle": "कैटलॉग से लाइव — MedInstru Market"
+  },
+  "pagination": {
+    "previous": "पिछला",
+    "next": "अगला"
+  },
+  "productCard": {
+    "meta": "{brand} · विक्रेता: {seller} · {location}",
+    "deviceClass": "क्लास {class}",
+    "priceOnRequest": "मूल्य के लिए संपर्क करें",
+    "sendInquiry": "पूछताछ भेजें"
+  },
+  "languageSwitcher": {
+    "label": "भाषा"
+  }
+}

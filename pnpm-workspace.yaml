@@ -3,7 +3,9 @@ packages:
   - "packages/*"
 allowBuilds:
   '@apollo/protobufjs': true
+  '@parcel/watcher': true
   '@prisma/engines': true
+  '@swc/core': true
   esbuild: true
   prisma: true
   protobufjs: true

@@ -1,0 +1,35 @@
+{
+  "metadata": {
+    "title": "MedInstru Market",
+    "description": "B2B marketplace for medical & surgical instruments"
+  },
+  "header": {
+    "categories": "Categories",
+    "sellOnMedInstru": "Sell on MedInstru",
+    "signIn": "Sign in"
+  },
+  "footer": {
+    "rights": "© {year} MedInstru Market. All rights reserved.",
+    "about": "About",
+    "contact": "Contact",
+    "terms": "Terms",
+    "privacy": "Privacy"
+  },
+  "home": {
+    "title": "Featured listings",
+    "subtitle": "Live from the catalog — MedInstru Market"
+  },
+  "pagination": {
+    "previous": "Previous",
+    "next": "Next"
+  },
+  "productCard": {
+    "meta": "{brand} · Sold by {seller} · {location}",
+    "deviceClass": "Class {class}",
+    "priceOnRequest": "Price on request",
+    "sendInquiry": "Send Inquiry"
+  },
+  "languageSwitcher": {
+    "label": "Language"
+  }
+}

@@ -1,5 +1,9 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startProdServer, type StartedServer } from "./helpers/server";
+
+const execFileAsync = promisify(execFile);
 
 // Automates the manual `curl -I` check from the earlier performance session:
 // hashed static assets must be cached forever, the favicon must be cached
@@ -47,5 +51,50 @@ describe("static asset caching (production build)", () => {
     const cacheControl = res.headers.get("cache-control") ?? "";
 
     expect(cacheControl).not.toContain("immutable");
+  });
+
+  it("serves the locale shell as prerendered/static, not re-rendered per request", async () => {
+    // Items-for-sale were deliberately split out of this route into a
+    // client-fetched component (see product-listing.tsx) specifically so
+    // this page has no server-side data dependency left and can be fully
+    // static per locale — this asserts that split actually worked, not
+    // just that it compiles.
+    const res = await fetch(`${server.baseUrl}/en`);
+    // Node's fetch joins repeated response headers with ", " — Next.js
+    // sends this one twice — so check presence, not exact equality.
+    expect(res.headers.get("x-nextjs-prerender")).toContain("1");
+  });
+
+  it("answers a conditional re-request for the shell with 304, not a full re-render", async () => {
+    // What "reload with the same language should come from cache, not the
+    // server" actually looks like over HTTP: the browser sends back the
+    // ETag it already has, and gets an empty 304 instead of the full
+    // document — no re-render, negligible transfer, even without a
+    // service worker.
+    //
+    // One warm-up request first: a brand-new server process hasn't cached
+    // this route yet, and conditional revalidation only kicks in once it
+    // has — matches how this was verified manually against an
+    // already-warm server.
+    //
+    // curl, not fetch(): Node's fetch (undici) doesn't reliably surface a
+    // 304 for a conditional request the way a real browser/curl does —
+    // same class of measurement gap hit earlier with gzip sizing.
+    await fetch(`${server.baseUrl}/en`);
+    const warm = await fetch(`${server.baseUrl}/en`);
+    const etag = warm.headers.get("etag");
+    expect(etag, "expected an ETag on the locale shell response").toBeTruthy();
+
+    const { stdout } = await execFileAsync("curl", [
+      "-s",
+      "-o",
+      "/dev/null",
+      "-w",
+      "%{http_code}",
+      "-H",
+      `If-None-Match: ${etag}`,
+      `${server.baseUrl}/en`,
+    ]);
+    expect(stdout.trim()).toBe("304");
   });
 });

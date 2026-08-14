@@ -5,6 +5,8 @@ import { AuthService } from './auth.service';
 import { AuthResolver } from './auth.resolver';
 import { OtpStoreService } from './otp-store.service';
 import { SmsService } from './sms.service';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { RolesGuard } from './guards/roles.guard';
 
 @Module({
   imports: [
@@ -17,6 +19,16 @@ import { SmsService } from './sms.service';
       }),
     }),
   ],
-  providers: [AuthService, AuthResolver, OtpStoreService, SmsService],
+  providers: [
+    AuthService,
+    AuthResolver,
+    OtpStoreService,
+    SmsService,
+    JwtAuthGuard,
+    RolesGuard,
+  ],
+  // JwtModule (for JwtService) + the guards, so other modules can
+  // @UseGuards(JwtAuthGuard, RolesGuard) by importing AuthModule.
+  exports: [JwtModule, JwtAuthGuard, RolesGuard],
 })
 export class AuthModule {}

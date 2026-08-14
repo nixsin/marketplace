@@ -21,7 +21,7 @@ describe('ProductsService', () => {
 
     expect(prisma.product.findMany).toHaveBeenCalledWith({
       take: 7, // limit + 1, the lookahead that detects "is there a next page"
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: { seller: true },
     });
   });

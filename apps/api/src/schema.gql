@@ -40,7 +40,6 @@ enum KycStatus {
 
 type Mutation {
   completeOnboarding(input: CompleteOnboardingInput!): AuthPayload!
-  createOrganization(input: CreateOrganizationInput!): Organization!
   requestOtp(input: RequestOtpInput!): Boolean!
   verifyOtp(input: VerifyOtpInput!): AuthPayload!
 }
@@ -64,8 +63,10 @@ type Product {
   category: String!
   certifications: [String!]!
   createdAt: DateTime!
+  description: String!
   deviceClass: DeviceClass
   id: ID!
+  imageUrl: String
   location: String!
   name: String!
   seller: Organization!
@@ -76,13 +77,37 @@ type ProductPage {
   nextCursor: String
 }
 
+type ProductsPaged {
+  items: [Product!]!
+  page: Int!
+  pageSize: Int!
+  totalCount: Int!
+  totalPages: Int!
+}
+
 type Query {
-  organization(id: ID!): Organization!
+  me: User!
+  myOrganization: Organization!
   products(cursor: String, limit: Int): ProductPage!
+  productsPaged(page: Int, pageSize: Int): ProductsPaged!
 }
 
 input RequestOtpInput {
   phone: String!
+}
+
+type User {
+  email: String
+  id: ID!
+  name: String!
+  organization: Organization!
+  phone: String!
+  role: UserRole!
+}
+
+enum UserRole {
+  ADMIN
+  STAFF
 }
 
 input VerifyOtpInput {

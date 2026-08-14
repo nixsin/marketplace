@@ -18,6 +18,13 @@ export class AuthService {
     private readonly jwt: JwtService,
   ) {}
 
+  getUserById(id: string) {
+    return this.prisma.user.findUniqueOrThrow({
+      where: { id },
+      include: { organization: true },
+    });
+  }
+
   async requestOtp(phone: string): Promise<{ sent: boolean }> {
     const code = randomOtp();
     this.otpStore.set(phone, code);

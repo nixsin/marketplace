@@ -88,6 +88,35 @@ pnpm --filter api test:load                           # autocannon load test (ma
 - **`apps/web/scripts/perf-budget.mjs`** (`test:perf`) — runs a real Lighthouse audit (mobile, simulated throttling) against the production build and checks it against §12A's performance-score/LCP/JS-transfer targets. Kept as a manual/periodic script rather than a CI gate — Lighthouse scores have real run-to-run variance.
 - **`apps/api/scripts/load-test.mjs`** (`test:load`) — runs `autocannon` against the `products` GraphQL query and reports throughput/latency percentiles. Also informational rather than CI-gated, for the same reason.
 
+## Localization
+
+English + Hindi, per TECHNICAL_PLAN.md §14 — path-based routing (`/en`, `/hi`) via `next-intl`, resolved by the proxy/middleware in this priority order: **URL path prefix first** (if present, wins outright) → **`Accept-Language` header negotiation** (first visit only) → **`NEXT_LOCALE` cookie** (returning visits, set automatically once a locale is resolved). Verified directly with real requests, not just asserted from docs — see the git history for the curl checks.
+
+- `apps/web/src/i18n/` — routing config, request config, locale-aware `Link`/`useRouter` (`@/i18n/navigation`, not `next/link` — using the plain Next one anywhere under `[locale]` loses the current locale on navigation).
+- `apps/web/messages/{en,hi}.json` — UI chrome strings only.
+- **Product/seller content (name, description, category) is never auto-translated** — it stays in whatever language the seller entered it in. Only platform-owned UI text (nav, buttons, labels) is translated. This is a deliberate §14 rule, not a gap: machine-translating a device's intended-use description is a liability for a medical-instruments marketplace, not a convenience.
+
+**Switching language is instant and client-side** (`apps/web/src/components/locale-provider.tsx`) — no server round trip, no route navigation. Swapping `NextIntlClientProvider`'s `messages` prop re-renders every `useTranslations()` consumer immediately; the URL updates via `history.replaceState` (cosmetic, fires no request) rather than `next-intl`'s router, which would re-fetch the `[locale]` route segment from the server on every switch. A locale's messages are fetched at most once per session — an explicit `Map` cache (seeded with the initial server-resolved locale) means switching en→hi→en→hi only ever touches the network on the very first visit to a given language; every switch after that, in either direction, is zero requests. Verified with real network monitoring, not assumed.
+
+This did require converting Header/Footer/Pagination/ProductCard from Server Components to Client Components (they need to react to client-side locale state) — a real, measured bundle-size cost, raised twice and documented both times in `test/bundle-budget.spec.ts` rather than silently absorbed: 150KB → 160KB → 172KB.
+
+### Shell vs. item data — split on purpose, not by accident
+
+`apps/web/src/app/[locale]/page.tsx` no longer fetches product data itself. Items for sale are fetched by `apps/web/src/components/product-listing.tsx`, a Client Component that calls the GraphQL API directly on mount and again whenever `?page` changes. Two reasons this split exists:
+
+1. **Product data is genuinely dynamic** (new listings, edited descriptions/prices) and must never be treated as safe to cache alongside the shell — every load needs current DB state.
+2. **The shell has no such requirement.** Splitting its data-fetching out entirely is what lets `/en` and `/hi` go back to being genuinely static, prerendered routes (confirmed via `x-nextjs-prerender: 1` and `x-nextjs-cache: HIT` — real headers, checked in `test/static-caching.spec.ts`, not assumed). A repeat visit with the same locale gets a `304 Not Modified` on the shell instead of a full re-render — no server-side work, negligible transfer, without needing a Service Worker.
+
+**Known remaining gap**: a hard page reload still costs one small conditional-GET round trip for the shell document itself (the 304 above) — that's normal, correct HTTP behavior, not a bug, but it isn't literally zero network activity. Closing that last gap would need a Service Worker serving the shell from Cache Storage — scoped but not built (declined when offered; revisit if wanted later).
+
+### Product data caching (GraphQL-over-GET)
+
+The first version of this shell/data split only solved half the problem: `product-listing.tsx` still fetched via **POST**, which HTTP defines as non-cacheable regardless of any headers set — no ETag or `Cache-Control` on a POST response can make a browser or CDN reuse it. `apps/web/src/lib/api.ts`'s `fetchProductsPaged` now sends the same GraphQL query as **GET** instead (query + variables URL-encoded, per the GraphQL-over-HTTP spec — the same approach GitHub's and Shopify's GraphQL APIs use for CDN-cacheable reads), with the `apollo-require-preflight` header Apollo Server's CSRF protection requires on GET.
+
+- `apps/api/src/app.setup.ts` — shared between `main.ts` and the e2e tests (previously two copies of bootstrap config existed and could drift) — overrides Apollo's default `Cache-Control: no-store` to `public, max-age=0, must-revalidate` **specifically for GET requests to `/graphql`**, so the real ETag Apollo already computes can actually be used for conditional revalidation. POST stays untouched (`no-store`, confirmed in `test/products.e2e-spec.ts`) — mutations and anything sent via POST must never be treated as cacheable.
+- Verified with real browser Resource Timing data (not just curl): a reload shows `transferSize: 300` bytes against an actual `encodedBodySize` of ~2.5KB for the product data — the same 304 signature as the shell, confirming the browser is genuinely reusing cached product data rather than re-fetching it. Cross-origin Resource Timing values are zeroed by browsers for privacy by default; `Timing-Allow-Origin` is set explicitly so this is actually measurable, not just inferred.
+- Mutations (`requestOtp`, `completeOnboarding`, etc.) and any exploratory queries sent via POST are deliberately unaffected — this override only ever applies to GET.
+
 ## Not yet built
 
 Everything else in the roadmap (TECHNICAL_PLAN.md §9) — catalog, search, RFQ engine, lead distribution, messaging, billing, admin console, CAD-to-sourcing, etc. This is Phase 0 only: repo skeleton + auth/org onboarding foundation.
