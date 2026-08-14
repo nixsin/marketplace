@@ -1,0 +1,91 @@
+# ------------------------------------------------------
+# THIS FILE WAS AUTOMATICALLY GENERATED (DO NOT MODIFY)
+# ------------------------------------------------------
+
+type AuthPayload {
+  accessToken: String!
+  isNewUser: Boolean!
+}
+
+input CompleteOnboardingInput {
+  onboardingToken: String!
+  organization: CreateOrganizationInput!
+  userName: String!
+}
+
+input CreateOrganizationInput {
+  gstin: String
+  name: String!
+  type: OrgType!
+}
+
+"""
+A date-time string at UTC, such as 2019-12-03T09:54:33Z, compliant with the date-time format.
+"""
+scalar DateTime
+
+enum DeviceClass {
+  A
+  B
+  C
+  D
+}
+
+enum KycStatus {
+  APPROVED
+  PENDING
+  REJECTED
+  UNDER_REVIEW
+}
+
+type Mutation {
+  completeOnboarding(input: CompleteOnboardingInput!): AuthPayload!
+  createOrganization(input: CreateOrganizationInput!): Organization!
+  requestOtp(input: RequestOtpInput!): Boolean!
+  verifyOtp(input: VerifyOtpInput!): AuthPayload!
+}
+
+enum OrgType {
+  BUYER
+  SELLER
+}
+
+type Organization {
+  createdAt: DateTime!
+  gstin: String
+  id: ID!
+  kycStatus: KycStatus!
+  name: String!
+  type: OrgType!
+}
+
+type Product {
+  brand: String!
+  category: String!
+  certifications: [String!]!
+  createdAt: DateTime!
+  deviceClass: DeviceClass
+  id: ID!
+  location: String!
+  name: String!
+  seller: Organization!
+}
+
+type ProductPage {
+  items: [Product!]!
+  nextCursor: String
+}
+
+type Query {
+  organization(id: ID!): Organization!
+  products(cursor: String, limit: Int): ProductPage!
+}
+
+input RequestOtpInput {
+  phone: String!
+}
+
+input VerifyOtpInput {
+  code: String!
+  phone: String!
+}

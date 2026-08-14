@@ -1,0 +1,107 @@
+// Prisma schema — Phase 0 entities (auth + org onboarding), plus a minimal
+// Product slice added early to wire up one real catalog item end-to-end.
+// Full Product/Category/RFQ/Lead/Order/Subscription model is Phase 1 (§6).
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum OrgType {
+  BUYER
+  SELLER
+}
+
+enum KycStatus {
+  PENDING
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum UserRole {
+  ADMIN
+  STAFF
+}
+
+enum LicenseType {
+  CDSCO_MANUFACTURING
+  CDSCO_IMPORT
+  GST
+  UDYAM
+}
+
+enum DeviceClass {
+  A
+  B
+  C
+  D
+}
+
+model Organization {
+  id        String     @id @default(cuid())
+  name      String
+  gstin     String?    @unique
+  type      OrgType
+  kycStatus KycStatus  @default(PENDING)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  users    User[]
+  licenses License[]
+  products Product[]
+
+  @@index([type, kycStatus])
+}
+
+model User {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  phone     String   @unique
+  email     String?  @unique
+  name      String
+  role      UserRole @default(STAFF)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([organizationId])
+}
+
+model License {
+  id             String      @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+
+  type           LicenseType
+  registrationNo String
+  docUrl         String
+  issuedAt       DateTime?
+  expiresAt      DateTime?
+  verifiedAt     DateTime?
+  createdAt      DateTime    @default(now())
+
+  @@index([organizationId, type])
+}
+
+model Product {
+  id       String       @id @default(cuid())
+  sellerId String
+  seller   Organization @relation(fields: [sellerId], references: [id])
+
+  name           String
+  brand          String
+  category       String
+  deviceClass    DeviceClass?
+  certifications String[]
+  location       String
+  createdAt      DateTime     @default(now())
+
+  @@index([sellerId])
+}
