@@ -11,9 +11,16 @@
     "dev:api": "pnpm --filter api start:dev",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
-    "lint:check": "pnpm --filter web lint && pnpm --filter api lint:check"
+    "lint:check": "pnpm --filter web lint && pnpm --filter api lint:check",
+    "prepare": "husky"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.117.1"
+    "@anthropic-ai/sdk": "^0.117.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.3.0"
+  },
+  "lint-staged": {
+    "apps/api/**/*.ts": "pnpm --filter api exec eslint --fix",
+    "apps/web/**/*.{ts,tsx}": "pnpm --filter web exec eslint --fix"
   }
 }
