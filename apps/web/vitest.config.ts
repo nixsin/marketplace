@@ -20,6 +20,7 @@ export default defineConfig({
     fileParallelism: false,
     coverage: {
       provider: "v8",
+      reporter: ["text", "json-summary"],
       // Scoped to src/components/** deliberately, not the whole app —
       // that's the surface this session's testing push actually covers.
       // ui/** is shadcn's vendored primitives, not code we own; excluding

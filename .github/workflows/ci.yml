@@ -61,6 +61,10 @@ jobs:
   test-api-unit:
     name: API unit tests
     runs-on: ubuntu-latest
+    # contents: write only matters for the badge-publish step below, which
+    # is itself gated to push-to-main only — PRs never touch gh-pages.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -73,6 +77,19 @@ jobs:
       - name: API unit tests (with coverage)
         working-directory: apps/api
         run: pnpm test:cov
+
+      # Publishes a shields.io endpoint-badge JSON (README's "API coverage"
+      # badge reads it live from gh-pages) — main only, so an in-progress
+      # PR's coverage never overwrites the badge before it's actually merged.
+      - name: Publish API coverage badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pct=$(jq '.total.statements.pct' apps/api/coverage/coverage-summary.json)
+          color=$(awk -v p="$pct" 'BEGIN { if (p>=90) print "brightgreen"; else if (p>=75) print "yellow"; else if (p>=50) print "orange"; else print "red" }')
+          echo "{\"schemaVersion\":1,\"label\":\"api coverage\",\"message\":\"${pct}%\",\"color\":\"${color}\"}" > /tmp/api-badge.json
+          ./scripts/publish-badge.sh api /tmp/api-badge.json
 
   test-api-e2e:
     name: API e2e tests
@@ -116,6 +133,8 @@ jobs:
   test-web:
     name: Web build + tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -128,6 +147,16 @@ jobs:
       - name: Web build + tests (with coverage)
         working-directory: apps/web
         run: pnpm build && pnpm exec vitest run --coverage
+
+      - name: Publish web coverage badge
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pct=$(jq '.total.statements.pct' apps/web/coverage/coverage-summary.json)
+          color=$(awk -v p="$pct" 'BEGIN { if (p>=90) print "brightgreen"; else if (p>=75) print "yellow"; else if (p>=50) print "orange"; else print "red" }')
+          echo "{\"schemaVersion\":1,\"label\":\"web coverage\",\"message\":\"${pct}%\",\"color\":\"${color}\"}" > /tmp/web-badge.json
+          ./scripts/publish-badge.sh web /tmp/web-badge.json
 
   docker-scan:
     name: Docker image vulnerability scan
