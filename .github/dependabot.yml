@@ -1,0 +1,56 @@
+version: 2
+
+updates:
+  # One entry for the whole pnpm workspace — root, apps/api, and apps/web
+  # all share a single pnpm-lock.yaml, so pointing at the repo root covers
+  # every package.json in the monorepo. Dependabot is pnpm-workspace-aware;
+  # it doesn't need (and shouldn't get) a separate entry per app directory.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels: ["dependencies"]
+    groups:
+      # One PR for the routine, low-risk stuff instead of one per package —
+      # matches this repo's existing bias toward signal over noise (see
+      # dependency-freshness.yml, and perf-budget/load-test being
+      # informational rather than one-alert-per-thing). Majors are left
+      # ungrouped — those are the ones that actually need a human to read
+      # the changelog before merging, so each gets its own PR.
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  # Action versions used in .github/workflows/*.yml (actions/checkout,
+  # pnpm/action-setup, aquasecurity/trivy-action, etc.) — a single root
+  # entry covers the whole workflows directory.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies"]
+    groups:
+      actions:
+        update-types: ["minor", "patch"]
+
+  # Dockerfiles aren't part of the pnpm workspace, and Docker base-image
+  # updates aren't workspace-aware the way npm is — each Dockerfile needs
+  # its own entry, pointed at the directory it actually lives in.
+  - package-ecosystem: "docker"
+    directory: "/apps/api"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels: ["dependencies"]
+
+  - package-ecosystem: "docker"
+    directory: "/apps/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    labels: ["dependencies"]
