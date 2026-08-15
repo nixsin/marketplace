@@ -4,6 +4,8 @@
 [![CodeQL](https://github.com/nixsin/marketplace/actions/workflows/codeql.yml/badge.svg)](https://github.com/nixsin/marketplace/actions/workflows/codeql.yml)
 [![Dependency freshness](https://github.com/nixsin/marketplace/actions/workflows/dependency-freshness.yml/badge.svg)](https://github.com/nixsin/marketplace/actions/workflows/dependency-freshness.yml)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](package.json)
+[![API coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nixsin/marketplace/gh-pages/coverage/api-badge.json)](apps/api)
+[![Web coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nixsin/marketplace/gh-pages/coverage/web-badge.json)](apps/web)
 
 B2B marketplace for medical & surgical instruments. Full architecture, rationale, and roadmap live in [TECHNICAL_PLAN.md](./TECHNICAL_PLAN.md) — read that first.
 

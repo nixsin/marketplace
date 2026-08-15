@@ -112,6 +112,7 @@
       }
     },
     "coverageDirectory": "../coverage",
+    "coverageReporters": ["text", "json-summary"],
     "testEnvironment": "node"
   }
 }
