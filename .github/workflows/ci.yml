@@ -151,3 +151,31 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  migrate:
+    name: Apply prod DB migrations
+    runs-on: ubuntu-latest
+    # Only the prod image's own container can reach the app at runtime, but
+    # the prod image deliberately has no prisma CLI (see apps/api/Dockerfile
+    # — `pnpm deploy --prod` drops devDependencies) and Render's Free-tier
+    # Pre-Deploy Command is locked. So migrations run here instead, against
+    # the External DB URL, gated behind every other check on main only —
+    # this job is itself a required check, so Render's "After CI Checks
+    # Pass" auto-deploy waits for the schema to land before the new code
+    # that depends on it goes live.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [lint, audit, test, docker-scan, docker-smoke]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Apply prod DB migrations
+        working-directory: apps/api
+        run: pnpm exec prisma migrate deploy
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
