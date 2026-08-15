@@ -15,7 +15,13 @@ const BASE_URL = `http://localhost:${PORT}`;
 const BUDGETS = {
   performanceScore: 0.9, // /1.0
   lcpMs: 2500, // §12A: LCP < 2.5s on Slow 4G
-  jsBudgetBytes: 150 * 1024, // §12A: JS < 150KB gzip/route
+  // Was the original §12A target (150KB) — raised to match
+  // test/bundle-budget.spec.ts's own budget, which has moved twice since
+  // then for real, deliberate reasons (see that file's comment). Two
+  // scripts measuring the same thing with different numbers is a bug, not
+  // two valid opinions; that file's number is the one with the documented
+  // history, so this follows it rather than the other way around.
+  jsBudgetBytes: 186 * 1024,
 };
 
 async function waitForReady(url, timeoutMs) {
