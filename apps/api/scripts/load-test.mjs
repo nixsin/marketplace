@@ -31,7 +31,7 @@ async function waitForReady(url, timeoutMs) {
 }
 
 function startApi() {
-  const child = spawn("node", ["dist/src/main.js"], {
+  const child = spawn("node", ["--enable-source-maps", "dist/src/main.js"], {
     cwd: APP_ROOT,
     env: { ...process.env, PORT: String(PORT) },
     stdio: "ignore",

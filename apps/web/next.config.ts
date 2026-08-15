@@ -4,6 +4,12 @@ import createNextIntlPlugin from "next-intl/plugin";
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 const nextConfig: NextConfig = {
+  // Ships .map files alongside minified prod JS — DevTools loads them only
+  // when actually opened, so this costs nothing for normal page loads.
+  // Public (not restricted to authenticated/internal access) is a
+  // deliberate choice for now, not an oversight — revisit once there's
+  // real business logic worth keeping out of a public source map.
+  productionBrowserSourceMaps: true,
   images: {
     // Only for the self-authored, static SVGs under /public/products — not
     // for any user/seller-uploaded content, which is exactly what this

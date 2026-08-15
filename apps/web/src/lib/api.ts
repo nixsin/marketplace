@@ -2,7 +2,15 @@ import type { Product } from "@/components/product-card";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql";
 
-const PRODUCTS_PAGED_QUERY = `
+// GraphQL doesn't care about whitespace/formatting, but this goes in a URL
+// (GraphQL-over-GET, see fetchProductsPaged) where every character costs a
+// real byte — and once percent-encoded, whitespace costs *more* per
+// character than it did unencoded (each space/newline becomes %20/%0A).
+// Collapsed once here at module load, not per-request, so the source stays
+// readable without paying that cost on every call.
+const minifyGql = (query: string) => query.replace(/\s+/g, " ").trim();
+
+const PRODUCTS_PAGED_QUERY = minifyGql(`
   query ProductsPaged($page: Int, $pageSize: Int) {
     productsPaged(page: $page, pageSize: $pageSize) {
       page
@@ -16,7 +24,7 @@ const PRODUCTS_PAGED_QUERY = `
       }
     }
   }
-`;
+`);
 
 interface ProductsPagedResponse {
   data: {

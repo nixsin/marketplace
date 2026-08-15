@@ -117,6 +117,21 @@ The first version of this shell/data split only solved half the problem: `produc
 - Verified with real browser Resource Timing data (not just curl): a reload shows `transferSize: 300` bytes against an actual `encodedBodySize` of ~2.5KB for the product data — the same 304 signature as the shell, confirming the browser is genuinely reusing cached product data rather than re-fetching it. Cross-origin Resource Timing values are zeroed by browsers for privacy by default; `Timing-Allow-Origin` is set explicitly so this is actually measurable, not just inferred.
 - Mutations (`requestOtp`, `completeOnboarding`, etc.) and any exploratory queries sent via POST are deliberately unaffected — this override only ever applies to GET.
 
+## Minification & debugging prod
+
+Standard industry split: dev is unminified for debugging; prod is minified for real users, with source maps as the mechanism to debug prod without shipping unminified code.
+
+| | Dev | Prod |
+|---|---|---|
+| Web JS/CSS | Unminified (`next dev` default) | Minified + source maps (`productionBrowserSourceMaps: true` in `next.config.ts`) |
+| API (NestJS) | Runs TS directly via ts-node | Compiled JS (not minified — see below) + source maps (`node --enable-source-maps`, `start:prod`) |
+| GraphQL query text | N/A | Minified once at module load (`minifyGql` in `lib/api.ts`) — it travels in a URL (GraphQL-over-GET), where whitespace costs real bytes and costs *more* once percent-encoded |
+
+- **Why the API isn't minified**: minification's entire benefit is reducing bytes a browser downloads. Backend code never leaves the server, so minifying it buys nothing and only makes prod stack traces harder to read. Source maps, not minification, are the right lever for a Node backend.
+- **Source maps are opt-in for DevTools, not a page-weight cost** — browsers only fetch a `.map` file when DevTools is actually open and requests it. Regular users loading the page never download them.
+- **Public source maps were a deliberate choice**, not an oversight — they can reveal original source structure to anyone who requests the `.map` file directly. Fine for this codebase today; revisit (upload to an error-tracking service instead of serving `.map` files publicly) once there's real business logic worth keeping private. Changing that later doesn't require touching the build pipeline, just where the maps end up.
+- Removed `source-map-support` from the API's dependencies — it was listed (leftover from the original `nest new` scaffold) but never actually imported anywhere, so source maps were being generated but never used. Node's own `--enable-source-maps` (stable since Node 18) replaces it.
+
 ## Not yet built
 
 Everything else in the roadmap (TECHNICAL_PLAN.md §9) — catalog, search, RFQ engine, lead distribution, messaging, billing, admin console, CAD-to-sourcing, etc. This is Phase 0 only: repo skeleton + auth/org onboarding foundation.

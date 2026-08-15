@@ -23,9 +23,19 @@ const execFileAsync = promisify(execFile);
 //     (wrap only the translated text nodes in small "island" client
 //     components, keep the surrounding layout as Server Components) but
 //     was deferred as extra engineering effort for later, not done now.
+//   172KB -> 186KB: adding an explicit `browserslist` config (Chrome/
+//     Safari/Firefox/Edge, last 2 versions each) for defined Tier 1
+//     browser support. Isolated and confirmed via a controlled A/B
+//     rebuild (config in vs. out, nothing else changed): Next.js's
+//     *implicit* target (no browserslist) takes a more aggressive
+//     internal shortcut in its minifier than the standard browserslist-
+//     driven transform path does, even though both are targeting
+//     similarly modern browsers. This is the cost of the target being
+//     verified and intentional instead of an undocumented framework
+//     default — accepted deliberately, not overlooked.
 // Budget is nearly exhausted again — next addition needs to earn its
 // bytes, or that island-component optimization needs to actually happen.
-const JS_BUDGET_BYTES = 172 * 1024;
+const JS_BUDGET_BYTES = 186 * 1024;
 
 async function compressedSize(url: string): Promise<number> {
   // Node's fetch (undici) transparently decompresses gzip/br bodies, and

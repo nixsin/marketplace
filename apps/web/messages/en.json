@@ -6,7 +6,8 @@
   "header": {
     "categories": "Categories",
     "sellOnMedInstru": "Sell on MedInstru",
-    "signIn": "Sign in"
+    "signIn": "Sign in",
+    "menu": "Menu"
   },
   "footer": {
     "rights": "© {year} MedInstru Market. All rights reserved.",
