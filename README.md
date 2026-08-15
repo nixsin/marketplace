@@ -1,5 +1,10 @@
 # MedInstru Market
 
+[![CI](https://github.com/nixsin/marketplace/actions/workflows/ci.yml/badge.svg)](https://github.com/nixsin/marketplace/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/nixsin/marketplace/actions/workflows/codeql.yml/badge.svg)](https://github.com/nixsin/marketplace/actions/workflows/codeql.yml)
+[![Dependency freshness](https://github.com/nixsin/marketplace/actions/workflows/dependency-freshness.yml/badge.svg)](https://github.com/nixsin/marketplace/actions/workflows/dependency-freshness.yml)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](package.json)
+
 B2B marketplace for medical & surgical instruments. Full architecture, rationale, and roadmap live in [TECHNICAL_PLAN.md](./TECHNICAL_PLAN.md) — read that first.
 
 ## Repo layout
