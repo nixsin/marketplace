@@ -210,6 +210,56 @@ jobs:
         if: always()
         run: docker compose down -v
 
+  ai-failure-analysis:
+    name: AI CI failure analysis
+    runs-on: ubuntu-latest
+    # PR-only: a push-to-main failure has no PR thread to comment on, and
+    # this job's whole point is posting a comment there. `failure()` here
+    # means "at least one job in `needs:` failed" — GitHub's own semantics
+    # for a job whose condition function runs even though an ancestor
+    # failed (normally a failed dependency skips downstream jobs).
+    if: failure() && github.event_name == 'pull_request'
+    needs:
+      [lint, audit, test-api-unit, test-api-e2e, test-web, docker-scan, docker-smoke]
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Only the failed steps' logs, not full job output — keeps the
+      # request focused and avoids paying to re-read everything that
+      # already passed.
+      - name: Fetch failed step logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run view "${{ github.run_id }}" --log-failed > /tmp/failed-logs.txt
+
+      - name: Analyze failure with Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node scripts/analyze-ci-failure.mjs /tmp/failed-logs.txt > /tmp/analysis.md
+
+      - name: Post analysis as PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### 🤖 AI failure analysis (Claude Haiku 4.5)"
+            echo
+            cat /tmp/analysis.md
+            echo
+            echo "_Automated analysis — verify before acting on it._"
+          } > /tmp/comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md
+
   # Both jobs below wire up scripts that already existed (apps/web/scripts/
   # perf-budget.mjs, apps/api/scripts/load-test.mjs) but only ever ran
   # manually. `continue-on-error: true` keeps them exactly as informational
