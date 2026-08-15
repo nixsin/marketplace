@@ -67,5 +67,15 @@ COPY --from=build /out/node_modules ./node_modules
 COPY --from=build /repo/apps/web/.next ./.next
 COPY --from=build /repo/apps/web/public ./public
 COPY --from=build /repo/apps/web/package.json ./package.json
+# `next build` resolves next.config.ts into .next/required-server-files.json,
+# but `next start` still needs the file itself on disk at boot for anything
+# handled by its own runtime route (the /_next/image optimizer, in
+# particular) rather than the prebuilt manifest — without it, `next start`
+# silently falls back to default config instead of erroring, so this was a
+# quiet breakage: images.dangerouslyAllowSVG reverted to its default `false`
+# and every SVG product image 400'd in production. next.config.ts's only
+# import (next-intl/plugin) is a real runtime dependency, already present in
+# node_modules above, so this is safe to load with no other deps.
+COPY --from=build /repo/apps/web/next.config.ts ./next.config.ts
 EXPOSE 3000
 CMD ["node_modules/.bin/next", "start"]
