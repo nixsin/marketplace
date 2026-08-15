@@ -1,0 +1,86 @@
+name: Rerun CI on PR comment
+
+# issue_comment fires for comments on both issues and PRs (GitHub treats a
+# PR as a kind of issue for commenting purposes) — github.event.issue.pull_request
+# only exists for the latter, which the job's `if:` below checks. Crucially,
+# this event always runs the workflow file from the base repo's default
+# branch, never the PR branch's own copy — so a malicious PR can't tamper
+# with what this does, unlike pull_request_target combined with checking
+# out PR code.
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  rerun-on-comment:
+    if: github.event.issue.pull_request != null
+    runs-on: ubuntu-latest
+    # actions: write is what lets `gh run rerun` actually work; pull-requests:
+    # write is for posting the confirmation comment and reacting to the
+    # trigger comment.
+    permissions:
+      actions: write
+      pull-requests: write
+    steps:
+      # Untrusted free text (the comment body) — passed via env and read as
+      # a shell variable, never interpolated directly into the script.
+      # Interpolating ${{ github.event.comment.body }} straight into a
+      # run: block would be a script-injection hole (classic GitHub Actions
+      # footgun): a comment body containing shell metacharacters would
+      # execute as code in a job that already holds actions:write.
+      #
+      # Public repo, so also gate on the commenter's association — random
+      # public commenters shouldn't be able to burn CI minutes just by
+      # posting the trigger phrase.
+      - name: Check trigger phrase and permission
+        id: check
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}
+        run: |
+          comment_lower=$(printf '%s' "$COMMENT_BODY" | tr '[:upper:]' '[:lower:]')
+          matched=false
+          if [[ "$comment_lower" == *"rerun test"* ]]; then
+            matched=true
+          fi
+          allowed=false
+          case "$AUTHOR_ASSOCIATION" in
+            OWNER|MEMBER|COLLABORATOR) allowed=true ;;
+          esac
+          echo "matched=$matched" >> "$GITHUB_OUTPUT"
+          echo "allowed=$allowed" >> "$GITHUB_OUTPUT"
+
+      - name: React with eyes
+        if: steps.check.outputs.matched == 'true' && steps.check.outputs.allowed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+            -f content='eyes'
+
+      - name: Rerun latest CI run for this PR
+        if: steps.check.outputs.matched == 'true' && steps.check.outputs.allowed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.issue.number }}"
+          HEAD_SHA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid)
+          RUN_ID=$(gh run list --repo "${{ github.repository }}" --commit "$HEAD_SHA" --workflow CI --limit 1 --json databaseId --jq '.[0].databaseId')
+
+          if [ -z "$RUN_ID" ]; then
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+              --body "⚠️ Couldn't find a CI run for the latest commit (\`${HEAD_SHA:0:7}\`) to rerun."
+            exit 1
+          fi
+
+          gh run rerun "$RUN_ID" --repo "${{ github.repository }}"
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" \
+            --body "🔄 Rerunning CI ([run #$RUN_ID](https://github.com/${{ github.repository }}/actions/runs/$RUN_ID)) for this PR."
+
+      - name: Explain why nothing happened (unauthorized commenter)
+        if: steps.check.outputs.matched == 'true' && steps.check.outputs.allowed != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "${{ github.event.issue.number }}" --repo "${{ github.repository }}" \
+            --body "Only repo collaborators can trigger a CI rerun via comment."
