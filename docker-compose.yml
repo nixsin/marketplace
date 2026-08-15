@@ -29,6 +29,65 @@ services:
       timeout: 5s
       retries: 10
 
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: dev
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Server-side only (this process runs inside the Docker network), so
+      # these use the compose service names, not localhost.
+      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/medinstru?schema=public"
+      REDIS_URL: "redis://redis:6379"
+      JWT_SECRET: "dev-secret-change-me"
+      PORT: "4000"
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./apps/api:/repo/apps/api
+      # Named volumes over node_modules, not the bind mount above — without
+      # these, the bind mount would shadow the node_modules that `pnpm
+      # install` populated at image-build time with whatever (likely
+      # nothing) exists in the same path on the host. See apps/api/Dockerfile.
+      - api_node_modules:/repo/apps/api/node_modules
+      - api_root_node_modules:/repo/node_modules
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: dev
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      # Client-side only: NEXT_PUBLIC_* vars are read by the *browser*,
+      # which runs on the host, not inside the Docker network — so this
+      # must be the host-published port (localhost:4000), never the
+      # Docker-internal `api` hostname, which the browser can't resolve.
+      NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web:/repo/apps/web
+      - web_node_modules:/repo/apps/web/node_modules
+      - web_root_node_modules:/repo/node_modules
+      # Keeps Next's dev build cache off the host filesystem — avoids a
+      # root-owned .next/ directory landing in a bind-mounted host repo,
+      # and survives container restarts for faster subsequent boots.
+      - web_next_cache:/repo/apps/web/.next
+
 volumes:
   postgres_data:
   redis_data:
+  api_node_modules:
+  api_root_node_modules:
+  web_node_modules:
+  web_root_node_modules:
+  web_next_cache:

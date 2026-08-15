@@ -1,0 +1,16 @@
+# Build context is the repo root for both apps/api/Dockerfile and
+# apps/web/Dockerfile (they need every workspace package.json to resolve
+# the pnpm monorepo) — this applies to both.
+
+**/node_modules
+**/.next
+**/dist
+**/coverage
+**/coverage-e2e
+apps/api/generated
+.git
+.claude
+*.log
+.env
+.env.local
+.env.*.local

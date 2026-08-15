@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Fast feedback: runs the code directly on the runner against Postgres/
+  # Redis service containers — no Docker image builds, just the actual
+  # test suites. This is what most pushes wait on.
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: medinstru
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Reads the exact pnpm version from package.json's "packageManager"
+      # field — one source of truth, same version this runs with locally.
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Configure API env
+        working-directory: apps/api
+        run: cp .env.example .env
+
+      - name: Apply dev-DB migrations
+        working-directory: apps/api
+        run: pnpm exec prisma migrate deploy
+
+      - name: API unit tests
+        working-directory: apps/api
+        run: pnpm test
+
+      - name: API e2e tests
+        working-directory: apps/api
+        run: pnpm run test:e2e:migrate && pnpm test:e2e
+
+      - name: Web build + tests
+        working-directory: apps/web
+        run: pnpm build && pnpm test
+
+  # Slower, but this is the part that actually answers "does the Docker
+  # setup still work" — the whole reason this job exists. Builds every
+  # stage in both Dockerfiles (including prod, which nothing else ever
+  # exercises) and boots the real dev stack via the exact script a
+  # developer runs locally, not a reimplementation of it.
+  docker:
+    name: Docker build & smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build prod images (build-only — no secrets available here to run them with)
+        run: |
+          docker build --target prod -f apps/api/Dockerfile -t marketplace-api:prod .
+          docker build --target prod -f apps/web/Dockerfile -t marketplace-web:prod .
+
+      - name: Bootstrap the dev stack
+        run: ./scripts/dev.sh
+
+      - name: Smoke test
+        run: |
+          curl -sf http://localhost:3000/en > /dev/null
+          response=$(curl -sf -X POST http://localhost:4000/graphql \
+            -H "Content-Type: application/json" \
+            -d '{"query":"{ productsPaged(page: 1, pageSize: 10) { totalCount } }"}')
+          echo "$response"
+          echo "$response" | grep -q '"totalCount":10'
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

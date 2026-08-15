@@ -9,16 +9,40 @@ apps/
   web/   Next.js (App Router, TypeScript, Tailwind, shadcn/ui)
   api/   NestJS (GraphQL via Apollo, Prisma ORM, Postgres)
 packages/  shared code (empty for now — Phase 1+)
-docker-compose.yml   local Postgres + Redis (optional — see below)
+docker-compose.yml   Postgres + Redis + web + api, containerized (see below)
+scripts/dev.sh        one-command setup: build, migrate, seed, run
 ```
 
 This is a pnpm workspace monorepo (see `pnpm-workspace.yaml`), not two independent projects.
 
-## Prerequisites
+## Quick start (recommended)
+
+The only prerequisite is [Docker](https://docs.docker.com/get-docker/) (Docker Desktop, or `brew install docker docker-compose colima && colima start` for a lighter CLI-only setup). Everything else — Node, pnpm, Postgres, Redis, `.env` files, migrations, seed data — is handled for you:
+
+```bash
+./scripts/dev.sh
+```
+
+First run builds the images and installs dependencies inside them (a few minutes); every run after that is fast, since Docker caches the dependency layer and only reinstalls when a `package.json` or the lockfile actually changes. When it's done:
+
+- web → http://localhost:3000
+- api → http://localhost:4000/graphql
+
+Source is bind-mounted into both containers, so edits on your machine hot-reload exactly like running `pnpm dev` locally — nothing to rebuild for day-to-day changes. Re-running `./scripts/dev.sh` any time is safe (migrations are idempotent, a duplicate seed attempt is caught and skipped). `docker compose down` stops everything; add `-v` to also wipe the database.
+
+### Why Docker instead of installing everything locally
+
+One command instead of pinning a Node version, installing pnpm, installing and configuring Postgres + Redis, and remembering the exact migrate/seed sequence — and it's the same environment on any machine, not just "works on mine." The tradeoff is the first build costing a few minutes and ~2.5GB of image size per app; worth it for anyone other than the original author touching this repo.
+
+## Alternative: running natively (no Docker)
+
+Still fully supported, and what this machine originally used before the Docker setup existed.
+
+### Prerequisites
 
 - Node.js 22+ (installed here via [nvm](https://github.com/nvm-sh/nvm))
 - pnpm (via `corepack enable`)
-- Postgres + Redis — this machine is set up via **Homebrew** (`postgresql@16`, `redis`, both running as `brew services`). `docker-compose.yml` is also in the repo as an alternative if you'd rather containerize later — either works, `.env` just needs to point at whichever is running.
+- Postgres + Redis — this machine is set up via **Homebrew** (`postgresql@16`, `redis`, both running as `brew services`).
 
 ### This machine's local setup (already done)
 
@@ -26,7 +50,7 @@ This is a pnpm workspace monorepo (see `pnpm-workspace.yaml`), not two independe
 - A `postgres` superuser role (password `postgres`) was created to match `docker-compose.yml`'s credentials, so `.env` doesn't need to change if you switch to Docker later: `psql -d postgres -c "CREATE ROLE postgres WITH LOGIN SUPERUSER PASSWORD 'postgres';"`
 - Homebrew's `redis.conf` ships with `loadmodule` lines for Bloom/Search/JSON/Timeseries modules that aren't actually bundled with the formula — they were commented out in `/opt/homebrew/etc/redis.conf` (Redis was crash-looping on startup otherwise). Not needed for anything in this stack (plain caching/queues only).
 
-## First-time setup
+### First-time setup
 
 ```bash
 pnpm install
@@ -38,9 +62,10 @@ createdb medinstru   # skip if already created
 
 # apply the Phase 0 schema (Organization, User, License — see TECHNICAL_PLAN.md §6)
 pnpm --filter api exec prisma migrate dev --name init
+pnpm --filter api run seed   # optional: 10 sample products
 ```
 
-## Running locally
+### Running locally
 
 ```bash
 pnpm dev:web   # http://localhost:3000
