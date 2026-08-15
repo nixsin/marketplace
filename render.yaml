@@ -1,0 +1,55 @@
+# Render Blueprint — infrastructure-as-code for this repo's Render deployment.
+#
+# This documents the live setup in nixsin/marketplace on Render (created by
+# hand through the dashboard) so it isn't tribal knowledge trapped in a UI.
+# It is NOT currently connected as an active Blueprint sync — Render treats
+# a newly-connected Blueprint as authoritative and can try to adopt/recreate
+# resources, which needs a deliberate, careful first sync against existing
+# services rather than an automatic one. Connect it intentionally via
+# Render's "New Blueprint" flow when that's actually wanted.
+#
+# The app code itself has zero Render-specific logic — every service below
+# only configures plain env vars (see README.md "Deployment" section for the
+# platform-agnostic contract). Moving to another host means writing new
+# infra config there and retiring this file; no application code changes.
+
+databases:
+  - name: medinstru-postgres
+    plan: free
+    region: singapore
+    postgresMajorVersion: "18"
+
+services:
+  - name: medinstru-api
+    type: web
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PORT
+        value: 4000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: medinstru-postgres
+          property: connectionString
+      - key: JWT_SECRET
+        sync: false # generated once via `openssl rand -base64 32`, set manually in the dashboard
+
+  - name: medinstru-web
+    type: web
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./apps/web/Dockerfile
+    dockerContext: .
+    autoDeployTrigger: checksPass
+    envVars:
+      # Public by nature (shipped to the browser) — see apps/web/Dockerfile
+      # for why this must also be passed as a Docker build ARG, not just a
+      # runtime env var, for a Docker-based Next.js deploy.
+      - key: NEXT_PUBLIC_API_URL
+        value: https://medinstru-api.onrender.com/graphql
