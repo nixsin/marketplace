@@ -43,6 +43,14 @@ CMD ["pnpm", "dev"]
 FROM deps AS build
 WORKDIR /repo
 COPY apps/web apps/web
+# NEXT_PUBLIC_* vars are inlined into the client bundle at `next build` time,
+# not read at container startup — so setting NEXT_PUBLIC_API_URL as a runtime
+# env var on the host (e.g. Render) has no effect on its own. Render (and
+# `docker build --build-arg`) both translate matching env vars/build args
+# into this ARG automatically; the ENV line below is what actually exposes
+# it to the `next build` process.
+ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN pnpm --filter web build
 RUN pnpm --filter web deploy --prod --legacy /out
 
