@@ -10,6 +10,7 @@
     "dev:web": "pnpm --filter web dev",
     "dev:api": "pnpm --filter api start:dev",
     "build": "pnpm -r build",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint",
+    "lint:check": "pnpm --filter web lint && pnpm --filter api lint:check"
   }
 }

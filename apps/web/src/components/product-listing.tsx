@@ -31,8 +31,12 @@ export function ProductListing() {
 
   useEffect(() => {
     let cancelled = false;
-    setState((s) => ({ ...s, loading: true }));
 
+    // No synchronous setState(loading: true) here — react-hooks/set-state
+    // -in-effect flags that as an extra render pass, and it isn't needed:
+    // on the very first run `state.loading` is already true from the
+    // initial useState value, and on later page changes `items.length`
+    // is already > 0, so the skeleton guard below never reads it anyway.
     fetchProductsPaged(page).then(({ items, totalPages }) => {
       if (cancelled) return;
       setState({ items, totalPages, loading: false });

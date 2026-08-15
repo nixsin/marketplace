@@ -116,7 +116,7 @@ describe('AuthService', () => {
         organizationId: 'org_1',
         role: 'ADMIN',
       };
-      prisma.$transaction.mockImplementation(async (cb) =>
+      prisma.$transaction.mockImplementation((cb) =>
         cb({
           organization: { create: jest.fn().mockResolvedValue(createdOrg) },
           user: { create: jest.fn().mockResolvedValue(createdUser) },

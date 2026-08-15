@@ -55,6 +55,13 @@ RUN pnpm --filter api deploy --prod --legacy /out
 FROM node:22-alpine AS prod
 WORKDIR /app
 ENV NODE_ENV=production
+# node:22-alpine ships a global npm install we never invoke (CMD below
+# calls `node` directly) — removed rather than left in place, since a
+# vulnerability scan of the final image otherwise flags real CVEs in
+# npm's own bundled dependencies (brace-expansion, tar, etc.) that pose
+# zero actual risk here but would still fail a scan gate for something
+# not even reachable at runtime.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=build /out/node_modules ./node_modules
 COPY --from=build /repo/apps/api/dist ./dist
 COPY --from=build /repo/apps/api/package.json ./package.json

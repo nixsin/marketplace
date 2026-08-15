@@ -18,9 +18,9 @@ export class JwtAuthGuard implements CanActivate {
   constructor(private readonly jwt: JwtService) {}
 
   canActivate(context: ExecutionContext): boolean {
-    const req = GqlExecutionContext.create(context)
-      .getContext<{ req: AuthenticatedRequest }>()
-      .req;
+    const req = GqlExecutionContext.create(context).getContext<{
+      req: AuthenticatedRequest;
+    }>().req;
 
     const header = req.headers.authorization;
     const token = header?.startsWith('Bearer ') ? header.slice(7) : undefined;

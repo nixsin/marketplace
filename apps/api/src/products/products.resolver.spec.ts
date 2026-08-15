@@ -19,10 +19,7 @@ describe('ProductsResolver', () => {
 
       const result = resolver.products('product_5', 3);
 
-      expect(mockProductsService.findPage).toHaveBeenCalledWith(
-        'product_5',
-        3,
-      );
+      expect(mockProductsService.findPage).toHaveBeenCalledWith('product_5', 3);
       expect(result).toBe(expected);
     });
 

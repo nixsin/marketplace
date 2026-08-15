@@ -22,9 +22,9 @@ export class RolesGuard implements CanActivate {
     );
     if (!requiredRoles || requiredRoles.length === 0) return true;
 
-    const req = GqlExecutionContext.create(context)
-      .getContext<{ req: AuthenticatedRequest }>()
-      .req;
+    const req = GqlExecutionContext.create(context).getContext<{
+      req: AuthenticatedRequest;
+    }>().req;
 
     if (!requiredRoles.includes(req.user.role)) {
       throw new ForbiddenException(

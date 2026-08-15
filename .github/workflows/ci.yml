@@ -6,9 +6,44 @@ on:
   pull_request:
 
 jobs:
-  # Fast feedback: runs the code directly on the runner against Postgres/
-  # Redis service containers — no Docker image builds, just the actual
-  # test suites. This is what most pushes wait on.
+  # Split into small, independent jobs on purpose — GitHub runs jobs with
+  # no `needs:` between them concurrently, on separate runners. Lint and
+  # audit don't need Postgres/Redis; the two prod-image scans don't need
+  # each other or the dev-stack smoke test. Keeping them as one big job
+  # (as this file used to) forces everything through one runner in
+  # sequence for no reason — total wall-clock time was the sum of every
+  # step, not the slowest one.
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint:check
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # high/critical only — a moderate advisory in a load-test-only dev
+      # dependency (autocannon's transitive uuid) shouldn't block every
+      # PR; it should still show up in `pnpm audit` output for a human
+      # to notice and track.
+      - run: pnpm audit --audit-level=high
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -38,16 +73,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      # Reads the exact pnpm version from package.json's "packageManager"
-      # field — one source of truth, same version this runs with locally.
       - uses: pnpm/action-setup@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-
       - run: pnpm install --frozen-lockfile
 
       - name: Configure API env
@@ -58,25 +88,20 @@ jobs:
         working-directory: apps/api
         run: pnpm exec prisma migrate deploy
 
-      - name: API unit tests
+      - name: API unit tests (with coverage)
         working-directory: apps/api
-        run: pnpm test
+        run: pnpm test:cov
 
       - name: API e2e tests
         working-directory: apps/api
         run: pnpm run test:e2e:migrate && pnpm test:e2e
 
-      - name: Web build + tests
+      - name: Web build + tests (with coverage)
         working-directory: apps/web
-        run: pnpm build && pnpm test
+        run: pnpm build && pnpm exec vitest run --coverage
 
-  # Slower, but this is the part that actually answers "does the Docker
-  # setup still work" — the whole reason this job exists. Builds every
-  # stage in both Dockerfiles (including prod, which nothing else ever
-  # exercises) and boots the real dev stack via the exact script a
-  # developer runs locally, not a reimplementation of it.
-  docker:
-    name: Docker build & smoke test
+  docker-scan:
+    name: Docker image vulnerability scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,6 +111,31 @@ jobs:
           docker build --target prod -f apps/api/Dockerfile -t marketplace-api:prod .
           docker build --target prod -f apps/web/Dockerfile -t marketplace-web:prod .
 
+      - name: Scan API prod image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: marketplace-api:prod
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Scan web prod image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: marketplace-web:prod
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+  docker-smoke:
+    name: Docker dev stack smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # scripts/dev.sh builds its own `dev`-target images from scratch —
+      # entirely independent of docker-scan's `prod`-target build above,
+      # so this doesn't need to wait for that job at all.
       - name: Bootstrap the dev stack
         run: ./scripts/dev.sh
 

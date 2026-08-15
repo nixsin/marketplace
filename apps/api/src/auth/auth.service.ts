@@ -93,9 +93,7 @@ export class AuthService {
 
   private decodeOnboardingToken(token: string): { phone: string } {
     try {
-      const payload = this.jwt.verify<{ phone: string; scope: string }>(
-        token,
-      );
+      const payload = this.jwt.verify<{ phone: string; scope: string }>(token);
       if (payload.scope !== 'onboarding') {
         throw new Error('wrong token scope');
       }

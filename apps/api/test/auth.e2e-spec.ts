@@ -9,7 +9,7 @@ import { SmsService } from '../src/auth/sms.service';
 class FakeSmsService {
   sentCodes = new Map<string, string>();
 
-  async sendOtp(phone: string, code: string): Promise<void> {
+  sendOtp(phone: string, code: string): void {
     this.sentCodes.set(phone, code);
   }
 }
@@ -38,7 +38,9 @@ describe('Auth + onboarding (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+    app.useGlobalPipes(
+      new ValidationPipe({ whitelist: true, transform: true }),
+    );
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);

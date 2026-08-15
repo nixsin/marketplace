@@ -51,6 +51,10 @@ RUN pnpm --filter web deploy --prod --legacy /out
 FROM node:22-alpine AS prod
 WORKDIR /app
 ENV NODE_ENV=production
+# See apps/api/Dockerfile for why: node:22-alpine's bundled npm is never
+# invoked here (CMD below runs the `next` binary directly) but still
+# shows up as real CVEs in a vulnerability scan of the final image.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=build /out/node_modules ./node_modules
 COPY --from=build /repo/apps/web/.next ./.next
 COPY --from=build /repo/apps/web/public ./public

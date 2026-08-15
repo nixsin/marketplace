@@ -17,10 +17,22 @@ export function configureApp(app: INestApplication): void {
   // uncacheable for everything else (mutations, and any query sent that
   // way). Overriding per-request via a setHeader wrapper, since Apollo
   // sets its header after this middleware would otherwise run.
+  // Express's Response.setHeader is an overloaded signature that
+  // TypeScript can't carry through `.bind()` cleanly (a known inference
+  // limitation, not a real type hole) — named and typed explicitly here
+  // so the wrapper below doesn't end up implicitly `any`.
+  type SetHeader = (
+    name: string,
+    value: number | string | readonly string[],
+  ) => Response;
+
   app.use('/graphql', (req: Request, res: Response, next: NextFunction) => {
     if (req.method === 'GET') {
-      const originalSetHeader = res.setHeader.bind(res);
-      res.setHeader = ((name: string, value: unknown) => {
+      const originalSetHeader = res.setHeader.bind(res) as SetHeader;
+      res.setHeader = ((
+        name: string,
+        value: number | string | readonly string[],
+      ) => {
         if (name.toLowerCase() === 'cache-control') {
           // Opts this cross-origin response into exposing real timing/
           // transfer-size data to the Resource Timing API — otherwise
@@ -34,7 +46,7 @@ export function configureApp(app: INestApplication): void {
             'public, max-age=0, must-revalidate',
           );
         }
-        return originalSetHeader(name, value as string);
+        return originalSetHeader(name, value);
       }) as typeof res.setHeader;
     }
     next();

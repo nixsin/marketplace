@@ -96,8 +96,12 @@ describe('Products pagination (e2e)', () => {
     expect(page2.body.data.products.items).toHaveLength(4);
     expect(page2.body.data.products.nextCursor).toBeNull();
 
-    const page1Ids = page1.body.data.products.items.map((i: { id: string }) => i.id);
-    const page2Ids = page2.body.data.products.items.map((i: { id: string }) => i.id);
+    const page1Ids = page1.body.data.products.items.map(
+      (i: { id: string }) => i.id,
+    );
+    const page2Ids = page2.body.data.products.items.map(
+      (i: { id: string }) => i.id,
+    );
 
     // No overlap between pages.
     expect(page1Ids.filter((id: string) => page2Ids.includes(id))).toEqual([]);

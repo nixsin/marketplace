@@ -32,4 +32,19 @@ export default tseslint.config(
       "prettier/prettier": ["error", { endOfLine: "auto" }],
     },
   },
+  {
+    // supertest's Response.body is typed `any` by the library itself, not
+    // by anything under our control — every e2e assertion on a GraphQL
+    // JSON response (res.body.data.x, res.body.errors[0].message) trips
+    // the no-unsafe-* family for that reason alone, not because the test
+    // is actually unsafe. Relaxed here, not project-wide: src/ still gets
+    // the strict version.
+    files: ['test/**/*.ts', '**/*.spec.ts'],
+    rules: {
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+    },
+  },
 );

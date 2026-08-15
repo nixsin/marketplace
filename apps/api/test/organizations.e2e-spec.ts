@@ -16,7 +16,7 @@ import { SmsService } from '../src/auth/sms.service';
 class FakeSmsService {
   sentCodes = new Map<string, string>();
 
-  async sendOtp(phone: string, code: string): Promise<void> {
+  sendOtp(phone: string, code: string): void {
     this.sentCodes.set(phone, code);
   }
 }
@@ -68,7 +68,9 @@ describe('Organizations (e2e)', () => {
       .compile();
 
     app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+    app.useGlobalPipes(
+      new ValidationPipe({ whitelist: true, transform: true }),
+    );
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
@@ -107,7 +109,7 @@ describe('Organizations (e2e)', () => {
     };
   }
 
-  it('returns the caller\'s own organization for a valid session token', async () => {
+  it("returns the caller's own organization for a valid session token", async () => {
     const { sessionToken } = await signUp('+919812300001', 'Zenith Surgicals');
 
     const res = await gql(app, sessionToken)(MY_ORGANIZATION);
@@ -125,7 +127,7 @@ describe('Organizations (e2e)', () => {
     expect(res.body.data.myOrganization.id).toBe(org?.id);
   });
 
-  it('scopes strictly to the caller\'s own org, not a different one', async () => {
+  it("scopes strictly to the caller's own org, not a different one", async () => {
     const orgA = await signUp('+919812300002', 'Org A Diagnostics');
     await signUp('+919812300003', 'Org B Instruments');
 
