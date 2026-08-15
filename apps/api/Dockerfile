@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-alpine AS base
+FROM node:26-alpine AS base
 RUN corepack enable
 
 # ---- deps: installed once here, reused by both the dev and build stages
@@ -52,7 +52,7 @@ RUN pnpm --filter api build
 RUN pnpm --filter api deploy --prod --legacy /out
 
 # ---- prod: minimal runtime image — no pnpm, no workspace, no dev deps.
-FROM node:22-alpine AS prod
+FROM node:26-alpine AS prod
 WORKDIR /app
 ENV NODE_ENV=production
 # node:22-alpine ships a global npm install we never invoke (CMD below
