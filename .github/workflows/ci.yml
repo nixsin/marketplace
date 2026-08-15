@@ -260,6 +260,93 @@ jobs:
           } > /tmp/comment.md
           gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md
 
+  # Both jobs below wire up scripts that already existed (apps/web/scripts/
+  # perf-budget.mjs, apps/api/scripts/load-test.mjs) but only ever ran
+  # manually. `continue-on-error: true` keeps them exactly as informational
+  # as their own doc comments already say they should be — Lighthouse
+  # scores and load-test latency have real run-to-run variance, especially
+  # on shared CI runners, so a red X here would be noise, not signal. They
+  # report real numbers on every PR without ever blocking one; neither is
+  # in `migrate`'s `needs:` list or branch protection's required checks.
+
+  perf-budget:
+    name: Web performance budget (Lighthouse)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # No live API in this job — keeping it self-contained and fast beats
+      # wiring up Postgres/migrations/seeding just for an informational
+      # check. This measures the shell's own load performance (exactly
+      # what the service worker in this repo targets), not a fully
+      # product-populated page; the product list will show its fetch-error
+      # state, which still paints and still gets measured.
+      - name: Build web
+        working-directory: apps/web
+        run: pnpm build
+
+      - name: Run Lighthouse performance budget
+        working-directory: apps/web
+        run: pnpm test:perf
+
+  load-test:
+    name: API load test (autocannon)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: medinstru
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Configure API env
+        working-directory: apps/api
+        run: cp .env.example .env
+
+      - name: Apply dev-DB migrations
+        working-directory: apps/api
+        run: pnpm exec prisma migrate deploy
+
+      # Real product rows, not an empty table — an empty-table query would
+      # under-report latency for the thing this actually needs to catch
+      # (e.g. an accidental N+1 query, per load-test.mjs's own comment).
+      - name: Seed sample data
+        working-directory: apps/api
+        run: pnpm seed
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medinstru?schema=public
+
+      - name: Run API load test
+        working-directory: apps/api
+        run: pnpm test:load
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medinstru?schema=public
+
   migrate:
     name: Apply prod DB migrations
     runs-on: ubuntu-latest
