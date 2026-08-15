@@ -44,8 +44,38 @@ jobs:
       # to notice and track.
       - run: pnpm audit --audit-level=high
 
-  test:
-    name: Test
+  # The old single "Test" job ran API unit tests, API e2e tests, and the web
+  # build+tests back to back on one runner even though none of the three
+  # depend on each other's output — split for the same reason docker-scan
+  # and docker-smoke are separate jobs (see the file-level comment above).
+  #
+  # Only test-api-e2e touches a real database — API unit tests mock
+  # PrismaService entirely (see src/**/*.service.spec.ts) and the web tests
+  # don't touch Postgres at all, so those two jobs skip the `services:`
+  # block completely rather than pay for a container they never use. Redis
+  # is dropped too: OtpStoreService is in-memory only today (see its
+  # TODO(Phase 1) comment) — nothing in this repo talks to Redis yet, so the
+  # service container CI had been starting for every run was pure dead
+  # weight.
+
+  test-api-unit:
+    name: API unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: API unit tests (with coverage)
+        working-directory: apps/api
+        run: pnpm test:cov
+
+  test-api-e2e:
+    name: API e2e tests
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -58,15 +88,6 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -88,13 +109,21 @@ jobs:
         working-directory: apps/api
         run: pnpm exec prisma migrate deploy
 
-      - name: API unit tests (with coverage)
-        working-directory: apps/api
-        run: pnpm test:cov
-
       - name: API e2e tests
         working-directory: apps/api
         run: pnpm run test:e2e:migrate && pnpm test:e2e
+
+  test-web:
+    name: Web build + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
 
       - name: Web build + tests (with coverage)
         working-directory: apps/web
@@ -164,7 +193,8 @@ jobs:
     # Pass" auto-deploy waits for the schema to land before the new code
     # that depends on it goes live.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [lint, audit, test, docker-scan, docker-smoke]
+    needs:
+      [lint, audit, test-api-unit, test-api-e2e, test-web, docker-scan, docker-smoke]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
