@@ -335,13 +335,28 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # Only the failed steps' logs, not full job output — keeps the
-      # request focused and avoids paying to re-read everything that
-      # already passed.
+      # `gh run view <run-id> --log-failed` on the *whole run* refuses to
+      # return anything until every job in that run — including this one —
+      # has completed. Chicken-and-egg: this job is itself part of the run
+      # it's trying to read. Query each failed job's ID directly instead
+      # and fetch its log individually — that works as soon as THAT job
+      # finishes, regardless of whether this job or any other sibling is
+      # still running.
       - name: Fetch failed step logs
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run view "${{ github.run_id }}" --log-failed > /tmp/failed-logs.txt
+        run: |
+          failed_job_ids=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate --jq '.jobs[] | select(.conclusion == "failure") | .id')
+
+          : > /tmp/failed-logs.txt
+          if [ -z "$failed_job_ids" ]; then
+            echo "No failed jobs found in this run." > /tmp/failed-logs.txt
+          else
+            for job_id in $failed_job_ids; do
+              echo "=== Job $job_id ===" >> /tmp/failed-logs.txt
+              gh run view --job "$job_id" --log-failed >> /tmp/failed-logs.txt
+            done
+          fi
 
       - name: Analyze failure with Claude
         env:
