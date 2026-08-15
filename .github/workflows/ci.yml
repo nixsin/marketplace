@@ -112,7 +112,7 @@ jobs:
           docker build --target prod -f apps/web/Dockerfile -t marketplace-web:prod .
 
       - name: Scan API prod image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: marketplace-api:prod
@@ -120,7 +120,7 @@ jobs:
           exit-code: "1"
 
       - name: Scan web prod image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: image
           image-ref: marketplace-web:prod
