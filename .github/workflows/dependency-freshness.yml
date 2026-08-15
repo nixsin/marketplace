@@ -1,0 +1,34 @@
+name: Dependency freshness
+
+# Deliberately not run on every PR: an unrelated PR shouldn't show
+# "outdated" just because time passed since the last dependency bump.
+# Runs weekly plus on every push to main, so the badge reflects genuine
+# as-of-last-check freshness, decoupled from individual PRs. Not wired into
+# branch protection — dependencies going stale shouldn't block unrelated
+# work from merging, it should just be visible.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1" # Monday 06:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  outdated:
+    name: Check for outdated packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # `pnpm outdated` exits 1 when outdated packages exist (verified
+      # locally) — genuinely fails this job/workflow run rather than just
+      # logging, unlike the perf-budget/load-test jobs. This check has no
+      # run-to-run variance (a package is either outdated or it isn't), so
+      # there's no reason to soften it with continue-on-error — the whole
+      # point is for the workflow badge to honestly reflect current status.
+      - run: pnpm outdated --recursive
