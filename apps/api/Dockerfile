@@ -4,15 +4,21 @@ FROM node:22-alpine AS base
 RUN corepack enable
 
 # ---- deps: installed once here, reused by both the dev and build stages
-# below via Docker's layer cache — only invalidates when a manifest or the
-# lockfile changes, not on every source edit. pnpm needs the *whole*
-# workspace's package.json files present (not just this app's) to resolve
-# the monorepo correctly, even though we only end up running apps/api.
+# below via Docker's layer cache — only invalidates when a manifest, the
+# lockfile, or the Prisma schema changes, not on every source edit. pnpm
+# needs the *whole* workspace's package.json files present (not just this
+# app's) to resolve the monorepo correctly, even though we only end up
+# running apps/api.
 FROM base AS deps
 WORKDIR /repo
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
+# apps/api's postinstall runs `prisma generate`, which needs its schema —
+# copied ahead of the full source (below, in later stages) for the same
+# layer-caching reason as the package.json files above.
+COPY apps/api/prisma.config.ts apps/api/prisma.config.ts
+COPY apps/api/prisma/schema.prisma apps/api/prisma/schema.prisma
 RUN pnpm install --frozen-lockfile
 
 # ---- dev: source is bind-mounted in by docker-compose.yml, not copied in

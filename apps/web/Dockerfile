@@ -4,12 +4,17 @@ FROM node:22-alpine AS base
 RUN corepack enable
 
 # ---- deps: see apps/api/Dockerfile for why the whole workspace's
-# package.json files are needed here, not just apps/web's.
+# package.json files are needed here, not just apps/web's — and, for the
+# same reason, apps/api's prisma schema: a workspace-root `pnpm install`
+# runs every package's postinstall, including apps/api's `prisma generate`,
+# even in a build that never otherwise touches the API app.
 FROM base AS deps
 WORKDIR /repo
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/package.json
 COPY apps/api/package.json apps/api/package.json
+COPY apps/api/prisma.config.ts apps/api/prisma.config.ts
+COPY apps/api/prisma/schema.prisma apps/api/prisma/schema.prisma
 RUN pnpm install --frozen-lockfile
 
 # ---- dev: source is bind-mounted in by docker-compose.yml, not copied in
