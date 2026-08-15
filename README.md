@@ -157,6 +157,23 @@ Standard industry split: dev is unminified for debugging; prod is minified for r
 - **Public source maps were a deliberate choice**, not an oversight — they can reveal original source structure to anyone who requests the `.map` file directly. Fine for this codebase today; revisit (upload to an error-tracking service instead of serving `.map` files publicly) once there's real business logic worth keeping private. Changing that later doesn't require touching the build pipeline, just where the maps end up.
 - Removed `source-map-support` from the API's dependencies — it was listed (leftover from the original `nest new` scaffold) but never actually imported anywhere, so source maps were being generated but never used. Node's own `--enable-source-maps` (stable since Node 18) replaces it.
 
+## Deployment
+
+App code has no host-specific logic anywhere — it only reads plain environment variables. Whatever platform runs these containers just needs to set the ones below; nothing in `apps/api` or `apps/web` source ever branches on which platform it's running on.
+
+| App | Var | Required | Notes |
+|---|---|---|---|
+| api | `DATABASE_URL` | yes | Postgres connection string |
+| api | `JWT_SECRET` | yes | Signs/verifies auth JWTs — generate with `openssl rand -base64 32`, never reuse the `.env.example` dev value |
+| api | `PORT` | no (default `3000`) | Both Dockerfiles set it to `4000` |
+| api | `NODE_ENV` | no | `production` disables the GraphQL Playground (`apps/api/src/app.module.ts`) |
+| api | `REDIS_URL` | not yet wired up | Reserved for Phase 1 (BullMQ queues, OTP store, caching) |
+| web | `NEXT_PUBLIC_API_URL` | yes | The API's public GraphQL endpoint. Inlined into the client bundle at `next build` time (standard Next.js `NEXT_PUBLIC_*` behavior) — for a Docker build this must be passed as a `--build-arg`, not just a runtime env var; see the comment in `apps/web/Dockerfile`'s `build` stage |
+
+Current deployment target is [Render](https://render.com) (Docker-based web services + managed Postgres) — its service definitions, regions, and plans are captured as infrastructure-as-code in [`render.yaml`](./render.yaml) (a [Render Blueprint](https://render.com/docs/blueprint-spec)) rather than living only in the dashboard. Moving to a different host later is a matter of writing that host's own infra config against the env var contract above and retiring `render.yaml` — no application code changes.
+
+CI (`.github/workflows/ci.yml`) applies production database migrations (`prisma migrate deploy`, gated behind every other check, `main`-only) against Postgres's *external* connection string, since the prod Docker image intentionally excludes the `prisma` CLI (see `apps/api/Dockerfile`) and Render's Pre-Deploy Command is unavailable on the free instance tier.
+
 ## Not yet built
 
 Everything else in the roadmap (TECHNICAL_PLAN.md §9) — catalog, search, RFQ engine, lead distribution, messaging, billing, admin console, CAD-to-sourcing, etc. This is Phase 0 only: repo skeleton + auth/org onboarding foundation.
