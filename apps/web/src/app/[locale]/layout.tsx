@@ -7,6 +7,7 @@ import { routing, type Locale } from "@/i18n/routing";
 import { LocaleProvider } from "@/components/locale-provider";
 import { Header } from "@/components/header";
 import { Footer } from "@/components/footer";
+import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
 import "../globals.css";
 
 const geistSans = Geist({
@@ -55,6 +56,7 @@ export default async function LocaleLayout({
     >
       <body className="min-h-full flex flex-col">
         <LocaleProvider initialLocale={locale as Locale} initialMessages={messages}>
+          <ServiceWorkerRegistration />
           <Header />
           <main className="flex flex-1 flex-col">{children}</main>
           <Footer />
