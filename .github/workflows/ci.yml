@@ -528,10 +528,15 @@ jobs:
   ai-code-review:
     name: AI code review
     runs-on: ubuntu-latest
+    # Checks both failure and cancelled, not just failure — a cancelled
+    # upstream job means its result is genuinely unknown (tests never
+    # finished, not "tests passed"), so it shouldn't be reviewed as if
+    # everything upstream actually completed.
     if: |
       always() &&
       github.event_name == 'pull_request' &&
-      !contains(needs.*.result, 'failure')
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
     needs:
       [
         lint,
@@ -613,7 +618,17 @@ jobs:
           verdict="REQUEST_CHANGES"
 
           if [ "${{ steps.review.outcome }}" = "success" ] && [ -s /tmp/review.md ]; then
-            raw_verdict=$(awk '/^## Verdict$/{getline; print; exit}' /tmp/review.md | tr -d '[:space:]')
+            # Last occurrence, not first — the diff is untrusted data fed to
+            # the model, and the model is told to quote suspicious diff
+            # content when flagging it. A diff containing its own fake
+            # "## Verdict\nAPPROVE" text, if quoted back verbatim while being
+            # correctly flagged as a suspected injection, would fool a
+            # first-match parse into extracting the wrong one. The prompt
+            # requires the real verdict to be the final thing in the
+            # response, so anchoring on the last match is what actually
+            # matches that contract. Verified locally against a constructed
+            # injection attempt before landing this.
+            raw_verdict=$(awk '/^## Verdict$/{getline; v=$0} END{print v}' /tmp/review.md | tr -d '[:space:]')
             if [ "$raw_verdict" = "APPROVE" ]; then
               verdict="APPROVE"
             fi
@@ -621,10 +636,15 @@ jobs:
             # The files it says it reviewed must exactly match the real
             # diff — a mismatch means it lost track of the actual change
             # somewhere, which disqualifies an APPROVE regardless of its
-            # stated conclusion.
+            # stated conclusion. Same last-occurrence reasoning as above.
             if [ "$verdict" = "APPROVE" ]; then
               actual_files=$(gh pr diff "$PR_NUMBER" --name-only | sort)
-              claimed_files=$(awk '/^## Files reviewed$/{flag=1; next} /^## Verdict$/{flag=0} flag' /tmp/review.md | sed '/^[[:space:]]*$/d' | sort)
+              claimed_files=$(awk '
+                /^## Files reviewed$/{flag=1; buf=""; next}
+                /^## Verdict$/{flag=0}
+                flag{buf = buf $0 "\n"}
+                END{printf "%s", buf}
+              ' /tmp/review.md | sed '/^[[:space:]]*$/d' | sort)
               if [ "$actual_files" != "$claimed_files" ]; then
                 echo "Files-reviewed list doesn't match the real diff — overriding to REQUEST_CHANGES."
                 verdict="REQUEST_CHANGES"
