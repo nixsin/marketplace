@@ -3,6 +3,7 @@
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { writeFileSync } from "node:fs";
 import * as chromeLauncher from "chrome-launcher";
 import lighthouse from "lighthouse";
 
@@ -108,6 +109,19 @@ Median of ${LIGHTHOUSE_RUNS} runs:
   LCP: ${(lcpMs / 1000).toFixed(1)}s  (budget: <=${BUDGETS.lcpMs / 1000}s)
   JS transferred: ${(jsBytes / 1024).toFixed(1)}KB  (budget: <=${BUDGETS.jsBudgetBytes / 1024}KB)
 `);
+
+    // Written unconditionally, before the pass/fail check below — CI's
+    // Lighthouse badge/history publishing step (gated on push-to-main,
+    // if: always()) reads this regardless of whether the budget itself
+    // was met, so the dashboard shows a real regression instead of
+    // silently freezing at the last passing score. Opt-in via env var so
+    // a plain local `pnpm test:perf` run is unaffected.
+    if (process.env.PERF_BUDGET_RESULT_FILE) {
+      writeFileSync(
+        process.env.PERF_BUDGET_RESULT_FILE,
+        JSON.stringify({ score: Math.round(score * 100), lcpMs, jsBytes }, null, 2),
+      );
+    }
 
     let failed = false;
     if (score < BUDGETS.performanceScore) {
