@@ -288,13 +288,25 @@ here only ever means the reviewer gets less context, never a false
 approve; none of the mechanical fail-closed checks (files-reviewed match,
 truncation override, single-verdict-heading rule) read this output, and a
 missing/unreadable log file fails closed to "no override context," the
-same safe default as before this feature existed.
+same safe default as before this feature existed — but only because the
+`Fetch prior override decisions` step is itself written to never fail
+(see below); a step that fails outright, even for an unrelated reason
+like a transient `gh api` error, takes every later step in the job down
+with it by GitHub Actions' own default, `ai-code-review`'s actual review
+included, not just this feature's own context.
 
 The `Fetch prior override decisions` step fetches with `gh api ...
 --paginate --slurp` (raw pages, no `--jq`) rather than filtering inline —
 see "Known gotchas" below for why `--paginate --jq` silently breaks on a
 PR with enough comments to span multiple pages, and why `--slurp` can't
-just be added alongside it.
+just be added alongside it. The step also runs under `set +e` with an
+explicit `[ ! -s ... ] && echo "[]"` fallback so a `gh api` failure
+degrades to an empty comments list instead of failing the step — a live
+review caught that this step originally had neither, so a transient API
+error would fail the step outright, and because GitHub Actions skips
+every later step in a job by default once one fails, that would have
+skipped `Review with ChatGPT` entirely — not just lost override context,
+lost the whole review for that run.
 
 **Known, accepted risk**: `ai-code-review` (`secrets.OPENAI_API_KEY`) and
 `ai-failure-analysis` (`secrets.ANTHROPIC_API_KEY`) both run on
@@ -357,6 +369,23 @@ care as any other secrets-using action, not as a rubber-stamp click.
   against a real multi-page shape (see `flattenPaginatedComments` in
   `scripts/lib/override-decisions.mjs`) — not in another bash/jq
   one-liner that would have the exact same blind spot.
+- **A failed step skips every later step in the same job by default, not
+  just the failing one.** GitHub Actions' implicit `if:` on a step with no
+  explicit condition is `success()` — so a step that fails without
+  `continue-on-error: true` silently cancels everything after it too,
+  unless a later step opts back in with its own `if: always()` (as
+  `Post review verdict` does). Hit `ai-code-review`'s `Fetch prior
+  override decisions` step exactly this way: it fetches PR comments as
+  optional context and was never meant to be able to block anything, but
+  because it had no failure handling of its own, a transient `gh api`
+  error would fail the step outright and skip `Review with ChatGPT`
+  entirely on the same run — turning an optional context source into a
+  hard dependency for the whole review. Fix (and the general pattern for
+  any future "nice to have, must not become load-bearing" step): make the
+  step itself unable to fail, e.g. `set +e` plus an explicit fallback
+  value on empty/failed output, rather than reaching for
+  `continue-on-error` — that marks the step as failed-but-ignored in the
+  UI for something that isn't actually a failure once it's handled.
 - **`node:26-alpine` dropped bundling Corepack.** `RUN corepack enable` alone
   now fails with `corepack: not found`. Fix: `RUN npm install -g corepack &&
   corepack enable`. Hit this on both `apps/api/Dockerfile` and

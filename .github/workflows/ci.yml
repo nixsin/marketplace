@@ -690,8 +690,23 @@ jobs:
           # so this fetches raw pages and scripts/parse-override-decisions
           # .mjs does the flattening in JS via flattenPaginatedComments,
           # where it's covered by a real multi-page test case.
+          #
+          # set +e and an explicit empty-array fallback, not
+          # continue-on-error: a live review caught that without either,
+          # a transient gh api failure (rate limit, permissions blip)
+          # would fail this step outright, and GitHub Actions skips every
+          # subsequent step by default on a step failure — silently
+          # preventing "Review with ChatGPT" from ever running at all,
+          # not just from getting override context. This is optional
+          # context for an otherwise-independent review, so its own
+          # fetch failing must never take the review down with it.
+          set +e
           gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate --slurp \
             > /tmp/pr-comments-raw.json
+          if [ ! -s /tmp/pr-comments-raw.json ]; then
+            echo "gh api call for PR comments failed or returned nothing — defaulting to no override context." >&2
+            echo "[]" > /tmp/pr-comments-raw.json
+          fi
           node scripts/parse-override-decisions.mjs /tmp/pr-comments-raw.json "${{ github.repository_owner }}" \
             > /tmp/override-decisions.json
 
