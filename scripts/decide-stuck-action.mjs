@@ -32,22 +32,20 @@ if (
   process.exit(1);
 }
 
-// A live review caught that this previously defaulted `runs` to []
-// on a parse failure but left `lookupOk` exactly as passed in from
-// bash — which, if bash's own gh calls had succeeded (a malformed
-// JSON string isn't necessarily a gh failure), meant
-// decideStuckAction saw {lookupOk: true, runs: []}, indistinguishable
-// from "confirmed zero stuck runs," and could falsely resolve a real,
-// still-active warning. A parse failure must force lookupOk to false
-// itself, not just supply an empty runs array and leave the caller's
-// success flag untouched.
-let runs = [];
-let parseOk = true;
-try {
-  runs = JSON.parse(runsJsonArg);
-} catch (err) {
-  console.error(`Failed to parse runs JSON, treating as a failed lookup: ${err.message}`);
-  parseOk = false;
+// Uses the tested parseRunsJson helper directly — a live review caught
+// that an earlier version of this wrapper imported it but then
+// duplicated its logic inline instead of actually calling it, so the
+// wrapper's real code path (as opposed to the pure functions in
+// isolation) was never exercised by the test suite. That inline version
+// also had the actual bug parseRunsJson exists to prevent: it defaulted
+// `runs` to [] on a parse failure but left `lookupOk` exactly as passed
+// in from bash, so a malformed JSON string with an otherwise-successful
+// gh call read as {lookupOk: true, runs: []} — indistinguishable from
+// "confirmed zero stuck runs" — and could falsely resolve a real,
+// still-active warning.
+const { runs, parseOk } = parseRunsJson(runsJsonArg);
+if (!parseOk) {
+  console.error("Failed to parse runs JSON, treating as a failed lookup");
 }
 
 console.log(
