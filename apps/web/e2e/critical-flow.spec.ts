@@ -11,8 +11,11 @@ import { test, expect } from "@playwright/test";
 // Screenshots use Playwright's built-in toHaveScreenshot() — baselines
 // live in e2e/critical-flow.spec.ts-snapshots/, committed to the repo.
 // A real visual diff fails the assertion and Playwright writes
-// -actual/-expected/-diff PNGs next to the baseline; CI picks those up
-// and posts them to the PR (see ci.yml's test-e2e-web job).
+// -actual/-expected/-diff PNGs next to the baseline; CI uploads the
+// full HTML report (with those images) as a workflow artifact on
+// failure — a human downloads it to see the diff. Posting the images
+// directly to the PR isn't built yet (see CLAUDE.md for the planned
+// follow-up) — don't overclaim it here once it exists elsewhere.
 
 test.describe("home page", () => {
   test("renders the real product catalog", async ({ page }) => {

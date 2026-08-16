@@ -158,6 +158,12 @@ jobs:
           web_or_deps=false
           if [ "$WEB_CHANGED" = "true" ] || [ "$DEPS_CHANGED" = "true" ]; then web_or_deps=true; fi
 
+          # test-e2e-web is a full-stack integration test (real API +
+          # DB), unlike test-web's mocked Vitest/jsdom suite — gated on
+          # api too, not just web/deps. See that job's own comment.
+          api_or_web_or_deps=false
+          if [ "$API_CHANGED" = "true" ] || [ "$WEB_CHANGED" = "true" ] || [ "$DEPS_CHANGED" = "true" ]; then api_or_web_or_deps=true; fi
+
           cat > /tmp/skip-comment.md <<EOF
           <!-- ci-skip-logic-comment -->
           ### 🔍 CI job skip logic
@@ -172,7 +178,7 @@ jobs:
           | API load test (autocannon) | $(status "$api_or_deps") | api or deps changed |
           | Web build + tests | $(status "$web_or_deps") | web or deps changed |
           | Web performance budget (Lighthouse) | $(status "$web_or_deps") | web or deps changed |
-          | Web e2e (Playwright) | $(status "$web_or_deps") | web or deps changed |
+          | Web e2e (Playwright) | $(status "$api_or_web_or_deps") | api, web, or deps changed |
           | Docker image vulnerability scan | $(status "$DOCKER_CHANGED") | apps/api, apps/web, either Dockerfile, docker-compose.yml, .dockerignore, scripts/dev.sh, or deps changed |
           | Docker dev stack smoke test | $(status "$DOCKER_CHANGED") | same as above |
 
@@ -562,11 +568,19 @@ jobs:
   # coverage" gap first; a multi-engine or full BrowserStack-style
   # device/OS matrix is a separate, later decision once this proves
   # valuable — see playwright.config.ts's own comment and CLAUDE.md.
+  #
+  # Gated on `api` too, not just `web`/`deps`, unlike test-web — a real
+  # gap an AI review round caught. Unlike test-web (Vitest/jsdom,
+  # mocked), this suite is a genuine full-stack integration test: its
+  # pagination assertion exercises real apps/api business logic
+  # (products.service.ts's findPaged, real Prisma queries against
+  # seeded data), not just the UI. An API-only change to that logic
+  # could break the catalog flow without this filter ever noticing.
   test-e2e-web:
     name: Web e2e (Playwright)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'test-e2e-web'))
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'test-e2e-web'))
     services:
       postgres:
         image: postgres:16-alpine
