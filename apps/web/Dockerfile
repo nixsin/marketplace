@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-alpine AS base
-RUN corepack enable
+FROM node:26-alpine AS base
+# Node 26 stopped bundling corepack — install it explicitly before enabling
+# (it still reads the pnpm version to use from package.json's packageManager
+# field, same as before).
+RUN npm install -g corepack && corepack enable
 
 # ---- deps: see apps/api/Dockerfile for why the whole workspace's
 # package.json files are needed here, not just apps/web's — and, for the
@@ -56,7 +59,7 @@ RUN pnpm --filter web deploy --prod --legacy /out
 
 # ---- prod: no pnpm, no workspace, no dev deps — but not minimal in the
 # way the abandoned standalone approach would have been (see above).
-FROM node:22-alpine AS prod
+FROM node:26-alpine AS prod
 WORKDIR /app
 ENV NODE_ENV=production
 # See apps/api/Dockerfile for why: node:22-alpine's bundled npm is never
