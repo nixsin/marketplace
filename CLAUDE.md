@@ -60,20 +60,51 @@ to merge past — only an actual failure blocks.
 Split into small independent jobs on purpose (parallel runners, not one long
 sequential job). Key structure:
 
-- **`changes`** — runs `dorny/paths-filter` first, produces `api`/`web`/`deps`
-  booleans, and posts/updates a PR comment (`<!-- ci-skip-logic-comment -->`
-  marker, edited in place across pushes) explaining which jobs will run vs.
-  skip and why. Read this comment on any PR before wondering why a check is
-  missing.
+- **`changes`** — runs `dorny/paths-filter` first, produces `api`/`web`/
+  `deps`/`docker` booleans, and posts/updates a PR comment
+  (`<!-- ci-skip-logic-comment -->` marker, edited in place across pushes)
+  explaining which jobs will run vs. skip and why. Read this comment on any
+  PR before wondering why a check is missing.
 - Path-filtered jobs (skip when irrelevant): `audit` (deps only),
   `test-api-unit`/`test-api-e2e`/`load-test` (api or deps), `test-web`/
-  `perf-budget` (web or deps).
+  `perf-budget` (web or deps), `docker-scan`/`docker-smoke` (`docker` — see
+  below).
 - **Never** path-filtered, deliberately: `lint` (lints both apps in one
-  command), `docker-scan`/`docker-smoke` (both Dockerfiles' `deps` stage runs
-  apps/api's `prisma generate` postinstall even for a web-only build — a
-  web-looking change can still affect the API image), `migrate` (too risky to
-  ever skip a real migration), `ai-failure-analysis` (reacts to `failure()`,
-  not to the diff).
+  command), `migrate` (too risky to ever skip a real migration),
+  `ai-failure-analysis` (reacts to `failure()`, not to the diff).
+- **The `docker` filter** — both jobs build off Docker's shared layer cache
+  across both Dockerfiles (a workspace-root `pnpm install` in the `deps`
+  stage runs apps/api's `prisma generate` postinstall even for a web-only
+  build, so a web-looking change can still affect the API image), which is
+  why the filter covers `apps/api/**` *and* `apps/web/**` together rather
+  than filtering each app's effect separately. Verified directly (not
+  assumed) before narrowing this: read both Dockerfiles' `COPY` instructions
+  (explicitly scoped, no `COPY . .` — `scripts/` and `.github/` genuinely
+  never enter either image), `docker-compose.yml` (build context is the repo
+  root; used by `scripts/dev.sh`), and `.dockerignore` (directly controls
+  the build context). The filter: `apps/api/**`, `apps/web/**`, both
+  Dockerfiles, `docker-compose.yml`, `.dockerignore`, `scripts/dev.sh`
+  specifically (not a broad `scripts/**` — a first draft would have
+  excluded the one file `docker-smoke`'s own job runs, `./scripts/dev.sh`,
+  along with the CI/review tooling that's actually safe to exclude), plus
+  the existing `deps` files.
+- **`docker-scan` (Trivy) is filtered here but *also* runs weekly,
+  unconditionally, in a separate workflow** — `docker-scan-scheduled.yml`.
+  Trivy checks against an external, time-varying CVE database, so a plain
+  path filter has a real gap docker-smoke's purely-deterministic behavioral
+  test doesn't: running only when the diff touches Docker-relevant paths
+  means a newly-disclosed CVE in an *unchanged* image goes uncaught until
+  the next such PR. The first version of this filter left docker-scan
+  unconditional to sidestep that gap entirely — deliberately reconsidered
+  once "unconditional forever" was recognized as relying on an accident
+  (every push happening to double as a re-scan) rather than an actual
+  design for CVE freshness. `docker-scan-scheduled.yml` is a real design
+  for it instead, mirroring `codeql.yml`'s own schedule trigger and
+  reasoning exactly ("a push-only trigger would miss newly-disclosed
+  vulnerability patterns in code that hasn't changed"). Informational only —
+  not wired into required checks or `migrate`'s `needs:`; a failure there
+  means the current `main` image has a new CVE, not that a specific push
+  introduced anything.
 - **`ai-failure-analysis`** — PR-only, fires on any real failure among its
   `needs:` (explicit `needs.*.result` contains-check + `always()`, not plain
   `failure()`, because skipped deps must not suppress or falsely trigger it).
@@ -87,9 +118,12 @@ sequential job). Key structure:
   (not failed) dependency doesn't block deploy.
 
 Other workflows: `dependency-freshness.yml` (weekly + push-to-main badge
-check, informational, not required), `codeql.yml`, `pr-comment-rerun.yml`
-(a PR comment can trigger `gh run rerun`), `pr-reconciliation.yml` (see
-its own section below), and the `/rerun-test` slash command
+check, informational, not required), `codeql.yml`, `docker-scan-scheduled
+.yml` (weekly Trivy re-scan of `main`'s images, informational, not
+required — see the `docker` filter note above for why it exists),
+`pr-comment-rerun.yml` (a PR comment can trigger `gh run rerun`),
+`pr-reconciliation.yml` (see its own section below), and the
+`/rerun-test` slash command
 (`.claude/commands/rerun-test.md`) for doing a rerun manually.
 
 ## PR reconciliation (`pr-reconciliation.yml`)
@@ -293,21 +327,27 @@ approve past a real failure. The one thing it can get wrong is judging the
 
 **The reviewer can also force-run a skipped job it disagrees with.** The
 path filter is a static glob match — it can miss genuine cross-boundary
-effects the same way docker-scan/docker-smoke's Dockerfile gotcha already
-shows is possible. The prompt asks it to name skipped jobs (from a fixed
-whitelist: `audit`, `test-api-unit`, `test-api-e2e`, `test-web`,
-`perf-budget`, `load-test`) it believes should have run for this specific
-diff. Lower-stakes than the approve/reject verdict — an unnecessary
-force-run just costs some CI time, nothing worse — so it doesn't need the
-same paranoid cross-checking, but the job-ID list is still whitelist-
-validated twice (once in the prompt, once again by exact-match filtering
-in `extractForceRunJobs`) since it ends up passed to `gh workflow run`.
-GitHub Actions has no way to change a job's `if:` mid-run, so "force-run"
-means starting a genuinely separate `workflow_dispatch` run on the same
-branch (`ci.yml`'s `workflow_dispatch.inputs.force_jobs`) — it can't
-resurrect the job actually skipped in the run already in progress. Also
-useful by hand: trigger it manually from the Actions tab, or `gh workflow
-run ci.yml --ref <branch> -f force_jobs=test-api-e2e,load-test`.
+effects. Concrete, not hypothetical: a live review caught exactly this on
+the PR that narrowed `docker-scan`/`docker-smoke`'s own filter — the
+`docker` filter deliberately excludes workflow YAML itself (most `ci.yml`
+edits don't touch those two jobs' logic), so a PR that changes
+`docker-scan`'s own steps would otherwise skip past the one check that
+should have validated it. The prompt asks it to name skipped jobs (from a
+fixed whitelist: `audit`, `test-api-unit`, `test-api-e2e`, `test-web`,
+`perf-budget`, `load-test`, `docker-scan`, `docker-smoke` — the last two
+added specifically in response to that finding) it believes should have
+run for this specific diff. Lower-stakes than the approve/reject verdict —
+an unnecessary force-run just costs some CI time, nothing worse — so it
+doesn't need the same paranoid cross-checking, but the job-ID list is
+still whitelist-validated twice (once in the prompt, once again by
+exact-match filtering in `extractForceRunJobs`) since it ends up passed to
+`gh workflow run`. GitHub Actions has no way to change a job's `if:`
+mid-run, so "force-run" means starting a genuinely separate
+`workflow_dispatch` run on the same branch (`ci.yml`'s
+`workflow_dispatch.inputs.force_jobs`) — it can't resurrect the job
+actually skipped in the run already in progress. Also useful by hand:
+trigger it manually from the Actions tab, or `gh workflow run ci.yml --ref
+<branch> -f force_jobs=test-api-e2e,load-test`.
 
 **Same rule as Lighthouse applies here**: don't admin-bypass a
 `REQUEST_CHANGES` verdict to route around it without actually addressing
