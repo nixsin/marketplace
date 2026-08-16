@@ -197,6 +197,30 @@ wrong, say so in a PR comment and use your judgment, don't just silently
 override it the way Lighthouse got silently overridden before that became
 an explicit rule.
 
+**How to avoid a perpetual review/fix cycle.** This isn't actually a
+technical infinite-loop risk — CI never re-triggers itself, only a new
+push does, and that's always a deliberate action by whoever's iterating.
+The real risk is behavioral: the reviewer is stateless *by design* (no
+memory of prior rounds, no implementer self-report — that's what prevents
+rubber-stamping), so it has no way to know a finding was already
+investigated and disputed, and will repeat it forever if you keep pushing
+commits without ever explicitly closing the loop. What actually converges
+a review (proven live on this job's own introducing PR, 5+ real rounds):
+1. Every finding gets independently verified before acting on it —
+   reproduce it locally where possible (e.g. a constructed injection
+   string, a `bash -e` repro of a `set -e` gotcha), not just trusted
+   because an AI said so. Real, reproducible bugs are finite; fixing them
+   converges naturally.
+2. A finding that repeats after you've already investigated it and
+   disagree doesn't get "fixed" again — it gets a PR comment stating your
+   reasoning once, then you stop touching it. Pushing another commit
+   hoping the stateless reviewer changes its mind is the actual loop risk,
+   since it never will on its own.
+3. Two rounds of the same finding recurring with nothing new alongside it
+   is converged, not "still in progress." At that point it's a human
+   decision — admin-bypass with the reasoning already on record, or
+   escalate — never a third attempt at the same fix.
+
 **Known, accepted risk**: `ai-code-review` (`secrets.OPENAI_API_KEY`) and
 `ai-failure-analysis` (`secrets.ANTHROPIC_API_KEY`) both run on
 `pull_request` — that trigger executes the workflow file from the PR
@@ -223,11 +247,23 @@ git checkout <dependabot-branch>
 ```
 
 If a Dependabot PR goes stale (`mergeStateStatus: BEHIND` after another PR
-merged to main), update it before re-checking CI:
+merged to main), `auto-update-open-prs.yml` (above) now handles this
+automatically on every merge — `gh pr update-branch <number>` is still the
+manual fallback if you need it sooner than the next merge.
 
-```bash
-gh pr update-branch <number>
-```
+**"2 workflows awaiting approval" on a Dependabot PR is not the same gate
+as "Review required."** GitHub automatically requires a maintainer to
+manually approve workflow runs from certain actors — Dependabot is one —
+before the workflow is even allowed to *execute*, not just before merging;
+it exists so a compromised or malicious dependency bump can't get CI to
+run with secrets available without a human explicitly signing off first.
+It commonly re-triggers on a new commit landing on the PR (e.g.
+Dependabot's own "Merge branch 'main' into ..." auto-rebase commits).
+Check `gh run list --branch <branch> --json conclusion --jq '.[0].conclusion'`
+for `action_required` to confirm this is what's happening; approve from
+the PR's Checks tab ("Approve workflows to run") when ready — this causes
+CI to actually execute using repo secrets, so treat it with the same
+care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
 
