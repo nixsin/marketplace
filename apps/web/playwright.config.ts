@@ -35,15 +35,22 @@ export default defineConfig({
   // testing in general (font hinting/anti-aliasing is never perfectly
   // deterministic across machines even with identical software
   // versions) — this is standard practice for visual regression
-  // tooling, not a workaround specific to this one diff. Set to 0.03,
-  // not exactly the observed 0.01, deliberately — matching the observed
-  // value exactly would sit right at the boundary and could still fail
-  // on the next run's slightly different sub-pixel noise; real margin
-  // above it is the point. A genuine layout/content regression moves far
-  // more than 3% of pixels, so this doesn't meaningfully weaken the
-  // check.
+  // tooling, not a workaround specific to this one diff.
+  //
+  // maxDiffPixels (an absolute count), not maxDiffPixelRatio — a real
+  // gap an AI review round caught in the first version of this fix,
+  // which used `maxDiffPixelRatio: 0.03`. That's 3% of the *entire*
+  // 1280x720 viewport (~27,600 pixels) — a real but small, localized
+  // regression (a missing icon, a wrong button color, a clipped label)
+  // can easily stay under that while still being a genuine bug the
+  // suite exists to catch. 600 is real margin above the observed 310
+  // (not set to exactly 310, which would sit right at the boundary and
+  // could still fail on the next run's slightly different sub-pixel
+  // noise) while staying tight enough that any UI element of
+  // meaningful size — even a small ~25x25px icon (~625px) — still
+  // trips it.
   expect: {
-    toHaveScreenshot: { maxDiffPixelRatio: 0.03 },
+    toHaveScreenshot: { maxDiffPixels: 600 },
   },
   projects: [
     {

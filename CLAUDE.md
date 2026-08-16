@@ -244,9 +244,12 @@ consistency, which lowers the real risk being deferred here.
 **Informational, not required** — started the same way `perf-budget`
 (Lighthouse) itself did; promote to required once it's proven stable
 across enough real runs, same reasoning CLAUDE.md already documents for
-why Lighthouse became required. Path-filtered exactly like `test-web`
-(`needs.changes.outputs.web == 'true' || deps == 'true'`), so a docs-only
-PR never pays for it.
+why Lighthouse became required. Path-filtered on `api`, `web`, *and*
+`deps` — unlike `test-web` (`web`/`deps` only), this suite is a genuine
+full-stack integration test, not a mocked component-test suite: its
+pagination assertion exercises real `apps/api` logic (`findPaged`'s
+Prisma queries), so an API-only change needs to run it too. A docs-only
+PR still never pays for it.
 
 **Screenshots use Playwright's built-in `toHaveScreenshot()`** — baselines
 live in `apps/web/e2e/critical-flow.spec.ts-snapshots/`, committed to the
