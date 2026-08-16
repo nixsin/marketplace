@@ -500,6 +500,154 @@ jobs:
           } > /tmp/comment.md
           gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md
 
+  # Second, independent agent in the two-step "one writes, one reviews"
+  # setup: the jobs above are the implementer's work (whether that's a
+  # human, Claude Code interactively, or Dependabot); this is a separate,
+  # stateless Claude call that reviews the diff and either approves or
+  # requests changes as a real PR review — not just a comment. A real
+  # "Changes requested" review leaves `required_pull_request_reviews`
+  # unsatisfied, so this is a genuine merge gate, not advisory.
+  #
+  # Deliberately only runs when nothing upstream has already failed — a
+  # failing required check already blocks merge on its own, so this job
+  # never has the chance to "approve past" a real failure; the one thing it
+  # can get wrong is judging the *code*, not contradicting a known-failed
+  # check. See scripts/ai-code-review.mjs for how hallucination/context-
+  # leaking risk is handled: no commit messages or PR description are
+  # passed in (only the raw diff + raw CI results), every claim has to cite
+  # actual diff/log content, and the "Post review verdict" step below fails
+  # closed (REQUEST_CHANGES) on anything that isn't a clean, verifiable
+  # APPROVE — API errors, malformed output, or a "files reviewed" list that
+  # doesn't match the real diff all count as untrusted.
+  #
+  # Admin-bypass (`gh pr merge --admin`) still technically overrides this,
+  # same as it overrides the review requirement generally — don't use it to
+  # route around a REQUEST_CHANGES verdict without actually addressing what
+  # it flagged, for the same reason this repo doesn't admin-bypass a
+  # failing Lighthouse check.
+  ai-code-review:
+    name: AI code review
+    runs-on: ubuntu-latest
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      !contains(needs.*.result, 'failure')
+    needs:
+      [
+        lint,
+        audit,
+        test-api-unit,
+        test-api-e2e,
+        test-web,
+        docker-scan,
+        docker-smoke,
+        perf-budget,
+        load-test,
+      ]
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch PR diff and job results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr diff "$PR_NUMBER" > /tmp/pr-diff.txt
+
+          cat > /tmp/job-summary.json << 'EOF'
+          {
+            "lint": "${{ needs.lint.result }}",
+            "audit": "${{ needs.audit.result }}",
+            "test-api-unit": "${{ needs.test-api-unit.result }}",
+            "test-api-e2e": "${{ needs.test-api-e2e.result }}",
+            "test-web": "${{ needs.test-web.result }}",
+            "docker-scan": "${{ needs.docker-scan.result }}",
+            "docker-smoke": "${{ needs.docker-smoke.result }}",
+            "perf-budget": "${{ needs.perf-budget.result }}",
+            "load-test": "${{ needs.load-test.result }}"
+          }
+          EOF
+
+      # Grepped summary lines, not full logs — enough for the reviewer to
+      # ground a "does test coverage look proportionate" judgment in real
+      # text, without a prompt-sized dump of install/build noise. Same raw
+      # per-job log endpoint as ai-failure-analysis (not `gh run view`,
+      # which gates on the whole run completing).
+      - name: Fetch test summary log excerpts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          : > /tmp/test-summaries.txt
+          job_ids=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate --jq '.jobs[] | select(.name == "API unit tests" or .name == "API e2e tests" or .name == "Web build + tests") | .id')
+          for job_id in $job_ids; do
+            echo "=== Job $job_id ===" >> /tmp/test-summaries.txt
+            gh api --allow-escape-sequences "repos/${{ github.repository }}/actions/jobs/$job_id/logs" 2>/dev/null | grep -E "Test Files|Tests |Suites:|Tests:|passed|failed|coverage" >> /tmp/test-summaries.txt || true
+          done
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # continue-on-error so a Claude API failure (rate limit, timeout,
+      # malformed response) still lets the next step run and fail closed,
+      # instead of silently leaving the PR with zero reviews.
+      - name: Review with Claude
+        id: review
+        continue-on-error: true
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt > /tmp/review.md
+
+      - name: Post review verdict
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          verdict="REQUEST_CHANGES"
+
+          if [ "${{ steps.review.outcome }}" = "success" ] && [ -s /tmp/review.md ]; then
+            raw_verdict=$(awk '/^## Verdict$/{getline; print; exit}' /tmp/review.md | tr -d '[:space:]')
+            if [ "$raw_verdict" = "APPROVE" ]; then
+              verdict="APPROVE"
+            fi
+
+            # The files it says it reviewed must exactly match the real
+            # diff — a mismatch means it lost track of the actual change
+            # somewhere, which disqualifies an APPROVE regardless of its
+            # stated conclusion.
+            if [ "$verdict" = "APPROVE" ]; then
+              actual_files=$(gh pr diff "$PR_NUMBER" --name-only | sort)
+              claimed_files=$(awk '/^## Files reviewed$/{flag=1; next} /^## Verdict$/{flag=0} flag' /tmp/review.md | sed '/^[[:space:]]*$/d' | sort)
+              if [ "$actual_files" != "$claimed_files" ]; then
+                echo "Files-reviewed list doesn't match the real diff — overriding to REQUEST_CHANGES."
+                verdict="REQUEST_CHANGES"
+              fi
+            fi
+          else
+            echo "Automated review did not complete — flagging for human review." > /tmp/review.md
+          fi
+
+          {
+            echo "### 🤖 AI code review (Claude Sonnet 5)"
+            echo
+            cat /tmp/review.md
+            echo
+            echo "_Automated review — verify before trusting it, especially a REQUEST_CHANGES verdict on something it may have misread._"
+          } > /tmp/review-comment.md
+
+          if [ "$verdict" = "APPROVE" ]; then
+            gh pr review "$PR_NUMBER" --approve --body-file /tmp/review-comment.md
+          else
+            gh pr review "$PR_NUMBER" --request-changes --body-file /tmp/review-comment.md
+          fi
+
   migrate:
     name: Apply prod DB migrations
     runs-on: ubuntu-latest
