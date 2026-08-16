@@ -272,6 +272,11 @@ jobs:
       # Publishes a shields.io endpoint-badge JSON (README's "API coverage"
       # badge reads it live from gh-pages) — main only, so an in-progress
       # PR's coverage never overwrites the badge before it's actually merged.
+      # Also appends this run's {date, commit, pct} to coverage/api-history
+      # .json on the same branch — the time series coverage/index.html
+      # charts. Skipped (not run at all) whenever test-api-unit itself is
+      # path-filtered out, which is the correct semantic: coverage didn't
+      # actually get re-measured, so no new data point should be recorded.
       - name: Publish API coverage badge
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
@@ -280,7 +285,7 @@ jobs:
           pct=$(jq '.total.statements.pct' apps/api/coverage/coverage-summary.json)
           color=$(awk -v p="$pct" 'BEGIN { if (p>=90) print "brightgreen"; else if (p>=75) print "yellow"; else if (p>=50) print "orange"; else print "red" }')
           echo "{\"schemaVersion\":1,\"label\":\"api coverage\",\"message\":\"${pct}%\",\"color\":\"${color}\"}" > /tmp/api-badge.json
-          ./scripts/publish-badge.sh api /tmp/api-badge.json
+          ./scripts/publish-badge.sh api /tmp/api-badge.json "$pct" "${{ github.sha }}"
 
   test-api-e2e:
     name: API e2e tests
@@ -343,6 +348,9 @@ jobs:
         working-directory: apps/web
         run: pnpm build && pnpm exec vitest run --coverage
 
+      # See "Publish API coverage badge" above for why the extra two args
+      # (pct, commit sha) are passed — same history-appending mechanism,
+      # coverage/web-history.json instead of coverage/api-history.json.
       - name: Publish web coverage badge
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         env:
@@ -351,7 +359,7 @@ jobs:
           pct=$(jq '.total.statements.pct' apps/web/coverage/coverage-summary.json)
           color=$(awk -v p="$pct" 'BEGIN { if (p>=90) print "brightgreen"; else if (p>=75) print "yellow"; else if (p>=50) print "orange"; else print "red" }')
           echo "{\"schemaVersion\":1,\"label\":\"web coverage\",\"message\":\"${pct}%\",\"color\":\"${color}\"}" > /tmp/web-badge.json
-          ./scripts/publish-badge.sh web /tmp/web-badge.json
+          ./scripts/publish-badge.sh web /tmp/web-badge.json "$pct" "${{ github.sha }}"
 
   docker-scan:
     name: Docker image vulnerability scan

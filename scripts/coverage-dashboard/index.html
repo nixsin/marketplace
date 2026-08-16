@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>marketplace — test coverage over time</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #0b0d10;
+    --fg: #e6e6e6;
+    --muted: #8a8f98;
+    --panel: #14171b;
+    --border: #262b31;
+    --api: #4f8cff;
+    --web: #34c37b;
+    --grid: #262b31;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f7f7f8;
+      --fg: #17181a;
+      --muted: #5a5f66;
+      --panel: #ffffff;
+      --border: #e2e4e8;
+      --grid: #eceef1;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    padding: 32px 20px 60px;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 28px; }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px 20px 8px;
+    margin-bottom: 24px;
+  }
+  .panel h2 { font-size: 14px; margin: 0 0 2px; display: flex; align-items: center; gap: 8px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+  .dot.api { background: var(--api); }
+  .dot.web { background: var(--web); }
+  .stat { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+  .stat b { color: var(--fg); font-weight: 600; }
+  svg { width: 100%; height: auto; display: block; }
+  .gridline { stroke: var(--grid); stroke-width: 1; }
+  .axis-label { fill: var(--muted); font-size: 10px; }
+  .line { fill: none; stroke-width: 2; }
+  .point { cursor: pointer; }
+  .empty { color: var(--muted); font-size: 13px; padding: 24px 0; text-align: center; }
+  #tooltip {
+    position: fixed;
+    pointer-events: none;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    display: none;
+    z-index: 10;
+    white-space: nowrap;
+  }
+  footer { color: var(--muted); font-size: 12px; margin-top: 12px; }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Test coverage over time</h1>
+  <p class="sub">nixsin/marketplace — statement coverage, recorded on every push to <code>main</code> that actually re-ran the relevant test suite.</p>
+
+  <div class="panel">
+    <h2><span class="dot api"></span>API coverage</h2>
+    <p class="stat" id="api-stat">Loading…</p>
+    <div id="api-chart"></div>
+  </div>
+
+  <div class="panel">
+    <h2><span class="dot web"></span>Web coverage</h2>
+    <p class="stat" id="web-stat">Loading…</p>
+    <div id="web-chart"></div>
+  </div>
+
+  <footer>
+    Raw data: <a href="coverage/api-history.json">api-history.json</a> ·
+    <a href="coverage/web-history.json">web-history.json</a>.
+    Only appends when the corresponding CI job actually runs (path-filtered —
+    see this repo's <code>CLAUDE.md</code>), so gaps mean "unchanged," not "missing."
+  </footer>
+</div>
+<div id="tooltip"></div>
+
+<script>
+const COLORS = { api: "#4f8cff", web: "#34c37b" };
+
+async function loadHistory(name) {
+  try {
+    const res = await fetch(`coverage/${name}-history.json`, { cache: "no-store" });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+function fmtDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
+    " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+function renderChart(containerId, statId, name, rows) {
+  const container = document.getElementById(containerId);
+  const statEl = document.getElementById(statId);
+
+  if (rows.length === 0) {
+    container.innerHTML = '<p class="empty">No data yet — accumulates on the next push to main that touches this app.</p>';
+    statEl.textContent = "No data yet.";
+    return;
+  }
+
+  const latest = rows[rows.length - 1];
+  const first = rows[0];
+  const delta = (latest.pct - first.pct).toFixed(2);
+  const deltaSign = delta > 0 ? "+" : "";
+  statEl.innerHTML = `<b>${latest.pct.toFixed(2)}%</b> as of ${fmtDate(latest.date)}` +
+    (rows.length > 1 ? ` — ${deltaSign}${delta}pp over ${rows.length} measurements` : "");
+
+  const width = 860, height = 220, padL = 42, padR = 16, padT = 16, padB = 28;
+  const plotW = width - padL - padR, plotH = height - padT - padB;
+
+  const pcts = rows.map(r => r.pct);
+  let yMin = Math.floor(Math.min(...pcts) - 2);
+  let yMax = Math.ceil(Math.max(...pcts) + 2);
+  if (yMax - yMin < 5) { yMin -= 2; yMax += 2; }
+  yMin = Math.max(0, yMin);
+  yMax = Math.min(100, yMax);
+
+  const x = i => rows.length === 1 ? padL + plotW / 2 : padL + (i / (rows.length - 1)) * plotW;
+  const y = pct => padT + plotH - ((pct - yMin) / (yMax - yMin)) * plotH;
+
+  const gridLines = [];
+  const steps = 4;
+  for (let s = 0; s <= steps; s++) {
+    const val = yMin + (s / steps) * (yMax - yMin);
+    const yy = y(val);
+    gridLines.push(`<line class="gridline" x1="${padL}" y1="${yy}" x2="${width - padR}" y2="${yy}" />`);
+    gridLines.push(`<text class="axis-label" x="4" y="${yy + 3}">${val.toFixed(0)}%</text>`);
+  }
+
+  const pathD = rows.map((r, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(r.pct).toFixed(1)}`).join(" ");
+
+  const dots = rows.map((r, i) => {
+    return `<circle class="point" cx="${x(i).toFixed(1)}" cy="${y(r.pct).toFixed(1)}" r="3.5" fill="${COLORS[name]}"
+      data-date="${r.date}" data-pct="${r.pct}" data-commit="${r.commit || ""}" />`;
+  }).join("");
+
+  const firstLabel = rows.length > 0 ? `<text class="axis-label" x="${padL}" y="${height - 8}">${fmtDate(rows[0].date)}</text>` : "";
+  const lastLabel = rows.length > 1 ? `<text class="axis-label" x="${width - padR}" y="${height - 8}" text-anchor="end">${fmtDate(rows[rows.length - 1].date)}</text>` : "";
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
+      ${gridLines.join("")}
+      <path class="line" d="${pathD}" stroke="${COLORS[name]}" />
+      ${dots}
+      ${firstLabel}
+      ${lastLabel}
+    </svg>`;
+
+  const tooltip = document.getElementById("tooltip");
+  container.querySelectorAll(".point").forEach(el => {
+    el.addEventListener("mousemove", (ev) => {
+      const pct = parseFloat(el.dataset.pct).toFixed(2);
+      const date = fmtDate(el.dataset.date);
+      const commit = el.dataset.commit ? el.dataset.commit.slice(0, 7) : "";
+      tooltip.innerHTML = `<b>${pct}%</b><br>${date}${commit ? `<br>${commit}` : ""}`;
+      tooltip.style.display = "block";
+      tooltip.style.left = (ev.clientX + 12) + "px";
+      tooltip.style.top = (ev.clientY + 12) + "px";
+    });
+    el.addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+  });
+}
+
+(async function main() {
+  const [apiRows, webRows] = await Promise.all([loadHistory("api"), loadHistory("web")]);
+  renderChart("api-chart", "api-stat", "api", apiRows);
+  renderChart("web-chart", "web-stat", "web", webRows);
+})();
+</script>
+</body>
+</html>
