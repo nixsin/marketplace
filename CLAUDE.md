@@ -115,6 +115,38 @@ to the same framing of an injected instruction. Requires a
 `secrets.OPENAI_API_KEY` repo secret (added manually — never via Claude,
 since that would mean handling a live API key in this session).
 
+**GitHub blocks the default `GITHUB_TOKEN` from ever posting an APPROVE
+review** — a deliberate platform restriction (a workflow self-approving a
+PR would defeat `required_pull_request_reviews` entirely), not a
+permissions/scopes gap fixable from this repo's side. Discovered live:
+every PR tested through five+ review rounds happened to get
+`REQUEST_CHANGES` (which `GITHUB_TOKEN` posts fine), so this was latent
+and undiscovered until PR #20 — a simple Dependabot version bump — became
+the first PR the reviewer actually approved, and the job crashed on
+`GitHub Actions is not permitted to approve pull requests.`
+
+**Do not "fix" this with a personal access token — a live review already
+caught that mistake once (PR #36) and rejected it.** The first attempt
+used a `secrets.PR_REVIEW_PAT` (a real account's token) via an inline
+`GH_TOKEN` override to post the approval instead of `GITHUB_TOKEN`. That
+doesn't route around GitHub's restriction so much as defeat its actual
+purpose: the restriction exists specifically so an automated verdict can
+never satisfy `required_pull_request_reviews` on its own, and branch
+protection can't distinguish "the account holder reviewed this" from "a
+workflow posted this using the account holder's credentials." There's
+also no GitHub feature for an identity whose approval is deliberately
+excluded from the required-review count — any approving review from a
+collaborator with write access satisfies the gate, PAT-driven or not. The
+actual fix: `REQUEST_CHANGES` keeps posting as a real review (blocking is
+fine — it only ever adds friction, never satisfies anything); `APPROVE`
+never posts as a review, regardless of any secret being configured — it
+always degrades to a plain `gh pr comment`. A human decides a green,
+AI-approved PR is ready to merge, via the same admin-bypass this repo
+already uses deliberately and visibly for its one-contributor review gate
+(see "The one hard rule" above) — not something a credential should
+quietly stand in for. If a future change reintroduces PAT-based approval
+here, that's a regression of this exact finding, not a new idea.
+
 Runs only when nothing upstream has already failed (`if: ... &&
 !contains(needs.*.result, 'failure')`) — a failing required check already
 blocks merge on its own, so this job structurally never gets the chance to
@@ -212,14 +244,76 @@ a review (proven live on this job's own introducing PR, 5+ real rounds):
    because an AI said so. Real, reproducible bugs are finite; fixing them
    converges naturally.
 2. A finding that repeats after you've already investigated it and
-   disagree doesn't get "fixed" again — it gets a PR comment stating your
-   reasoning once, then you stop touching it. Pushing another commit
-   hoping the stateless reviewer changes its mind is the actual loop risk,
-   since it never will on its own.
+   disagree doesn't get "fixed" again — it gets recorded in the
+   override-decision log (below) stating your reasoning once, then you
+   stop touching it. Pushing another commit hoping the stateless reviewer
+   changes its mind is the actual loop risk, since it never will on its
+   own — though now it also won't need to, since it reads that log.
 3. Two rounds of the same finding recurring with nothing new alongside it
    is converged, not "still in progress." At that point it's a human
    decision — admin-bypass with the reasoning already on record, or
    escalate — never a third attempt at the same fix.
+
+**Override-decision log — the implementer's half of not repeating step 2.**
+Every time a finding gets fixed or disputed rather than accepted at face
+value, maintain a single PR comment (marker `<!-- ai-review-override-log
+-->`, edited in place across pushes — same pattern as the `changes` job's
+skip-logic comment) with a table:
+
+| Reviewer finding | My resolution | Status |
+|---|---|---|
+| what the reviewer flagged | what happened — fixed in commit X, or why it's disputed | Resolved / Overridden |
+
+Escape any literal `|` inside a cell's text as `\|` (standard Markdown
+table syntax) — a finding or resolution that quotes a shell pipe, a
+TypeScript union type, or `a || b` will contain one. The parser only
+handles the escaped form correctly (see below); an unescaped `|` splits
+the row into extra cells and silently shifts resolution/status into the
+wrong column, same as it would in any real Markdown table renderer.
+
+...ending with a `**Recommendation:**` line stating the actual
+merge-readiness call — usually `APPROVE` once every row is accounted for
+and CI is green, but it must say so honestly, not by convention: if
+something real is still blocking, say that instead. This is not a status
+update for its own sake — it's the "reasoning already on record" that
+step 3 above requires before an admin-bypass, made explicit instead of
+scattered across ad hoc comments.
+
+The `ai-code-review` job reads this comment back on every run (`Fetch
+prior override decisions` step) and feeds matched rows to the model as
+context, so it can skip re-flagging something already adjudicated instead
+of relying on a human to notice the repeat. Trust boundary: a row only
+counts if the *comment* comes from an authorized login (currently
+`github.repository_owner`, i.e. the repo owner) — the marker string alone
+is not enough, since this repo's PRs are publicly commentable and the
+marker alone would let anyone post a fake "already discussed and
+dismissed" comment to try to suppress a real finding. Parsing lives in
+`scripts/lib/override-decisions.mjs` (its own
+test suite, `override-decisions.test.mjs`, run as an actual CI step) — not
+security-critical the way verdict extraction is, since a botched parse
+here only ever means the reviewer gets less context, never a false
+approve; none of the mechanical fail-closed checks (files-reviewed match,
+truncation override, single-verdict-heading rule) read this output, and a
+missing/unreadable log file fails closed to "no override context," the
+same safe default as before this feature existed — but only because the
+`Fetch prior override decisions` step is itself written to never fail
+(see below); a step that fails outright, even for an unrelated reason
+like a transient `gh api` error, takes every later step in the job down
+with it by GitHub Actions' own default, `ai-code-review`'s actual review
+included, not just this feature's own context.
+
+The `Fetch prior override decisions` step fetches with `gh api ...
+--paginate --slurp` (raw pages, no `--jq`) rather than filtering inline —
+see "Known gotchas" below for why `--paginate --jq` silently breaks on a
+PR with enough comments to span multiple pages, and why `--slurp` can't
+just be added alongside it. The step also runs under `set +e` with an
+explicit `[ ! -s ... ] && echo "[]"` fallback so a `gh api` failure
+degrades to an empty comments list instead of failing the step — a live
+review caught that this step originally had neither, so a transient API
+error would fail the step outright, and because GitHub Actions skips
+every later step in a job by default once one fails, that would have
+skipped `Review with ChatGPT` entirely — not just lost override context,
+lost the whole review for that run.
 
 **Known, accepted risk**: `ai-code-review` (`secrets.OPENAI_API_KEY`) and
 `ai-failure-analysis` (`secrets.ANTHROPIC_API_KEY`) both run on
@@ -267,6 +361,54 @@ care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
 
+- **`gh api -f key=@path` does NOT read the file — only `-F` does.** The
+  `@<path>` (or `@-` for stdin) file-reading syntax is documented under
+  `-F/--field` (typed parameters) only; `-f/--raw-field` treats an `@...`
+  value as a literal string. `gh api -X PATCH .../comments/$id -f
+  body=@/tmp/file.md` silently posts the seven-character string
+  `@/tmp/file.md` as the comment body, not the file's content. Caught by
+  hand while editing an override-decision-log comment, then found the
+  exact same bug already live in the `changes` job's "Comment skip logic
+  on PR" step — and it's self-hiding: corrupting the body also destroys
+  the `<!-- ci-skip-logic-comment -->` marker that step's own
+  find-existing-comment lookup depends on, so the *next* push can't find
+  the (now-corrupted) comment, falls through to creating a fresh one, and
+  the cycle repeats — one broken, orphaned comment left behind every
+  other push, forever, on any PR that gets more than one push. Fix is
+  just the one-character flag swap (`-f` → `-F`); grep for `-f [a-z_]*=@`
+  across `.github/workflows/` if this pattern ever gets copied elsewhere.
+- **`gh api --paginate --jq` runs the jq filter once PER PAGE, not once
+  over the combined result.** A multi-page response piped through
+  `--jq '[...]'` produces several complete JSON arrays emitted
+  back-to-back — not one valid JSON value — so anything downstream doing
+  a single `JSON.parse` on the output breaks silently once there's enough
+  data to paginate (a live review caught this on the override-decision
+  log's `Fetch prior override decisions` step, which only fetches PR
+  comments — fine on any PR tested so far, broken on a long thread).
+  `--slurp` wraps all pages into one outer array, but the gh CLI flatly
+  rejects combining `--slurp` with `--jq` — you can't just add it. The
+  actual fix: fetch raw with `--paginate --slurp` (no `--jq`) and do the
+  flattening/shaping downstream, in a language where it's unit-testable
+  against a real multi-page shape (see `flattenPaginatedComments` in
+  `scripts/lib/override-decisions.mjs`) — not in another bash/jq
+  one-liner that would have the exact same blind spot.
+- **A failed step skips every later step in the same job by default, not
+  just the failing one.** GitHub Actions' implicit `if:` on a step with no
+  explicit condition is `success()` — so a step that fails without
+  `continue-on-error: true` silently cancels everything after it too,
+  unless a later step opts back in with its own `if: always()` (as
+  `Post review verdict` does). Hit `ai-code-review`'s `Fetch prior
+  override decisions` step exactly this way: it fetches PR comments as
+  optional context and was never meant to be able to block anything, but
+  because it had no failure handling of its own, a transient `gh api`
+  error would fail the step outright and skip `Review with ChatGPT`
+  entirely on the same run — turning an optional context source into a
+  hard dependency for the whole review. Fix (and the general pattern for
+  any future "nice to have, must not become load-bearing" step): make the
+  step itself unable to fail, e.g. `set +e` plus an explicit fallback
+  value on empty/failed output, rather than reaching for
+  `continue-on-error` — that marks the step as failed-but-ignored in the
+  UI for something that isn't actually a failure once it's handled.
 - **`node:26-alpine` dropped bundling Corepack.** `RUN corepack enable` alone
   now fails with `corepack: not found`. Fix: `RUN npm install -g corepack &&
   corepack enable`. Hit this on both `apps/api/Dockerfile` and
