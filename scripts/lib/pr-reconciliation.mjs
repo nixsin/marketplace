@@ -44,16 +44,31 @@ export function decideConflictAction({
   return { action: "skip", reason: "clean-no-existing-flag" };
 }
 
+function runIsStuck(run, nowEpoch, thresholdSeconds) {
+  if (!run || run.conclusion !== "action_required" || !run.createdAt) {
+    return false;
+  }
+  const createdEpoch = Math.floor(new Date(run.createdAt).getTime() / 1000);
+  if (Number.isNaN(createdEpoch)) return false;
+  return nowEpoch - createdEpoch > thresholdSeconds;
+}
+
+// This repo has more than one workflow that triggers per push (CI and
+// CodeQL, confirmed live) — a live review caught that checking only the
+// single most recent run (`gh run list --limit 1`) meant that if two
+// workflows exist for the same revision and one is action_required while
+// the other has already resolved (or is simply newer by a hair), the
+// check could see whichever one happened to sort last and miss the
+// real stuck one entirely, or worse, incorrectly resolve a real,
+// still-active warning. `runs` must be every run for the PR's *current*
+// head commit (across every workflow, filtered by `gh run list
+// --commit`) — stuck if ANY of them is.
 export function isStuck({
-  conclusion,
-  createdAt,
+  runs,
   nowEpoch,
   thresholdSeconds = STUCK_THRESHOLD_SECONDS,
 }) {
-  if (conclusion !== "action_required" || !createdAt) return false;
-  const createdEpoch = Math.floor(new Date(createdAt).getTime() / 1000);
-  if (Number.isNaN(createdEpoch)) return false;
-  return nowEpoch - createdEpoch > thresholdSeconds;
+  return (runs ?? []).some((run) => runIsStuck(run, nowEpoch, thresholdSeconds));
 }
 
 // Bug 3, same shape as decideConflictAction: a failed gh pr view/gh run
@@ -61,15 +76,14 @@ export function isStuck({
 export function decideStuckAction({
   lookupOk,
   commentLookupOk,
-  conclusion,
-  createdAt,
+  runs,
   nowEpoch,
   existingCommentId,
 }) {
   if (!lookupOk || !commentLookupOk) {
     return { action: "skip", reason: "lookup-failed" };
   }
-  if (isStuck({ conclusion, createdAt, nowEpoch })) {
+  if (isStuck({ runs, nowEpoch })) {
     return { action: "flag", reason: "stuck" };
   }
   if (existingCommentId) return { action: "resolve", reason: "not-stuck" };

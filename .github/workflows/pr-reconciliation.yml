@@ -188,19 +188,26 @@ jobs:
             # execute — Dependabot PRs commonly hit this (see CLAUDE.md's
             # Dependabot section). Flag if it's been sitting unapproved
             # for over a day rather than silently rotting.
+            #
+            # A live review caught that checking only the single most
+            # recent run (`gh run list --limit 1`) isn't enough — this
+            # repo genuinely has more than one workflow that triggers per
+            # push (CI and CodeQL, confirmed live), so the single most
+            # recent run across both could be the wrong one to look at:
+            # one could be action_required while the other has already
+            # resolved. `--commit` (a native gh run list filter, not a
+            # manual jq match) scopes to every run for the PR's *current*
+            # head commit specifically, across all workflows — isStuck in
+            # pr-reconciliation.mjs checks whether ANY of them is stuck.
             stuck_lookup_ok=true
-            if ! head_ref=$(gh pr view "$pr" --repo "${{ github.repository }}" --json headRefName --jq '.headRefName'); then
+            if ! head_sha=$(gh pr view "$pr" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid'); then
               stuck_lookup_ok=false
-            elif ! latest_run=$(gh run list --repo "${{ github.repository }}" --branch "$head_ref" --limit 1 --json conclusion,createdAt --jq '.[0]'); then
+            elif ! runs_json=$(gh run list --repo "${{ github.repository }}" --commit "$head_sha" --json conclusion,createdAt); then
               stuck_lookup_ok=false
             fi
             if [ "$stuck_lookup_ok" != "true" ]; then
               echo "  Could not determine workflow-run status"
-              conclusion=""
-              created_at=""
-            else
-              conclusion=$(echo "$latest_run" | jq -r '.conclusion // empty')
-              created_at=$(echo "$latest_run" | jq -r '.createdAt // empty')
+              runs_json="[]"
             fi
             stuck_marker="<!-- pr-reconciliation-stuck-approval -->"
             if existing_stuck_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate | jq --arg m "$stuck_marker" '.[] | select(.body | startswith($m)) | .id' | head -1); then
@@ -212,7 +219,7 @@ jobs:
             fi
 
             now_epoch=$(date -u +%s)
-            stuck_action=$(node scripts/decide-stuck-action.mjs "$stuck_lookup_ok" "$stuck_comment_lookup_ok" "$conclusion" "$created_at" "$now_epoch" "$existing_stuck_id")
+            stuck_action=$(node scripts/decide-stuck-action.mjs "$stuck_lookup_ok" "$stuck_comment_lookup_ok" "$runs_json" "$now_epoch" "$existing_stuck_id")
             case "$stuck_action" in
               flag)
                 echo "  Workflow run awaiting approval for over 24h"
