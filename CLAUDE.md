@@ -527,6 +527,32 @@ care as any other secrets-using action, not as a rubber-stamp click.
   attempting this bump again: re-check `typescript-eslint`'s current
   peer-dependency range for `typescript` — once it covers `7.x`, this
   becomes a normal bump like any other Dependabot PR.
+- **PR #24 (`eslint` 9.39.5 → 10.8.1) is also blocked upstream — don't
+  re-investigate, don't try to force it through.** `eslint-config-next`
+  (this repo's `apps/web` lint config, latest is `16.3.1`, already what's
+  installed) pulls in `eslint-plugin-react@^7.37.0` as a transitive
+  dependency (`pnpm why eslint-plugin-react --filter web`), and that
+  plugin crashes under ESLint 10: `TypeError: Error while loading rule
+  'react/display-name': contextOrFilename.getFilename is not a function`,
+  because the rule-context shape it expects was removed. Confirmed via
+  both `npm view eslint-plugin-react@latest peerDependencies` (`eslint:
+  '^3 || ... || ^9.7'` — no `^10`) and its `next` dist-tag (`7.8.0-rc.0`,
+  itself far older than `latest` and clearly abandoned — no active
+  prerelease channel carries a fix yet). The actual fix exists only as an
+  open, unmerged upstream PR:
+  [eslint-plugin-react#4022](https://github.com/jsx-eslint/eslint-plugin-react/pull/4022)
+  ("fix: complete ESLint 10 compatibility"), consolidating
+  [#4018](https://github.com/jsx-eslint/eslint-plugin-react/issues/4018).
+  **The automated `ai-failure-analysis` comment on this PR is wrong** — it
+  suggested bumping to `eslint-plugin-react@^7.38.0`/`^7.39.0`; neither
+  version exists on npm (verified directly, `npm view
+  eslint-plugin-react@7.38.0` 404s). Treat that job's suggestions as
+  unverified, same as always — this is a concrete instance of it
+  fabricating a plausible-sounding but nonexistent fix. Before attempting
+  this bump again: re-check whether `eslint-config-next` (or
+  `eslint-plugin-react` directly) has shipped a version with a peer range
+  covering `eslint@^10` — once it has, this becomes a normal bump like any
+  other Dependabot PR.
 - **`gh api -f key=@path` does NOT read the file — only `-F` does.** The
   `@<path>` (or `@-` for stdin) file-reading syntax is documented under
   `-F/--field` (typed parameters) only; `-f/--raw-field` treats an `@...`
