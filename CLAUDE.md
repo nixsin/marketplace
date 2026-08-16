@@ -125,12 +125,22 @@ reconciled.
 
 **The actual flag/resolve/skip decisions live in a tested module, not
 inline bash.** `scripts/lib/pr-reconciliation.mjs` (`pr-reconciliation
-.test.mjs`, 18 tests, run as an actual CI step) — this job's bash only
-gathers each decision function's inputs and acts on its output. That
-split exists because this job's introducing PR went through **four live
-review rounds and found six real bugs**, every one in the identical
-shape: a failed or non-conclusive lookup silently treated as a
-conclusive one.
+.test.mjs`) — this job's bash only gathers each decision function's
+inputs and acts on its output. That split exists because this job's
+introducing PR went through **four live review rounds and found six real
+bugs**, every one in the identical shape: a failed or non-conclusive
+lookup silently treated as a conclusive one.
+
+These tests also run in `ci.yml`'s own `test-ci-scripts` job — a plain,
+unconditional job (no path filter) on every regular PR, separate from
+`pr-reconciliation.yml`'s own steps. Needed because `pr-reconciliation
+.yml` never triggers on `pull_request` — without this, a regression to
+this file would ship straight to `main` unnoticed by the introducing PR's
+own CI, only surfacing later when `pr-reconciliation.yml` next actually
+ran (close, schedule, or manual dispatch). A live review caught this gap
+directly; `test-ci-scripts` closes it and is wired into `ai-code-review`,
+`ai-failure-analysis`, and `migrate`'s `needs:` lists the same way `lint`
+is.
 1. Every `gh pr view`/`gh pr comment` call needs `--repo` explicitly —
    this job never runs `actions/checkout` for its main step, so without a
    local git repo `gh` has no way to resolve a bare PR number.
