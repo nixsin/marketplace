@@ -7,10 +7,11 @@
 // head commit — see CLAUDE.md's "PR reconciliation" section for why a
 // single most-recent run isn't enough once a repo has more than one
 // workflow triggering per push), not individual conclusion/createdAt
-// args. Fails closed to lookupOk=false semantics (an empty runs list) on
-// unparseable JSON, same reasoning as parse-override-decisions.mjs: this
-// only ever removes a signal, never fabricates a false "not stuck."
-import { decideStuckAction } from "./lib/pr-reconciliation.mjs";
+// args. Unparseable JSON forces lookupOk to false (see below) — never
+// just an empty runs array with lookupOk left as whatever bash passed
+// in, which read as "confirmed zero stuck runs" and could falsely
+// resolve a real, still-active warning.
+import { decideStuckAction, parseRunsJson } from "./lib/pr-reconciliation.mjs";
 
 const [
   lookupOkArg,
@@ -31,16 +32,27 @@ if (
   process.exit(1);
 }
 
+// A live review caught that this previously defaulted `runs` to []
+// on a parse failure but left `lookupOk` exactly as passed in from
+// bash — which, if bash's own gh calls had succeeded (a malformed
+// JSON string isn't necessarily a gh failure), meant
+// decideStuckAction saw {lookupOk: true, runs: []}, indistinguishable
+// from "confirmed zero stuck runs," and could falsely resolve a real,
+// still-active warning. A parse failure must force lookupOk to false
+// itself, not just supply an empty runs array and leave the caller's
+// success flag untouched.
 let runs = [];
+let parseOk = true;
 try {
   runs = JSON.parse(runsJsonArg);
 } catch (err) {
-  console.error(`Failed to parse runs JSON, treating as empty: ${err.message}`);
+  console.error(`Failed to parse runs JSON, treating as a failed lookup: ${err.message}`);
+  parseOk = false;
 }
 
 console.log(
   decideStuckAction({
-    lookupOk: lookupOkArg === "true",
+    lookupOk: lookupOkArg === "true" && parseOk,
     commentLookupOk: commentLookupOkArg === "true",
     runs,
     nowEpoch: Number(nowEpochArg),

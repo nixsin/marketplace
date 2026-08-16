@@ -71,6 +71,22 @@ export function isStuck({
   return (runs ?? []).some((run) => runIsStuck(run, nowEpoch, thresholdSeconds));
 }
 
+// Bug 7 (this round, in the wrapper that calls this file): unparseable
+// JSON must force lookupOk to false for the caller, not just supply an
+// empty runs array while leaving the caller's own success flag
+// untouched — {lookupOk: true, runs: []} is indistinguishable from
+// "confirmed zero stuck runs" to decideStuckAction below, and could
+// falsely resolve a real, still-active warning. Extracted here (rather
+// than left inline in decide-stuck-action.mjs) specifically so this
+// exact failure mode is unit-testable without spawning a subprocess.
+export function parseRunsJson(jsonString) {
+  try {
+    return { runs: JSON.parse(jsonString), parseOk: true };
+  } catch {
+    return { runs: [], parseOk: false };
+  }
+}
+
 // Bug 3, same shape as decideConflictAction: a failed gh pr view/gh run
 // list lookup must not be treated as "confirmed not stuck."
 export function decideStuckAction({

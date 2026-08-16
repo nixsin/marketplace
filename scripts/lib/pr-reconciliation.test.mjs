@@ -5,6 +5,7 @@ import {
   decideConflictAction,
   decideStuckAction,
   isStuck,
+  parseRunsJson,
 } from "./pr-reconciliation.mjs";
 
 // --- decideEnumeration ---
@@ -201,5 +202,46 @@ test("decideStuckAction: confirmed not stuck with an existing flag resolves", ()
       existingCommentId: "123",
     }),
     { action: "resolve", reason: "not-stuck" },
+  );
+});
+
+// --- parseRunsJson ---
+
+test("parseRunsJson: valid JSON parses correctly with parseOk true", () => {
+  const { runs, parseOk } = parseRunsJson(
+    '[{"conclusion":"success","createdAt":"2026-08-16T00:00:00Z"}]',
+  );
+  assert.equal(parseOk, true);
+  assert.deepEqual(runs, [
+    { conclusion: "success", createdAt: "2026-08-16T00:00:00Z" },
+  ]);
+});
+
+test("parseRunsJson: malformed JSON returns parseOk false and empty runs, doesn't throw", () => {
+  const { runs, parseOk } = parseRunsJson("not-valid-json");
+  assert.equal(parseOk, false);
+  assert.deepEqual(runs, []);
+});
+
+// Bug 7, reproduced end to end: a live review caught that
+// decide-stuck-action.mjs's original malformed-JSON handling defaulted
+// runs to [] but left lookupOk exactly as passed in from bash — so if
+// bash's own gh calls had succeeded, decideStuckAction saw {lookupOk:
+// true, runs: []}, indistinguishable from "confirmed zero stuck runs,"
+// and could falsely resolve a real, still-active warning. This mirrors
+// decide-stuck-action.mjs's own combination (`lookupOkArg === "true" &&
+// parseOk`) to prove the fix actually closes the gap, not just that
+// parseRunsJson reports failure correctly in isolation.
+test("decideStuckAction: a failed runs-JSON parse must skip, never resolve, even if the caller's own lookup otherwise succeeded", () => {
+  const { runs, parseOk } = parseRunsJson("not-valid-json");
+  assert.deepEqual(
+    decideStuckAction({
+      lookupOk: true && parseOk,
+      commentLookupOk: true,
+      runs,
+      nowEpoch: 9999999999,
+      existingCommentId: "123",
+    }),
+    { action: "skip", reason: "lookup-failed" },
   );
 });
