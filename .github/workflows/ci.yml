@@ -71,10 +71,33 @@ jobs:
       # independent `force_jobs` OR-clause (below), so a workflow_dispatch
       # run reaches the jobs it's meant to regardless of what (if
       # anything) this step produces for that trigger type.
+      #
+      # A real regression lived here for ~14 hours (2026-08-16, from PR #33
+      # to this fix): the `if:` below used to read only `== 'pull_request'`
+      # — the comment above only ever reasoned about excluding
+      # workflow_dispatch, but the condition as written also excluded
+      # `push`, silently skipping every path-filtered job (test-api-unit,
+      # test-api-e2e, test-web, audit, perf-budget, load-test, docker-scan,
+      # docker-smoke) on every push to main. Runs still reported "success"
+      # since a skipped job doesn't fail a run — nothing surfaced this
+      # until the coverage/Lighthouse badges stopped updating and that got
+      # investigated. `!= 'workflow_dispatch'` states the actual intent
+      # directly instead of enumerating the events that should run it.
+      #
+      # Per dorny/paths-filter's own docs ("Master, Release, or other
+      # long-lived branches"): a push event additionally needs `base: ${{
+      # github.ref }}` to diff against "the most recent commit on the same
+      # branch before the push" — without it, the default (compare against
+      # the repo's default branch) compares the just-pushed commit against
+      # itself on a push *to* that same default branch, producing an empty
+      # diff. `base` is documented as ignored for `pull_request` events
+      # (unless `token` is overridden, which it isn't here), so setting it
+      # unconditionally is safe and doesn't change PR behavior.
       - uses: dorny/paths-filter@v4
         id: filter
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'workflow_dispatch'
         with:
+          base: ${{ github.ref }}
           filters: |
             deps:
               - 'package.json'
