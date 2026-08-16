@@ -90,8 +90,8 @@
   </div>
 
   <footer>
-    Raw data: <a href="coverage/api-history.json">api-history.json</a> ·
-    <a href="coverage/web-history.json">web-history.json</a>.
+    Raw data: <a href="api-history.json">api-history.json</a> ·
+    <a href="web-history.json">web-history.json</a>.
     Only appends when the corresponding CI job actually runs (path-filtered —
     see this repo's <code>CLAUDE.md</code>), so gaps mean "unchanged," not "missing."
   </footer>
@@ -103,7 +103,7 @@ const COLORS = { api: "#4f8cff", web: "#34c37b" };
 
 async function loadHistory(name) {
   try {
-    const res = await fetch(`coverage/${name}-history.json`, { cache: "no-store" });
+    const res = await fetch(`${name}-history.json`, { cache: "no-store" });
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data) ? data : [];
