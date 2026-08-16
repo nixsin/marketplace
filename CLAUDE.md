@@ -118,9 +118,10 @@ sequential job). Key structure:
   (not failed) dependency doesn't block deploy.
 
 Other workflows: `dependency-freshness.yml` (weekly + push-to-main badge
-check, informational, not required), `codeql.yml`, `docker-scan-scheduled
-.yml` (weekly Trivy re-scan of `main`'s images, informational, not
-required — see the `docker` filter note above for why it exists),
+check, informational, not required), `codeql.yml`,
+`docker-scan-scheduled.yml` (weekly Trivy re-scan of `main`'s images,
+informational, not required — see the `docker` filter note above for why
+it exists),
 `pr-comment-rerun.yml` (a PR comment can trigger `gh run rerun`),
 `pr-reconciliation.yml` (see its own section below), and the
 `/rerun-test` slash command
@@ -158,21 +159,22 @@ decisions. `set +e` (plus `pipefail`) throughout, same reasoning as the
 reconciled.
 
 **The actual flag/resolve/skip decisions live in a tested module, not
-inline bash.** `scripts/lib/pr-reconciliation.mjs` (`pr-reconciliation
-.test.mjs`) — this job's bash only gathers each decision function's
-inputs and acts on its output. That split exists because this job's
-introducing PR went through **four live review rounds and found six real
-bugs**, every one in the identical shape: a failed or non-conclusive
-lookup silently treated as a conclusive one.
+inline bash.** `scripts/lib/pr-reconciliation.mjs`
+(`pr-reconciliation.test.mjs`) — this job's bash only gathers each
+decision function's inputs and acts on its output. That split exists
+because this job's introducing PR went through **four live review
+rounds and found six real bugs**, every one in the identical shape: a
+failed or non-conclusive lookup silently treated as a conclusive one.
 
 These tests also run in `ci.yml`'s own `test-ci-scripts` job — a plain,
 unconditional job (no path filter) on every regular PR, separate from
-`pr-reconciliation.yml`'s own steps. Needed because `pr-reconciliation
-.yml` never triggers on `pull_request` — without this, a regression to
-this file would ship straight to `main` unnoticed by the introducing PR's
-own CI, only surfacing later when `pr-reconciliation.yml` next actually
-ran (close, schedule, or manual dispatch). A live review caught this gap
-directly; `test-ci-scripts` closes it and is wired into `ai-code-review`,
+`pr-reconciliation.yml`'s own steps. Needed because
+`pr-reconciliation.yml` never triggers on `pull_request` — without this,
+a regression to this file would ship straight to `main` unnoticed by the
+introducing PR's own CI, only surfacing later when
+`pr-reconciliation.yml` next actually ran (close, schedule, or manual
+dispatch). A live review caught this gap directly; `test-ci-scripts`
+closes it and is wired into `ai-code-review`,
 `ai-failure-analysis`, and `migrate`'s `needs:` lists the same way `lint`
 is.
 1. Every `gh pr view`/`gh pr comment` call needs `--repo` explicitly —
@@ -508,6 +510,20 @@ care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
 
+**Convention: prefix a PR's title with `[blocked]` when it's stuck on a
+genuine upstream gap** (confirmed via direct verification, not just an
+error message — see the entries below for what that verification looks
+like), not merely pending review or CI. It's a quick visual signal on
+the PR list that no action is expected on that PR until the upstream
+gap closes — check the title before re-investigating one. Currently:
+`[blocked] Bump typescript from 5.9.3 to 7.0.2` (#27),
+`[blocked] Bump eslint from 9.39.5 to 10.8.1` (#24),
+`[blocked] Bump @eslint/js from 9.39.5 to 10.0.1` (#25). Rename with
+`gh pr edit <number> --title "[blocked] <original title>"` — don't
+touch the rest of the title. Remove the prefix once the underlying
+blocker actually clears and the PR becomes a normal mergeable bump
+again.
+
 - **PR #27 (`typescript` 5.9.3 → 7.0.2) is blocked upstream — don't
   re-investigate, don't try to force it through.** `typescript-eslint`
   does not support TypeScript 7 at all: `pnpm lint:check` fails outright
@@ -527,8 +543,9 @@ care as any other secrets-using action, not as a rubber-stamp click.
   attempting this bump again: re-check `typescript-eslint`'s current
   peer-dependency range for `typescript` — once it covers `7.x`, this
   becomes a normal bump like any other Dependabot PR.
-- **PR #24 (`eslint` 9.39.5 → 10.8.1) is also blocked upstream — don't
-  re-investigate, don't try to force it through.** `eslint-config-next`
+- **PR #24 (`eslint` 9.39.5 → 10.8.1) and PR #25 (`@eslint/js` 9.39.5 →
+  10.0.1) are both blocked by the same upstream gap — don't
+  re-investigate, don't try to force either through.** `eslint-config-next`
   (this repo's `apps/web` lint config, latest is `16.3.1`, already what's
   installed) pulls in `eslint-plugin-react@^7.37.0` as a transitive
   dependency (`pnpm why eslint-plugin-react --filter web`), and that
@@ -548,11 +565,18 @@ care as any other secrets-using action, not as a rubber-stamp click.
   version exists on npm (verified directly, `npm view
   eslint-plugin-react@7.38.0` 404s). Treat that job's suggestions as
   unverified, same as always — this is a concrete instance of it
-  fabricating a plausible-sounding but nonexistent fix. Before attempting
-  this bump again: re-check whether `eslint-config-next` (or
+  fabricating a plausible-sounding but nonexistent fix.
+  **PR #25 is the same family, not a separate issue**: `@eslint/js` is
+  meant to track ESLint's own major version, and its `10.0.1` lockfile
+  entry declares a peer of `eslint: ^10.0.0` (optional, which is why
+  `lint` doesn't actually crash on this one — apps/api's `eslint` stays
+  pinned at `^9.18.0`) — a real, verified, unsupported major-version
+  pairing, confirmed by reading `pnpm-lock.yaml` directly, not just
+  trusting the AI reviewer's finding on that PR. Before attempting either
+  bump again: re-check whether `eslint-config-next` (or
   `eslint-plugin-react` directly) has shipped a version with a peer range
-  covering `eslint@^10` — once it has, this becomes a normal bump like any
-  other Dependabot PR.
+  covering `eslint@^10` — once it has, both become normal bumps like any
+  other Dependabot PR, ideally merged together since they're the same major.
 - **`gh api -f key=@path` does NOT read the file — only `-F` does.** The
   `@<path>` (or `@-` for stdin) file-reading syntax is documented under
   `-F/--field` (typed parameters) only; `-f/--raw-field` treats an `@...`
