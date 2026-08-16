@@ -82,7 +82,7 @@ pnpm dev:api   # http://localhost:4000/graphql (GraphQL Playground in dev)
 ## What's scaffolded so far (Phase 0)
 
 - Monorepo workspace (pnpm) with `apps/web` and `apps/api`.
-- `apps/web`: Next.js + Tailwind + shadcn/ui (Radix base) initialized, base components added (button, input, table, dialog, card, badge, sonner) + react-hook-form/zod for forms.
+- `apps/web`: Next.js + Tailwind + shadcn/ui (Radix base) initialized, base components added (button, input, table, dialog, card, badge, sonner).
 - `apps/api`: NestJS + GraphQL (code-first, auto-generated schema at `apps/api/src/schema.gql`) + Prisma.
 - Phase 0 data model: `Organization`, `User`, `License` (see `apps/api/prisma/schema.prisma`, mirrors TECHNICAL_PLAN.md §6).
 - Auth flow: phone OTP request/verify → JWT, plus a `completeOnboarding` mutation that creates an Organization + first User together. **SMS sending is a dev-only stub** (`apps/api/src/auth/sms.service.ts` logs the OTP instead of sending it — no MSG91/Gupshup account wired up yet, see TODO in that file). OTP storage is in-memory (`otp-store.service.ts`) — needs to move to Redis before this runs on more than one process (TODO noted in file).
