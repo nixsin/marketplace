@@ -123,18 +123,29 @@ every PR tested through five+ review rounds happened to get
 `REQUEST_CHANGES` (which `GITHUB_TOKEN` posts fine), so this was latent
 and undiscovered until PR #20 — a simple Dependabot version bump — became
 the first PR the reviewer actually approved, and the job crashed on
-`GitHub Actions is not permitted to approve pull requests.` Fix: a
-`secrets.PR_REVIEW_PAT` (a real account's fine-grained personal access
-token, scoped to `pull_requests: write` on this repo) used via an inline
-`GH_TOKEN` override on just the two `gh pr review` calls — `GITHUB_TOKEN`
-stays the default for everything else in the job, including
-`REQUEST_CHANGES`, which was never affected. If the PAT secret isn't
-configured, the approve path degrades to a plain `gh pr comment` instead
-of retrying the same broken call with an empty token — check
-`gh secret list` if `ai-code-review` starts failing again on an approve
-verdict specifically. The review posts under the PAT owner's account
-identity, not `github-actions[bot]` — the body's own "🤖 Automated
-review" framing is what keeps that from reading as a real human approval.
+`GitHub Actions is not permitted to approve pull requests.`
+
+**Do not "fix" this with a personal access token — a live review already
+caught that mistake once (PR #36) and rejected it.** The first attempt
+used a `secrets.PR_REVIEW_PAT` (a real account's token) via an inline
+`GH_TOKEN` override to post the approval instead of `GITHUB_TOKEN`. That
+doesn't route around GitHub's restriction so much as defeat its actual
+purpose: the restriction exists specifically so an automated verdict can
+never satisfy `required_pull_request_reviews` on its own, and branch
+protection can't distinguish "the account holder reviewed this" from "a
+workflow posted this using the account holder's credentials." There's
+also no GitHub feature for an identity whose approval is deliberately
+excluded from the required-review count — any approving review from a
+collaborator with write access satisfies the gate, PAT-driven or not. The
+actual fix: `REQUEST_CHANGES` keeps posting as a real review (blocking is
+fine — it only ever adds friction, never satisfies anything); `APPROVE`
+never posts as a review, regardless of any secret being configured — it
+always degrades to a plain `gh pr comment`. A human decides a green,
+AI-approved PR is ready to merge, via the same admin-bypass this repo
+already uses deliberately and visibly for its one-contributor review gate
+(see "The one hard rule" above) — not something a credential should
+quietly stand in for. If a future change reintroduces PAT-based approval
+here, that's a regression of this exact finding, not a new idea.
 
 Runs only when nothing upstream has already failed (`if: ... &&
 !contains(needs.*.result, 'failure')`) — a failing required check already
