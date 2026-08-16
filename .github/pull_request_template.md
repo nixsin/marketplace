@@ -20,6 +20,21 @@
 | Integration/e2e tests (pass/fail counts) | | |
 | Coverage — statements / branches / functions / lines | | |
 
+### UX / visual changes
+<!-- Only for changes that could plausibly affect what a user sees or
+     interacts with — delete this subsection otherwise. Drag in a
+     screenshot of the affected page/component from before this change
+     and from after, plus a one-line note on what changed and why. -->
+
+**Before:**
+
+
+**After:**
+
+
+**What changed:**
+
+
 ### Performance
 <!-- Only for changes that could plausibly affect load time, bundle size,
      or response time — delete this subsection otherwise. Use real numbers
