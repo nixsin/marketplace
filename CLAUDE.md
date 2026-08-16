@@ -133,6 +133,17 @@ wrong, say so in a PR comment and use your judgment, don't just silently
 override it the way Lighthouse got silently overridden before that became
 an explicit rule.
 
+**Known, accepted risk**: `ai-code-review` and `ai-failure-analysis` both
+run on `pull_request` and use `secrets.ANTHROPIC_API_KEY` — that trigger
+executes the workflow file from the PR branch itself (not the base branch,
+unlike `pull_request_target`), so a same-repo branch that edited either job
+could exfiltrate the key before any gate runs. Deliberately not engineered
+around: this repo takes no external fork contributions (GitHub already
+withholds secrets from fork PRs specifically on `pull_request`), and
+anyone able to push a branch here already has more direct paths to the
+same secret. If this repo ever adds outside contributors, revisit — e.g.
+a GitHub Environment with required-reviewer protection on the secret.
+
 ## Dependabot
 
 `.github/dependabot.yml`: weekly (Monday), grouped minor/patch for npm and
