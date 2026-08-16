@@ -118,7 +118,10 @@ sequential job). Key structure:
   (not failed) dependency doesn't block deploy.
 
 Other workflows: `dependency-freshness.yml` (weekly + push-to-main badge
-check, informational, not required), `codeql.yml`,
+check, informational, not required — fails only on outdated packages not
+listed in `scripts/known-outdated-packages.txt`, so a verified upstream
+blocker doesn't leave this permanently and unfixably red; see the
+`[blocked]` convention below), `codeql.yml`,
 `docker-scan-scheduled.yml` (weekly Trivy re-scan of `main`'s images,
 informational, not required — see the `docker` filter note above for why
 it exists),
@@ -522,7 +525,11 @@ gap closes — check the title before re-investigating one. Currently:
 `gh pr edit <number> --title "[blocked] <original title>"` — don't
 touch the rest of the title. Remove the prefix once the underlying
 blocker actually clears and the PR becomes a normal mergeable bump
-again.
+again. **Keep `scripts/known-outdated-packages.txt` in sync with this
+list** — that's what keeps `dependency-freshness.yml` from permanently
+failing on packages nobody can currently fix; add a package's exact npm
+name there in the same commit that marks its PR `[blocked]`, and remove
+it there too the moment the prefix comes off.
 
 - **PR #27 (`typescript` 5.9.3 → 7.0.2) is blocked upstream — don't
   re-investigate, don't try to force it through.** `typescript-eslint`

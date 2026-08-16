@@ -1,0 +1,14 @@
+# Packages allowed to show as outdated in dependency-freshness.yml without
+# failing the check. Each entry here MUST correspond to a genuine, verified
+# upstream blocker documented in CLAUDE.md's Known Gotchas section — not
+# "we haven't gotten around to it yet." A package belongs here only if no
+# amount of waiting-and-retrying will fix it until an external project
+# ships a release; otherwise the check should stay red, since that's a
+# real, actionable signal.
+#
+# Remove an entry the moment its blocker actually clears — the
+# corresponding Dependabot PR's `[blocked]` title prefix should come off
+# in the same commit/PR, per CLAUDE.md's `[blocked]` convention.
+eslint
+@eslint/js
+typescript
