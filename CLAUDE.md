@@ -60,20 +60,43 @@ to merge past — only an actual failure blocks.
 Split into small independent jobs on purpose (parallel runners, not one long
 sequential job). Key structure:
 
-- **`changes`** — runs `dorny/paths-filter` first, produces `api`/`web`/`deps`
-  booleans, and posts/updates a PR comment (`<!-- ci-skip-logic-comment -->`
-  marker, edited in place across pushes) explaining which jobs will run vs.
-  skip and why. Read this comment on any PR before wondering why a check is
-  missing.
+- **`changes`** — runs `dorny/paths-filter` first, produces `api`/`web`/
+  `deps`/`docker` booleans, and posts/updates a PR comment
+  (`<!-- ci-skip-logic-comment -->` marker, edited in place across pushes)
+  explaining which jobs will run vs. skip and why. Read this comment on any
+  PR before wondering why a check is missing.
 - Path-filtered jobs (skip when irrelevant): `audit` (deps only),
   `test-api-unit`/`test-api-e2e`/`load-test` (api or deps), `test-web`/
-  `perf-budget` (web or deps).
+  `perf-budget` (web or deps), `docker-smoke` (`docker` — see below).
 - **Never** path-filtered, deliberately: `lint` (lints both apps in one
-  command), `docker-scan`/`docker-smoke` (both Dockerfiles' `deps` stage runs
-  apps/api's `prisma generate` postinstall even for a web-only build — a
-  web-looking change can still affect the API image), `migrate` (too risky to
-  ever skip a real migration), `ai-failure-analysis` (reacts to `failure()`,
-  not to the diff).
+  command), `docker-scan` (see below), `migrate` (too risky to ever skip a
+  real migration), `ai-failure-analysis` (reacts to `failure()`, not to the
+  diff).
+- **The `docker` filter, and why `docker-scan`/`docker-smoke` are treated
+  differently from each other** — both jobs build off Docker's shared layer
+  cache across both Dockerfiles (a workspace-root `pnpm install` in the
+  `deps` stage runs apps/api's `prisma generate` postinstall even for a
+  web-only build, so a web-looking change can still affect the API image),
+  which is why the filter covers `apps/api/**` *and* `apps/web/**` together
+  rather than filtering each app's effect separately. Verified directly (not
+  assumed) before narrowing this: read both Dockerfiles' `COPY` instructions
+  (explicitly scoped, no `COPY . .` — `scripts/` and `.github/` genuinely
+  never enter either image), `docker-compose.yml` (build context is the repo
+  root; used by `scripts/dev.sh`), and `.dockerignore` (directly controls
+  the build context). The filter: `apps/api/**`, `apps/web/**`, both
+  Dockerfiles, `docker-compose.yml`, `.dockerignore`, `scripts/dev.sh`
+  specifically (not a broad `scripts/**` — a first draft would have
+  excluded the one file `docker-smoke`'s own job runs, `./scripts/dev.sh`,
+  along with the CI/review tooling that's actually safe to exclude), plus
+  the existing `deps` files.
+  `docker-smoke` (the dev-stack behavioral test) uses this filter — fully
+  deterministic given the same source, so skipping it on a provably
+  Docker-irrelevant diff loses nothing. `docker-scan` (Trivy) deliberately
+  does **not** — it checks against an external, time-varying CVE database,
+  so running unconditionally on every push to `main` incidentally re-scans
+  the unchanged image often, catching newly-disclosed CVEs; narrowing its
+  filter the same way would trade that away for CI time, a different kind
+  of trade-off than everything else on this list.
 - **`ai-failure-analysis`** — PR-only, fires on any real failure among its
   `needs:` (explicit `needs.*.result` contains-check + `always()`, not plain
   `failure()`, because skipped deps must not suppress or falsely trigger it).
