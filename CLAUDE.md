@@ -512,9 +512,12 @@ care as any other secrets-using action, not as a rubber-stamp click.
   re-investigate, don't try to force it through.** `typescript-eslint`
   does not support TypeScript 7 at all: `pnpm lint:check` fails outright
   with `typescript-eslint does not support TS 7.0`, and
-  `typescript-eslint@latest` (including pre-release alphas, checked
-  directly via `npm view typescript-eslint@latest peerDependencies`)
-  still declares `typescript: '>=4.8.4 <6.1.0'` — there is no newer
+  `typescript-eslint@latest` (checked directly via `npm view
+  typescript-eslint@latest peerDependencies`) still declares `typescript:
+  '>=4.8.4 <6.1.0'`. Also checked the `canary` dist-tag specifically
+  (`npm view typescript-eslint@canary peerDependencies`) since `@latest`
+  alone doesn't cover separately-tagged prereleases — as of `8.67.1-alpha.4`
+  it declares the identical range, so there is no newer or prerelease
   version that fixes this yet. Tracked upstream:
   [typescript-eslint#10940](https://github.com/typescript-eslint/typescript-eslint/issues/10940).
   Merging this bump would permanently break `lint` — a never-path-filtered,
