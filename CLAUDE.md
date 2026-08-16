@@ -527,8 +527,9 @@ care as any other secrets-using action, not as a rubber-stamp click.
   attempting this bump again: re-check `typescript-eslint`'s current
   peer-dependency range for `typescript` — once it covers `7.x`, this
   becomes a normal bump like any other Dependabot PR.
-- **PR #24 (`eslint` 9.39.5 → 10.8.1) is also blocked upstream — don't
-  re-investigate, don't try to force it through.** `eslint-config-next`
+- **PR #24 (`eslint` 9.39.5 → 10.8.1) and PR #25 (`@eslint/js` 9.39.5 →
+  10.0.1) are both blocked by the same upstream gap — don't
+  re-investigate, don't try to force either through.** `eslint-config-next`
   (this repo's `apps/web` lint config, latest is `16.3.1`, already what's
   installed) pulls in `eslint-plugin-react@^7.37.0` as a transitive
   dependency (`pnpm why eslint-plugin-react --filter web`), and that
@@ -548,11 +549,18 @@ care as any other secrets-using action, not as a rubber-stamp click.
   version exists on npm (verified directly, `npm view
   eslint-plugin-react@7.38.0` 404s). Treat that job's suggestions as
   unverified, same as always — this is a concrete instance of it
-  fabricating a plausible-sounding but nonexistent fix. Before attempting
-  this bump again: re-check whether `eslint-config-next` (or
-  `eslint-plugin-react` directly) has shipped a version with a peer range
-  covering `eslint@^10` — once it has, this becomes a normal bump like any
-  other Dependabot PR.
+  fabricating a plausible-sounding but nonexistent fix.
+  **PR #25 is the same family, not a separate issue**: `@eslint/js` is
+  meant to track ESLint's own major version, and its `10.0.1` lockfile
+  entry declares a peer of `eslint: ^10.0.0` (optional, which is why
+  `lint` doesn't actually crash on this one — apps/api's `eslint` stays
+  pinned at `^9.18.0`) — a real, verified, unsupported major-version
+  pairing, confirmed by reading `pnpm-lock.yaml` directly, not just
+  trusting the AI reviewer's finding on that PR. Before attempting either
+  bump again: re-check whether `eslint-config-next` (or `eslint-plugin-
+  react` directly) has shipped a version with a peer range covering
+  `eslint@^10` — once it has, both become normal bumps like any other
+  Dependabot PR, ideally merged together since they're the same major.
 - **`gh api -f key=@path` does NOT read the file — only `-F` does.** The
   `@<path>` (or `@-` for stdin) file-reading syntax is documented under
   `-F/--field` (typed parameters) only; `-f/--raw-field` treats an `@...`
