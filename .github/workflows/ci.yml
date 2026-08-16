@@ -931,7 +931,8 @@ jobs:
             "docker-scan": "${{ needs.docker-scan.result }}",
             "docker-smoke": "${{ needs.docker-smoke.result }}",
             "perf-budget": "${{ needs.perf-budget.result }}",
-            "load-test": "${{ needs.load-test.result }}"
+            "load-test": "${{ needs.load-test.result }}",
+            "test-e2e-web": "${{ needs.test-e2e-web.result }}"
           }
           EOF
 
@@ -945,7 +946,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           : > /tmp/test-summaries.txt
-          job_ids=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate --jq '.jobs[] | select(.name == "API unit tests" or .name == "API e2e tests" or .name == "Web build + tests") | .id')
+          job_ids=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate --jq '.jobs[] | select(.name == "API unit tests" or .name == "API e2e tests" or .name == "Web build + tests" or .name == "Web e2e (Playwright)") | .id')
           for job_id in $job_ids; do
             echo "=== Job $job_id ===" >> /tmp/test-summaries.txt
             gh api --allow-escape-sequences "repos/${{ github.repository }}/actions/jobs/$job_id/logs" 2>/dev/null | grep -E "Test Files|Tests |Suites:|Tests:|passed|failed|coverage" >> /tmp/test-summaries.txt || true
