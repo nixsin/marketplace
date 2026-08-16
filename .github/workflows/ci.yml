@@ -760,8 +760,38 @@ jobs:
             echo "_Automated review — verify before trusting it, especially a REQUEST_CHANGES verdict on something it may have misread._"
           } > /tmp/review-comment.md
 
+          # GitHub blocks the default GITHUB_TOKEN from ever posting an
+          # APPROVE review — a deliberate platform restriction (a workflow
+          # self-approving a PR would defeat required_pull_request_reviews
+          # entirely), not a permissions/scopes gap this repo controls.
+          # Discovered live: PR #20 was the first real APPROVE verdict this
+          # job ever produced, and the job crashed on
+          # "GitHub Actions is not permitted to approve pull requests."
+          #
+          # The first fix attempt here used a PR_REVIEW_PAT (a real
+          # account's token) via an inline GH_TOKEN override to post the
+          # approval instead. A live review of that attempt (PR #36) caught
+          # why it was wrong, not just a workaround: GitHub's restriction
+          # exists specifically so an automated verdict can never satisfy
+          # required_pull_request_reviews on its own — swapping in a real
+          # human account's PAT doesn't route around that restriction so
+          # much as defeat its actual purpose, since branch protection
+          # can't distinguish "the account holder reviewed this" from "a
+          # workflow posted this using the account holder's credentials."
+          # There's also no GitHub feature for an identity whose approval
+          # is deliberately excluded from the count — any approving review
+          # from a collaborator with write access satisfies the gate.
+          #
+          # So: REQUEST_CHANGES keeps posting as a real review (blocking is
+          # fine — it only ever adds friction, never satisfies anything).
+          # APPROVE never does, regardless of any secret being configured —
+          # it always degrades to a plain comment. The human is the one who
+          # decides a green, AI-approved PR is ready, via the same
+          # admin-bypass this repo already uses deliberately and visibly
+          # for its one-contributor review gate (see "The one hard rule"
+          # above) — not something a credential can quietly stand in for.
           if [ "$verdict" = "APPROVE" ]; then
-            gh pr review "$PR_NUMBER" --approve --body-file /tmp/review-comment.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/review-comment.md
           else
             gh pr review "$PR_NUMBER" --request-changes --body-file /tmp/review-comment.md
           fi
