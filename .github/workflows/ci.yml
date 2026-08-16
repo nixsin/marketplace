@@ -59,7 +59,7 @@ jobs:
       web: ${{ steps.filter.outputs.web }}
       deps: ${{ steps.filter.outputs.deps }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # workflow_dispatch has no PR/push diff for dorny/paths-filter to
       # compare against — not attempting it there avoids depending on
       # unconfirmed behavior for a trigger type it isn't designed for.
@@ -124,8 +124,18 @@ jobs:
 
           existing_id=$(gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate --jq '.[] | select(.body | startswith("<!-- ci-skip-logic-comment -->")) | .id' | head -1)
 
+          # -F (typed field), not -f (raw-field): only -F documents "@<path>"
+          # to read a parameter's value from a file — -f treats "@..." as a
+          # literal string. Discovered live: every other push to a PR was
+          # silently overwriting this comment's body with the literal text
+          # "@/tmp/skip-comment.md" instead of its actual content, which
+          # also destroys the "<!-- ci-skip-logic-comment -->" marker this
+          # same lookup depends on — so the NEXT push can no longer find the
+          # (now-corrupted) comment, falls through to creating a fresh one,
+          # and the cycle repeats: one broken comment left behind every
+          # other push, forever, on every PR that gets more than one push.
           if [ -n "$existing_id" ]; then
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_id" -f body=@/tmp/skip-comment.md > /dev/null
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_id" -F body=@/tmp/skip-comment.md > /dev/null
           else
             gh pr comment "$PR_NUMBER" --body-file /tmp/skip-comment.md
           fi
@@ -134,7 +144,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -153,7 +163,7 @@ jobs:
     # — see that job's own comment for why/how this is constrained.
     if: needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'audit'))
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -193,7 +203,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -239,7 +249,7 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -267,7 +277,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -293,7 +303,7 @@ jobs:
     name: Docker image vulnerability scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build prod images (build-only — no secrets available here to run them with)
         run: |
@@ -320,7 +330,7 @@ jobs:
     name: Docker dev stack smoke test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # scripts/dev.sh builds its own `dev`-target images from scratch —
       # entirely independent of docker-scan's `prod`-target build above,
@@ -359,7 +369,7 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'perf-budget'))
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -402,7 +412,7 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -469,7 +479,7 @@ jobs:
       pull-requests: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -619,7 +629,7 @@ jobs:
       # call — a workflow_dispatch trigger requires actions: write.
       actions: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Fetch PR diff and job results
         env:
@@ -665,6 +675,51 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      # Lets the reviewer avoid re-flagging a finding I've already fixed or
+      # explicitly disputed earlier in this same PR's thread, instead of
+      # relying purely on a human noticing the repeat across rounds — see
+      # CLAUDE.md's "AI code review gate" section. Only a comment from an
+      # authorized login counts as a real override-decision record, not
+      # just the marker string — this is a public-thread trust boundary,
+      # not a formatting convention, since anyone who can comment on a
+      # public PR could otherwise post a fake "already discussed and
+      # dismissed" comment to try to suppress a real finding.
+      - name: Fetch prior override decisions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # --slurp, not --jq: gh api --paginate --jq runs the filter once
+          # PER PAGE, so a PR with enough comments to paginate would
+          # produce several JSON arrays concatenated back-to-back instead
+          # of one valid JSON value here — silently breaking this feature
+          # on long threads (JSON.parse throwing, caught by the script's
+          # own fail-closed default, so it wouldn't even show up as an
+          # error). --slurp wraps every page into one outer array instead,
+          # but the gh CLI rejects combining --slurp with --jq outright —
+          # so this fetches raw pages and scripts/parse-override-decisions
+          # .mjs does the flattening in JS via flattenPaginatedComments,
+          # where it's covered by a real multi-page test case.
+          #
+          # set +e and an explicit empty-array fallback, not
+          # continue-on-error: a live review caught that without either,
+          # a transient gh api failure (rate limit, permissions blip)
+          # would fail this step outright, and GitHub Actions skips every
+          # subsequent step by default on a step failure — silently
+          # preventing "Review with ChatGPT" from ever running at all,
+          # not just from getting override context. This is optional
+          # context for an otherwise-independent review, so its own
+          # fetch failing must never take the review down with it.
+          set +e
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate --slurp \
+            > /tmp/pr-comments-raw.json
+          if [ ! -s /tmp/pr-comments-raw.json ]; then
+            echo "gh api call for PR comments failed or returned nothing — defaulting to no override context." >&2
+            echo "[]" > /tmp/pr-comments-raw.json
+          fi
+          node scripts/parse-override-decisions.mjs /tmp/pr-comments-raw.json "${{ github.repository_owner }}" \
+            > /tmp/override-decisions.json
+
       # continue-on-error so an OpenAI API failure (rate limit, timeout,
       # malformed response) still lets the next step run and fail closed,
       # instead of silently leaving the PR with zero reviews.
@@ -673,7 +728,7 @@ jobs:
         continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt /tmp/diff-truncated.txt > /tmp/review.md
+        run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt /tmp/diff-truncated.txt /tmp/override-decisions.json > /tmp/review.md
 
       # Runs the same tests that back scripts/lib/review-verdict.mjs
       # (scripts/lib/review-verdict.test.mjs) as an actual CI gate, not
@@ -689,6 +744,9 @@ jobs:
       # same class of bug by hand again later.
       - name: Test review-verdict parsing
         run: node --test scripts/lib/review-verdict.test.mjs
+
+      - name: Test override-decision parsing
+        run: node --test scripts/lib/override-decisions.test.mjs
 
       - name: Post review verdict
         if: always()
@@ -727,8 +785,38 @@ jobs:
             echo "_Automated review — verify before trusting it, especially a REQUEST_CHANGES verdict on something it may have misread._"
           } > /tmp/review-comment.md
 
+          # GitHub blocks the default GITHUB_TOKEN from ever posting an
+          # APPROVE review — a deliberate platform restriction (a workflow
+          # self-approving a PR would defeat required_pull_request_reviews
+          # entirely), not a permissions/scopes gap this repo controls.
+          # Discovered live: PR #20 was the first real APPROVE verdict this
+          # job ever produced, and the job crashed on
+          # "GitHub Actions is not permitted to approve pull requests."
+          #
+          # The first fix attempt here used a PR_REVIEW_PAT (a real
+          # account's token) via an inline GH_TOKEN override to post the
+          # approval instead. A live review of that attempt (PR #36) caught
+          # why it was wrong, not just a workaround: GitHub's restriction
+          # exists specifically so an automated verdict can never satisfy
+          # required_pull_request_reviews on its own — swapping in a real
+          # human account's PAT doesn't route around that restriction so
+          # much as defeat its actual purpose, since branch protection
+          # can't distinguish "the account holder reviewed this" from "a
+          # workflow posted this using the account holder's credentials."
+          # There's also no GitHub feature for an identity whose approval
+          # is deliberately excluded from the count — any approving review
+          # from a collaborator with write access satisfies the gate.
+          #
+          # So: REQUEST_CHANGES keeps posting as a real review (blocking is
+          # fine — it only ever adds friction, never satisfies anything).
+          # APPROVE never does, regardless of any secret being configured —
+          # it always degrades to a plain comment. The human is the one who
+          # decides a green, AI-approved PR is ready, via the same
+          # admin-bypass this repo already uses deliberately and visibly
+          # for its one-contributor review gate (see "The one hard rule"
+          # above) — not something a credential can quietly stand in for.
           if [ "$verdict" = "APPROVE" ]; then
-            gh pr review "$PR_NUMBER" --approve --body-file /tmp/review-comment.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/review-comment.md
           else
             gh pr review "$PR_NUMBER" --request-changes --body-file /tmp/review-comment.md
           fi
@@ -798,7 +886,7 @@ jobs:
     needs:
       [lint, audit, test-api-unit, test-api-e2e, test-web, docker-scan, docker-smoke]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
