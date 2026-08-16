@@ -361,6 +361,22 @@ care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
 
+- **`gh api -f key=@path` does NOT read the file — only `-F` does.** The
+  `@<path>` (or `@-` for stdin) file-reading syntax is documented under
+  `-F/--field` (typed parameters) only; `-f/--raw-field` treats an `@...`
+  value as a literal string. `gh api -X PATCH .../comments/$id -f
+  body=@/tmp/file.md` silently posts the seven-character string
+  `@/tmp/file.md` as the comment body, not the file's content. Caught by
+  hand while editing an override-decision-log comment, then found the
+  exact same bug already live in the `changes` job's "Comment skip logic
+  on PR" step — and it's self-hiding: corrupting the body also destroys
+  the `<!-- ci-skip-logic-comment -->` marker that step's own
+  find-existing-comment lookup depends on, so the *next* push can't find
+  the (now-corrupted) comment, falls through to creating a fresh one, and
+  the cycle repeats — one broken, orphaned comment left behind every
+  other push, forever, on any PR that gets more than one push. Fix is
+  just the one-character flag swap (`-f` → `-F`); grep for `-f [a-z_]*=@`
+  across `.github/workflows/` if this pattern ever gets copied elsewhere.
 - **`gh api --paginate --jq` runs the jq filter once PER PAGE, not once
   over the combined result.** A multi-page response piped through
   `--jq '[...]'` produces several complete JSON arrays emitted

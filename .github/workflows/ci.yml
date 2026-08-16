@@ -124,8 +124,18 @@ jobs:
 
           existing_id=$(gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate --jq '.[] | select(.body | startswith("<!-- ci-skip-logic-comment -->")) | .id' | head -1)
 
+          # -F (typed field), not -f (raw-field): only -F documents "@<path>"
+          # to read a parameter's value from a file — -f treats "@..." as a
+          # literal string. Discovered live: every other push to a PR was
+          # silently overwriting this comment's body with the literal text
+          # "@/tmp/skip-comment.md" instead of its actual content, which
+          # also destroys the "<!-- ci-skip-logic-comment -->" marker this
+          # same lookup depends on — so the NEXT push can no longer find the
+          # (now-corrupted) comment, falls through to creating a fresh one,
+          # and the cycle repeats: one broken comment left behind every
+          # other push, forever, on every PR that gets more than one push.
           if [ -n "$existing_id" ]; then
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_id" -f body=@/tmp/skip-comment.md > /dev/null
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_id" -F body=@/tmp/skip-comment.md > /dev/null
           else
             gh pr comment "$PR_NUMBER" --body-file /tmp/skip-comment.md
           fi
