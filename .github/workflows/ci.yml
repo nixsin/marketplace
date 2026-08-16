@@ -335,13 +335,17 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # `gh run view <run-id> --log-failed` on the *whole run* refuses to
-      # return anything until every job in that run — including this one —
-      # has completed. Chicken-and-egg: this job is itself part of the run
-      # it's trying to read. Query each failed job's ID directly instead
-      # and fetch its log individually — that works as soon as THAT job
-      # finishes, regardless of whether this job or any other sibling is
-      # still running.
+      # `gh run view` — both `--log-failed` on the whole run AND
+      # `--job <id> --log-failed` on a single job — refuses to return
+      # anything until the *entire run* completes, including this job
+      # itself. Verified this the hard way: switching to per-job fetching
+      # still hit the same "run ... is still in progress" error. The raw
+      # REST endpoint doesn't have that problem — it's scoped to a single
+      # job's own completion, not the run's — so hit it directly via
+      # `gh api` instead of going through `gh run view` at all. It returns
+      # the full job log (no failed-steps-only filtering, unlike
+      # --log-failed), but that's fine: the analysis script already keeps
+      # only the tail of the log, where the actual error almost always is.
       - name: Fetch failed step logs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -354,7 +358,7 @@ jobs:
           else
             for job_id in $failed_job_ids; do
               echo "=== Job $job_id ===" >> /tmp/failed-logs.txt
-              gh run view --job "$job_id" --log-failed >> /tmp/failed-logs.txt
+              gh api --allow-escape-sequences "repos/${{ github.repository }}/actions/jobs/$job_id/logs" >> /tmp/failed-logs.txt
             done
           fi
 
