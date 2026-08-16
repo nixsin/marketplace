@@ -100,16 +100,25 @@ jobs:
         run: |
           set +e
           set -o pipefail
-          # A live review caught that every gh api -X PATCH/gh pr comment
-          # call below ran under set +e with nobody checking whether it
-          # actually succeeded — an API/auth/transient failure there left
-          # the intended warning or resolution unpublished while the step
-          # still exited 0 and the summary line still claimed the issue
-          # was handled. had_errors tracks this across every PR without
+          # A live review caught, across two rounds, that this step could
+          # report success (exit 0) despite never actually reconciling one
+          # or more PRs. Round one: every gh api -X PATCH/gh pr comment
+          # call ran under set +e with nobody checking whether it actually
+          # succeeded, so a write failure left the intended warning or
+          # resolution unpublished while the summary line still claimed it
+          # was handled. Round two: a failed *lookup* (gh pr view, gh run
+          # list, either comment-marker pipeline) correctly produces a
+          # safe `skip` action — no false resolution — but that skip
+          # wasn't tracked either, so a PR that couldn't even be inspected
+          # this run looked identical to one that was inspected and found
+          # clean. Especially bad for the scheduled safety net: a
+          # systemic API/auth failure could silently skip reconciling
+          # every open PR while the run still reported green. had_errors
+          # now tracks both failure classes across every PR without
           # changing the "one PR's failure must not stop the rest" design
           # — the loop keeps running regardless, but the step's own exit
-          # status now honestly reflects whether every write actually
-          # landed.
+          # status now honestly reflects whether every PR was actually
+          # inspected and every intended write actually landed.
           had_errors=false
 
           if pr_numbers=$(gh pr list --repo "${{ github.repository }}" --base main --state open --json number --jq '.[].number'); then
@@ -160,7 +169,8 @@ jobs:
             else
               conflict_lookup_ok=false
               merge_status=""
-              echo "  Could not determine mergeStateStatus"
+              echo "  WARNING: could not determine mergeStateStatus — this PR's conflict status was not actually checked this run"
+              had_errors=true
             fi
             conflict_marker="<!-- pr-reconciliation-conflict -->"
             if existing_conflict_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate | jq --arg m "$conflict_marker" '.[] | select(.body | startswith($m)) | .id' | head -1); then
@@ -168,7 +178,8 @@ jobs:
             else
               conflict_comment_lookup_ok=false
               existing_conflict_id=""
-              echo "  Could not look up existing conflict comment"
+              echo "  WARNING: could not look up existing conflict comment — this PR's conflict status was not actually checked this run"
+              had_errors=true
             fi
 
             conflict_action=$(node scripts/decide-conflict-action.mjs "$conflict_lookup_ok" "$conflict_comment_lookup_ok" "$merge_status" "$existing_conflict_id")
@@ -226,7 +237,8 @@ jobs:
               stuck_lookup_ok=false
             fi
             if [ "$stuck_lookup_ok" != "true" ]; then
-              echo "  Could not determine workflow-run status"
+              echo "  WARNING: could not determine workflow-run status — this PR's stuck-approval status was not actually checked this run"
+              had_errors=true
               runs_json="[]"
             fi
             stuck_marker="<!-- pr-reconciliation-stuck-approval -->"
@@ -235,7 +247,8 @@ jobs:
             else
               stuck_comment_lookup_ok=false
               existing_stuck_id=""
-              echo "  Could not look up existing stuck-approval comment"
+              echo "  WARNING: could not look up existing stuck-approval comment — this PR's stuck-approval status was not actually checked this run"
+              had_errors=true
             fi
 
             now_epoch=$(date -u +%s)
@@ -273,6 +286,6 @@ jobs:
           echo "Summary: $updated updated, $conflicted with real conflicts, $stuck stuck on workflow approval"
 
           if [ "$had_errors" = "true" ]; then
-            echo "One or more comment writes failed above — failing the step so this doesn't silently look like a fully successful run."
+            echo "One or more PRs could not be fully inspected, or a comment write failed, above — failing the step so this doesn't silently look like a fully successful run."
             exit 1
           fi
