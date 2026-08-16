@@ -4,6 +4,7 @@ import {
   OVERRIDE_LOG_MARKER,
   selectOverrideLogComment,
   parseOverrideLog,
+  flattenPaginatedComments,
 } from "./override-decisions.mjs";
 
 const validLog = `${OVERRIDE_LOG_MARKER}
@@ -105,6 +106,48 @@ test("parseOverrideLog: malformed row (too few cells) is skipped, not thrown", (
   const { rows } = parseOverrideLog(body);
   assert.deepEqual(rows, [
     { finding: "complete row", resolution: "resolved it", status: "Resolved" },
+  ]);
+});
+
+// Real bug from a live review of this feature's introducing PR: `gh api
+// --paginate --jq` runs the jq filter per page, so a multi-page comments
+// fetch produced several concatenated JSON arrays rather than one valid
+// value, and JSON.parse silently failed closed to "no override context"
+// on any PR with enough comments to paginate. The fix moved flattening
+// into JS against the raw `--paginate --slurp` shape: an outer array of
+// pages, each page itself the raw array of GitHub comment objects.
+test("flattenPaginatedComments: flattens multiple pages of raw GitHub comment objects in order", () => {
+  const page1 = [
+    { user: { login: "nixsin" }, body: "first", updated_at: "2026-08-14T00:00:00Z" },
+    { user: { login: "github-actions[bot]" }, body: "second", updated_at: "2026-08-14T01:00:00Z" },
+  ];
+  const page2 = [
+    { user: { login: "nixsin" }, body: "third", updated_at: "2026-08-15T00:00:00Z" },
+  ];
+  assert.deepEqual(flattenPaginatedComments([page1, page2]), [
+    { login: "nixsin", body: "first", updated_at: "2026-08-14T00:00:00Z" },
+    { login: "github-actions[bot]", body: "second", updated_at: "2026-08-14T01:00:00Z" },
+    { login: "nixsin", body: "third", updated_at: "2026-08-15T00:00:00Z" },
+  ]);
+});
+
+test("flattenPaginatedComments: a single page (gh --slurp still wraps it in an outer array) works the same way", () => {
+  const page1 = [{ user: { login: "nixsin" }, body: "only comment", updated_at: "2026-08-15T00:00:00Z" }];
+  assert.deepEqual(flattenPaginatedComments([page1]), [
+    { login: "nixsin", body: "only comment", updated_at: "2026-08-15T00:00:00Z" },
+  ]);
+});
+
+test("flattenPaginatedComments: no pages / empty pages returns an empty array, doesn't throw", () => {
+  assert.deepEqual(flattenPaginatedComments([]), []);
+  assert.deepEqual(flattenPaginatedComments([[]]), []);
+  assert.deepEqual(flattenPaginatedComments(undefined), []);
+});
+
+test("flattenPaginatedComments: a comment with no user field doesn't throw, login is undefined", () => {
+  const page1 = [{ body: "orphaned comment", updated_at: "2026-08-15T00:00:00Z" }];
+  assert.deepEqual(flattenPaginatedComments([page1]), [
+    { login: undefined, body: "orphaned comment", updated_at: "2026-08-15T00:00:00Z" },
   ]);
 });
 

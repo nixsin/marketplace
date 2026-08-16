@@ -10,6 +10,24 @@
 
 export const OVERRIDE_LOG_MARKER = "<!-- ai-review-override-log -->";
 
+// `gh api ... --paginate --jq '[...]'` runs the jq filter once PER PAGE,
+// so multi-page output is several JSON arrays emitted back-to-back — not
+// one valid JSON value. `--slurp` fixes that but is mutually exclusive
+// with `--jq` (gh CLI rejects the combination outright), so the caller
+// fetches raw pages with `--paginate --slurp` (no `--jq`) and this
+// function does the flattening/shaping in JS instead, where it's
+// testable against a real multi-page shape. A live review caught this on
+// this exact feature's introducing PR: a PR with enough comments to
+// paginate would silently lose override context (JSON.parse throwing,
+// caught by the fail-closed default) without ever surfacing as an error.
+export function flattenPaginatedComments(pages) {
+  return (pages ?? []).flat().map((c) => ({
+    login: c.user?.login,
+    body: c.body,
+    updated_at: c.updated_at,
+  }));
+}
+
 // Trust boundary: the marker string alone is not enough to treat a comment
 // as authoritative. This repo's PRs are publicly commentable, and the whole
 // point of the reviewer's prompt-injection defenses elsewhere is to never

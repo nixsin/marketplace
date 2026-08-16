@@ -258,6 +258,12 @@ truncation override, single-verdict-heading rule) read this output, and a
 missing/unreadable log file fails closed to "no override context," the
 same safe default as before this feature existed.
 
+The `Fetch prior override decisions` step fetches with `gh api ...
+--paginate --slurp` (raw pages, no `--jq`) rather than filtering inline —
+see "Known gotchas" below for why `--paginate --jq` silently breaks on a
+PR with enough comments to span multiple pages, and why `--slurp` can't
+just be added alongside it.
+
 **Known, accepted risk**: `ai-code-review` (`secrets.OPENAI_API_KEY`) and
 `ai-failure-analysis` (`secrets.ANTHROPIC_API_KEY`) both run on
 `pull_request` — that trigger executes the workflow file from the PR
@@ -304,6 +310,21 @@ care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
 
+- **`gh api --paginate --jq` runs the jq filter once PER PAGE, not once
+  over the combined result.** A multi-page response piped through
+  `--jq '[...]'` produces several complete JSON arrays emitted
+  back-to-back — not one valid JSON value — so anything downstream doing
+  a single `JSON.parse` on the output breaks silently once there's enough
+  data to paginate (a live review caught this on the override-decision
+  log's `Fetch prior override decisions` step, which only fetches PR
+  comments — fine on any PR tested so far, broken on a long thread).
+  `--slurp` wraps all pages into one outer array, but the gh CLI flatly
+  rejects combining `--slurp` with `--jq` — you can't just add it. The
+  actual fix: fetch raw with `--paginate --slurp` (no `--jq`) and do the
+  flattening/shaping downstream, in a language where it's unit-testable
+  against a real multi-page shape (see `flattenPaginatedComments` in
+  `scripts/lib/override-decisions.mjs`) — not in another bash/jq
+  one-liner that would have the exact same blind spot.
 - **`node:26-alpine` dropped bundling Corepack.** `RUN corepack enable` alone
   now fails with `corepack: not found`. Fix: `RUN npm install -g corepack &&
   corepack enable`. Hit this on both `apps/api/Dockerfile` and
