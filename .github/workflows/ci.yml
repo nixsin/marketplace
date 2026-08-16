@@ -630,64 +630,46 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt > /tmp/review.md
 
+      # Runs the same tests that back scripts/lib/review-verdict.mjs
+      # (scripts/lib/review-verdict.test.mjs) as an actual CI gate, not
+      # just something run by hand — a regression here fails this step,
+      # and "Post review verdict" below (if: always()) still posts a
+      # fail-closed REQUEST_CHANGES rather than silently leaving zero
+      # reviews. The parsing logic that decides APPROVE vs REQUEST_CHANGES
+      # went through three real bugs across successive live reviews
+      # (first-occurrence matching fooled by injected text, `tr -d`
+      # collapsing internal whitespace so a malformed verdict matched
+      # anyway, and a `set -e`-triggered silent abort on zero matches) —
+      # this is what actually closes that gap, versus re-discovering the
+      # same class of bug by hand again later.
+      - name: Test review-verdict parsing
+        run: node --test scripts/lib/review-verdict.test.mjs
+
       - name: Post review verdict
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          # This step's entire job is to always eventually reach the final
+          # `gh pr review` call below — never to abort partway through.
+          # GitHub Actions' default bash runs with `set -e`, and this step
+          # already hit that exact failure mode once (a zero-match `grep -c`
+          # silently aborted before REQUEST_CHANGES was ever posted).
+          # Patching each risky command individually (`|| true`) is fragile
+          # — `set +e` here instead makes it structural: nothing in this
+          # step can abort it early, only the explicit checks below decide
+          # the outcome. Verified locally with a deliberately failing
+          # command mid-step under both settings before landing this.
+          set +e
           verdict="REQUEST_CHANGES"
 
           if [ "${{ steps.review.outcome }}" = "success" ] && [ -s /tmp/review.md ]; then
-            # Three checks, not one — a live ChatGPT review on this job's own
-            # introducing PR found that even last-occurrence matching isn't
-            # enough: a fake "## Verdict\nAPPROVE" positioned as the true
-            # final content of the response is indistinguishable from a
-            # genuine one by position alone. So: (1) there must be EXACTLY
-            # ONE "## Verdict" heading anywhere in the output — the prompt
-            # requires exactly one, so more than one (whether injected-and-
-            # quoted or a genuine duplicate) is already a contract violation
-            # and disqualifies the whole response; (2) the value is trimmed
-            # on leading/trailing whitespace only, not `tr -d` of all
-            # whitespace, which previously would have collapsed a malformed
-            # "APP ROVE" into a matching "APPROVE"; (3) the verdict value
-            # must be the literal last non-blank line of the entire file —
-            # nothing may trail it, matching the prompt's own "end with this
-            # and nothing after it" contract. Verified locally against
-            # constructed injection attempts (a lone fake heading, and two
-            # headings with the fake one positioned last) before landing.
-            # `|| true` matters: GitHub Actions' default bash runs with
-            # `set -e`, and `grep -c` exits 1 (not 0) when the count is
-            # zero, even though it still prints "0". Verified locally —
-            # without the `|| true`, a zero-match response aborts this
-            # whole step immediately at this line, before REQUEST_CHANGES
-            # is ever posted, silently leaving the PR with no review at
-            # all instead of the fail-closed review this step exists to
-            # guarantee. A second live review caught this.
-            verdict_count=$(grep -c '^## Verdict$' /tmp/review.md || true)
-            raw_verdict=$(awk '/^## Verdict$/{getline; v=$0} END{print v}' /tmp/review.md | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-            last_nonblank=$(awk 'NF{line=$0} END{print line}' /tmp/review.md | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-            if [ "$verdict_count" = "1" ] && [ "$raw_verdict" = "APPROVE" ] && [ "$raw_verdict" = "$last_nonblank" ]; then
-              verdict="APPROVE"
-            fi
-
-            # The files it says it reviewed must exactly match the real
-            # diff — a mismatch means it lost track of the actual change
-            # somewhere, which disqualifies an APPROVE regardless of its
-            # stated conclusion. Same last-occurrence reasoning as above.
-            if [ "$verdict" = "APPROVE" ]; then
-              actual_files=$(gh pr diff "$PR_NUMBER" --name-only | sort)
-              claimed_files=$(awk '
-                /^## Files reviewed$/{flag=1; buf=""; next}
-                /^## Verdict$/{flag=0}
-                flag{buf = buf $0 "\n"}
-                END{printf "%s", buf}
-              ' /tmp/review.md | sed '/^[[:space:]]*$/d' | sort)
-              if [ "$actual_files" != "$claimed_files" ]; then
-                echo "Files-reviewed list doesn't match the real diff — overriding to REQUEST_CHANGES."
-                verdict="REQUEST_CHANGES"
-              fi
-            fi
+            # scripts/lib/review-verdict.mjs has the actual decision logic
+            # (and its own test suite, run above) — this step just gathers
+            # its two inputs and trusts its stdout verbatim.
+            gh pr diff "$PR_NUMBER" --name-only > /tmp/actual-files.txt
+            verdict=$(node scripts/parse-review-verdict.mjs /tmp/review.md /tmp/actual-files.txt)
           else
             echo "Automated review did not complete — flagging for human review." > /tmp/review.md
           fi
