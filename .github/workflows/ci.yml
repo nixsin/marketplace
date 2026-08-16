@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       force_jobs:
-        description: "Comma-separated job IDs to force-run despite the path filter (audit, test-api-unit, test-api-e2e, test-web, perf-budget, load-test)"
+        description: "Comma-separated job IDs to force-run despite the path filter (audit, test-api-unit, test-api-e2e, test-web, perf-budget, load-test, docker-scan, docker-smoke)"
         required: false
         type: string
         default: ""
