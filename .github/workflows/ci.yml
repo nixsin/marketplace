@@ -628,7 +628,7 @@ jobs:
         continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt > /tmp/review.md
+        run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt /tmp/diff-truncated.txt > /tmp/review.md
 
       # Runs the same tests that back scripts/lib/review-verdict.mjs
       # (scripts/lib/review-verdict.test.mjs) as an actual CI gate, not
@@ -669,7 +669,7 @@ jobs:
             # (and its own test suite, run above) — this step just gathers
             # its two inputs and trusts its stdout verbatim.
             gh pr diff "$PR_NUMBER" --name-only > /tmp/actual-files.txt
-            verdict=$(node scripts/parse-review-verdict.mjs /tmp/review.md /tmp/actual-files.txt)
+            verdict=$(node scripts/parse-review-verdict.mjs /tmp/review.md /tmp/actual-files.txt /tmp/diff-truncated.txt)
           else
             echo "Automated review did not complete — flagging for human review." > /tmp/review.md
           fi

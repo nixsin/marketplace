@@ -113,6 +113,28 @@ test("decideVerdict: clean APPROVE with mismatched files falls back to REQUEST_C
   assert.equal(result, "REQUEST_CHANGES");
 });
 
+// A live review caught this: the reviewer can list the right file names
+// and say APPROVE having never seen a truncated file's full content — the
+// files-list check alone can't catch that, since names can be correct
+// while content is incomplete. diffWasTruncated overrides everything else.
+test("decideVerdict: truncated diff overrides a clean APPROVE with matching files", () => {
+  const result = decideVerdict({
+    reviewText: clean("APPROVE"),
+    actualChangedFiles: ["foo.tsx", "bar.ts"],
+    diffWasTruncated: true,
+  });
+  assert.equal(result, "REQUEST_CHANGES");
+});
+
+test("decideVerdict: diffWasTruncated=false behaves exactly like omitting it", () => {
+  const result = decideVerdict({
+    reviewText: clean("APPROVE"),
+    actualChangedFiles: ["foo.tsx", "bar.ts"],
+    diffWasTruncated: false,
+  });
+  assert.equal(result, "APPROVE");
+});
+
 test("decideVerdict: REQUEST_CHANGES passes through regardless of files list", () => {
   const result = decideVerdict({
     reviewText: clean("REQUEST_CHANGES"),

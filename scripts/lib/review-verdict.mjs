@@ -67,8 +67,18 @@ function sameFileSet(a, b) {
 // The single entry point the CLI wrapper calls. Defaults to
 // REQUEST_CHANGES on every path except a clean, fully-verified APPROVE —
 // mirrors the workflow's own fail-closed philosophy: anything ambiguous,
-// malformed, or unverifiable is not trusted.
-export function decideVerdict({ reviewText, actualChangedFiles }) {
+// malformed, or unverifiable is not trusted. `diffWasTruncated` is an
+// unconditional override, checked first: a live review caught that the
+// model can list the right file names and say APPROVE having never seen
+// a truncated file's full content — the files-list check alone can't
+// catch that, since names can be correct while content is incomplete.
+export function decideVerdict({
+  reviewText,
+  actualChangedFiles,
+  diffWasTruncated,
+}) {
+  if (diffWasTruncated) return "REQUEST_CHANGES";
+
   const rawVerdict = extractVerdict(reviewText);
   if (rawVerdict !== "APPROVE") return "REQUEST_CHANGES";
 

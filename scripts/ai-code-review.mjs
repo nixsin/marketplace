@@ -10,12 +10,13 @@
 // switched vendors: stateless, no commit messages or PR description passed
 // in, only the raw diff and raw CI job results/log excerpts.
 import OpenAI from "openai";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
-const [diffPath, jobSummaryPath, testSummaryPath] = process.argv.slice(2);
-if (!diffPath || !jobSummaryPath || !testSummaryPath) {
+const [diffPath, jobSummaryPath, testSummaryPath, truncatedFlagPath] =
+  process.argv.slice(2);
+if (!diffPath || !jobSummaryPath || !testSummaryPath || !truncatedFlagPath) {
   console.error(
-    "Usage: ai-code-review.mjs <diff-file> <job-summary.json> <test-summary.txt>",
+    "Usage: ai-code-review.mjs <diff-file> <job-summary.json> <test-summary.txt> <truncated-flag-outfile>",
   );
   process.exit(1);
 }
@@ -27,6 +28,17 @@ const MAX_DIFF_CHARS = 60_000;
 let diff = readFileSync(diffPath, "utf8");
 const truncated = diff.length > MAX_DIFF_CHARS;
 if (truncated) diff = diff.slice(0, MAX_DIFF_CHARS);
+
+// A live review caught the gap this closes: the model can list the right
+// file names and say APPROVE while never having seen a truncated file's
+// full content — the files-reviewed check only validates names, not that
+// complete content reached it. Written to a separate file, not stdout —
+// stdout here is captured entirely as the review body, so this can't ride
+// along with it. review-verdict.mjs treats this as an unconditional
+// REQUEST_CHANGES override, the same way a files-list mismatch is —
+// never trusting the model's own verdict to self-regulate around
+// something it structurally couldn't have fully seen.
+writeFileSync(truncatedFlagPath, truncated ? "true" : "false");
 
 const jobSummary = readFileSync(jobSummaryPath, "utf8");
 const testSummary = readFileSync(testSummaryPath, "utf8");

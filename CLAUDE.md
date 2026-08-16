@@ -155,6 +155,17 @@ approve past a real failure. The one thing it can get wrong is judging the
   zero-match count, and under `set -e` that silently aborted the step
   before `REQUEST_CHANGES` was ever posted, leaving the PR with no review
   at all instead of the fail-closed one this step exists to guarantee.
+- A diff over 60,000 characters gets truncated before it's sent to the
+  reviewer (`MAX_DIFF_CHARS` in `ai-code-review.mjs`) — and `decideVerdict`
+  treats truncation as an unconditional override to `REQUEST_CHANGES`,
+  checked before anything else. A live review caught why this matters: the
+  files-reviewed check only validates *names* match the real diff, not that
+  *complete content* reached the model — a large file's tail past the
+  truncation point could be silently unreviewed while its filename still
+  shows up correctly in "Files reviewed." The flag is written to a
+  dedicated file (`ai-code-review.mjs`'s 4th CLI arg), never to stdout,
+  since stdout there is captured whole as the review body. Missing or
+  unreadable flag file fails closed to "was truncated," never to "wasn't."
 
 **Same rule as Lighthouse applies here**: don't admin-bypass a
 `REQUEST_CHANGES` verdict to route around it without actually addressing
