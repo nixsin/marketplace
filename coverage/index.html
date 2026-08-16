@@ -90,20 +90,22 @@
   </div>
 
   <footer>
-    Raw data: <a href="coverage/api-history.json">api-history.json</a> ·
-    <a href="coverage/web-history.json">web-history.json</a>.
+    Raw data: <a href="api-history.json">api-history.json</a> ·
+    <a href="web-history.json">web-history.json</a>.
     Only appends when the corresponding CI job actually runs (path-filtered —
     see this repo's <code>CLAUDE.md</code>), so gaps mean "unchanged," not "missing."
   </footer>
 </div>
 <div id="tooltip"></div>
 
-<script>
+<script type="module">
+import { computeChartLayout, computeStats } from "./chart-math.mjs";
+
 const COLORS = { api: "#4f8cff", web: "#34c37b" };
 
 async function loadHistory(name) {
   try {
-    const res = await fetch(`coverage/${name}-history.json`, { cache: "no-store" });
+    const res = await fetch(`${name}-history.json`, { cache: "no-store" });
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data) ? data : [];
@@ -122,54 +124,37 @@ function renderChart(containerId, statId, name, rows) {
   const container = document.getElementById(containerId);
   const statEl = document.getElementById(statId);
 
-  if (rows.length === 0) {
+  const stats = computeStats(rows);
+  if (stats.empty) {
     container.innerHTML = '<p class="empty">No data yet — accumulates on the next push to main that touches this app.</p>';
     statEl.textContent = "No data yet.";
     return;
   }
 
-  const latest = rows[rows.length - 1];
-  const first = rows[0];
-  const delta = (latest.pct - first.pct).toFixed(2);
-  const deltaSign = delta > 0 ? "+" : "";
-  statEl.innerHTML = `<b>${latest.pct.toFixed(2)}%</b> as of ${fmtDate(latest.date)}` +
-    (rows.length > 1 ? ` — ${deltaSign}${delta}pp over ${rows.length} measurements` : "");
+  const deltaSign = stats.deltaPp > 0 ? "+" : "";
+  statEl.innerHTML = `<b>${stats.latestPct.toFixed(2)}%</b> as of ${fmtDate(stats.latestDate)}` +
+    (stats.hasDelta ? ` — ${deltaSign}${stats.deltaPp}pp over ${stats.count} measurements` : "");
 
-  const width = 860, height = 220, padL = 42, padR = 16, padT = 16, padB = 28;
-  const plotW = width - padL - padR, plotH = height - padT - padB;
+  const layout = computeChartLayout(rows);
 
-  const pcts = rows.map(r => r.pct);
-  let yMin = Math.floor(Math.min(...pcts) - 2);
-  let yMax = Math.ceil(Math.max(...pcts) + 2);
-  if (yMax - yMin < 5) { yMin -= 2; yMax += 2; }
-  yMin = Math.max(0, yMin);
-  yMax = Math.min(100, yMax);
+  const gridLines = layout.gridLines.map(g =>
+    `<line class="gridline" x1="${layout.padL}" y1="${g.y}" x2="${layout.width - layout.padR}" y2="${g.y}" />` +
+    `<text class="axis-label" x="4" y="${g.y + 3}">${g.value.toFixed(0)}%</text>`
+  ).join("");
 
-  const x = i => rows.length === 1 ? padL + plotW / 2 : padL + (i / (rows.length - 1)) * plotW;
-  const y = pct => padT + plotH - ((pct - yMin) / (yMax - yMin)) * plotH;
+  const pathD = layout.points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
 
-  const gridLines = [];
-  const steps = 4;
-  for (let s = 0; s <= steps; s++) {
-    const val = yMin + (s / steps) * (yMax - yMin);
-    const yy = y(val);
-    gridLines.push(`<line class="gridline" x1="${padL}" y1="${yy}" x2="${width - padR}" y2="${yy}" />`);
-    gridLines.push(`<text class="axis-label" x="4" y="${yy + 3}">${val.toFixed(0)}%</text>`);
-  }
+  const dots = layout.points.map(p =>
+    `<circle class="point" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.5" fill="${COLORS[name]}"
+      data-date="${p.date}" data-pct="${p.pct}" data-commit="${p.commit}" />`
+  ).join("");
 
-  const pathD = rows.map((r, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(r.pct).toFixed(1)}`).join(" ");
-
-  const dots = rows.map((r, i) => {
-    return `<circle class="point" cx="${x(i).toFixed(1)}" cy="${y(r.pct).toFixed(1)}" r="3.5" fill="${COLORS[name]}"
-      data-date="${r.date}" data-pct="${r.pct}" data-commit="${r.commit || ""}" />`;
-  }).join("");
-
-  const firstLabel = rows.length > 0 ? `<text class="axis-label" x="${padL}" y="${height - 8}">${fmtDate(rows[0].date)}</text>` : "";
-  const lastLabel = rows.length > 1 ? `<text class="axis-label" x="${width - padR}" y="${height - 8}" text-anchor="end">${fmtDate(rows[rows.length - 1].date)}</text>` : "";
+  const firstLabel = `<text class="axis-label" x="${layout.padL}" y="${layout.height - 8}">${fmtDate(rows[0].date)}</text>`;
+  const lastLabel = rows.length > 1 ? `<text class="axis-label" x="${layout.width - layout.padR}" y="${layout.height - 8}" text-anchor="end">${fmtDate(rows[rows.length - 1].date)}</text>` : "";
 
   container.innerHTML = `
-    <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet">
-      ${gridLines.join("")}
+    <svg viewBox="0 0 ${layout.width} ${layout.height}" preserveAspectRatio="xMidYMid meet">
+      ${gridLines}
       <path class="line" d="${pathD}" stroke="${COLORS[name]}" />
       ${dots}
       ${firstLabel}
