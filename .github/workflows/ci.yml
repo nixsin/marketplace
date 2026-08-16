@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       force_jobs:
-        description: "Comma-separated job IDs to force-run despite the path filter (audit, test-api-unit, test-api-e2e, test-web, perf-budget, load-test)"
+        description: "Comma-separated job IDs to force-run despite the path filter (audit, test-api-unit, test-api-e2e, test-web, perf-budget, load-test, docker-scan, docker-smoke)"
         required: false
         type: string
         default: ""
@@ -26,29 +26,32 @@ jobs:
   # sequence for no reason — total wall-clock time was the sum of every
   # step, not the slowest one.
 
-  # Feeds the path-based `if:` conditions below. Deliberately narrow in
-  # scope: only test-api-unit/test-api-e2e/test-web/audit/perf-budget/
-  # load-test are safe to skip on an unrelated change — lint, docker-scan,
-  # docker-smoke, migrate, and ai-failure-analysis are NOT filtered:
+  # Feeds the path-based `if:` conditions below. lint, migrate, and
+  # ai-failure-analysis remain NOT filtered:
   #   - lint currently lints both apps in one combined command (not split
   #     per-app), so its real skip condition is the union of both apps'
   #     paths anyway — no separate filtering to be gained without first
   #     splitting the job itself.
-  #   - docker-scan/docker-smoke build BOTH Dockerfiles, and both
-  #     Dockerfiles' `deps` stage does a workspace-root `pnpm install`
-  #     that runs apps/api's `prisma generate` postinstall even for the
-  #     WEB build (see apps/web/Dockerfile's own comment) — so a
-  #     web-only-looking change can still affect the API image and vice
-  #     versa. Per-app isolation here would be actively wrong, not just
-  #     unnecessary, and "skip only when neither app nor deps changed" is
-  #     a small enough win (docs-only PRs, mostly) to not be worth the
-  #     extra surface area right now.
   #   - migrate runs `prisma migrate deploy` against production, already a
   #     fast no-op with nothing new to apply — the risk of a filter
   #     incorrectly skipping a real migration outweighs the seconds saved.
   #   - ai-failure-analysis reacts to `failure()`, not to the diff itself —
   #     doesn't make sense to path-filter something whose entire job is
   #     "respond to whatever just failed."
+  # test-api-unit/test-api-e2e/test-web/audit/perf-budget/load-test/
+  # docker-smoke/docker-scan ARE filtered (`docker` — both Dockerfiles
+  # build off a SHARED `deps` stage: a workspace-root `pnpm install` that
+  # runs apps/api's `prisma generate` postinstall even for the web image,
+  # see apps/web/Dockerfile's own comment — so the filter covers both apps
+  # together, not each app's effect on the image separately).
+  # docker-scan (Trivy) has a real trade-off docker-smoke's purely-
+  # deterministic behavioral test doesn't: it checks against an external,
+  # time-varying CVE database, so filtering it means losing the
+  # incidental re-scan coverage it used to get from running on every
+  # push. That gap is closed properly instead of left as an accepted
+  # loss — see docker-scan-scheduled.yml, a weekly cron re-scan
+  # independent of what any given push touches, the same reasoning
+  # codeql.yml already uses for its own schedule trigger.
   changes:
     name: Detect changed paths
     runs-on: ubuntu-latest
@@ -58,6 +61,7 @@ jobs:
       api: ${{ steps.filter.outputs.api }}
       web: ${{ steps.filter.outputs.web }}
       deps: ${{ steps.filter.outputs.deps }}
+      docker: ${{ steps.filter.outputs.docker }}
     steps:
       - uses: actions/checkout@v7
       # workflow_dispatch has no PR/push diff for dorny/paths-filter to
@@ -80,6 +84,32 @@ jobs:
               - 'apps/api/**'
             web:
               - 'apps/web/**'
+            # Explicit files, not a broad `scripts/**` glob — verified by
+            # reading both Dockerfiles (explicitly scoped COPY, no
+            # `COPY . .`, so scripts/ and .github/ genuinely never enter
+            # either image), docker-compose.yml (build context is the
+            # repo root, used by scripts/dev.sh), .dockerignore (directly
+            # controls the build context), and the docker-scan/docker-
+            # smoke job steps themselves (docker-scan runs `docker build`
+            # directly; docker-smoke runs `./scripts/dev.sh`, which is
+            # `docker compose` under the hood). scripts/dev.sh specifically
+            # — not scripts/** — because a first draft of this filter
+            # would have excluded it along with the rest of scripts/,
+            # which is exactly the file docker-smoke's job exists to
+            # exercise. Everything else under scripts/ (the ai-code-review
+            # /pr-reconciliation tooling) is confirmed unreferenced by
+            # either Dockerfile and stays excludable.
+            docker:
+              - 'apps/api/**'
+              - 'apps/web/**'
+              - 'apps/api/Dockerfile'
+              - 'apps/web/Dockerfile'
+              - 'docker-compose.yml'
+              - '.dockerignore'
+              - 'scripts/dev.sh'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
 
       # Surfaces the run/skip decision on the PR itself instead of making
       # someone reconstruct it from each job's `if:` in this file. Edits
@@ -92,6 +122,7 @@ jobs:
           API_CHANGED: ${{ steps.filter.outputs.api }}
           WEB_CHANGED: ${{ steps.filter.outputs.web }}
           DEPS_CHANGED: ${{ steps.filter.outputs.deps }}
+          DOCKER_CHANGED: ${{ steps.filter.outputs.docker }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           status() {
@@ -108,7 +139,7 @@ jobs:
           <!-- ci-skip-logic-comment -->
           ### 🔍 CI job skip logic
 
-          Changed paths detected: \`api=$API_CHANGED\` · \`web=$WEB_CHANGED\` · \`deps=$DEPS_CHANGED\`
+          Changed paths detected: \`api=$API_CHANGED\` · \`web=$WEB_CHANGED\` · \`deps=$DEPS_CHANGED\` · \`docker=$DOCKER_CHANGED\`
 
           | Job | Status | Runs when |
           |---|---|---|
@@ -118,8 +149,10 @@ jobs:
           | API load test (autocannon) | $(status "$api_or_deps") | api or deps changed |
           | Web build + tests | $(status "$web_or_deps") | web or deps changed |
           | Web performance budget (Lighthouse) | $(status "$web_or_deps") | web or deps changed |
+          | Docker image vulnerability scan | $(status "$DOCKER_CHANGED") | apps/api, apps/web, either Dockerfile, docker-compose.yml, .dockerignore, scripts/dev.sh, or deps changed |
+          | Docker dev stack smoke test | $(status "$DOCKER_CHANGED") | same as above |
 
-          Lint, Docker image vulnerability scan, and Docker dev stack smoke test always run regardless of what changed — see the \`changes\` job's own comment in \`ci.yml\` for why those aren't filtered.
+          Lint always runs regardless of what changed — see the \`changes\` job's own comment in \`ci.yml\` for why. Docker image vulnerability scan also runs weekly regardless of any push, in a separate scheduled workflow — see \`docker-scan-scheduled.yml\`.
           EOF
 
           existing_id=$(gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate --jq '.[] | select(.body | startswith("<!-- ci-skip-logic-comment -->")) | .id' | head -1)
@@ -302,6 +335,18 @@ jobs:
   docker-scan:
     name: Docker image vulnerability scan
     runs-on: ubuntu-latest
+    needs: [changes]
+    # Now path-filtered the same as docker-smoke — the CVE-freshness
+    # concern (Trivy scans an external, time-varying database, so running
+    # on every push incidentally re-scans the unchanged image, catching
+    # newly-disclosed CVEs) is real, but the fix for it is an explicit
+    # scheduled re-scan, not leaving this job's path filter permanently
+    # loose as an accidental substitute. See
+    # docker-scan-scheduled.yml — same scan, weekly cron, independent of
+    # what any given push touches, mirroring codeql.yml's own reasoning
+    # for its schedule trigger ("a push-only trigger would miss newly-
+    # disclosed vulnerability patterns in code that hasn't changed").
+    if: needs.changes.outputs.docker == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'docker-scan'))
     steps:
       - uses: actions/checkout@v7
 
@@ -329,6 +374,8 @@ jobs:
   docker-smoke:
     name: Docker dev stack smoke test
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.docker == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'docker-smoke'))
     steps:
       - uses: actions/checkout@v7
 
