@@ -48,7 +48,19 @@ test.describe("home page", () => {
     await pagination.getByRole("link", { name: "2", exact: true }).click();
 
     await page.waitForURL(/[?&]page=2/);
-    await expect(page.locator('[data-slot="card"]').first()).toBeVisible();
+
+    // The URL changes on click (client-side routing), but ProductListing
+    // fetches its data in a useEffect that fires *after* that — reading
+    // card titles right after waitForURL is a race that can catch the
+    // still-rendered page-1 data. toHaveText's built-in polling (unlike a
+    // one-shot allTextContents() read) waits until the first card's title
+    // actually differs from page 1's, which is what "the new page has
+    // genuinely loaded" means here. Caught this exact race live: passed
+    // reliably in two different local environments (native macOS, and a
+    // Linux Docker container) but failed on the first real CI run.
+    await expect(
+      page.locator('[data-slot="card-title"]').first(),
+    ).not.toHaveText(firstPageNames[0]);
 
     const secondPageNames = await page
       .locator('[data-slot="card-title"]')
