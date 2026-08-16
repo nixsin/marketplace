@@ -33,9 +33,16 @@ const execFileAsync = promisify(execFile);
 //     similarly modern browsers. This is the cost of the target being
 //     verified and intentional instead of an undocumented framework
 //     default — accepted deliberately, not overlooked.
+//   186KB -> 189KB: no single isolated cause this time, unlike the three
+//     raises above. Discovered failing (188.7KB measured) on PR #19, a
+//     Dockerfile-only Dependabot bump with no apps/web source changes —
+//     so this is drift (dependency patch versions, Next.js itself, etc.),
+//     not a deliberate tradeoff. Raised at the user's direction to give a
+//     small margin over the current real number rather than investigating
+//     the drift's source right now.
 // Budget is nearly exhausted again — next addition needs to earn its
 // bytes, or that island-component optimization needs to actually happen.
-const JS_BUDGET_BYTES = 186 * 1024;
+const JS_BUDGET_BYTES = 189 * 1024;
 
 async function compressedSize(url: string): Promise<number> {
   // Node's fetch (undici) transparently decompresses gzip/br bodies, and
