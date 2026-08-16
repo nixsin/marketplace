@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-alpine AS base
-RUN corepack enable
+FROM node:26-alpine AS base
+# Node 26 stopped bundling corepack — install it explicitly before enabling
+# (it still reads the pnpm version to use from package.json's packageManager
+# field, same as before).
+RUN npm install -g corepack && corepack enable
 
 # ---- deps: installed once here, reused by both the dev and build stages
 # below via Docker's layer cache — only invalidates when a manifest, the
@@ -52,7 +55,7 @@ RUN pnpm --filter api build
 RUN pnpm --filter api deploy --prod --legacy /out
 
 # ---- prod: minimal runtime image — no pnpm, no workspace, no dev deps.
-FROM node:22-alpine AS prod
+FROM node:26-alpine AS prod
 WORKDIR /app
 ENV NODE_ENV=production
 # node:22-alpine ships a global npm install we never invoke (CMD below
