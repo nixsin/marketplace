@@ -694,6 +694,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          PAT: ${{ secrets.PR_REVIEW_PAT }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # This step's entire job is to always eventually reach the final
@@ -727,8 +728,25 @@ jobs:
             echo "_Automated review — verify before trusting it, especially a REQUEST_CHANGES verdict on something it may have misread._"
           } > /tmp/review-comment.md
 
+          # GitHub blocks the default GITHUB_TOKEN from ever posting an
+          # APPROVE review — a deliberate platform restriction (a workflow
+          # self-approving a PR would defeat required_pull_request_reviews
+          # entirely), not a permissions/scopes gap this repo controls.
+          # Discovered live: PR #20 was the first real APPROVE verdict this
+          # job ever produced, and the job crashed on
+          # "GitHub Actions is not permitted to approve pull requests."
+          # REQUEST_CHANGES has no such restriction and keeps using
+          # GITHUB_TOKEN. A real approval needs a PAT belonging to an
+          # actual account (PR_REVIEW_PAT secret) — if it isn't configured
+          # yet, degrade to a plain comment rather than retry the same
+          # broken call with an empty token.
           if [ "$verdict" = "APPROVE" ]; then
-            gh pr review "$PR_NUMBER" --approve --body-file /tmp/review-comment.md
+            if [ -n "$PAT" ]; then
+              GH_TOKEN="$PAT" gh pr review "$PR_NUMBER" --approve --body-file /tmp/review-comment.md
+            else
+              echo "PR_REVIEW_PAT not configured — GITHUB_TOKEN cannot post an approve review, posting as a comment instead."
+              gh pr comment "$PR_NUMBER" --body-file /tmp/review-comment.md
+            fi
           else
             gh pr review "$PR_NUMBER" --request-changes --body-file /tmp/review-comment.md
           fi
