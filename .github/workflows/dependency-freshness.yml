@@ -31,4 +31,18 @@ jobs:
       # run-to-run variance (a package is either outdated or it isn't), so
       # there's no reason to soften it with continue-on-error — the whole
       # point is for the workflow badge to honestly reflect current status.
-      - run: pnpm outdated --recursive
+      #
+      # "Current status" excludes packages this repo has already verified
+      # are blocked upstream (see CLAUDE.md's Known Gotchas and
+      # scripts/known-outdated-packages.txt) — those can't be fixed no
+      # matter how long this badge stays red, so counting them as a
+      # failure isn't honest signal, it's permanent noise that would mask
+      # a real, newly-actionable staleness landing alongside them.
+      # scripts/check-outdated.sh (tested — check-outdated.test.sh, run in
+      # ci.yml's test-ci-scripts job) does the actual pass/fail decision;
+      # this step only gathers pnpm's own output for it. `|| true` because
+      # pnpm outdated itself still exits 1 even with --format json, and
+      # the JSON on stdout is exactly what's needed either way.
+      - run: |
+          pnpm outdated --recursive --format json > /tmp/outdated.json || true
+          ./scripts/check-outdated.sh /tmp/outdated.json scripts/known-outdated-packages.txt
