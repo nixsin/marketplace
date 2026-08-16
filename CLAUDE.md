@@ -88,12 +88,45 @@ sequential job). Key structure:
 
 Other workflows: `dependency-freshness.yml` (weekly + push-to-main badge
 check, informational, not required), `codeql.yml`, `pr-comment-rerun.yml`
-(a PR comment can trigger `gh run rerun`), `auto-update-open-prs.yml`
-(triggers on `pull_request: types: [closed]` with a `merged == true`
-guard — updates every other open PR targeting `main` to the new tip via
-the same API `gh pr update-branch` calls, so a stale/BEHIND PR doesn't
-sit unnoticed), and the `/rerun-test` slash command
+(a PR comment can trigger `gh run rerun`), `pr-reconciliation.yml` (see
+its own section below), and the `/rerun-test` slash command
 (`.claude/commands/rerun-test.md`) for doing a rerun manually.
+
+## PR reconciliation (`pr-reconciliation.yml`)
+
+Keeps every open PR targeting `main` in sync on three axes, event-driven
+(`pull_request: types: [closed]`, merged-into-main guard) **and**
+scheduled (daily `cron`, since PR drift accumulates faster than the
+event-driven trigger alone catches — a failed update call, a PR opened in
+the gap between runs, drift from something other than a merge). Also
+triggerable by hand (`workflow_dispatch`). Started as just "auto-update
+open PRs after a merge" (the file's original name) and was broadened —
+renamed accordingly.
+
+For every open PR targeting `main`:
+1. **Freshness** — attempts `update-branch` (same operation as `gh pr
+   update-branch` / GitHub's "Update branch" button). A non-zero result is
+   expected/harmless when already current; not worth guessing at GitHub's
+   exact error wording to classify it.
+2. **Real conflicts** — `mergeStateStatus: DIRTY` means an actual merge
+   conflict step 1 can't fix on its own. Flagged with an edit-in-place PR
+   comment (`<!-- pr-reconciliation-conflict -->` marker) so it doesn't
+   sit invisible in an Actions log; updated to say "resolved" once it no
+   longer applies, rather than left as a stale warning.
+3. **Stuck workflow approval** — flags (`<!-- pr-reconciliation-stuck-approval -->`
+   marker) a PR whose latest run has sat at `action_required` (see the
+   Dependabot section below) for over 24 hours.
+
+All three only **surface or retry** — nothing here auto-resolves a real
+conflict or auto-approves a stuck workflow run; those stay human
+decisions. `set +e` throughout, same reasoning as the `ai-code-review`
+fix: one PR's failure must not stop the rest from being reconciled.
+
+Comment bodies are built with `printf '%s\n%s'` (marker, message), not
+raw multi-line bash string literals inside the `run: |` block — a literal
+newline mid-string puts the continuation line at column 1, which breaks
+YAML's block-scalar indentation rule and is a real parse error. Caught by
+validating this file's YAML locally before it was ever pushed.
 
 ## AI code review gate (`ai-code-review` job)
 
@@ -247,9 +280,14 @@ git checkout <dependabot-branch>
 ```
 
 If a Dependabot PR goes stale (`mergeStateStatus: BEHIND` after another PR
-merged to main), `auto-update-open-prs.yml` (above) now handles this
-automatically on every merge — `gh pr update-branch <number>` is still the
-manual fallback if you need it sooner than the next merge.
+merged to main), `pr-reconciliation.yml` (above) now handles this
+automatically on every merge and once daily — `gh pr update-branch
+<number>` is still the manual fallback if you need it sooner. A real
+merge conflict (`mergeStateStatus: DIRTY`) can't be auto-fixed by either —
+`pr-reconciliation.yml` will flag it with a PR comment, but resolving it
+is still a `git checkout <branch> && git merge main`, fix conflicts,
+push (same as any other Dependabot branch fix — see above, these are
+same-repo branches).
 
 **"2 workflows awaiting approval" on a Dependabot PR is not the same gate
 as "Review required."** GitHub automatically requires a maintainer to
