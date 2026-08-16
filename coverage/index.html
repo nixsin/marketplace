@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>marketplace — test coverage over time</title>
+<title>marketplace — CI metrics over time</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -14,6 +14,7 @@
     --border: #262b31;
     --api: #4f8cff;
     --web: #34c37b;
+    --lighthouse: #f5a623;
     --grid: #262b31;
   }
   @media (prefers-color-scheme: light) {
@@ -48,6 +49,7 @@
   .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
   .dot.api { background: var(--api); }
   .dot.web { background: var(--web); }
+  .dot.lighthouse { background: var(--lighthouse); }
   .stat { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
   .stat b { color: var(--fg); font-weight: 600; }
   svg { width: 100%; height: auto; display: block; }
@@ -74,8 +76,8 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Test coverage over time</h1>
-  <p class="sub">nixsin/marketplace — statement coverage, recorded on every push to <code>main</code> that actually re-ran the relevant test suite.</p>
+  <h1>CI metrics over time</h1>
+  <p class="sub">nixsin/marketplace — test coverage and Lighthouse performance, recorded on every push to <code>main</code> that actually re-ran the relevant job.</p>
 
   <div class="panel">
     <h2><span class="dot api"></span>API coverage</h2>
@@ -89,11 +91,21 @@
     <div id="web-chart"></div>
   </div>
 
+  <div class="panel">
+    <h2><span class="dot lighthouse"></span>Lighthouse performance score</h2>
+    <p class="stat" id="lighthouse-stat">Loading…</p>
+    <div id="lighthouse-chart"></div>
+  </div>
+
   <footer>
     Raw data: <a href="api-history.json">api-history.json</a> ·
-    <a href="web-history.json">web-history.json</a>.
-    Only appends when the corresponding CI job actually runs (path-filtered —
-    see this repo's <code>CLAUDE.md</code>), so gaps mean "unchanged," not "missing."
+    <a href="web-history.json">web-history.json</a> ·
+    <a href="lighthouse-history.json">lighthouse-history.json</a>.
+    Coverage only appends when the corresponding CI job actually runs
+    (path-filtered — see this repo's <code>CLAUDE.md</code>), so gaps mean
+    "unchanged," not "missing." Lighthouse appends on every push-to-main run
+    of that job regardless of pass/fail, so a real regression shows up here
+    rather than being hidden.
   </footer>
 </div>
 <div id="tooltip"></div>
@@ -101,7 +113,7 @@
 <script type="module">
 import { computeChartLayout, computeStats } from "./chart-math.mjs";
 
-const COLORS = { api: "#4f8cff", web: "#34c37b" };
+const COLORS = { api: "#4f8cff", web: "#34c37b", lighthouse: "#f5a623" };
 
 async function loadHistory(name) {
   try {
@@ -120,26 +132,26 @@ function fmtDate(iso) {
     " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
-function renderChart(containerId, statId, name, rows) {
+function renderChart(containerId, statId, name, rows, unit = "%", deltaUnit = "pp") {
   const container = document.getElementById(containerId);
   const statEl = document.getElementById(statId);
 
   const stats = computeStats(rows);
   if (stats.empty) {
-    container.innerHTML = '<p class="empty">No data yet — accumulates on the next push to main that touches this app.</p>';
+    container.innerHTML = '<p class="empty">No data yet — accumulates on the next push to main that touches this metric.</p>';
     statEl.textContent = "No data yet.";
     return;
   }
 
   const deltaSign = stats.deltaPp > 0 ? "+" : "";
-  statEl.innerHTML = `<b>${stats.latestPct.toFixed(2)}%</b> as of ${fmtDate(stats.latestDate)}` +
-    (stats.hasDelta ? ` — ${deltaSign}${stats.deltaPp}pp over ${stats.count} measurements` : "");
+  statEl.innerHTML = `<b>${stats.latestPct.toFixed(2)}${unit}</b> as of ${fmtDate(stats.latestDate)}` +
+    (stats.hasDelta ? ` — ${deltaSign}${stats.deltaPp}${deltaUnit} over ${stats.count} measurements` : "");
 
   const layout = computeChartLayout(rows);
 
   const gridLines = layout.gridLines.map(g =>
     `<line class="gridline" x1="${layout.padL}" y1="${g.y}" x2="${layout.width - layout.padR}" y2="${g.y}" />` +
-    `<text class="axis-label" x="4" y="${g.y + 3}">${g.value.toFixed(0)}%</text>`
+    `<text class="axis-label" x="4" y="${g.y + 3}">${g.value.toFixed(0)}${unit}</text>`
   ).join("");
 
   const pathD = layout.points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
@@ -167,7 +179,7 @@ function renderChart(containerId, statId, name, rows) {
       const pct = parseFloat(el.dataset.pct).toFixed(2);
       const date = fmtDate(el.dataset.date);
       const commit = el.dataset.commit ? el.dataset.commit.slice(0, 7) : "";
-      tooltip.innerHTML = `<b>${pct}%</b><br>${date}${commit ? `<br>${commit}` : ""}`;
+      tooltip.innerHTML = `<b>${pct}${unit}</b><br>${date}${commit ? `<br>${commit}` : ""}`;
       tooltip.style.display = "block";
       tooltip.style.left = (ev.clientX + 12) + "px";
       tooltip.style.top = (ev.clientY + 12) + "px";
@@ -177,9 +189,14 @@ function renderChart(containerId, statId, name, rows) {
 }
 
 (async function main() {
-  const [apiRows, webRows] = await Promise.all([loadHistory("api"), loadHistory("web")]);
+  const [apiRows, webRows, lighthouseRows] = await Promise.all([
+    loadHistory("api"),
+    loadHistory("web"),
+    loadHistory("lighthouse"),
+  ]);
   renderChart("api-chart", "api-stat", "api", apiRows);
   renderChart("web-chart", "web-stat", "web", webRows);
+  renderChart("lighthouse-chart", "lighthouse-stat", "lighthouse", lighthouseRows, "/100", "pts");
 })();
 </script>
 </body>
