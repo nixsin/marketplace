@@ -21,7 +21,7 @@ const BUDGETS = {
   // scripts measuring the same thing with different numbers is a bug, not
   // two valid opinions; that file's number is the one with the documented
   // history, so this follows it rather than the other way around.
-  jsBudgetBytes: 186 * 1024,
+  jsBudgetBytes: 189 * 1024,
 };
 
 async function waitForReady(url, timeoutMs) {
