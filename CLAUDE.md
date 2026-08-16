@@ -277,6 +277,16 @@ separate steps with their own curl-retry-loop readiness checks, so both
 servers' logs stay visible in the job output instead of being buried
 inside Playwright's own webServer log capture.
 
+**Local `pnpm test:e2e` still needs Postgres + the API running
+yourself** — an AI review round caught that `webServer.command` was
+just `pnpm start`, which has nothing to serve on a fresh checkout with
+no prior `.next` build; fixed to `pnpm build && pnpm start` (confirmed
+by reproducing the original failure directly: `rm -rf .next && pnpm
+test:e2e`). What's still deliberately not automated: starting Postgres
+or the API — same prerequisites README.md's "Testing" section already
+assumes for `apps/api`'s own e2e suite, not a new pattern. Run
+`scripts/dev.sh` (or start the API by hand) first.
+
 ## PR reconciliation (`pr-reconciliation.yml`)
 
 Keeps every open PR targeting `main` in sync on three axes, event-driven

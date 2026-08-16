@@ -55,12 +55,29 @@ export default defineConfig({
   // a separate step (see ci.yml's test-e2e-web job) so the server logs
   // stay visible in the job output instead of buried in Playwright's own
   // webServer capture.
+  //
+  // `pnpm build && pnpm start`, not just `pnpm start` — a real gap an AI
+  // review round caught: on a fresh checkout with no prior `.next` build,
+  // plain `pnpm start` has nothing to serve, so the suite failed outright
+  // rather than just showing stale content. Reproduced directly (`rm -rf
+  // .next && pnpm exec playwright test`) before fixing, then confirmed
+  // the fix with a real `pnpm build` from a clean state.
+  //
+  // What this still doesn't do, deliberately: start Postgres or the API.
+  // Those are the same prerequisites README.md's own "Testing" section
+  // already assumes for apps/api's e2e suite (a running Postgres, with
+  // `apps/api` started separately) — this suite needs the identical
+  // setup, not a new pattern. Automating that from inside a Playwright
+  // config would duplicate what `scripts/dev.sh` already does for the
+  // full stack; run that (or start the API by hand) before `pnpm
+  // test:e2e` locally. CI's test-e2e-web job does this itself as
+  // separate steps — see CLAUDE.md.
   webServer: process.env.PLAYWRIGHT_BASE_URL
     ? undefined
     : {
-        command: "pnpm start",
+        command: "pnpm build && pnpm start",
         url: "http://localhost:3000",
         reuseExistingServer: !process.env.CI,
-        timeout: 30_000,
+        timeout: 120_000,
       },
 });
