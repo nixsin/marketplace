@@ -510,6 +510,20 @@ care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
 
+**Convention: prefix a PR's title with `[blocked]` when it's stuck on a
+genuine upstream gap** (confirmed via direct verification, not just an
+error message — see the entries below for what that verification looks
+like), not merely pending review or CI. It's a quick visual signal on
+the PR list that no action is expected on that PR until the upstream
+gap closes — check the title before re-investigating one. Currently:
+`[blocked] Bump typescript from 5.9.3 to 7.0.2` (#27),
+`[blocked] Bump eslint from 9.39.5 to 10.8.1` (#24),
+`[blocked] Bump @eslint/js from 9.39.5 to 10.0.1` (#25). Rename with
+`gh pr edit <number> --title "[blocked] <original title>"` — don't
+touch the rest of the title. Remove the prefix once the underlying
+blocker actually clears and the PR becomes a normal mergeable bump
+again.
+
 - **PR #27 (`typescript` 5.9.3 → 7.0.2) is blocked upstream — don't
   re-investigate, don't try to force it through.** `typescript-eslint`
   does not support TypeScript 7 at all: `pnpm lint:check` fails outright
