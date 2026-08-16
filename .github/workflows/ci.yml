@@ -14,6 +14,102 @@ jobs:
   # sequence for no reason — total wall-clock time was the sum of every
   # step, not the slowest one.
 
+  # Feeds the path-based `if:` conditions below. Deliberately narrow in
+  # scope: only test-api-unit/test-api-e2e/test-web/audit/perf-budget/
+  # load-test are safe to skip on an unrelated change — lint, docker-scan,
+  # docker-smoke, migrate, and ai-failure-analysis are NOT filtered:
+  #   - lint currently lints both apps in one combined command (not split
+  #     per-app), so its real skip condition is the union of both apps'
+  #     paths anyway — no separate filtering to be gained without first
+  #     splitting the job itself.
+  #   - docker-scan/docker-smoke build BOTH Dockerfiles, and both
+  #     Dockerfiles' `deps` stage does a workspace-root `pnpm install`
+  #     that runs apps/api's `prisma generate` postinstall even for the
+  #     WEB build (see apps/web/Dockerfile's own comment) — so a
+  #     web-only-looking change can still affect the API image and vice
+  #     versa. Per-app isolation here would be actively wrong, not just
+  #     unnecessary, and "skip only when neither app nor deps changed" is
+  #     a small enough win (docs-only PRs, mostly) to not be worth the
+  #     extra surface area right now.
+  #   - migrate runs `prisma migrate deploy` against production, already a
+  #     fast no-op with nothing new to apply — the risk of a filter
+  #     incorrectly skipping a real migration outweighs the seconds saved.
+  #   - ai-failure-analysis reacts to `failure()`, not to the diff itself —
+  #     doesn't make sense to path-filter something whose entire job is
+  #     "respond to whatever just failed."
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    outputs:
+      api: ${{ steps.filter.outputs.api }}
+      web: ${{ steps.filter.outputs.web }}
+      deps: ${{ steps.filter.outputs.deps }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            deps:
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+            api:
+              - 'apps/api/**'
+            web:
+              - 'apps/web/**'
+
+      # Surfaces the run/skip decision on the PR itself instead of making
+      # someone reconstruct it from each job's `if:` in this file. Edits
+      # its own prior comment (found via the HTML-comment marker) rather
+      # than posting a new one on every push to the same PR.
+      - name: Comment skip logic on PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          API_CHANGED: ${{ steps.filter.outputs.api }}
+          WEB_CHANGED: ${{ steps.filter.outputs.web }}
+          DEPS_CHANGED: ${{ steps.filter.outputs.deps }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          status() {
+            if [ "$1" = "true" ]; then echo "▶️ run"; else echo "⏭️ skip"; fi
+          }
+
+          api_or_deps=false
+          if [ "$API_CHANGED" = "true" ] || [ "$DEPS_CHANGED" = "true" ]; then api_or_deps=true; fi
+
+          web_or_deps=false
+          if [ "$WEB_CHANGED" = "true" ] || [ "$DEPS_CHANGED" = "true" ]; then web_or_deps=true; fi
+
+          cat > /tmp/skip-comment.md <<EOF
+          <!-- ci-skip-logic-comment -->
+          ### 🔍 CI job skip logic
+
+          Changed paths detected: \`api=$API_CHANGED\` · \`web=$WEB_CHANGED\` · \`deps=$DEPS_CHANGED\`
+
+          | Job | Status | Runs when |
+          |---|---|---|
+          | Dependency audit | $(status "$DEPS_CHANGED") | deps changed |
+          | API unit tests | $(status "$api_or_deps") | api or deps changed |
+          | API e2e tests | $(status "$api_or_deps") | api or deps changed |
+          | API load test (autocannon) | $(status "$api_or_deps") | api or deps changed |
+          | Web build + tests | $(status "$web_or_deps") | web or deps changed |
+          | Web performance budget (Lighthouse) | $(status "$web_or_deps") | web or deps changed |
+
+          Lint, Docker image vulnerability scan, and Docker dev stack smoke test always run regardless of what changed — see the \`changes\` job's own comment in \`ci.yml\` for why those aren't filtered.
+          EOF
+
+          existing_id=$(gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate --jq '.[] | select(.body | startswith("<!-- ci-skip-logic-comment -->")) | .id' | head -1)
+
+          if [ -n "$existing_id" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_id" -f body=@/tmp/skip-comment.md > /dev/null
+          else
+            gh pr comment "$PR_NUMBER" --body-file /tmp/skip-comment.md
+          fi
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -30,6 +126,10 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    needs: [changes]
+    # Only scans the lockfile for known vulnerabilities — irrelevant to
+    # source changes with no dependency bump.
+    if: needs.changes.outputs.deps == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -61,6 +161,11 @@ jobs:
   test-api-unit:
     name: API unit tests
     runs-on: ubuntu-latest
+    needs: [changes]
+    # deps too, not just api — a root dependency bump (e.g. a Dependabot
+    # PR touching only package.json/pnpm-lock.yaml) can affect the API
+    # even though no apps/api/** file changed.
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true'
     # contents: write only matters for the badge-publish step below, which
     # is itself gated to push-to-main only — PRs never touch gh-pages.
     permissions:
@@ -94,6 +199,8 @@ jobs:
   test-api-e2e:
     name: API e2e tests
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true'
     services:
       postgres:
         image: postgres:16-alpine
@@ -133,6 +240,8 @@ jobs:
   test-web:
     name: Web build + tests
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true'
     permissions:
       contents: write
     steps:
@@ -210,69 +319,23 @@ jobs:
         if: always()
         run: docker compose down -v
 
-  ai-failure-analysis:
-    name: AI CI failure analysis
-    runs-on: ubuntu-latest
-    # PR-only: a push-to-main failure has no PR thread to comment on, and
-    # this job's whole point is posting a comment there. `failure()` here
-    # means "at least one job in `needs:` failed" — GitHub's own semantics
-    # for a job whose condition function runs even though an ancestor
-    # failed (normally a failed dependency skips downstream jobs).
-    if: failure() && github.event_name == 'pull_request'
-    needs:
-      [lint, audit, test-api-unit, test-api-e2e, test-web, docker-scan, docker-smoke]
-    permissions:
-      contents: read
-      pull-requests: write
-      actions: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-
-      # Only the failed steps' logs, not full job output — keeps the
-      # request focused and avoids paying to re-read everything that
-      # already passed.
-      - name: Fetch failed step logs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh run view "${{ github.run_id }}" --log-failed > /tmp/failed-logs.txt
-
-      - name: Analyze failure with Claude
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: node scripts/analyze-ci-failure.mjs /tmp/failed-logs.txt > /tmp/analysis.md
-
-      - name: Post analysis as PR comment
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          {
-            echo "### 🤖 AI failure analysis (Claude Haiku 4.5)"
-            echo
-            cat /tmp/analysis.md
-            echo
-            echo "_Automated analysis — verify before acting on it._"
-          } > /tmp/comment.md
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md
-
   # Both jobs below wire up scripts that already existed (apps/web/scripts/
   # perf-budget.mjs, apps/api/scripts/load-test.mjs) but only ever ran
-  # manually. `continue-on-error: true` keeps them exactly as informational
-  # as their own doc comments already say they should be — Lighthouse
-  # scores and load-test latency have real run-to-run variance, especially
-  # on shared CI runners, so a red X here would be noise, not signal. They
-  # report real numbers on every PR without ever blocking one; neither is
-  # in `migrate`'s `needs:` list or branch protection's required checks.
+  # manually. Deliberately *not* `continue-on-error: true` — Lighthouse
+  # scores and load-test latency have real run-to-run variance, so a
+  # failure here isn't necessarily a real regression, but it's still
+  # worth AI analysis rather than being silently masked (continue-on-error
+  # hides a job's real outcome from `needs.<job>.result`/`failure()` for
+  # anything downstream, which would make ai-failure-analysis below unable
+  # to see these failures at all). They still can't block a merge on their
+  # own: neither is in `migrate`'s `needs:` list or branch protection's
+  # required checks — that's what actually keeps them "informational".
 
   perf-budget:
     name: Web performance budget (Lighthouse)
     runs-on: ubuntu-latest
-    continue-on-error: true
+    needs: [changes]
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -299,7 +362,8 @@ jobs:
   load-test:
     name: API load test (autocannon)
     runs-on: ubuntu-latest
-    continue-on-error: true
+    needs: [changes]
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true'
     services:
       postgres:
         image: postgres:16-alpine
@@ -347,6 +411,95 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medinstru?schema=public
 
+  ai-failure-analysis:
+    name: AI CI failure analysis
+    runs-on: ubuntu-latest
+    # PR-only: a push-to-main failure has no PR thread to comment on, and
+    # this job's whole point is posting a comment there. Explicit
+    # needs.*.result check instead of the plain `failure()` this used to
+    # be — now that test-api-unit/test-api-e2e/test-web/audit/perf-budget/
+    # load-test can be genuinely SKIPPED (path filtering, see the
+    # `changes` job), this needs to fire on a real failure among its
+    # dependencies while treating a skip as a non-event, not as something
+    # that should suppress or falsely trigger analysis. `always()` forces
+    # this job's own `if:` to actually be evaluated regardless of upstream
+    # outcomes, since a skipped/failed dependency can otherwise cause a
+    # downstream job to be skipped automatically before its own condition
+    # is even checked.
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      contains(needs.*.result, 'failure')
+    needs:
+      [
+        lint,
+        audit,
+        test-api-unit,
+        test-api-e2e,
+        test-web,
+        docker-scan,
+        docker-smoke,
+        perf-budget,
+        load-test,
+      ]
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # `gh run view` — both `--log-failed` on the whole run AND
+      # `--job <id> --log-failed` on a single job — refuses to return
+      # anything until the *entire run* completes, including this job
+      # itself. Verified this the hard way: switching to per-job fetching
+      # still hit the same "run ... is still in progress" error. The raw
+      # REST endpoint doesn't have that problem — it's scoped to a single
+      # job's own completion, not the run's — so hit it directly via
+      # `gh api` instead of going through `gh run view` at all. It returns
+      # the full job log (no failed-steps-only filtering, unlike
+      # --log-failed), but that's fine: the analysis script already keeps
+      # only the tail of the log, where the actual error almost always is.
+      - name: Fetch failed step logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          failed_job_ids=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate --jq '.jobs[] | select(.conclusion == "failure") | .id')
+
+          : > /tmp/failed-logs.txt
+          if [ -z "$failed_job_ids" ]; then
+            echo "No failed jobs found in this run." > /tmp/failed-logs.txt
+          else
+            for job_id in $failed_job_ids; do
+              echo "=== Job $job_id ===" >> /tmp/failed-logs.txt
+              gh api --allow-escape-sequences "repos/${{ github.repository }}/actions/jobs/$job_id/logs" >> /tmp/failed-logs.txt
+            done
+          fi
+
+      - name: Analyze failure with Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node scripts/analyze-ci-failure.mjs /tmp/failed-logs.txt > /tmp/analysis.md
+
+      - name: Post analysis as PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### 🤖 AI failure analysis (Claude Haiku 4.5)"
+            echo
+            cat /tmp/analysis.md
+            echo
+            echo "_Automated analysis — verify before acting on it._"
+          } > /tmp/comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md
+
   migrate:
     name: Apply prod DB migrations
     runs-on: ubuntu-latest
@@ -358,7 +511,22 @@ jobs:
     # this job is itself a required check, so Render's "After CI Checks
     # Pass" auto-deploy waits for the schema to land before the new code
     # that depends on it goes live.
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    #
+    # Explicit needs.*.result check, not the plain ref/event check this
+    # used to be — audit/test-api-unit/test-api-e2e/test-web can now be
+    # genuinely SKIPPED on this same push (path filtering, see the
+    # `changes` job), and a skip here must not block deploy: the merge
+    # that produced this push already required those checks to report
+    # *something* (skipped counts) before GitHub allowed it. Only a real
+    # failure or cancellation should stop migrations from applying.
+    # `always()` forces this job's own `if:` to actually be evaluated
+    # regardless of upstream outcomes, for the same reason as
+    # ai-failure-analysis below.
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
     needs:
       [lint, audit, test-api-unit, test-api-e2e, test-web, docker-scan, docker-smoke]
     steps:
