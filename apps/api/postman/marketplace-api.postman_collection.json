@@ -1,0 +1,308 @@
+{
+  "info": {
+    "name": "MedInstru Market API",
+    "description": "GraphQL API for nixsin/marketplace (apps/api). All requests hit a single POST /graphql endpoint — schema fields below are copied directly from apps/api/src/schema.gql (auto-generated, do not hand-edit that file; regenerate the Postman collection instead if the schema changes).\n\nFlow: run \"Request OTP\" (dev-only: the code isn't actually SMSed, see apps/api/src/auth/sms.service.ts — check the API server's own log output for the code it \"sent\"), then \"Verify OTP\" with that code. Its response's accessToken is saved to the {{accessToken}} collection variable automatically (see that request's Tests script) — a new phone number gets isNewUser: true and that token is only valid for \"Complete Onboarding\", not the authenticated queries yet. Run \"Complete Onboarding\" next; its own accessToken (also auto-saved) is a real, full session token, usable for \"Me\" / \"My Organization\".",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:4000/graphql",
+      "type": "string"
+    },
+    {
+      "key": "phone",
+      "value": "+919876543210",
+      "type": "string",
+      "description": "Reused across the Auth folder's requests -- change this to start a fresh onboarding flow instead of hitting an already-onboarded user."
+    },
+    {
+      "key": "otpCode",
+      "value": "",
+      "type": "string",
+      "description": "Fill in from the API server's log output after running \"Request OTP\" -- the dev SMS stub logs it instead of sending it."
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string",
+      "description": "Auto-populated by \"Verify OTP\" and \"Complete Onboarding\"'s Tests scripts."
+    }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Request OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "pm.test('requestOtp returned true', () => {",
+                  "  pm.expect(body.data && body.data.requestOtp).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation RequestOtp($input: RequestOtpInput!) {\n  requestOtp(input: $input)\n}",
+                "variables": "{\n  \"input\": { \"phone\": \"{{phone}}\" }\n}"
+              }
+            },
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "description": "Dev-only: apps/api/src/auth/sms.service.ts logs the generated code instead of sending a real SMS -- no SMS provider is wired up yet. Check the API server's stdout for it, then set the {{otpCode}} collection variable before running \"Verify OTP\"."
+          },
+          "response": []
+        },
+        {
+          "name": "Verify OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "const data = body.data;",
+                  "pm.test('verifyOtp returned an accessToken', () => {",
+                  "  pm.expect(data && data.verifyOtp && data.verifyOtp.accessToken).to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (data && data.verifyOtp && data.verifyOtp.accessToken) {",
+                  "  pm.collectionVariables.set('accessToken', data.verifyOtp.accessToken);",
+                  "  console.log('isNewUser:', data.verifyOtp.isNewUser, '-- saved accessToken to {{accessToken}}');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation VerifyOtp($input: VerifyOtpInput!) {\n  verifyOtp(input: $input) {\n    accessToken\n    isNewUser\n  }\n}",
+                "variables": "{\n  \"input\": { \"phone\": \"{{phone}}\", \"code\": \"{{otpCode}}\" }\n}"
+              }
+            },
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "description": "isNewUser: true means the returned accessToken is an onboarding-scoped token, only valid for \"Complete Onboarding\" -- not the authenticated queries in the Account folder yet. A returning user (isNewUser: false) gets a full session token directly here."
+          },
+          "response": []
+        },
+        {
+          "name": "Complete Onboarding",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "const data = body.data;",
+                  "pm.test('completeOnboarding returned an accessToken', () => {",
+                  "  pm.expect(data && data.completeOnboarding && data.completeOnboarding.accessToken).to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (data && data.completeOnboarding && data.completeOnboarding.accessToken) {",
+                  "  pm.collectionVariables.set('accessToken', data.completeOnboarding.accessToken);",
+                  "  console.log('Saved full session accessToken to {{accessToken}}');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "mutation CompleteOnboarding($input: CompleteOnboardingInput!) {\n  completeOnboarding(input: $input) {\n    accessToken\n    isNewUser\n  }\n}",
+                "variables": "{\n  \"input\": {\n    \"onboardingToken\": \"{{accessToken}}\",\n    \"userName\": \"Test Buyer\",\n    \"organization\": {\n      \"name\": \"Apollo Diagnostics Pvt Ltd\",\n      \"type\": \"BUYER\",\n      \"gstin\": \"27AABCU9603R1ZM\"\n    }\n  }\n}"
+              }
+            },
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "description": "Only needed once per new phone number -- only reachable with the onboarding-scoped token from a Verify OTP response where isNewUser was true. organization.type is BUYER or SELLER (OrgType enum); gstin is optional."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Products",
+      "item": [
+        {
+          "name": "Products (paged)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "pm.test('productsPaged returned an items array', () => {",
+                  "  pm.expect(body.data && body.data.productsPaged && body.data.productsPaged.items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query ProductsPaged($page: Int, $pageSize: Int) {\n  productsPaged(page: $page, pageSize: $pageSize) {\n    items {\n      id\n      name\n      brand\n      category\n      deviceClass\n      certifications\n      description\n      imageUrl\n      location\n      seller {\n        id\n        name\n      }\n    }\n    page\n    pageSize\n    totalCount\n    totalPages\n  }\n}",
+                "variables": "{\n  \"page\": 1,\n  \"pageSize\": 4\n}"
+              }
+            },
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "description": "Offset-style pagination -- what apps/web's home page actually uses (see apps/web/src/lib/api.ts). No auth required. pageSize defaults to 4 server-side if omitted."
+          },
+          "response": []
+        },
+        {
+          "name": "Products (cursor)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "pm.test('products returned an items array', () => {",
+                  "  pm.expect(body.data && body.data.products && body.data.products.items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query Products($cursor: String, $limit: Int) {\n  products(cursor: $cursor, limit: $limit) {\n    items {\n      id\n      name\n      brand\n      category\n    }\n    nextCursor\n  }\n}",
+                "variables": "{\n  \"limit\": 6\n}"
+              }
+            },
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "description": "Cursor-style pagination -- an alternative to productsPaged, not currently used by apps/web. Pass the previous response's nextCursor as the cursor variable to fetch the next page; a null nextCursor means there are no more results. No auth required."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Account (requires auth)",
+      "auth": {
+        "type": "bearer",
+        "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+      },
+      "item": [
+        {
+          "name": "Me",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "pm.test('me returned the expected phone', () => {",
+                  "  pm.expect(body.data && body.data.me && body.data.me.phone).to.eql(pm.collectionVariables.get('phone'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query Me {\n  me {\n    id\n    name\n    phone\n    email\n    role\n    organization {\n      id\n      name\n      type\n    }\n  }\n}",
+                "variables": ""
+              }
+            },
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "description": "Requires a full session accessToken (from Verify OTP with isNewUser: false, or Complete Onboarding) -- an onboarding-scoped token is rejected here."
+          },
+          "response": []
+        },
+        {
+          "name": "My Organization",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "pm.test('myOrganization returned a name', () => {",
+                  "  pm.expect(body.data && body.data.myOrganization && body.data.myOrganization.name).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "graphql",
+              "graphql": {
+                "query": "query MyOrganization {\n  myOrganization {\n    id\n    name\n    type\n    gstin\n    kycStatus\n    createdAt\n  }\n}",
+                "variables": ""
+              }
+            },
+            "url": { "raw": "{{baseUrl}}", "host": ["{{baseUrl}}"] },
+            "description": "Requires a full session accessToken, same as Me."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}
