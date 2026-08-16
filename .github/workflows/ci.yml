@@ -469,6 +469,33 @@ jobs:
       - name: Run Lighthouse performance budget
         working-directory: apps/web
         run: pnpm test:perf
+        env:
+          PERF_BUDGET_RESULT_FILE: /tmp/lighthouse-result.json
+
+      # if: always() (scoped to push-to-main only, not every rerun) so a
+      # real regression still lands in the history/dashboard instead of
+      # silently freezing at the last passing score — unlike the coverage
+      # badges above, going under budget is a hard failure for this job,
+      # and hiding that from the trend the dashboard exists to show would
+      # defeat the point. The required-check behavior itself (blocking a
+      # PR until the budget is met) is unaffected — that's this job's own
+      # exit code, not this step.
+      - name: Publish Lighthouse performance badge
+        if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f /tmp/lighthouse-result.json ]; then
+            echo "No Lighthouse result file (Lighthouse itself likely crashed before writing one) — skipping badge publish."
+            exit 0
+          fi
+          score=$(jq '.score' /tmp/lighthouse-result.json)
+          # Lighthouse's own official score-color convention (0-49 red,
+          # 50-89 orange, 90-100 green), not the 4-tier coverage-badge
+          # scheme above — this is what a Lighthouse score reader expects.
+          color=$(awk -v s="$score" 'BEGIN { if (s>=90) print "brightgreen"; else if (s>=50) print "orange"; else print "red" }')
+          echo "{\"schemaVersion\":1,\"label\":\"lighthouse\",\"message\":\"${score}/100\",\"color\":\"${color}\"}" > /tmp/lighthouse-badge.json
+          ./scripts/publish-badge.sh lighthouse /tmp/lighthouse-badge.json "$score" "${{ github.sha }}"
 
   load-test:
     name: API load test (autocannon)
