@@ -64,6 +64,31 @@ jobs:
       # column 1, which breaks YAML's block-scalar indentation rule and
       # is a real parse error, not just a style nit. Caught by validating
       # this file's YAML locally before pushing.
+      #
+      # Two real bugs a live review caught in this job's introducing PR,
+      # both of which made checks 2 and 3 silently no-ops from day one
+      # (check 1, freshness, was unaffected — it never calls `gh pr`
+      # bare and uses `gh api` with a full `repos/OWNER/REPO/...` path):
+      #   - Every `gh pr view`/`gh pr comment` call below passes `--repo`
+      #     explicitly. This job never runs `actions/checkout`, so without
+      #     a local git repo to infer the target from, a bare `gh pr view
+      #     "$pr"` fails outright ("not a git repository") — confirmed by
+      #     running the same command in a directory with no `.git`.
+      #   - The marker lookups use `gh api ... --paginate | jq --arg m
+      #     ... '...'`, piping into a separate `jq` process, not `gh api
+      #     ... --jq --arg m ...`. `gh api --jq` takes exactly one string
+      #     (the query) — passing `--arg` after it is a hard parse error
+      #     ("accepts 1 arg(s), received 4"), confirmed directly. Piping
+      #     into `jq` also sidesteps the per-page-filter pagination gotcha
+      #     documented in CLAUDE.md's "Known gotchas": jq's default
+      #     (non-slurp) mode already treats concatenated multi-page JSON
+      #     values as a stream and matches across all of them, so no
+      #     `--slurp` is needed here the way it was for the override-
+      #     decision log's fetch.
+      # Both were silent under `set +e` — `set +e` failing closed to "no
+      # comment gets posted" here was working as designed, but a command
+      # that can never succeed in the first place isn't a "safe" failure,
+      # it's the check being off since this workflow was introduced.
       - name: Reconcile every open PR targeting main
         env:
           GH_TOKEN: ${{ github.token }}
@@ -101,9 +126,9 @@ jobs:
             # merge conflict with main, not just "behind" (which step 1
             # already tried to fix). Flag it so this doesn't sit invisible
             # in an Actions log nobody reads.
-            merge_status=$(gh pr view "$pr" --json mergeStateStatus --jq '.mergeStateStatus')
+            merge_status=$(gh pr view "$pr" --repo "${{ github.repository }}" --json mergeStateStatus --jq '.mergeStateStatus')
             conflict_marker="<!-- pr-reconciliation-conflict -->"
-            existing_conflict_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate --jq --arg m "$conflict_marker" '.[] | select(.body | startswith($m)) | .id' | head -1)
+            existing_conflict_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate | jq --arg m "$conflict_marker" '.[] | select(.body | startswith($m)) | .id' | head -1)
 
             if [ "$merge_status" = "DIRTY" ]; then
               echo "  Real merge conflict with main (mergeStateStatus=DIRTY)"
@@ -113,7 +138,7 @@ jobs:
               if [ -n "$existing_conflict_id" ]; then
                 gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_conflict_id" -f body="$body" > /dev/null
               else
-                gh pr comment "$pr" --body "$body"
+                gh pr comment "$pr" --repo "${{ github.repository }}" --body "$body"
               fi
             elif [ -n "$existing_conflict_id" ]; then
               # Was flagged before, isn't dirty anymore — update the same
@@ -130,12 +155,12 @@ jobs:
             # for over a day rather than silently rotting. jq's own
             # fromdateiso8601 parses the timestamp portably — avoids
             # depending on GNU-specific `date -d` syntax.
-            head_ref=$(gh pr view "$pr" --json headRefName --jq '.headRefName')
+            head_ref=$(gh pr view "$pr" --repo "${{ github.repository }}" --json headRefName --jq '.headRefName')
             latest_run=$(gh run list --repo "${{ github.repository }}" --branch "$head_ref" --limit 1 --json conclusion,createdAt --jq '.[0]')
             conclusion=$(echo "$latest_run" | jq -r '.conclusion // empty')
             created_at=$(echo "$latest_run" | jq -r '.createdAt // empty')
             stuck_marker="<!-- pr-reconciliation-stuck-approval -->"
-            existing_stuck_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate --jq --arg m "$stuck_marker" '.[] | select(.body | startswith($m)) | .id' | head -1)
+            existing_stuck_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate | jq --arg m "$stuck_marker" '.[] | select(.body | startswith($m)) | .id' | head -1)
 
             is_stuck=false
             if [ "$conclusion" = "action_required" ] && [ -n "$created_at" ]; then
@@ -155,7 +180,7 @@ jobs:
               if [ -n "$existing_stuck_id" ]; then
                 gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_stuck_id" -f body="$body" > /dev/null
               else
-                gh pr comment "$pr" --body "$body"
+                gh pr comment "$pr" --repo "${{ github.repository }}" --body "$body"
               fi
             elif [ -n "$existing_stuck_id" ]; then
               resolved_message="✅ This PR's workflow runs are no longer awaiting approval."
