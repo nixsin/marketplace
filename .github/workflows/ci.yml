@@ -196,6 +196,37 @@ jobs:
             gh pr comment "$PR_NUMBER" --body-file /tmp/skip-comment.md
           fi
 
+      # Deliberately independent of the filter step's own `if:` — this
+      # asserts the actual requirement (the filter must run for every
+      # real trigger except workflow_dispatch) rather than re-deriving it
+      # from whatever that step's condition currently says. If a future
+      # edit reintroduces this bug in a *different* shape (a typo, an
+      # overly-narrow rewrite, anything), this still catches it, because
+      # it doesn't trust the filter step's own condition to be correct —
+      # only its actual outcome.
+      #
+      # This is exactly the failure mode that shipped silently for ~14
+      # hours (2026-08-16, PR #33 to the fix): the filter step's `if:`
+      # accidentally excluded `push`, so every path-filtered job
+      # (test-api-unit, test-web, audit, perf-budget, load-test,
+      # docker-scan, docker-smoke) silently skipped on every push to
+      # main. Runs still showed green — a skipped job doesn't fail a
+      # run — so nothing surfaced it until the coverage/Lighthouse
+      # badges stopped updating and that got investigated by hand. See
+      # CLAUDE.md's note on this same job for the full story.
+      #
+      # `changes` is in `migrate`'s `needs:` list specifically so this
+      # failing actually blocks deploy via `migrate`'s existing
+      # `!contains(needs.*.result, 'failure')` gate — not just a
+      # cosmetic red job nobody looks at.
+      - name: Verify the path filter actually ran
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          if [ "${{ steps.filter.outcome }}" != "success" ]; then
+            echo "::error::dorny/paths-filter did not run successfully for event '${{ github.event_name }}' (outcome: '${{ steps.filter.outcome }}'). Every path-filtered job downstream will silently skip. Check this step's own if: condition in ci.yml."
+            exit 1
+          fi
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -1010,6 +1041,17 @@ jobs:
     # `always()` forces this job's own `if:` to actually be evaluated
     # regardless of upstream outcomes, for the same reason as
     # ai-failure-analysis below.
+    #
+    # `changes` itself is in this list — deliberately, unlike the jobs
+    # above that only need it transitively — so its own "Verify the path
+    # filter actually ran" self-check failing blocks deploy through this
+    # same `!contains(needs.*.result, 'failure')` gate, not just show a
+    # red job nobody's watching. Without this, `changes` failing would
+    # cascade the *other* jobs in this list to `skipped` (a job whose own
+    # `needs:` dependency failed doesn't run), and `skipped` already
+    # passes this gate by design — so the one failure that actually
+    # matters here would have been silently absorbed by the same
+    # skip-tolerance this gate needs for path-filtered jobs.
     if: |
       always() &&
       github.ref == 'refs/heads/main' && github.event_name == 'push' &&
@@ -1017,6 +1059,7 @@ jobs:
       !contains(needs.*.result, 'cancelled')
     needs:
       [
+        changes,
         lint,
         test-ci-scripts,
         audit,
