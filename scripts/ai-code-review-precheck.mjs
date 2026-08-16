@@ -31,8 +31,10 @@
 // trust the exact same tested parsing logic, not independently-maintained
 // copies.
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import OpenAI from "openai";
 import { decideVerdict } from "./lib/review-verdict.mjs";
+import { selectPushedCommit } from "./lib/pre-push-refs.mjs";
 import {
   flattenPaginatedComments,
   selectOverrideLogComment,
@@ -82,10 +84,30 @@ try {
   warnSkip(`${BASE_REF} not found locally — run \`git fetch origin\` first`);
 }
 
+// Git's pre-push hook protocol feeds one line per ref being pushed on
+// stdin (`<local ref> <local sha1> <remote ref> <remote sha1>`) — the
+// first version of this script ignored that entirely and always diffed
+// local HEAD, which silently reviews (and gates on) the wrong commit
+// whenever the pushed ref isn't the checked-out branch. See CLAUDE.md and
+// scripts/lib/pre-push-refs.mjs for the full finding.
+let stdinText = "";
+try {
+  stdinText = readFileSync(0, "utf8");
+} catch {
+  // No stdin available (e.g. run manually, not via git's own pre-push
+  // invocation) — selectPushedCommit's "no refs" branch below handles
+  // this the same as an empty/delete-only push.
+}
+const pushedRef = selectPushedCommit(stdinText);
+if (pushedRef.skip) {
+  warnSkip(pushedRef.skip);
+}
+const pushedSha = pushedRef.sha;
+
 let diff, changedFiles;
 try {
-  diff = sh(`git diff ${BASE_REF}...HEAD --`);
-  changedFiles = sh(`git diff --name-only ${BASE_REF}...HEAD --`)
+  diff = sh(`git diff ${BASE_REF}...${pushedSha} --`);
+  changedFiles = sh(`git diff --name-only ${BASE_REF}...${pushedSha} --`)
     .split("\n")
     .filter((f) => f.length > 0);
 } catch (err) {
