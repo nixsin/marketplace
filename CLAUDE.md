@@ -508,6 +508,22 @@ care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
 
+- **PR #27 (`typescript` 5.9.3 → 7.0.2) is blocked upstream — don't
+  re-investigate, don't try to force it through.** `typescript-eslint`
+  does not support TypeScript 7 at all: `pnpm lint:check` fails outright
+  with `typescript-eslint does not support TS 7.0`, and
+  `typescript-eslint@latest` (including pre-release alphas, checked
+  directly via `npm view typescript-eslint@latest peerDependencies`)
+  still declares `typescript: '>=4.8.4 <6.1.0'` — there is no newer
+  version that fixes this yet. Tracked upstream:
+  [typescript-eslint#10940](https://github.com/typescript-eslint/typescript-eslint/issues/10940).
+  Merging this bump would permanently break `lint` — a never-path-filtered,
+  always-required check — for every future PR. Left open, deliberately
+  unmerged, with the conflict against `main` resolved (so it doesn't sit
+  in a stale `CONFLICTING` state) but nothing else touched. Before
+  attempting this bump again: re-check `typescript-eslint`'s current
+  peer-dependency range for `typescript` — once it covers `7.x`, this
+  becomes a normal bump like any other Dependabot PR.
 - **`gh api -f key=@path` does NOT read the file — only `-F` does.** The
   `@<path>` (or `@-` for stdin) file-reading syntax is documented under
   `-F/--field` (typed parameters) only; `-f/--raw-field` treats an `@...`
