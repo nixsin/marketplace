@@ -83,6 +83,10 @@ pnpm dev:web   # http://localhost:3000
 pnpm dev:api   # http://localhost:4000/graphql (GraphQL Playground in dev)
 ```
 
+### Calling the API from Postman
+
+Import [`apps/api/postman/marketplace-api.postman_collection.json`](apps/api/postman/marketplace-api.postman_collection.json) for ready-made requests covering the full auth flow (request OTP → verify → complete onboarding, with the access token auto-saved to a collection variable between steps) plus the product-catalog and account queries. Every request in it is verified directly against a real running API, not just written from the schema — see the collection's own description for the exact flow, including where to find the dev-only OTP (it's logged, not actually SMSed — see `apps/api/src/auth/sms.service.ts`).
+
 ## What's scaffolded so far (Phase 0)
 
 - Monorepo workspace (pnpm) with `apps/web` and `apps/api`.
