@@ -122,12 +122,100 @@ check, informational, not required), `codeql.yml`, `docker-scan-scheduled
 .yml` (weekly Trivy re-scan of `main`'s images, informational, not
 required — see the `docker` filter note above for why it exists),
 `pr-comment-rerun.yml` (a PR comment can trigger `gh run rerun`),
-`auto-update-open-prs.yml`
-(triggers on `pull_request: types: [closed]` with a `merged == true`
-guard — updates every other open PR targeting `main` to the new tip via
-the same API `gh pr update-branch` calls, so a stale/BEHIND PR doesn't
-sit unnoticed), and the `/rerun-test` slash command
+`pr-reconciliation.yml` (see its own section below), and the
+`/rerun-test` slash command
 (`.claude/commands/rerun-test.md`) for doing a rerun manually.
+
+## PR reconciliation (`pr-reconciliation.yml`)
+
+Keeps every open PR targeting `main` in sync on three axes, event-driven
+(`pull_request: types: [closed]`, merged-into-main guard) **and**
+scheduled (daily `cron`, since PR drift accumulates faster than the
+event-driven trigger alone catches — a failed update call, a PR opened in
+the gap between runs, drift from something other than a merge). Also
+triggerable by hand (`workflow_dispatch`). Started as just "auto-update
+open PRs after a merge" (the file's original name) and was broadened —
+renamed accordingly.
+
+For every open PR targeting `main`:
+1. **Freshness** — attempts `update-branch` (same operation as `gh pr
+   update-branch` / GitHub's "Update branch" button). A non-zero result is
+   expected/harmless when already current; not worth guessing at GitHub's
+   exact error wording to classify it.
+2. **Real conflicts** — `mergeStateStatus: DIRTY` means an actual merge
+   conflict step 1 can't fix on its own. Flagged with an edit-in-place PR
+   comment (`<!-- pr-reconciliation-conflict -->` marker) so it doesn't
+   sit invisible in an Actions log; updated to say "resolved" once it no
+   longer applies, rather than left as a stale warning.
+3. **Stuck workflow approval** — flags (`<!-- pr-reconciliation-stuck-approval -->`
+   marker) a PR whose latest run has sat at `action_required` (see the
+   Dependabot section below) for over 24 hours.
+
+All three only **surface or retry** — nothing here auto-resolves a real
+conflict or auto-approves a stuck workflow run; those stay human
+decisions. `set +e` (plus `pipefail`) throughout, same reasoning as the
+`ai-code-review` fix: one PR's failure must not stop the rest from being
+reconciled.
+
+**The actual flag/resolve/skip decisions live in a tested module, not
+inline bash.** `scripts/lib/pr-reconciliation.mjs` (`pr-reconciliation
+.test.mjs`) — this job's bash only gathers each decision function's
+inputs and acts on its output. That split exists because this job's
+introducing PR went through **four live review rounds and found six real
+bugs**, every one in the identical shape: a failed or non-conclusive
+lookup silently treated as a conclusive one.
+
+These tests also run in `ci.yml`'s own `test-ci-scripts` job — a plain,
+unconditional job (no path filter) on every regular PR, separate from
+`pr-reconciliation.yml`'s own steps. Needed because `pr-reconciliation
+.yml` never triggers on `pull_request` — without this, a regression to
+this file would ship straight to `main` unnoticed by the introducing PR's
+own CI, only surfacing later when `pr-reconciliation.yml` next actually
+ran (close, schedule, or manual dispatch). A live review caught this gap
+directly; `test-ci-scripts` closes it and is wired into `ai-code-review`,
+`ai-failure-analysis`, and `migrate`'s `needs:` lists the same way `lint`
+is.
+1. Every `gh pr view`/`gh pr comment` call needs `--repo` explicitly —
+   this job never runs `actions/checkout` for its main step, so without a
+   local git repo `gh` has no way to resolve a bare PR number.
+2. The marker-lookup pipelines must pipe `gh api --paginate` (no `--jq`)
+   into a separate `jq --arg m ...` — `gh api --jq` takes exactly one
+   string argument; passing jq's own `--arg` after it is a hard parse
+   error.
+3. A failed status lookup (`gh pr view`/`gh run list`) must not be read
+   as "confirmed clean/not stuck" — under `set +e` a failure and a
+   genuine clean result look identical unless the lookup's own exit
+   status is captured explicitly (`if var=$(cmd); then`, never a bare
+   assignment followed by a value check).
+4. `mergeStateStatus: UNKNOWN` is a real, documented value of the
+   `MergeStateStatus` GraphQL enum (GitHub still computing mergeability),
+   not an error — it needs its own branch, or it falls through to
+   "resolved" exactly like bug 3.
+5. The marker-lookup pipelines (`gh api | jq | head -1`) need `pipefail`
+   — without it, `head -1` exits 0 on empty input regardless of whether
+   that's a genuine zero-match result or an upstream `gh api`/`jq`
+   failure, so a real failure could produce a *duplicate* comment instead
+   of editing the existing one.
+6. `pr_numbers=$(gh pr list ...)` failing is indistinguishable from a
+   genuinely empty PR list unless its own exit status is captured too —
+   otherwise a real API/auth failure silently reports "no open PRs" and
+   exits 0, making the scheduled safety net look successful while doing
+   nothing.
+
+Every one of these was independently reproduced (a real bash repro, or a
+direct GraphQL schema/`gh` CLI check) before being fixed — see this
+workflow's own git history for each round. The lesson that stuck: after
+finding the same bug shape five times in untested inline bash, the sixth
+review round asked for actual test coverage directly, which is what
+produced the extraction — the same "pull the pure logic into a tested
+module" move already proven on `review-verdict.mjs` and
+`override-decisions.mjs` above.
+
+Comment bodies are built with `printf '%s\n%s'` (marker, message), not
+raw multi-line bash string literals inside the `run: |` block — a literal
+newline mid-string puts the continuation line at column 1, which breaks
+YAML's block-scalar indentation rule and is a real parse error. Caught by
+validating this file's YAML locally before it was ever pushed.
 
 ## AI code review gate (`ai-code-review` job)
 
@@ -319,6 +407,20 @@ update for its own sake — it's the "reasoning already on record" that
 step 3 above requires before an admin-bypass, made explicit instead of
 scattered across ad hoc comments.
 
+**Ordering discipline: update the log in the same breath as the fix, not
+later, and on every PR you're touching, not just the one it's already a
+habit on.** This has actually been skipped once — juggling two PRs with
+review rounds in parallel, the log stayed a consistent habit on the one
+it started on early, and was simply never started on the other until the
+user noticed it missing. The fix isn't "remember better," it's a fixed
+order of operations: the moment you `git push` in response to a review
+finding, updating that PR's override-decision log is the *next action*,
+before checking CI status, before switching branches, before starting
+the next PR's work. If several PRs are in flight at once, each one's log
+is part of *that PR's own* fix-forward loop — never something to batch
+at the end or backfill once, since "once" only happens if someone
+notices it's missing.
+
 The `ai-code-review` job reads this comment back on every run (`Fetch
 prior override decisions` step) and feeds matched rows to the model as
 context, so it can skip re-flagging something already adjudicated instead
@@ -381,9 +483,14 @@ git checkout <dependabot-branch>
 ```
 
 If a Dependabot PR goes stale (`mergeStateStatus: BEHIND` after another PR
-merged to main), `auto-update-open-prs.yml` (above) now handles this
-automatically on every merge — `gh pr update-branch <number>` is still the
-manual fallback if you need it sooner than the next merge.
+merged to main), `pr-reconciliation.yml` (above) now handles this
+automatically on every merge and once daily — `gh pr update-branch
+<number>` is still the manual fallback if you need it sooner. A real
+merge conflict (`mergeStateStatus: DIRTY`) can't be auto-fixed by either —
+`pr-reconciliation.yml` will flag it with a PR comment, but resolving it
+is still a `git checkout <branch> && git merge main`, fix conflicts,
+push (same as any other Dependabot branch fix — see above, these are
+same-repo branches).
 
 **"2 workflows awaiting approval" on a Dependabot PR is not the same gate
 as "Review required."** GitHub automatically requires a maintainer to
