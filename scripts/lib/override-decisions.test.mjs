@@ -109,6 +109,38 @@ test("parseOverrideLog: malformed row (too few cells) is skipped, not thrown", (
   ]);
 });
 
+// Real bug from a live review: a naive split("|") mis-splits any
+// finding/resolution text that legitimately contains a pipe (a shell
+// pipe, a TypeScript union type, `a || b`), silently shifting
+// resolution/status into the wrong column instead of erroring or
+// skipping. Standard Markdown table syntax escapes a literal pipe as
+// `\|` — this must split on unescaped pipes only, then unescape `\|`
+// back to `|` in the cell content, the same two-step handling a real
+// Markdown renderer does.
+test("parseOverrideLog: an escaped pipe in a cell doesn't shift the columns", () => {
+  const body = `${OVERRIDE_LOG_MARKER}
+| Reviewer finding | My resolution | Status |
+|---|---|---|
+| uses \\| in a shell pipeline | fixed by quoting the pipeline | Resolved |`;
+  const { rows } = parseOverrideLog(body);
+  assert.deepEqual(rows, [
+    {
+      finding: "uses | in a shell pipeline",
+      resolution: "fixed by quoting the pipeline",
+      status: "Resolved",
+    },
+  ]);
+});
+
+test("parseOverrideLog: multiple escaped pipes in one cell all unescape correctly", () => {
+  const body = `${OVERRIDE_LOG_MARKER}
+| Reviewer finding | My resolution | Status |
+|---|---|---|
+| type is string \\| number \\| boolean | narrowed the union | Resolved |`;
+  const { rows } = parseOverrideLog(body);
+  assert.equal(rows[0].finding, "type is string | number | boolean");
+});
+
 // Real bug from a live review of this feature's introducing PR: `gh api
 // --paginate --jq` runs the jq filter per page, so a multi-page comments
 // fetch produced several concatenated JSON arrays rather than one valid

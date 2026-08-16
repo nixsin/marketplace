@@ -52,9 +52,21 @@ export function selectOverrideLogComment(comments, authorizedLogins) {
   return candidates[0].body;
 }
 
+// Markdown table cells escape a literal pipe as `\|` — naively splitting
+// on every `|` character (as an earlier version of this function did)
+// mis-splits any finding/resolution text that legitimately contains one
+// (a shell pipe, a TypeScript union type, `a || b`), silently shifting
+// resolution/status into the wrong column instead of erroring. The
+// negative lookbehind skips a `|` immediately preceded by `\` when
+// deciding where to split, then each resulting cell has `\|` unescaped
+// back to a literal `|` — the same two-step handling a real Markdown
+// table renderer does. When writing an override-log table row, escape
+// any literal `|` in the finding/resolution text as `\|`.
 function splitRow(line) {
   const inner = line.trim().replace(/^\|/, "").replace(/\|$/, "");
-  return inner.split("|").map((cell) => cell.trim());
+  return inner
+    .split(/(?<!\\)\|/)
+    .map((cell) => cell.trim().replace(/\\\|/g, "|"));
 }
 
 function isSeparatorRow(cells) {

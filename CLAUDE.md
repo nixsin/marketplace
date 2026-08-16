@@ -264,6 +264,13 @@ skip-logic comment) with a table:
 |---|---|---|
 | what the reviewer flagged | what happened — fixed in commit X, or why it's disputed | Resolved / Overridden |
 
+Escape any literal `|` inside a cell's text as `\|` (standard Markdown
+table syntax) — a finding or resolution that quotes a shell pipe, a
+TypeScript union type, or `a || b` will contain one. The parser only
+handles the escaped form correctly (see below); an unescaped `|` splits
+the row into extra cells and silently shifts resolution/status into the
+wrong column, same as it would in any real Markdown table renderer.
+
 ...ending with a `**Recommendation:**` line stating the actual
 merge-readiness call — usually `APPROVE` once every row is accounted for
 and CI is green, but it must say so honestly, not by convention: if
