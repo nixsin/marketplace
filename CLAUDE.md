@@ -80,8 +80,12 @@ sequential job). Key structure:
 
 Other workflows: `dependency-freshness.yml` (weekly + push-to-main badge
 check, informational, not required), `codeql.yml`, `pr-comment-rerun.yml`
-(a PR comment can trigger `gh run rerun`), and the `/rerun-test` slash
-command (`.claude/commands/rerun-test.md`) for doing that manually.
+(a PR comment can trigger `gh run rerun`), `auto-update-open-prs.yml`
+(triggers on `pull_request: types: [closed]` with a `merged == true`
+guard — updates every other open PR targeting `main` to the new tip via
+the same API `gh pr update-branch` calls, so a stale/BEHIND PR doesn't
+sit unnoticed), and the `/rerun-test` slash command
+(`.claude/commands/rerun-test.md`) for doing a rerun manually.
 
 ## Dependabot
 
