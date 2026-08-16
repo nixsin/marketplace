@@ -25,12 +25,18 @@ set -euo pipefail
 # Usage: scripts/publish-badge.sh <name> <path-to-json-file> [pct] [commit-sha]
 # Requires GITHUB_TOKEN and GITHUB_REPOSITORY in the environment (both set
 # automatically inside GitHub Actions).
+#
+# PUBLISH_BADGE_REPO_URL overrides the target remote (default: this repo on
+# GitHub, over HTTPS with GITHUB_TOKEN). Exists solely so
+# publish-badge.test.sh can point this script at a local bare repo instead
+# of a real GitHub remote — no caller inside ci.yml sets it, so production
+# behavior is unchanged.
 
 NAME="$1"
 JSON_FILE="$2"
 PCT="${3:-}"
 COMMIT_SHA="${4:-}"
-REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+REPO_URL="${PUBLISH_BADGE_REPO_URL:-https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git}"
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
