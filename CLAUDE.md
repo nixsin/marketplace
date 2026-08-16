@@ -130,6 +130,62 @@ it exists),
 `/rerun-test` slash command
 (`.claude/commands/rerun-test.md`) for doing a rerun manually.
 
+## Badges and the metrics dashboard (`gh-pages` branch)
+
+`scripts/publish-badge.sh <name> <path-to-json-file> [pct] [commit-sha]`
+publishes a shields.io "endpoint" badge JSON to `coverage/<name>-badge.json`
+on the `gh-pages` branch (README's badges read these live via
+`raw.githubusercontent.com` — no third-party badge service/account needed).
+Bootstraps `gh-pages` as an orphan branch on first run if it doesn't exist;
+retries on push conflict (another job racing to update a different file on
+the same branch) with a jittered backoff. When `pct`/`commit-sha` are
+passed, it also appends `{date, commit, pct}` to
+`coverage/<name>-history.json` **unconditionally** — even when the value is
+unchanged from last time, since a time-series chart needs a data point on
+every measurement or an unchanged stretch shows as a gap instead of a flat
+line. Every run also syncs `scripts/coverage-dashboard/{index.html,
+chart-math.mjs}` (version-controlled on `main`) to `coverage/` on
+`gh-pages` — **both files, every time**; a real bug once shipped with only
+`index.html` synced, silently breaking the dashboard's `import` (see
+`publish-badge.test.sh`, which now asserts both are present after a
+publish).
+
+Three metrics currently flow through this: `api`/`web` coverage (published
+from `ci.yml`'s `test-api-unit`/`test-web` jobs, main-only, gated on
+`if: github.ref == 'refs/heads/main' && github.event_name == 'push'` — an
+in-progress PR's coverage never overwrites the badge before it merges) and
+`lighthouse` (published from the `perf-budget` job). The Lighthouse one is
+deliberately different: it publishes with `if: always()` (still scoped to
+push-to-main) rather than only on success, because going under budget is a
+**hard failure** for that job — freezing the badge/history at the last
+*passing* score would hide the exact regression the dashboard exists to
+show. The required-check behavior (blocking a PR until the budget is met)
+is unaffected by this — that's `perf-budget`'s own exit code, not the
+publish step.
+
+The dashboard itself (`coverage/index.html` on `gh-pages`, live at
+https://nixsin.github.io/marketplace/coverage/index.html) is a
+self-contained static page — no build step, no external JS/CSS — that
+fetches each `<name>-history.json` and renders a hand-rolled SVG line
+chart per metric. The chart math (layout, gridlines, stats) lives in
+`scripts/coverage-dashboard/chart-math.mjs`, imported by `index.html` as a
+real ES module (`<script type="module">`) — verified empirically that
+GitHub Pages serves `.mjs` as `text/javascript`, so this isn't relying on
+an unverified assumption about the deploy environment. `chart-math.mjs`
+has its own test suite (`chart-math.test.mjs` — empty/single-point/
+0%-or-100%-boundary/multi-point cases), run in `ci.yml`'s `test-ci-scripts`
+job alongside `publish-badge.test.sh` (exercises the history-append/
+retry-safe-push behavior against a local bare git repo via a
+`PUBLISH_BADGE_REPO_URL` test-only override).
+
+**Adding a new metric**: call `publish-badge.sh <new-name> <json-file> [pct] [sha]`
+from the relevant CI job (same pattern as the three above), add a
+`<a href="<new-name>-history.json">` link + a `<div class="panel">` +
+`renderChart(...)` call to `scripts/coverage-dashboard/index.html`, and a
+README badge line pointing at `coverage/<new-name>-badge.json`. No changes
+needed to `publish-badge.sh` or `chart-math.mjs` — both are already fully
+generic over the metric name.
+
 ## PR reconciliation (`pr-reconciliation.yml`)
 
 Keeps every open PR targeting `main` in sync on three axes, event-driven
