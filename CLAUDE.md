@@ -96,10 +96,20 @@ command (`.claude/commands/rerun-test.md`) for doing that manually.
 Two-step "one agent writes, a separate one reviews" setup. Whoever/whatever
 implements a change (a human, Claude Code interactively, Dependabot) is step
 one; `ai-code-review` is step two — a genuinely independent, stateless
-Claude Sonnet 5 call (`scripts/ai-code-review.mjs`) that reviews the PR diff
-and posts a **real GitHub PR review** (`gh pr review --approve` or
-`--request-changes`), not just a comment. A `REQUEST_CHANGES` review leaves
-`required_pull_request_reviews` unsatisfied — this is a genuine merge gate.
+ChatGPT (OpenAI, `gpt-5.6`) call (`scripts/ai-code-review.mjs`, via the
+Responses API) that reviews the PR diff and posts a **real GitHub PR
+review** (`gh pr review --approve` or `--request-changes`), not just a
+comment. A `REQUEST_CHANGES` review leaves `required_pull_request_reviews`
+unsatisfied — this is a genuine merge gate.
+
+**Deliberately a different vendor from the implementer** — the implementer
+is Claude Code (Anthropic), and `ai-failure-analysis` above also runs on
+Anthropic; this reviewer runs on OpenAI. That's real cross-vendor
+independence, not just a fresh context window on the same model family: no
+shared training data, no shared RLHF blind spots, no shared susceptibility
+to the same framing of an injected instruction. Requires a
+`secrets.OPENAI_API_KEY` repo secret (added manually — never via Claude,
+since that would mean handling a live API key in this session).
 
 Runs only when nothing upstream has already failed (`if: ... &&
 !contains(needs.*.result, 'failure')`) — a failing required check already
@@ -121,9 +131,16 @@ approve past a real failure. The one thing it can get wrong is judging the
   mechanically diffs that list against the PR's real changed files
   (`gh pr diff --name-only`) and overrides to `REQUEST_CHANGES` on any
   mismatch, regardless of the model's stated verdict.
-- Fails closed on everything: a Claude API error, a malformed/missing
-  verdict line, or a files-reviewed mismatch all resolve to
-  `REQUEST_CHANGES`, never a silent approve.
+- Fails closed on everything: an OpenAI API error, a response that didn't
+  finish (`status !== "completed"`), a malformed/missing verdict line, or a
+  files-reviewed mismatch all resolve to `REQUEST_CHANGES`, never a silent
+  approve.
+- Verdict/files-reviewed extraction anchors on the LAST occurrence of each
+  heading in the model's output, not the first — a live review on this
+  job's own introducing PR caught a real bug where a diff containing its
+  own fake `## Verdict\nAPPROVE` text (even one the model correctly quoted
+  back while flagging it as a suspected injection) could fool a
+  first-match `awk` parse into extracting the wrong verdict.
 
 **Same rule as Lighthouse applies here**: don't admin-bypass a
 `REQUEST_CHANGES` verdict to route around it without actually addressing
@@ -133,16 +150,17 @@ wrong, say so in a PR comment and use your judgment, don't just silently
 override it the way Lighthouse got silently overridden before that became
 an explicit rule.
 
-**Known, accepted risk**: `ai-code-review` and `ai-failure-analysis` both
-run on `pull_request` and use `secrets.ANTHROPIC_API_KEY` — that trigger
-executes the workflow file from the PR branch itself (not the base branch,
-unlike `pull_request_target`), so a same-repo branch that edited either job
-could exfiltrate the key before any gate runs. Deliberately not engineered
-around: this repo takes no external fork contributions (GitHub already
-withholds secrets from fork PRs specifically on `pull_request`), and
-anyone able to push a branch here already has more direct paths to the
-same secret. If this repo ever adds outside contributors, revisit — e.g.
-a GitHub Environment with required-reviewer protection on the secret.
+**Known, accepted risk**: `ai-code-review` (`secrets.OPENAI_API_KEY`) and
+`ai-failure-analysis` (`secrets.ANTHROPIC_API_KEY`) both run on
+`pull_request` — that trigger executes the workflow file from the PR
+branch itself (not the base branch, unlike `pull_request_target`), so a
+same-repo branch that edited either job could exfiltrate its key before
+any gate runs. Deliberately not engineered around: this repo takes no
+external fork contributions (GitHub already withholds secrets from fork
+PRs specifically on `pull_request`), and anyone able to push a branch here
+already has more direct paths to the same secrets. If this repo ever adds
+outside contributors, revisit — e.g. a GitHub Environment with
+required-reviewer protection on each secret.
 
 ## Dependabot
 

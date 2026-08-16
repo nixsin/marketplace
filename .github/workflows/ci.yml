@@ -503,10 +503,17 @@ jobs:
   # Second, independent agent in the two-step "one writes, one reviews"
   # setup: the jobs above are the implementer's work (whether that's a
   # human, Claude Code interactively, or Dependabot); this is a separate,
-  # stateless Claude call that reviews the diff and either approves or
-  # requests changes as a real PR review — not just a comment. A real
-  # "Changes requested" review leaves `required_pull_request_reviews`
+  # stateless ChatGPT (OpenAI) call that reviews the diff and either
+  # approves or requests changes as a real PR review — not just a comment.
+  # A real "Changes requested" review leaves `required_pull_request_reviews`
   # unsatisfied, so this is a genuine merge gate, not advisory.
+  #
+  # Deliberately a different vendor from the implementer, not just a
+  # different session of the same model — ai-failure-analysis above and the
+  # implementer (Claude Code) are both Anthropic; this job is OpenAI. Actual
+  # cross-vendor independence, not just a fresh context window: no shared
+  # training data, no shared RLHF blind spots, no shared susceptibility to
+  # the same framing of an injected instruction.
   #
   # Deliberately only runs when nothing upstream has already failed — a
   # failing required check already blocks merge on its own, so this job
@@ -528,17 +535,17 @@ jobs:
   #
   # Accepted risk, deliberately not engineered around: this job runs on
   # `pull_request`, which executes the workflow file *from the PR branch
-  # itself* (unlike `pull_request_target`), and uses secrets.ANTHROPIC_API_KEY.
+  # itself* (unlike `pull_request_target`), and uses secrets.OPENAI_API_KEY.
   # A same-repo branch that edited this job could exfiltrate that key before
   # the verdict step ever runs. Not new to this job — ai-failure-analysis
-  # above has carried the identical exposure since it was added. Left as-is
-  # because: this repo has no external fork contributors (GitHub already
-  # withholds secrets from fork PRs on `pull_request` specifically, so that
-  # path isn't the risk); every branch that could exploit this already
-  # requires push access to this repo, at which point far more direct paths
-  # to the same secret already exist. Revisit (e.g. an Environment with
-  # required-reviewer protection on the secret) if this repo ever takes
-  # external contributions.
+  # above has carried the identical exposure (for secrets.ANTHROPIC_API_KEY)
+  # since it was added. Left as-is because: this repo has no external fork
+  # contributors (GitHub already withholds secrets from fork PRs on
+  # `pull_request` specifically, so that path isn't the risk); every branch
+  # that could exploit this already requires push access to this repo, at
+  # which point far more direct paths to the same secret already exist.
+  # Revisit (e.g. an Environment with required-reviewer protection on the
+  # secret) if this repo ever takes external contributions.
   ai-code-review:
     name: AI code review
     runs-on: ubuntu-latest
@@ -613,14 +620,14 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # continue-on-error so a Claude API failure (rate limit, timeout,
+      # continue-on-error so an OpenAI API failure (rate limit, timeout,
       # malformed response) still lets the next step run and fail closed,
       # instead of silently leaving the PR with zero reviews.
-      - name: Review with Claude
+      - name: Review with ChatGPT
         id: review
         continue-on-error: true
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt > /tmp/review.md
 
       - name: Post review verdict
@@ -669,7 +676,7 @@ jobs:
           fi
 
           {
-            echo "### 🤖 AI code review (Claude Sonnet 5)"
+            echo "### 🤖 AI code review (ChatGPT · GPT-5.6)"
             echo
             cat /tmp/review.md
             echo
