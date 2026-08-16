@@ -119,8 +119,53 @@ For every open PR targeting `main`:
 
 All three only **surface or retry** — nothing here auto-resolves a real
 conflict or auto-approves a stuck workflow run; those stay human
-decisions. `set +e` throughout, same reasoning as the `ai-code-review`
-fix: one PR's failure must not stop the rest from being reconciled.
+decisions. `set +e` (plus `pipefail`) throughout, same reasoning as the
+`ai-code-review` fix: one PR's failure must not stop the rest from being
+reconciled.
+
+**The actual flag/resolve/skip decisions live in a tested module, not
+inline bash.** `scripts/lib/pr-reconciliation.mjs` (`pr-reconciliation
+.test.mjs`, 18 tests, run as an actual CI step) — this job's bash only
+gathers each decision function's inputs and acts on its output. That
+split exists because this job's introducing PR went through **four live
+review rounds and found six real bugs**, every one in the identical
+shape: a failed or non-conclusive lookup silently treated as a
+conclusive one.
+1. Every `gh pr view`/`gh pr comment` call needs `--repo` explicitly —
+   this job never runs `actions/checkout` for its main step, so without a
+   local git repo `gh` has no way to resolve a bare PR number.
+2. The marker-lookup pipelines must pipe `gh api --paginate` (no `--jq`)
+   into a separate `jq --arg m ...` — `gh api --jq` takes exactly one
+   string argument; passing jq's own `--arg` after it is a hard parse
+   error.
+3. A failed status lookup (`gh pr view`/`gh run list`) must not be read
+   as "confirmed clean/not stuck" — under `set +e` a failure and a
+   genuine clean result look identical unless the lookup's own exit
+   status is captured explicitly (`if var=$(cmd); then`, never a bare
+   assignment followed by a value check).
+4. `mergeStateStatus: UNKNOWN` is a real, documented value of the
+   `MergeStateStatus` GraphQL enum (GitHub still computing mergeability),
+   not an error — it needs its own branch, or it falls through to
+   "resolved" exactly like bug 3.
+5. The marker-lookup pipelines (`gh api | jq | head -1`) need `pipefail`
+   — without it, `head -1` exits 0 on empty input regardless of whether
+   that's a genuine zero-match result or an upstream `gh api`/`jq`
+   failure, so a real failure could produce a *duplicate* comment instead
+   of editing the existing one.
+6. `pr_numbers=$(gh pr list ...)` failing is indistinguishable from a
+   genuinely empty PR list unless its own exit status is captured too —
+   otherwise a real API/auth failure silently reports "no open PRs" and
+   exits 0, making the scheduled safety net look successful while doing
+   nothing.
+
+Every one of these was independently reproduced (a real bash repro, or a
+direct GraphQL schema/`gh` CLI check) before being fixed — see this
+workflow's own git history for each round. The lesson that stuck: after
+finding the same bug shape five times in untested inline bash, the sixth
+review round asked for actual test coverage directly, which is what
+produced the extraction — the same "pull the pure logic into a tested
+module" move already proven on `review-verdict.mjs` and
+`override-decisions.mjs` above.
 
 Comment bodies are built with `printf '%s\n%s'` (marker, message), not
 raw multi-line bash string literals inside the `run: |` block — a literal
