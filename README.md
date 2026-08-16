@@ -4,10 +4,12 @@
 [![CodeQL](https://github.com/nixsin/marketplace/actions/workflows/codeql.yml/badge.svg)](https://github.com/nixsin/marketplace/actions/workflows/codeql.yml)
 [![Dependency freshness](https://github.com/nixsin/marketplace/actions/workflows/dependency-freshness.yml/badge.svg)](https://github.com/nixsin/marketplace/actions/workflows/dependency-freshness.yml)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](package.json)
-[![API coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nixsin/marketplace/gh-pages/coverage/api-badge.json)](apps/api)
-[![Web coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nixsin/marketplace/gh-pages/coverage/web-badge.json)](apps/web)
+[![API coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nixsin/marketplace/gh-pages/coverage/api-badge.json)](https://nixsin.github.io/marketplace/coverage/index.html)
+[![Web coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nixsin/marketplace/gh-pages/coverage/web-badge.json)](https://nixsin.github.io/marketplace/coverage/index.html)
 
 B2B marketplace for medical & surgical instruments. Full architecture, rationale, and roadmap live in [TECHNICAL_PLAN.md](./TECHNICAL_PLAN.md) — read that first.
+
+Test coverage over time (both apps, charted): **https://nixsin.github.io/marketplace/coverage/index.html** — accumulates automatically on every push to `main` that actually re-runs the relevant test suite (path-filtered, so gaps mean "unchanged," not "missing").
 
 ## Repo layout
 
