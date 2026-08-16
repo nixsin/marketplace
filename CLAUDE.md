@@ -167,6 +167,24 @@ approve past a real failure. The one thing it can get wrong is judging the
   since stdout there is captured whole as the review body. Missing or
   unreadable flag file fails closed to "was truncated," never to "wasn't."
 
+**The reviewer can also force-run a skipped job it disagrees with.** The
+path filter is a static glob match — it can miss genuine cross-boundary
+effects the same way docker-scan/docker-smoke's Dockerfile gotcha already
+shows is possible. The prompt asks it to name skipped jobs (from a fixed
+whitelist: `audit`, `test-api-unit`, `test-api-e2e`, `test-web`,
+`perf-budget`, `load-test`) it believes should have run for this specific
+diff. Lower-stakes than the approve/reject verdict — an unnecessary
+force-run just costs some CI time, nothing worse — so it doesn't need the
+same paranoid cross-checking, but the job-ID list is still whitelist-
+validated twice (once in the prompt, once again by exact-match filtering
+in `extractForceRunJobs`) since it ends up passed to `gh workflow run`.
+GitHub Actions has no way to change a job's `if:` mid-run, so "force-run"
+means starting a genuinely separate `workflow_dispatch` run on the same
+branch (`ci.yml`'s `workflow_dispatch.inputs.force_jobs`) — it can't
+resurrect the job actually skipped in the run already in progress. Also
+useful by hand: trigger it manually from the Actions tab, or `gh workflow
+run ci.yml --ref <branch> -f force_jobs=test-api-e2e,load-test`.
+
 **Same rule as Lighthouse applies here**: don't admin-bypass a
 `REQUEST_CHANGES` verdict to route around it without actually addressing
 what it flagged. It can be wrong (it's reviewing code it's never seen

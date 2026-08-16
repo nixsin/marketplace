@@ -4,6 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Lets ai-code-review force-run a specific skipped job when it disagrees
+  # with the path filter's decision for a given diff (see that job's own
+  # comment below for why this exists and how it's constrained). Also
+  # available for a human to trigger by hand from the Actions tab if ever
+  # needed — `force_jobs` just defaults to empty, running nothing extra.
+  workflow_dispatch:
+    inputs:
+      force_jobs:
+        description: "Comma-separated job IDs to force-run despite the path filter (audit, test-api-unit, test-api-e2e, test-web, perf-budget, load-test)"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   # Split into small, independent jobs on purpose — GitHub runs jobs with
@@ -48,8 +60,16 @@ jobs:
       deps: ${{ steps.filter.outputs.deps }}
     steps:
       - uses: actions/checkout@v4
+      # workflow_dispatch has no PR/push diff for dorny/paths-filter to
+      # compare against — not attempting it there avoids depending on
+      # unconfirmed behavior for a trigger type it isn't designed for.
+      # Harmless either way: every forceable job's `if:` already has an
+      # independent `force_jobs` OR-clause (below), so a workflow_dispatch
+      # run reaches the jobs it's meant to regardless of what (if
+      # anything) this step produces for that trigger type.
       - uses: dorny/paths-filter@v3
         id: filter
+        if: github.event_name == 'pull_request'
         with:
           filters: |
             deps:
@@ -128,8 +148,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes]
     # Only scans the lockfile for known vulnerabilities — irrelevant to
-    # source changes with no dependency bump.
-    if: needs.changes.outputs.deps == 'true'
+    # source changes with no dependency bump. The workflow_dispatch clause
+    # lets ai-code-review (or a human) force this to run despite the skip
+    # — see that job's own comment for why/how this is constrained.
+    if: needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'audit'))
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -165,7 +187,7 @@ jobs:
     # deps too, not just api — a root dependency bump (e.g. a Dependabot
     # PR touching only package.json/pnpm-lock.yaml) can affect the API
     # even though no apps/api/** file changed.
-    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true'
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'test-api-unit'))
     # contents: write only matters for the badge-publish step below, which
     # is itself gated to push-to-main only — PRs never touch gh-pages.
     permissions:
@@ -200,7 +222,7 @@ jobs:
     name: API e2e tests
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true'
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'test-api-e2e'))
     services:
       postgres:
         image: postgres:16-alpine
@@ -241,7 +263,7 @@ jobs:
     name: Web build + tests
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true'
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'test-web'))
     permissions:
       contents: write
     steps:
@@ -335,7 +357,7 @@ jobs:
     name: Web performance budget (Lighthouse)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true'
+    if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'perf-budget'))
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -363,7 +385,7 @@ jobs:
     name: API load test (autocannon)
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true'
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'load-test'))
     services:
       postgres:
         image: postgres:16-alpine
@@ -546,6 +568,26 @@ jobs:
   # which point far more direct paths to the same secret already exist.
   # Revisit (e.g. an Environment with required-reviewer protection on the
   # secret) if this repo ever takes external contributions.
+  #
+  # The reviewer also judges the path filter's skip decisions for this
+  # specific diff (see the "This repo path-filters CI" paragraph in
+  # ai-code-review.mjs's prompt) and can name skipped jobs it believes
+  # should actually run — a static glob-based filter can miss genuine
+  # cross-boundary effects the way docker-scan/docker-smoke's Dockerfile
+  # gotcha already shows is possible (see the `changes` job's comment).
+  # Structurally can't cause a skip that was CORRECT to become a problem —
+  # forcing an unnecessary job to run just costs some CI time, nothing
+  # more, so this doesn't need the same paranoid cross-checking as the
+  # approve/reject verdict. Real guardrails that do exist: the model may
+  # only ever name job IDs from a fixed whitelist (enforced twice — once
+  # in the prompt, once again by exact-match filtering in
+  # extractForceRunJobs, since a value only being *requested* isn't the
+  # same as it being *safe to trust*); the list is never interpolated
+  # into a shell command directly, only passed through `gh workflow run`'s
+  # own `-f` flag; and because GitHub Actions has no way to change a
+  # job's `if:` mid-run, "force-running" a job means starting a genuinely
+  # separate `workflow_dispatch` run — it cannot retroactively resurrect
+  # the job that was actually skipped in the current run.
   ai-code-review:
     name: AI code review
     runs-on: ubuntu-latest
@@ -573,6 +615,9 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      # Only for the "Force-run skipped CI jobs" step's `gh workflow run`
+      # call — a workflow_dispatch trigger requires actions: write.
+      actions: write
     steps:
       - uses: actions/checkout@v4
 
@@ -686,6 +731,41 @@ jobs:
             gh pr review "$PR_NUMBER" --approve --body-file /tmp/review-comment.md
           else
             gh pr review "$PR_NUMBER" --request-changes --body-file /tmp/review-comment.md
+          fi
+
+      # GitHub Actions has no way to change a job's `if:` mid-run, so
+      # "force-running" a skipped job means starting a genuinely separate
+      # workflow_dispatch run on this same branch — it can't resurrect the
+      # job that was actually skipped in the run this step is part of.
+      # Gated on steps.review.outcome specifically (not just always()):
+      # if the review itself never completed, there's no trustworthy
+      # review.md to read a force-run list from.
+      #
+      # Untestable pre-merge, structurally: GitHub only recognizes
+      # workflow_dispatch as a valid trigger for a workflow file once that
+      # trigger exists on the *default branch* — until this PR merges,
+      # `gh workflow run` below will fail (`set +e` catches it, logs it,
+      # doesn't fail this job) rather than actually dispatch anything, even
+      # on this PR's own branch. Verified everything else that can be
+      # verified pre-merge (unit tests on the parsing, YAML validity,
+      # dry-run of the command's own syntax) — the live dispatch call
+      # itself is the one piece that can only be confirmed working after
+      # this lands on main.
+      - name: Force-run skipped CI jobs if the reviewer disagrees
+        if: always() && steps.review.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set +e
+          force_jobs=$(node scripts/parse-force-run-jobs.mjs /tmp/review.md)
+
+          if [ -n "$force_jobs" ]; then
+            echo "Reviewer disagrees with CI skip logic — force-running: $force_jobs"
+            gh workflow run ci.yml --ref "${{ github.event.pull_request.head.ref }}" -f force_jobs="$force_jobs"
+            gh pr comment "$PR_NUMBER" --body "🔁 The AI reviewer disagreed with the CI skip logic for this diff and requested a force-run of: \`$force_jobs\`. A separate workflow run has been triggered on this branch — check the Actions tab for its progress (it runs independently of this PR's normal required checks, since GitHub Actions can't retroactively un-skip a job in the run already in progress)."
+          else
+            echo "Reviewer agrees with all skip decisions — nothing to force-run."
           fi
 
   migrate:
