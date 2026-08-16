@@ -40,6 +40,8 @@ jobs:
   changes:
     name: Detect changed paths
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     outputs:
       api: ${{ steps.filter.outputs.api }}
       web: ${{ steps.filter.outputs.web }}
@@ -58,6 +60,55 @@ jobs:
               - 'apps/api/**'
             web:
               - 'apps/web/**'
+
+      # Surfaces the run/skip decision on the PR itself instead of making
+      # someone reconstruct it from each job's `if:` in this file. Edits
+      # its own prior comment (found via the HTML-comment marker) rather
+      # than posting a new one on every push to the same PR.
+      - name: Comment skip logic on PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          API_CHANGED: ${{ steps.filter.outputs.api }}
+          WEB_CHANGED: ${{ steps.filter.outputs.web }}
+          DEPS_CHANGED: ${{ steps.filter.outputs.deps }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          status() {
+            if [ "$1" = "true" ]; then echo "▶️ run"; else echo "⏭️ skip"; fi
+          }
+
+          api_or_deps=false
+          if [ "$API_CHANGED" = "true" ] || [ "$DEPS_CHANGED" = "true" ]; then api_or_deps=true; fi
+
+          web_or_deps=false
+          if [ "$WEB_CHANGED" = "true" ] || [ "$DEPS_CHANGED" = "true" ]; then web_or_deps=true; fi
+
+          cat > /tmp/skip-comment.md <<EOF
+          <!-- ci-skip-logic-comment -->
+          ### 🔍 CI job skip logic
+
+          Changed paths detected: \`api=$API_CHANGED\` · \`web=$WEB_CHANGED\` · \`deps=$DEPS_CHANGED\`
+
+          | Job | Status | Runs when |
+          |---|---|---|
+          | Dependency audit | $(status "$DEPS_CHANGED") | deps changed |
+          | API unit tests | $(status "$api_or_deps") | api or deps changed |
+          | API e2e tests | $(status "$api_or_deps") | api or deps changed |
+          | API load test (autocannon) | $(status "$api_or_deps") | api or deps changed |
+          | Web build + tests | $(status "$web_or_deps") | web or deps changed |
+          | Web performance budget (Lighthouse) | $(status "$web_or_deps") | web or deps changed |
+
+          Lint, Docker image vulnerability scan, and Docker dev stack smoke test always run regardless of what changed — see the \`changes\` job's own comment in \`ci.yml\` for why those aren't filtered.
+          EOF
+
+          existing_id=$(gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate --jq '.[] | select(.body | startswith("<!-- ci-skip-logic-comment -->")) | .id' | head -1)
+
+          if [ -n "$existing_id" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_id" -f body=@/tmp/skip-comment.md > /dev/null
+          else
+            gh pr comment "$PR_NUMBER" --body-file /tmp/skip-comment.md
+          fi
 
   lint:
     name: Lint
