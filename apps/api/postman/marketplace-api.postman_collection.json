@@ -35,6 +35,24 @@
       "item": [
         {
           "name": "Request OTP",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "pm.test('requestOtp returned true', () => {",
+                  "  pm.expect(body.data && body.data.requestOtp).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
@@ -58,7 +76,15 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "const data = pm.response.json().data;",
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "const data = body.data;",
+                  "pm.test('verifyOtp returned an accessToken', () => {",
+                  "  pm.expect(data && data.verifyOtp && data.verifyOtp.accessToken).to.be.a('string').and.not.empty;",
+                  "});",
                   "if (data && data.verifyOtp && data.verifyOtp.accessToken) {",
                   "  pm.collectionVariables.set('accessToken', data.verifyOtp.accessToken);",
                   "  console.log('isNewUser:', data.verifyOtp.isNewUser, '-- saved accessToken to {{accessToken}}');",
@@ -90,7 +116,15 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "const data = pm.response.json().data;",
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "const data = body.data;",
+                  "pm.test('completeOnboarding returned an accessToken', () => {",
+                  "  pm.expect(data && data.completeOnboarding && data.completeOnboarding.accessToken).to.be.a('string').and.not.empty;",
+                  "});",
                   "if (data && data.completeOnboarding && data.completeOnboarding.accessToken) {",
                   "  pm.collectionVariables.set('accessToken', data.completeOnboarding.accessToken);",
                   "  console.log('Saved full session accessToken to {{accessToken}}');",
@@ -121,6 +155,24 @@
       "item": [
         {
           "name": "Products (paged)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "pm.test('productsPaged returned an items array', () => {",
+                  "  pm.expect(body.data && body.data.productsPaged && body.data.productsPaged.items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
@@ -138,6 +190,24 @@
         },
         {
           "name": "Products (cursor)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "pm.test('products returned an items array', () => {",
+                  "  pm.expect(body.data && body.data.products && body.data.products.items).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
@@ -164,6 +234,24 @@
       "item": [
         {
           "name": "Me",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "pm.test('me returned the expected phone', () => {",
+                  "  pm.expect(body.data && body.data.me && body.data.me.phone).to.eql(pm.collectionVariables.get('phone'));",
+                  "});"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
@@ -181,6 +269,24 @@
         },
         {
           "name": "My Organization",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('No GraphQL errors', () => {",
+                  "  pm.expect(body.errors, JSON.stringify(body.errors)).to.be.undefined;",
+                  "});",
+                  "pm.test('myOrganization returned a name', () => {",
+                  "  pm.expect(body.data && body.data.myOrganization && body.data.myOrganization.name).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
