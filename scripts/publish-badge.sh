@@ -15,12 +15,15 @@ set -euo pipefail
 # omitted, so this script's original badge-only behavior is unaffected
 # for any caller that doesn't pass it.
 #
-# Also syncs scripts/coverage-dashboard/index.html (the dashboard page
-# itself, version-controlled on main) to coverage/index.html on gh-pages
-# every run, if that source file exists in the checkout — cheap (git
-# only actually commits it when its content changes, via the same
-# diff-check below) and means every coverage-publishing run keeps the
-# published dashboard in sync with main without needing separate wiring.
+# Also syncs scripts/coverage-dashboard/index.html and chart-math.mjs (the
+# dashboard page and the ES module it imports, both version-controlled on
+# main) to coverage/ on gh-pages every run, if those source files exist in
+# the checkout — cheap (git only actually commits when content changes, via
+# the same diff-check below) and means every coverage-publishing run keeps
+# the published dashboard in sync with main without needing separate
+# wiring. Both files are required — the dashboard fails to render with only
+# one of the two published (a real bug an earlier round of this shipped
+# with: index.html got synced but chart-math.mjs never did).
 #
 # Usage: scripts/publish-badge.sh <name> <path-to-json-file> [pct] [commit-sha]
 # Requires GITHUB_TOKEN and GITHUB_REPOSITORY in the environment (both set
@@ -55,6 +58,12 @@ for attempt in 1 2 3 4 5; do
   if [ -f "scripts/coverage-dashboard/index.html" ]; then
     cp "scripts/coverage-dashboard/index.html" "$WORKDIR/coverage/index.html"
   fi
+  # index.html imports this as an ES module — it's a real deployment
+  # artifact, not just test infrastructure, so it has to be copied
+  # alongside index.html every time, not only when it happens to change.
+  if [ -f "scripts/coverage-dashboard/chart-math.mjs" ]; then
+    cp "scripts/coverage-dashboard/chart-math.mjs" "$WORKDIR/coverage/chart-math.mjs"
+  fi
 
   # Appends unconditionally (not just when the badge value differs) — a
   # coverage-over-time chart needs a data point every time a measurement
@@ -83,8 +92,11 @@ for attempt in 1 2 3 4 5; do
     if [ -f "coverage/index.html" ]; then
       git add "coverage/index.html"
     fi
+    if [ -f "coverage/chart-math.mjs" ]; then
+      git add "coverage/chart-math.mjs"
+    fi
     if git diff --cached --quiet; then
-      echo "No change to ${NAME} badge, history, or dashboard, skipping."
+      echo "No change to ${NAME} badge, history, dashboard, or chart-math, skipping."
       exit 0
     fi
     git commit -m "Update ${NAME} coverage badge" --quiet

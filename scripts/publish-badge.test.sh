@@ -38,6 +38,7 @@ check_out() {
 check_out
 [ -f "$TMPDIR/check/coverage/api-badge.json" ] || fail "badge missing after first publish"
 [ -f "$TMPDIR/check/coverage/index.html" ] || fail "dashboard missing after first publish (scripts/coverage-dashboard/index.html should have been synced)"
+[ -f "$TMPDIR/check/coverage/chart-math.mjs" ] || fail "chart-math.mjs missing after first publish — index.html imports it, so a dashboard without it is broken"
 count=$(jq 'length' "$TMPDIR/check/coverage/api-history.json")
 [ "$count" = "1" ] || fail "expected 1 history entry after first publish, got $count"
 entry=$(jq -c '.[0]' "$TMPDIR/check/coverage/api-history.json")
