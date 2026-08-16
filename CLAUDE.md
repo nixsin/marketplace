@@ -118,9 +118,10 @@ sequential job). Key structure:
   (not failed) dependency doesn't block deploy.
 
 Other workflows: `dependency-freshness.yml` (weekly + push-to-main badge
-check, informational, not required), `codeql.yml`, `docker-scan-scheduled
-.yml` (weekly Trivy re-scan of `main`'s images, informational, not
-required — see the `docker` filter note above for why it exists),
+check, informational, not required), `codeql.yml`,
+`docker-scan-scheduled.yml` (weekly Trivy re-scan of `main`'s images,
+informational, not required — see the `docker` filter note above for why
+it exists),
 `pr-comment-rerun.yml` (a PR comment can trigger `gh run rerun`),
 `pr-reconciliation.yml` (see its own section below), and the
 `/rerun-test` slash command
@@ -158,21 +159,22 @@ decisions. `set +e` (plus `pipefail`) throughout, same reasoning as the
 reconciled.
 
 **The actual flag/resolve/skip decisions live in a tested module, not
-inline bash.** `scripts/lib/pr-reconciliation.mjs` (`pr-reconciliation
-.test.mjs`) — this job's bash only gathers each decision function's
-inputs and acts on its output. That split exists because this job's
-introducing PR went through **four live review rounds and found six real
-bugs**, every one in the identical shape: a failed or non-conclusive
-lookup silently treated as a conclusive one.
+inline bash.** `scripts/lib/pr-reconciliation.mjs`
+(`pr-reconciliation.test.mjs`) — this job's bash only gathers each
+decision function's inputs and acts on its output. That split exists
+because this job's introducing PR went through **four live review
+rounds and found six real bugs**, every one in the identical shape: a
+failed or non-conclusive lookup silently treated as a conclusive one.
 
 These tests also run in `ci.yml`'s own `test-ci-scripts` job — a plain,
 unconditional job (no path filter) on every regular PR, separate from
-`pr-reconciliation.yml`'s own steps. Needed because `pr-reconciliation
-.yml` never triggers on `pull_request` — without this, a regression to
-this file would ship straight to `main` unnoticed by the introducing PR's
-own CI, only surfacing later when `pr-reconciliation.yml` next actually
-ran (close, schedule, or manual dispatch). A live review caught this gap
-directly; `test-ci-scripts` closes it and is wired into `ai-code-review`,
+`pr-reconciliation.yml`'s own steps. Needed because
+`pr-reconciliation.yml` never triggers on `pull_request` — without this,
+a regression to this file would ship straight to `main` unnoticed by the
+introducing PR's own CI, only surfacing later when
+`pr-reconciliation.yml` next actually ran (close, schedule, or manual
+dispatch). A live review caught this gap directly; `test-ci-scripts`
+closes it and is wired into `ai-code-review`,
 `ai-failure-analysis`, and `migrate`'s `needs:` lists the same way `lint`
 is.
 1. Every `gh pr view`/`gh pr comment` call needs `--repo` explicitly —
@@ -557,10 +559,10 @@ care as any other secrets-using action, not as a rubber-stamp click.
   pinned at `^9.18.0`) — a real, verified, unsupported major-version
   pairing, confirmed by reading `pnpm-lock.yaml` directly, not just
   trusting the AI reviewer's finding on that PR. Before attempting either
-  bump again: re-check whether `eslint-config-next` (or `eslint-plugin-
-  react` directly) has shipped a version with a peer range covering
-  `eslint@^10` — once it has, both become normal bumps like any other
-  Dependabot PR, ideally merged together since they're the same major.
+  bump again: re-check whether `eslint-config-next` (or
+  `eslint-plugin-react` directly) has shipped a version with a peer range
+  covering `eslint@^10` — once it has, both become normal bumps like any
+  other Dependabot PR, ideally merged together since they're the same major.
 - **`gh api -f key=@path` does NOT read the file — only `-F` does.** The
   `@<path>` (or `@-` for stdin) file-reading syntax is documented under
   `-F/--field` (typed parameters) only; `-f/--raw-field` treats an `@...`
