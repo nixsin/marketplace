@@ -80,7 +80,21 @@ sequential job). Key structure:
   ignored for `pull_request` events, so setting it unconditionally doesn't
   affect PR behavior. If a path-filtered job goes suspiciously quiet on
   `main` again, check this first before assuming the diff is genuinely
-  empty.
+  empty. **A "Verify the path filter actually ran" step now guards
+  against exactly this failure mode**, deliberately independent of the
+  filter step's own `if:` (it asserts the actual requirement rather than
+  re-deriving it from whatever that condition currently says, so a future
+  regression in a *different* shape — a typo, an overly-narrow rewrite —
+  still gets caught): fails the `changes` job outright if
+  `steps.filter.outcome != 'success'` for any trigger except
+  `workflow_dispatch`. `changes` is deliberately in `migrate`'s `needs:`
+  list too (not just relied on transitively through jobs like
+  `test-api-unit`) — without that, `changes` failing would cascade those
+  jobs to `skipped` (a job whose own `needs:` dependency failed doesn't
+  run), and `skipped` already passes `migrate`'s
+  `!contains(needs.*.result, 'failure')` gate by design for the
+  path-filtering case — silently absorbing the one failure that actually
+  needs to block deploy.
 - Path-filtered jobs (skip when irrelevant): `audit` (deps only),
   `test-api-unit`/`test-api-e2e`/`load-test` (api or deps), `test-web`/
   `perf-budget` (web or deps), `docker-scan`/`docker-smoke` (`docker` — see
