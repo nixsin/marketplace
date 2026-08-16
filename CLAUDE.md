@@ -367,6 +367,20 @@ update for its own sake — it's the "reasoning already on record" that
 step 3 above requires before an admin-bypass, made explicit instead of
 scattered across ad hoc comments.
 
+**Ordering discipline: update the log in the same breath as the fix, not
+later, and on every PR you're touching, not just the one it's already a
+habit on.** This has actually been skipped once — juggling two PRs with
+review rounds in parallel, the log stayed a consistent habit on the one
+it started on early, and was simply never started on the other until the
+user noticed it missing. The fix isn't "remember better," it's a fixed
+order of operations: the moment you `git push` in response to a review
+finding, updating that PR's override-decision log is the *next action*,
+before checking CI status, before switching branches, before starting
+the next PR's work. If several PRs are in flight at once, each one's log
+is part of *that PR's own* fix-forward loop — never something to batch
+at the end or backfill once, since "once" only happens if someone
+notices it's missing.
+
 The `ai-code-review` job reads this comment back on every run (`Fetch
 prior override decisions` step) and feeds matched rows to the model as
 context, so it can skip re-flagging something already adjudicated instead
