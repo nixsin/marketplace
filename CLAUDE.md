@@ -212,14 +212,51 @@ a review (proven live on this job's own introducing PR, 5+ real rounds):
    because an AI said so. Real, reproducible bugs are finite; fixing them
    converges naturally.
 2. A finding that repeats after you've already investigated it and
-   disagree doesn't get "fixed" again — it gets a PR comment stating your
-   reasoning once, then you stop touching it. Pushing another commit
-   hoping the stateless reviewer changes its mind is the actual loop risk,
-   since it never will on its own.
+   disagree doesn't get "fixed" again — it gets recorded in the
+   override-decision log (below) stating your reasoning once, then you
+   stop touching it. Pushing another commit hoping the stateless reviewer
+   changes its mind is the actual loop risk, since it never will on its
+   own — though now it also won't need to, since it reads that log.
 3. Two rounds of the same finding recurring with nothing new alongside it
    is converged, not "still in progress." At that point it's a human
    decision — admin-bypass with the reasoning already on record, or
    escalate — never a third attempt at the same fix.
+
+**Override-decision log — the implementer's half of not repeating step 2.**
+Every time a finding gets fixed or disputed rather than accepted at face
+value, maintain a single PR comment (marker `<!-- ai-review-override-log
+-->`, edited in place across pushes — same pattern as the `changes` job's
+skip-logic comment) with a table:
+
+| Reviewer finding | My resolution | Status |
+|---|---|---|
+| what the reviewer flagged | what happened — fixed in commit X, or why it's disputed | Resolved / Overridden |
+
+...ending with a `**Recommendation:**` line stating the actual
+merge-readiness call — usually `APPROVE` once every row is accounted for
+and CI is green, but it must say so honestly, not by convention: if
+something real is still blocking, say that instead. This is not a status
+update for its own sake — it's the "reasoning already on record" that
+step 3 above requires before an admin-bypass, made explicit instead of
+scattered across ad hoc comments.
+
+The `ai-code-review` job reads this comment back on every run (`Fetch
+prior override decisions` step) and feeds matched rows to the model as
+context, so it can skip re-flagging something already adjudicated instead
+of relying on a human to notice the repeat. Trust boundary: a row only
+counts if the *comment* comes from an authorized login (currently
+`github.repository_owner`, i.e. the repo owner) — the marker string alone
+is not enough, since this repo's PRs are publicly commentable and the
+marker alone would let anyone post a fake "already discussed and
+dismissed" comment to try to suppress a real finding. Parsing lives in
+`scripts/lib/override-decisions.mjs` (its own
+test suite, `override-decisions.test.mjs`, run as an actual CI step) — not
+security-critical the way verdict extraction is, since a botched parse
+here only ever means the reviewer gets less context, never a false
+approve; none of the mechanical fail-closed checks (files-reviewed match,
+truncation override, single-verdict-heading rule) read this output, and a
+missing/unreadable log file fails closed to "no override context," the
+same safe default as before this feature existed.
 
 **Known, accepted risk**: `ai-code-review` (`secrets.OPENAI_API_KEY`) and
 `ai-failure-analysis` (`secrets.ANTHROPIC_API_KEY`) both run on

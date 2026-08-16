@@ -665,6 +665,26 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      # Lets the reviewer avoid re-flagging a finding I've already fixed or
+      # explicitly disputed earlier in this same PR's thread, instead of
+      # relying purely on a human noticing the repeat across rounds — see
+      # CLAUDE.md's "AI code review gate" section. Only a comment from an
+      # authorized login counts as a real override-decision record, not
+      # just the marker string — this is a public-thread trust boundary,
+      # not a formatting convention, since anyone who can comment on a
+      # public PR could otherwise post a fake "already discussed and
+      # dismissed" comment to try to suppress a real finding.
+      - name: Fetch prior override decisions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate \
+            --jq '[.[] | {login: .user.login, body: .body, updated_at: .updated_at}]' \
+            > /tmp/pr-comments.json
+          node scripts/parse-override-decisions.mjs /tmp/pr-comments.json "${{ github.repository_owner }}" \
+            > /tmp/override-decisions.json
+
       # continue-on-error so an OpenAI API failure (rate limit, timeout,
       # malformed response) still lets the next step run and fail closed,
       # instead of silently leaving the PR with zero reviews.
@@ -673,7 +693,7 @@ jobs:
         continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt /tmp/diff-truncated.txt > /tmp/review.md
+        run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt /tmp/diff-truncated.txt /tmp/override-decisions.json > /tmp/review.md
 
       # Runs the same tests that back scripts/lib/review-verdict.mjs
       # (scripts/lib/review-verdict.test.mjs) as an actual CI gate, not
@@ -689,6 +709,9 @@ jobs:
       # same class of bug by hand again later.
       - name: Test review-verdict parsing
         run: node --test scripts/lib/review-verdict.test.mjs
+
+      - name: Test override-decision parsing
+        run: node --test scripts/lib/override-decisions.test.mjs
 
       - name: Post review verdict
         if: always()
