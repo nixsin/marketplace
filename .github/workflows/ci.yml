@@ -186,6 +186,27 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint:check
 
+  # A live review caught that scripts/lib/pr-reconciliation.mjs's tests
+  # only ever ran inside pr-reconciliation.yml's own steps — a workflow
+  # that never triggers on `pull_request`, only on close/schedule/manual
+  # dispatch. A regression here would ship straight to main, unnoticed by
+  # this PR's own CI, and only surface much later when pr-reconciliation
+  # .yml next actually ran. This job closes that gap: same tests, run as
+  # part of every regular PR's gate instead. Unconditional (not path-
+  # filtered) — zero npm dependencies to install (pure Node built-ins),
+  # so there's no real cost to just always running it, and one less
+  # filter surface to get wrong on a file that's already had plenty of
+  # those.
+  test-ci-scripts:
+    name: Test CI/reconciliation scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test scripts/lib/pr-reconciliation.test.mjs
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
@@ -512,6 +533,7 @@ jobs:
     needs:
       [
         lint,
+        test-ci-scripts,
         audit,
         test-api-unit,
         test-api-e2e,
@@ -660,6 +682,7 @@ jobs:
     needs:
       [
         lint,
+        test-ci-scripts,
         audit,
         test-api-unit,
         test-api-e2e,
@@ -688,6 +711,7 @@ jobs:
           cat > /tmp/job-summary.json << 'EOF'
           {
             "lint": "${{ needs.lint.result }}",
+            "test-ci-scripts": "${{ needs.test-ci-scripts.result }}",
             "audit": "${{ needs.audit.result }}",
             "test-api-unit": "${{ needs.test-api-unit.result }}",
             "test-api-e2e": "${{ needs.test-api-e2e.result }}",
@@ -931,7 +955,16 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     needs:
-      [lint, audit, test-api-unit, test-api-e2e, test-web, docker-scan, docker-smoke]
+      [
+        lint,
+        test-ci-scripts,
+        audit,
+        test-api-unit,
+        test-api-e2e,
+        test-web,
+        docker-scan,
+        docker-smoke,
+      ]
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
