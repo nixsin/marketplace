@@ -89,11 +89,45 @@ jobs:
       # comment gets posted" here was working as designed, but a command
       # that can never succeed in the first place isn't a "safe" failure,
       # it's the check being off since this workflow was introduced.
+      #
+      # Two more real bugs a live review caught, both in the same "a
+      # non-conclusive result got treated as conclusive" shape:
+      #   - GitHub can successfully return `mergeStateStatus: UNKNOWN`
+      #     while it's still computing mergeability — confirmed as a real
+      #     value of the `MergeStateStatus` GraphQL enum, not an error.
+      #     That was falling through to "not DIRTY" and falsely resolving
+      #     a real, still-active conflict. Now has its own branch: skip
+      #     entirely on UNKNOWN, don't flag or resolve.
+      #   - The marker-lookup pipelines (`gh api ... | jq ... | head -1`)
+      #     didn't track their own success. Without `pipefail`, a failed
+      #     `gh api`/`jq` upstream is indistinguishable from "looked,
+      #     found zero matches" — `head -1` exits 0 either way. A failure
+      #     here meant a confirmed-real conflict/stuck-run could create a
+      #     brand new duplicate warning comment instead of editing the
+      #     existing one, contradicting this job's own edit-in-place
+      #     design. Fixed with `set -o pipefail` (doesn't cause early
+      #     abort — only `-e`, deliberately off, does that) plus
+      #     explicitly capturing each pipeline's own exit status, same
+      #     pattern as the status lookups above. Verified: a genuinely
+      #     empty result still reports success; an actually-failed
+      #     upstream command now reports failure.
       - name: Reconcile every open PR targeting main
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set +e
+          # pipefail alongside set +e: doesn't cause any early abort (only
+          # -e does that, and it's deliberately off), it just makes a
+          # pipeline's own exit status reflect a real failure anywhere in
+          # it, not just its last stage. Needed for the marker-lookup
+          # pipelines below (`gh api ... | jq ... | head -1`) — without
+          # it, `head -1` succeeding on empty input (itself correct: zero
+          # matches is a legitimate, successful outcome) made a genuinely
+          # FAILED `gh api`/`jq` upstream indistinguishable from "looked,
+          # found nothing." Verified empirically: with pipefail, a
+          # deliberately-failing first stage reports non-zero; a
+          # successful stage with zero real matches still reports zero.
+          set -o pipefail
 
           pr_numbers=$(gh pr list --repo "${{ github.repository }}" --base main --state open --json number --jq '.[].number')
 
@@ -144,9 +178,22 @@ jobs:
               echo "  Could not determine mergeStateStatus — skipping conflict check this run"
             fi
             conflict_marker="<!-- pr-reconciliation-conflict -->"
-            existing_conflict_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate | jq --arg m "$conflict_marker" '.[] | select(.body | startswith($m)) | .id' | head -1)
+            if existing_conflict_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate | jq --arg m "$conflict_marker" '.[] | select(.body | startswith($m)) | .id' | head -1); then
+              conflict_comment_lookup_ok=true
+            else
+              conflict_comment_lookup_ok=false
+              echo "  Could not look up existing conflict comment — skipping conflict check this run"
+            fi
 
-            if [ "$conflict_lookup_ok" = "true" ]; then
+            # GitHub can successfully return mergeStateStatus=UNKNOWN while
+            # mergeability is still being computed (confirmed as a real,
+            # documented value of the MergeStateStatus GraphQL enum, not
+            # an error) — a live review caught that this was falling
+            # through to "not DIRTY" and falsely resolving a real,
+            # still-active conflict. UNKNOWN gets its own branch: skip
+            # entirely, neither flag nor resolve, until a later run gets a
+            # conclusive answer.
+            if [ "$conflict_lookup_ok" = "true" ] && [ "$conflict_comment_lookup_ok" = "true" ]; then
               if [ "$merge_status" = "DIRTY" ]; then
                 echo "  Real merge conflict with main (mergeStateStatus=DIRTY)"
                 conflicted=$((conflicted + 1))
@@ -157,6 +204,8 @@ jobs:
                 else
                   gh pr comment "$pr" --repo "${{ github.repository }}" --body "$body"
                 fi
+              elif [ "$merge_status" = "UNKNOWN" ]; then
+                echo "  mergeStateStatus is UNKNOWN (GitHub still computing it) — skipping this run"
               elif [ -n "$existing_conflict_id" ]; then
                 # Was flagged before, isn't dirty anymore — update the same
                 # comment rather than leave a stale warning in place.
@@ -190,7 +239,12 @@ jobs:
             conclusion=$(echo "$latest_run" | jq -r '.conclusion // empty')
             created_at=$(echo "$latest_run" | jq -r '.createdAt // empty')
             stuck_marker="<!-- pr-reconciliation-stuck-approval -->"
-            existing_stuck_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate | jq --arg m "$stuck_marker" '.[] | select(.body | startswith($m)) | .id' | head -1)
+            if existing_stuck_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate | jq --arg m "$stuck_marker" '.[] | select(.body | startswith($m)) | .id' | head -1); then
+              stuck_comment_lookup_ok=true
+            else
+              stuck_comment_lookup_ok=false
+              echo "  Could not look up existing stuck-approval comment — skipping this run"
+            fi
 
             is_stuck=false
             if [ "$conclusion" = "action_required" ] && [ -n "$created_at" ]; then
@@ -202,7 +256,7 @@ jobs:
               fi
             fi
 
-            if [ "$stuck_lookup_ok" = "true" ]; then
+            if [ "$stuck_lookup_ok" = "true" ] && [ "$stuck_comment_lookup_ok" = "true" ]; then
               if [ "$is_stuck" = "true" ]; then
                 echo "  Workflow run awaiting approval for over 24h"
                 stuck=$((stuck + 1))
