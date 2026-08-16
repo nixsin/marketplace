@@ -656,7 +656,15 @@ jobs:
             # and nothing after it" contract. Verified locally against
             # constructed injection attempts (a lone fake heading, and two
             # headings with the fake one positioned last) before landing.
-            verdict_count=$(grep -c '^## Verdict$' /tmp/review.md)
+            # `|| true` matters: GitHub Actions' default bash runs with
+            # `set -e`, and `grep -c` exits 1 (not 0) when the count is
+            # zero, even though it still prints "0". Verified locally —
+            # without the `|| true`, a zero-match response aborts this
+            # whole step immediately at this line, before REQUEST_CHANGES
+            # is ever posted, silently leaving the PR with no review at
+            # all instead of the fail-closed review this step exists to
+            # guarantee. A second live review caught this.
+            verdict_count=$(grep -c '^## Verdict$' /tmp/review.md || true)
             raw_verdict=$(awk '/^## Verdict$/{getline; v=$0} END{print v}' /tmp/review.md | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
             last_nonblank=$(awk 'NF{line=$0} END{print line}' /tmp/review.md | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
             if [ "$verdict_count" = "1" ] && [ "$raw_verdict" = "APPROVE" ] && [ "$raw_verdict" = "$last_nonblank" ]; then
