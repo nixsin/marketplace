@@ -71,7 +71,7 @@ jobs:
       # independent `force_jobs` OR-clause (below), so a workflow_dispatch
       # run reaches the jobs it's meant to regardless of what (if
       # anything) this step produces for that trigger type.
-      - uses: dorny/paths-filter@v3
+      - uses: dorny/paths-filter@v4
         id: filter
         if: github.event_name == 'pull_request'
         with:
