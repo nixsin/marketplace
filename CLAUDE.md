@@ -216,6 +216,80 @@ README badge line pointing at `coverage/<new-name>-badge.json`. No changes
 needed to `publish-badge.sh` or `chart-math.mjs` — both are already fully
 generic over the metric name.
 
+## Web e2e testing (`test-e2e-web` job, Playwright)
+
+The first test in this repo that runs in a real browser engine at all —
+every other web test (`apps/web/src/**/*.spec.tsx`,
+`apps/web/test/*.spec.ts`) is a Vitest/jsdom component test, which never
+executes real browser code. `apps/web/e2e/critical-flow.spec.ts` covers
+the one substantive flow that actually exists in the UI today: home page
+→ real product listing (a genuine GraphQL call to a real API against real
+seeded Postgres data, not mocked) → pagination → language switch. There's
+no login/onboarding UI yet — that flow is API-only so far (see
+`apps/api/test/auth.e2e-spec.ts`) — so don't assume this suite covers it;
+extend it here once that UI exists.
+
+**Chromium only, deliberately** — this closes the "zero real-browser
+coverage" gap first. A full BrowserStack-style cross-browser/OS device
+matrix was considered and rejected as premature: cross-browser testing
+multiplies an *existing* single-browser suite, and there wasn't one.
+Playwright's other bundled engines (Firefox, WebKit) are the natural next
+step once this proves valuable — free, no paid service, no new CI
+infrastructure. A real device farm (BrowserStack/Sauce Labs) is worth it
+once there are real users on diverse devices and a track record of bugs
+slipping past that — not before. shadcn/Radix (this repo's actual
+component library) is also specifically built for cross-browser
+consistency, which lowers the real risk being deferred here.
+
+**Informational, not required** — started the same way `perf-budget`
+(Lighthouse) itself did; promote to required once it's proven stable
+across enough real runs, same reasoning CLAUDE.md already documents for
+why Lighthouse became required. Path-filtered on `api`, `web`, *and*
+`deps` — unlike `test-web` (`web`/`deps` only), this suite is a genuine
+full-stack integration test, not a mocked component-test suite: its
+pagination assertion exercises real `apps/api` logic (`findPaged`'s
+Prisma queries), so an API-only change needs to run it too. A docs-only
+PR still never pays for it.
+
+**Screenshots use Playwright's built-in `toHaveScreenshot()`** — baselines
+live in `apps/web/e2e/critical-flow.spec.ts-snapshots/`, committed to the
+repo (platform-suffixed filenames, e.g. `-chromium-darwin.png`; CI runs on
+Linux, so the *real* baselines a PR is checked against are Linux-generated
+— regenerate with `pnpm --filter web exec playwright test
+--update-snapshots` inside the same environment CI uses, not by copying
+local macOS-generated PNGs over the repo's Linux ones). A real diff fails
+the assertion and Playwright writes `-actual`/`-expected`/`-diff` PNGs
+into `test-results/` — verified this mechanism directly (deliberately
+swapped a baseline to simulate a regression, confirmed a real diff image
+was produced highlighting the changed region, then restored the correct
+baseline) before relying on it. Right now a failure's diff images are
+only reachable via the uploaded `playwright-report` workflow artifact (a
+human has to download and open it) — the planned improvement is posting
+the before/after images directly to the PR as a comment, with an AI-
+generated description of what visually changed, instead of requiring a
+report download. Not built yet; this section will be extended once it
+is.
+
+**Local server startup, not Playwright's own `webServer` config, in
+CI** — `playwright.config.ts`'s `webServer` block only activates for a
+plain local `pnpm test:e2e` (no `PLAYWRIGHT_BASE_URL` set). The CI job
+builds and starts both the API (real prod-style build, `node
+dist/src/main.js`, matching `load-test.mjs`'s own approach — not `nest
+start --watch`, which behaves differently) and the web app itself as
+separate steps with their own curl-retry-loop readiness checks, so both
+servers' logs stay visible in the job output instead of being buried
+inside Playwright's own webServer log capture.
+
+**Local `pnpm test:e2e` still needs Postgres + the API running
+yourself** — an AI review round caught that `webServer.command` was
+just `pnpm start`, which has nothing to serve on a fresh checkout with
+no prior `.next` build; fixed to `pnpm build && pnpm start` (confirmed
+by reproducing the original failure directly: `rm -rf .next && pnpm
+test:e2e`). What's still deliberately not automated: starting Postgres
+or the API — same prerequisites README.md's "Testing" section already
+assumes for `apps/api`'s own e2e suite, not a new pattern. Run
+`scripts/dev.sh` (or start the API by hand) first.
+
 ## PR reconciliation (`pr-reconciliation.yml`)
 
 Keeps every open PR targeting `main` in sync on three axes, event-driven
