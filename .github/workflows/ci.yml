@@ -210,69 +210,21 @@ jobs:
         if: always()
         run: docker compose down -v
 
-  ai-failure-analysis:
-    name: AI CI failure analysis
-    runs-on: ubuntu-latest
-    # PR-only: a push-to-main failure has no PR thread to comment on, and
-    # this job's whole point is posting a comment there. `failure()` here
-    # means "at least one job in `needs:` failed" — GitHub's own semantics
-    # for a job whose condition function runs even though an ancestor
-    # failed (normally a failed dependency skips downstream jobs).
-    if: failure() && github.event_name == 'pull_request'
-    needs:
-      [lint, audit, test-api-unit, test-api-e2e, test-web, docker-scan, docker-smoke]
-    permissions:
-      contents: read
-      pull-requests: write
-      actions: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-
-      # Only the failed steps' logs, not full job output — keeps the
-      # request focused and avoids paying to re-read everything that
-      # already passed.
-      - name: Fetch failed step logs
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh run view "${{ github.run_id }}" --log-failed > /tmp/failed-logs.txt
-
-      - name: Analyze failure with Claude
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: node scripts/analyze-ci-failure.mjs /tmp/failed-logs.txt > /tmp/analysis.md
-
-      - name: Post analysis as PR comment
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          {
-            echo "### 🤖 AI failure analysis (Claude Haiku 4.5)"
-            echo
-            cat /tmp/analysis.md
-            echo
-            echo "_Automated analysis — verify before acting on it._"
-          } > /tmp/comment.md
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md
-
   # Both jobs below wire up scripts that already existed (apps/web/scripts/
   # perf-budget.mjs, apps/api/scripts/load-test.mjs) but only ever ran
-  # manually. `continue-on-error: true` keeps them exactly as informational
-  # as their own doc comments already say they should be — Lighthouse
-  # scores and load-test latency have real run-to-run variance, especially
-  # on shared CI runners, so a red X here would be noise, not signal. They
-  # report real numbers on every PR without ever blocking one; neither is
-  # in `migrate`'s `needs:` list or branch protection's required checks.
+  # manually. Deliberately *not* `continue-on-error: true` — Lighthouse
+  # scores and load-test latency have real run-to-run variance, so a
+  # failure here isn't necessarily a real regression, but it's still
+  # worth AI analysis rather than being silently masked (continue-on-error
+  # hides a job's real outcome from `needs.<job>.result`/`failure()` for
+  # anything downstream, which would make ai-failure-analysis below unable
+  # to see these failures at all). They still can't block a merge on their
+  # own: neither is in `migrate`'s `needs:` list or branch protection's
+  # required checks — that's what actually keeps them "informational".
 
   perf-budget:
     name: Web performance budget (Lighthouse)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -299,7 +251,6 @@ jobs:
   load-test:
     name: API load test (autocannon)
     runs-on: ubuntu-latest
-    continue-on-error: true
     services:
       postgres:
         image: postgres:16-alpine
@@ -346,6 +297,88 @@ jobs:
         run: pnpm test:load
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medinstru?schema=public
+
+  ai-failure-analysis:
+    name: AI CI failure analysis
+    runs-on: ubuntu-latest
+    # PR-only: a push-to-main failure has no PR thread to comment on, and
+    # this job's whole point is posting a comment there. `failure()` here
+    # means "at least one job in `needs:` failed" — GitHub's own semantics
+    # for a job whose condition function runs even though an ancestor
+    # failed (normally a failed dependency skips downstream jobs). Covers
+    # perf-budget/load-test too now, not just the required checks — see
+    # the comment above those two jobs for why that only works because
+    # they don't use continue-on-error.
+    if: failure() && github.event_name == 'pull_request'
+    needs:
+      [
+        lint,
+        audit,
+        test-api-unit,
+        test-api-e2e,
+        test-web,
+        docker-scan,
+        docker-smoke,
+        perf-budget,
+        load-test,
+      ]
+    permissions:
+      contents: read
+      pull-requests: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # `gh run view` — both `--log-failed` on the whole run AND
+      # `--job <id> --log-failed` on a single job — refuses to return
+      # anything until the *entire run* completes, including this job
+      # itself. Verified this the hard way: switching to per-job fetching
+      # still hit the same "run ... is still in progress" error. The raw
+      # REST endpoint doesn't have that problem — it's scoped to a single
+      # job's own completion, not the run's — so hit it directly via
+      # `gh api` instead of going through `gh run view` at all. It returns
+      # the full job log (no failed-steps-only filtering, unlike
+      # --log-failed), but that's fine: the analysis script already keeps
+      # only the tail of the log, where the actual error almost always is.
+      - name: Fetch failed step logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          failed_job_ids=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate --jq '.jobs[] | select(.conclusion == "failure") | .id')
+
+          : > /tmp/failed-logs.txt
+          if [ -z "$failed_job_ids" ]; then
+            echo "No failed jobs found in this run." > /tmp/failed-logs.txt
+          else
+            for job_id in $failed_job_ids; do
+              echo "=== Job $job_id ===" >> /tmp/failed-logs.txt
+              gh api --allow-escape-sequences "repos/${{ github.repository }}/actions/jobs/$job_id/logs" >> /tmp/failed-logs.txt
+            done
+          fi
+
+      - name: Analyze failure with Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node scripts/analyze-ci-failure.mjs /tmp/failed-logs.txt > /tmp/analysis.md
+
+      - name: Post analysis as PR comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### 🤖 AI failure analysis (Claude Haiku 4.5)"
+            echo
+            cat /tmp/analysis.md
+            echo
+            echo "_Automated analysis — verify before acting on it._"
+          } > /tmp/comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md
 
   migrate:
     name: Apply prod DB migrations

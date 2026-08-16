@@ -111,14 +111,13 @@ pnpm --filter api test:e2e    # integration tests — real GraphQL + real Postgr
 
 ```bash
 pnpm --filter web build && pnpm --filter web test   # static caching + JS bundle budget
-pnpm --filter web test:perf                          # Lighthouse audit vs. §12A targets (manual/periodic, not CI-gated)
-pnpm --filter api test:load                           # autocannon load test (manual/periodic, not CI-gated)
+pnpm --filter web test:perf                          # Lighthouse audit vs. §12A targets
+pnpm --filter api test:load                           # autocannon load test
 ```
 
 - **`apps/web/test/static-caching.spec.ts`** — boots the production build and asserts real `Cache-Control` headers: hashed JS/CSS chunks must be `immutable, max-age=31536000`; the favicon must be cached for a real but finite window (not immutable — its URL never changes, so it can't cache forever without risking a stale icon); the HTML document must **not** be immutable-cached (content needs to go stale). This caught a real gap — the favicon had no meaningful caching at all — now fixed via `next.config.ts`'s `headers()`.
-- **`apps/web/test/bundle-budget.spec.ts`** — measures actual gzip-compressed bytes (via `curl`, since Node's `fetch` transparently decompresses and can't be used to measure wire size) for every real `<script src>` a browser would load, and asserts the total stays under the §12A 150KB budget. Deliberately excludes `nomodule=""` legacy-polyfill scripts — a modern browser never downloads those at all if it supports ES modules, so counting them would overstate what real users actually transfer.
-- **`apps/web/scripts/perf-budget.mjs`** (`test:perf`) — runs a real Lighthouse audit (mobile, simulated throttling) against the production build and checks it against §12A's performance-score/LCP/JS-transfer targets. Kept as a manual/periodic script rather than a CI gate — Lighthouse scores have real run-to-run variance.
-- **`apps/api/scripts/load-test.mjs`** (`test:load`) — runs `autocannon` against the `products` GraphQL query and reports throughput/latency percentiles. Also informational rather than CI-gated, for the same reason.
+- **`apps/web/test/bundle-budget.spec.ts`** — measures actual gzip-compressed bytes (via `curl`, since Node's `fetch` transparently decompresses and can't be used to measure wire size) for every real `<script src>` a browser would load, and asserts the total stays under budget — raised twice since the original §12A 150KB target, currently 186KB (see the file's own comment for why each raise happened). Deliberately excludes `nomodule=""` legacy-polyfill scripts — a modern browser never downloads those at all if it supports ES modules, so counting them would overstate what real users actually transfer.
+- **`apps/web/scripts/perf-budget.mjs`** (`test:perf`) and **`apps/api/scripts/load-test.mjs`** (`test:load`) — a real Lighthouse audit (mobile, simulated throttling) against the production build, and an `autocannon` load test against the `products` GraphQL query, respectively. Both run in CI on every PR (`perf-budget`/`load-test` jobs in `ci.yml`) but are deliberately **not required checks** — Lighthouse scores and load-test latency have real run-to-run variance, so a red X here isn't necessarily a regression. A real failure still gets AI root-cause analysis posted as a PR comment (`ai-failure-analysis` job) — informational doesn't mean ignored, just non-blocking.
 
 ## Localization
 
