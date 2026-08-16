@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       force_jobs:
-        description: "Comma-separated job IDs to force-run despite the path filter (audit, test-api-unit, test-api-e2e, test-web, perf-budget, load-test)"
+        description: "Comma-separated job IDs to force-run despite the path filter (audit, test-api-unit, test-api-e2e, test-web, perf-budget, load-test, docker-scan, docker-smoke)"
         required: false
         type: string
         default: ""
@@ -26,29 +26,32 @@ jobs:
   # sequence for no reason — total wall-clock time was the sum of every
   # step, not the slowest one.
 
-  # Feeds the path-based `if:` conditions below. Deliberately narrow in
-  # scope: only test-api-unit/test-api-e2e/test-web/audit/perf-budget/
-  # load-test are safe to skip on an unrelated change — lint, docker-scan,
-  # docker-smoke, migrate, and ai-failure-analysis are NOT filtered:
+  # Feeds the path-based `if:` conditions below. lint, migrate, and
+  # ai-failure-analysis remain NOT filtered:
   #   - lint currently lints both apps in one combined command (not split
   #     per-app), so its real skip condition is the union of both apps'
   #     paths anyway — no separate filtering to be gained without first
   #     splitting the job itself.
-  #   - docker-scan/docker-smoke build BOTH Dockerfiles, and both
-  #     Dockerfiles' `deps` stage does a workspace-root `pnpm install`
-  #     that runs apps/api's `prisma generate` postinstall even for the
-  #     WEB build (see apps/web/Dockerfile's own comment) — so a
-  #     web-only-looking change can still affect the API image and vice
-  #     versa. Per-app isolation here would be actively wrong, not just
-  #     unnecessary, and "skip only when neither app nor deps changed" is
-  #     a small enough win (docs-only PRs, mostly) to not be worth the
-  #     extra surface area right now.
   #   - migrate runs `prisma migrate deploy` against production, already a
   #     fast no-op with nothing new to apply — the risk of a filter
   #     incorrectly skipping a real migration outweighs the seconds saved.
   #   - ai-failure-analysis reacts to `failure()`, not to the diff itself —
   #     doesn't make sense to path-filter something whose entire job is
   #     "respond to whatever just failed."
+  # test-api-unit/test-api-e2e/test-web/audit/perf-budget/load-test/
+  # docker-smoke/docker-scan ARE filtered (`docker` — both Dockerfiles
+  # build off a SHARED `deps` stage: a workspace-root `pnpm install` that
+  # runs apps/api's `prisma generate` postinstall even for the web image,
+  # see apps/web/Dockerfile's own comment — so the filter covers both apps
+  # together, not each app's effect on the image separately).
+  # docker-scan (Trivy) has a real trade-off docker-smoke's purely-
+  # deterministic behavioral test doesn't: it checks against an external,
+  # time-varying CVE database, so filtering it means losing the
+  # incidental re-scan coverage it used to get from running on every
+  # push. That gap is closed properly instead of left as an accepted
+  # loss — see docker-scan-scheduled.yml, a weekly cron re-scan
+  # independent of what any given push touches, the same reasoning
+  # codeql.yml already uses for its own schedule trigger.
   changes:
     name: Detect changed paths
     runs-on: ubuntu-latest
@@ -58,8 +61,9 @@ jobs:
       api: ${{ steps.filter.outputs.api }}
       web: ${{ steps.filter.outputs.web }}
       deps: ${{ steps.filter.outputs.deps }}
+      docker: ${{ steps.filter.outputs.docker }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # workflow_dispatch has no PR/push diff for dorny/paths-filter to
       # compare against — not attempting it there avoids depending on
       # unconfirmed behavior for a trigger type it isn't designed for.
@@ -80,6 +84,32 @@ jobs:
               - 'apps/api/**'
             web:
               - 'apps/web/**'
+            # Explicit files, not a broad `scripts/**` glob — verified by
+            # reading both Dockerfiles (explicitly scoped COPY, no
+            # `COPY . .`, so scripts/ and .github/ genuinely never enter
+            # either image), docker-compose.yml (build context is the
+            # repo root, used by scripts/dev.sh), .dockerignore (directly
+            # controls the build context), and the docker-scan/docker-
+            # smoke job steps themselves (docker-scan runs `docker build`
+            # directly; docker-smoke runs `./scripts/dev.sh`, which is
+            # `docker compose` under the hood). scripts/dev.sh specifically
+            # — not scripts/** — because a first draft of this filter
+            # would have excluded it along with the rest of scripts/,
+            # which is exactly the file docker-smoke's job exists to
+            # exercise. Everything else under scripts/ (the ai-code-review
+            # /pr-reconciliation tooling) is confirmed unreferenced by
+            # either Dockerfile and stays excludable.
+            docker:
+              - 'apps/api/**'
+              - 'apps/web/**'
+              - 'apps/api/Dockerfile'
+              - 'apps/web/Dockerfile'
+              - 'docker-compose.yml'
+              - '.dockerignore'
+              - 'scripts/dev.sh'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
 
       # Surfaces the run/skip decision on the PR itself instead of making
       # someone reconstruct it from each job's `if:` in this file. Edits
@@ -92,6 +122,7 @@ jobs:
           API_CHANGED: ${{ steps.filter.outputs.api }}
           WEB_CHANGED: ${{ steps.filter.outputs.web }}
           DEPS_CHANGED: ${{ steps.filter.outputs.deps }}
+          DOCKER_CHANGED: ${{ steps.filter.outputs.docker }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           status() {
@@ -108,7 +139,7 @@ jobs:
           <!-- ci-skip-logic-comment -->
           ### 🔍 CI job skip logic
 
-          Changed paths detected: \`api=$API_CHANGED\` · \`web=$WEB_CHANGED\` · \`deps=$DEPS_CHANGED\`
+          Changed paths detected: \`api=$API_CHANGED\` · \`web=$WEB_CHANGED\` · \`deps=$DEPS_CHANGED\` · \`docker=$DOCKER_CHANGED\`
 
           | Job | Status | Runs when |
           |---|---|---|
@@ -118,14 +149,26 @@ jobs:
           | API load test (autocannon) | $(status "$api_or_deps") | api or deps changed |
           | Web build + tests | $(status "$web_or_deps") | web or deps changed |
           | Web performance budget (Lighthouse) | $(status "$web_or_deps") | web or deps changed |
+          | Docker image vulnerability scan | $(status "$DOCKER_CHANGED") | apps/api, apps/web, either Dockerfile, docker-compose.yml, .dockerignore, scripts/dev.sh, or deps changed |
+          | Docker dev stack smoke test | $(status "$DOCKER_CHANGED") | same as above |
 
-          Lint, Docker image vulnerability scan, and Docker dev stack smoke test always run regardless of what changed — see the \`changes\` job's own comment in \`ci.yml\` for why those aren't filtered.
+          Lint always runs regardless of what changed — see the \`changes\` job's own comment in \`ci.yml\` for why. Docker image vulnerability scan also runs weekly regardless of any push, in a separate scheduled workflow — see \`docker-scan-scheduled.yml\`.
           EOF
 
           existing_id=$(gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate --jq '.[] | select(.body | startswith("<!-- ci-skip-logic-comment -->")) | .id' | head -1)
 
+          # -F (typed field), not -f (raw-field): only -F documents "@<path>"
+          # to read a parameter's value from a file — -f treats "@..." as a
+          # literal string. Discovered live: every other push to a PR was
+          # silently overwriting this comment's body with the literal text
+          # "@/tmp/skip-comment.md" instead of its actual content, which
+          # also destroys the "<!-- ci-skip-logic-comment -->" marker this
+          # same lookup depends on — so the NEXT push can no longer find the
+          # (now-corrupted) comment, falls through to creating a fresh one,
+          # and the cycle repeats: one broken comment left behind every
+          # other push, forever, on every PR that gets more than one push.
           if [ -n "$existing_id" ]; then
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_id" -f body=@/tmp/skip-comment.md > /dev/null
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_id" -F body=@/tmp/skip-comment.md > /dev/null
           else
             gh pr comment "$PR_NUMBER" --body-file /tmp/skip-comment.md
           fi
@@ -134,14 +177,35 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint:check
+
+  # A live review caught that scripts/lib/pr-reconciliation.mjs's tests
+  # only ever ran inside pr-reconciliation.yml's own steps — a workflow
+  # that never triggers on `pull_request`, only on close/schedule/manual
+  # dispatch. A regression here would ship straight to main, unnoticed by
+  # this PR's own CI, and only surface much later when pr-reconciliation
+  # .yml next actually ran. This job closes that gap: same tests, run as
+  # part of every regular PR's gate instead. Unconditional (not path-
+  # filtered) — zero npm dependencies to install (pure Node built-ins),
+  # so there's no real cost to just always running it, and one less
+  # filter surface to get wrong on a file that's already had plenty of
+  # those.
+  test-ci-scripts:
+    name: Test CI/reconciliation scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: node --test scripts/lib/pr-reconciliation.test.mjs
 
   audit:
     name: Dependency audit
@@ -153,9 +217,9 @@ jobs:
     # — see that job's own comment for why/how this is constrained.
     if: needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'audit'))
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -193,9 +257,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -239,9 +303,9 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -267,9 +331,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -292,8 +356,20 @@ jobs:
   docker-scan:
     name: Docker image vulnerability scan
     runs-on: ubuntu-latest
+    needs: [changes]
+    # Now path-filtered the same as docker-smoke — the CVE-freshness
+    # concern (Trivy scans an external, time-varying database, so running
+    # on every push incidentally re-scans the unchanged image, catching
+    # newly-disclosed CVEs) is real, but the fix for it is an explicit
+    # scheduled re-scan, not leaving this job's path filter permanently
+    # loose as an accidental substitute. See
+    # docker-scan-scheduled.yml — same scan, weekly cron, independent of
+    # what any given push touches, mirroring codeql.yml's own reasoning
+    # for its schedule trigger ("a push-only trigger would miss newly-
+    # disclosed vulnerability patterns in code that hasn't changed").
+    if: needs.changes.outputs.docker == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'docker-scan'))
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build prod images (build-only — no secrets available here to run them with)
         run: |
@@ -319,8 +395,10 @@ jobs:
   docker-smoke:
     name: Docker dev stack smoke test
     runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.docker == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'docker-smoke'))
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # scripts/dev.sh builds its own `dev`-target images from scratch —
       # entirely independent of docker-scan's `prod`-target build above,
@@ -359,9 +437,9 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'perf-budget'))
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -402,9 +480,9 @@ jobs:
           --health-retries 10
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -455,6 +533,7 @@ jobs:
     needs:
       [
         lint,
+        test-ci-scripts,
         audit,
         test-api-unit,
         test-api-e2e,
@@ -469,9 +548,9 @@ jobs:
       pull-requests: write
       actions: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -603,6 +682,7 @@ jobs:
     needs:
       [
         lint,
+        test-ci-scripts,
         audit,
         test-api-unit,
         test-api-e2e,
@@ -619,7 +699,7 @@ jobs:
       # call — a workflow_dispatch trigger requires actions: write.
       actions: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Fetch PR diff and job results
         env:
@@ -631,6 +711,7 @@ jobs:
           cat > /tmp/job-summary.json << 'EOF'
           {
             "lint": "${{ needs.lint.result }}",
+            "test-ci-scripts": "${{ needs.test-ci-scripts.result }}",
             "audit": "${{ needs.audit.result }}",
             "test-api-unit": "${{ needs.test-api-unit.result }}",
             "test-api-e2e": "${{ needs.test-api-e2e.result }}",
@@ -658,12 +739,57 @@ jobs:
             gh api --allow-escape-sequences "repos/${{ github.repository }}/actions/jobs/$job_id/logs" 2>/dev/null | grep -E "Test Files|Tests |Suites:|Tests:|passed|failed|coverage" >> /tmp/test-summaries.txt || true
           done
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+
+      # Lets the reviewer avoid re-flagging a finding I've already fixed or
+      # explicitly disputed earlier in this same PR's thread, instead of
+      # relying purely on a human noticing the repeat across rounds — see
+      # CLAUDE.md's "AI code review gate" section. Only a comment from an
+      # authorized login counts as a real override-decision record, not
+      # just the marker string — this is a public-thread trust boundary,
+      # not a formatting convention, since anyone who can comment on a
+      # public PR could otherwise post a fake "already discussed and
+      # dismissed" comment to try to suppress a real finding.
+      - name: Fetch prior override decisions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # --slurp, not --jq: gh api --paginate --jq runs the filter once
+          # PER PAGE, so a PR with enough comments to paginate would
+          # produce several JSON arrays concatenated back-to-back instead
+          # of one valid JSON value here — silently breaking this feature
+          # on long threads (JSON.parse throwing, caught by the script's
+          # own fail-closed default, so it wouldn't even show up as an
+          # error). --slurp wraps every page into one outer array instead,
+          # but the gh CLI rejects combining --slurp with --jq outright —
+          # so this fetches raw pages and scripts/parse-override-decisions
+          # .mjs does the flattening in JS via flattenPaginatedComments,
+          # where it's covered by a real multi-page test case.
+          #
+          # set +e and an explicit empty-array fallback, not
+          # continue-on-error: a live review caught that without either,
+          # a transient gh api failure (rate limit, permissions blip)
+          # would fail this step outright, and GitHub Actions skips every
+          # subsequent step by default on a step failure — silently
+          # preventing "Review with ChatGPT" from ever running at all,
+          # not just from getting override context. This is optional
+          # context for an otherwise-independent review, so its own
+          # fetch failing must never take the review down with it.
+          set +e
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate --slurp \
+            > /tmp/pr-comments-raw.json
+          if [ ! -s /tmp/pr-comments-raw.json ]; then
+            echo "gh api call for PR comments failed or returned nothing — defaulting to no override context." >&2
+            echo "[]" > /tmp/pr-comments-raw.json
+          fi
+          node scripts/parse-override-decisions.mjs /tmp/pr-comments-raw.json "${{ github.repository_owner }}" \
+            > /tmp/override-decisions.json
 
       # continue-on-error so an OpenAI API failure (rate limit, timeout,
       # malformed response) still lets the next step run and fail closed,
@@ -673,7 +799,7 @@ jobs:
         continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt /tmp/diff-truncated.txt > /tmp/review.md
+        run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt /tmp/diff-truncated.txt /tmp/override-decisions.json > /tmp/review.md
 
       # Runs the same tests that back scripts/lib/review-verdict.mjs
       # (scripts/lib/review-verdict.test.mjs) as an actual CI gate, not
@@ -689,6 +815,9 @@ jobs:
       # same class of bug by hand again later.
       - name: Test review-verdict parsing
         run: node --test scripts/lib/review-verdict.test.mjs
+
+      - name: Test override-decision parsing
+        run: node --test scripts/lib/override-decisions.test.mjs
 
       - name: Post review verdict
         if: always()
@@ -727,8 +856,38 @@ jobs:
             echo "_Automated review — verify before trusting it, especially a REQUEST_CHANGES verdict on something it may have misread._"
           } > /tmp/review-comment.md
 
+          # GitHub blocks the default GITHUB_TOKEN from ever posting an
+          # APPROVE review — a deliberate platform restriction (a workflow
+          # self-approving a PR would defeat required_pull_request_reviews
+          # entirely), not a permissions/scopes gap this repo controls.
+          # Discovered live: PR #20 was the first real APPROVE verdict this
+          # job ever produced, and the job crashed on
+          # "GitHub Actions is not permitted to approve pull requests."
+          #
+          # The first fix attempt here used a PR_REVIEW_PAT (a real
+          # account's token) via an inline GH_TOKEN override to post the
+          # approval instead. A live review of that attempt (PR #36) caught
+          # why it was wrong, not just a workaround: GitHub's restriction
+          # exists specifically so an automated verdict can never satisfy
+          # required_pull_request_reviews on its own — swapping in a real
+          # human account's PAT doesn't route around that restriction so
+          # much as defeat its actual purpose, since branch protection
+          # can't distinguish "the account holder reviewed this" from "a
+          # workflow posted this using the account holder's credentials."
+          # There's also no GitHub feature for an identity whose approval
+          # is deliberately excluded from the count — any approving review
+          # from a collaborator with write access satisfies the gate.
+          #
+          # So: REQUEST_CHANGES keeps posting as a real review (blocking is
+          # fine — it only ever adds friction, never satisfies anything).
+          # APPROVE never does, regardless of any secret being configured —
+          # it always degrades to a plain comment. The human is the one who
+          # decides a green, AI-approved PR is ready, via the same
+          # admin-bypass this repo already uses deliberately and visibly
+          # for its one-contributor review gate (see "The one hard rule"
+          # above) — not something a credential can quietly stand in for.
           if [ "$verdict" = "APPROVE" ]; then
-            gh pr review "$PR_NUMBER" --approve --body-file /tmp/review-comment.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/review-comment.md
           else
             gh pr review "$PR_NUMBER" --request-changes --body-file /tmp/review-comment.md
           fi
@@ -796,11 +955,20 @@ jobs:
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     needs:
-      [lint, audit, test-api-unit, test-api-e2e, test-web, docker-scan, docker-smoke]
+      [
+        lint,
+        test-ci-scripts,
+        audit,
+        test-api-unit,
+        test-api-e2e,
+        test-web,
+        docker-scan,
+        docker-smoke,
+      ]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm

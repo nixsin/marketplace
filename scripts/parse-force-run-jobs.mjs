@@ -18,6 +18,8 @@ const FORCEABLE_JOBS = [
   "test-web",
   "perf-budget",
   "load-test",
+  "docker-scan",
+  "docker-smoke",
 ];
 
 const [reviewPath] = process.argv.slice(2);

@@ -1,0 +1,341 @@
+name: PR reconciliation
+
+# Keeps every open PR targeting main in sync with reality, on three axes.
+# Event-driven automation (this used to be just "update on merge") only
+# catches the common case — it misses a failed update call, a PR opened in
+# the gap between runs, or drift from something other than a merge. The
+# `schedule` trigger below is the safety net: a daily sweep that re-checks
+# every open PR regardless of what triggered it, the same reconciliation-
+# loop idea used elsewhere for "periodically re-assert desired state,
+# don't just react to one event."
+#
+# `pull_request: types: [closed]` (not `push: branches: [main]`) is still
+# the more precise trigger for the merge-driven run — it fires once per
+# PR-close event and the `merged` check in the job's `if:` cleanly
+# separates "actually merged" from "closed without merging," which a
+# push-based trigger can't distinguish on its own. `workflow_dispatch` is
+# for running it by hand.
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    # Offset from dependency-freshness.yml's Monday 06:00 UTC slot —
+    # daily, not weekly, since PR drift accumulates faster than dependency
+    # staleness does.
+    - cron: "0 7 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  reconcile:
+    name: Reconcile open PRs
+    runs-on: ubuntu-latest
+    # A live review caught that with three trigger types (schedule,
+    # workflow_dispatch, merge-driven pull_request) and no concurrency
+    # control, two runs could genuinely overlap — a PR merging right at
+    # the daily cron slot, or a manual dispatch while the schedule is
+    # already running. Both would read the same marker-comment state
+    # before either writes, race on `head -1` picking the same "existing"
+    # id (or both seeing none), and could each create their own comment.
+    # A single shared group (not per-ref/per-PR — every run processes ALL
+    # open PRs, so there's nothing to further scope by) with
+    # cancel-in-progress: false queues concurrent triggers to run one at a
+    # time rather than fight over the same comments, without cancelling a
+    # sweep partway through (this job's steps are otherwise idempotent
+    # and safe to just re-run, which cancelling and letting the next
+    # trigger start fresh would also achieve, but queueing is simpler and
+    # doesn't risk a busy period never getting a single run to completion).
+    concurrency:
+      group: pr-reconciliation
+      cancel-in-progress: false
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'main')
+    # contents: write is what lets the update-branch call push a merge
+    # commit onto each PR's branch; pull-requests: write is for listing
+    # PRs and posting/editing comments; actions: read is for checking
+    # each PR's latest workflow-run conclusion.
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # The decide-*.mjs scripts this job calls have zero npm dependencies
+      # (only built-in Node modules), so no pnpm/action-setup or install
+      # step is needed — just a Node runtime to execute them.
+      - name: Test pr-reconciliation decision logic
+        run: node --test scripts/lib/pr-reconciliation.test.mjs
+
+      # This step's job is to attempt every check on every PR and never
+      # abort partway — one PR's failure (a real merge conflict, a PR that
+      # raced this run and got closed/locked, an API hiccup) must not stop
+      # the rest from being reconciled. `set +e` (plus `pipefail`, so a
+      # pipeline's exit status reflects a real failure anywhere in it, not
+      # just its last stage) makes that structural instead of relying on
+      # `|| true` after each risky command — same reasoning as the
+      # equivalent fix in the ai-code-review job (see CLAUDE.md).
+      #
+      # Each of the three checks below only surfaces or retries — nothing
+      # here auto-resolves a real conflict or auto-approves a stuck
+      # workflow run; those stay human decisions. A flagged issue gets an
+      # edit-in-place comment (marker-based, same pattern as the `changes`
+      # job's skip-logic comment in ci.yml) so re-running doesn't spam
+      # duplicates, and so a since-resolved flag gets updated to say so
+      # rather than left as a stale warning.
+      #
+      # The actual flag/resolve/skip decisions live in
+      # scripts/lib/pr-reconciliation.mjs (tested above), not inline here
+      # — after SIX real bugs turned up across three live-review rounds on
+      # this job's introducing PR, all in the same shape (a failed or
+      # non-conclusive lookup silently treated as a conclusive one: a
+      # missing --repo, an invalid `--jq --arg`, a failed status lookup
+      # read as "confirmed clean," a real `mergeStateStatus: UNKNOWN`
+      # value read the same way, an unchecked marker-lookup pipe, and a
+      # failed PR-enumeration call read as "genuinely zero open PRs" —
+      # each one independently reproduced before being fixed, see this
+      # PR's history for the details), the untested-inline-bash approach
+      # itself was the actual problem. This bash's only remaining job is
+      # gathering each decision function's inputs and acting on its
+      # output — every `gh`/`jq` call whose success matters is captured
+      # explicitly (`if var=$(cmd); then` — never a bare assignment
+      # followed by a value check) precisely because "successfully
+      # returned a value" and "returned the value we wanted" turned out
+      # not to be the same thing, repeatedly.
+      #
+      # Comment bodies are built with `printf '%s\n%s'` (marker, message)
+      # rather than raw multi-line string literals — a literal newline
+      # inside a `run: |` block's bash puts the continuation line at
+      # column 1, which breaks YAML's block-scalar indentation rule and
+      # is a real parse error, not just a style nit.
+      - name: Reconcile every open PR targeting main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          set -o pipefail
+          # A live review caught, across two rounds, that this step could
+          # report success (exit 0) despite never actually reconciling one
+          # or more PRs. Round one: every gh api -X PATCH/gh pr comment
+          # call ran under set +e with nobody checking whether it actually
+          # succeeded, so a write failure left the intended warning or
+          # resolution unpublished while the summary line still claimed it
+          # was handled. Round two: a failed *lookup* (gh pr view, gh run
+          # list, either comment-marker pipeline) correctly produces a
+          # safe `skip` action — no false resolution — but that skip
+          # wasn't tracked either, so a PR that couldn't even be inspected
+          # this run looked identical to one that was inspected and found
+          # clean. Especially bad for the scheduled safety net: a
+          # systemic API/auth failure could silently skip reconciling
+          # every open PR while the run still reported green. had_errors
+          # now tracks both failure classes across every PR without
+          # changing the "one PR's failure must not stop the rest" design
+          # — the loop keeps running regardless, but the step's own exit
+          # status now honestly reflects whether every PR was actually
+          # inspected and every intended write actually landed.
+          had_errors=false
+
+          if pr_numbers=$(gh pr list --repo "${{ github.repository }}" --base main --state open --json number --jq '.[].number'); then
+            enum_lookup_ok=true
+          else
+            enum_lookup_ok=false
+            pr_numbers=""
+          fi
+
+          enum_action=$(node scripts/decide-enumeration.mjs "$enum_lookup_ok" "$pr_numbers")
+          case "$enum_action" in
+            fail)
+              echo "Could not enumerate open PRs — failing so a real API/auth failure doesn't silently look like a successful no-op run."
+              exit 1
+              ;;
+            no-op)
+              echo "No open PRs targeting main."
+              exit 0
+              ;;
+          esac
+
+          updated=0
+          conflicted=0
+          stuck=0
+
+          for pr in $pr_numbers; do
+            echo "=== PR #$pr ==="
+
+            # 1. Freshness: try to update to the latest main. A non-zero
+            # exit here is expected/harmless when already current — not
+            # worth guessing at GitHub's exact error wording to classify
+            # it; the real response is more trustworthy than a pattern
+            # match against text this workflow doesn't control. But
+            # "expected/harmless" only holds for the "already current"
+            # case — a live review caught that a genuine API/auth failure
+            # produces the exact same non-zero exit and was being treated
+            # identically, so freshness could silently never be achieved
+            # while the run still reported success. Rather than guess at
+            # error wording (which this step deliberately avoids), verify
+            # afterward using data check 2 below already fetches: if the
+            # update failed AND mergeStateStatus is confirmed BEHIND (or
+            # couldn't be checked at all), that's real evidence freshness
+            # wasn't actually achieved — flagged after that check runs.
+            update_output=$(gh api --method PUT "repos/${{ github.repository }}/pulls/$pr/update-branch" 2>&1)
+            if [ $? -eq 0 ]; then
+              echo "  Updated to latest main"
+              updated=$((updated + 1))
+              update_failed=false
+            else
+              echo "  No update performed (already current, or a real conflict) — $update_output"
+              update_failed=true
+            fi
+
+            # 2. Real conflicts: mergeStateStatus DIRTY means an actual
+            # merge conflict with main, not just "behind" (which step 1
+            # already tried to fix). Flag it so this doesn't sit invisible
+            # in an Actions log nobody reads.
+            if merge_status=$(gh pr view "$pr" --repo "${{ github.repository }}" --json mergeStateStatus --jq '.mergeStateStatus'); then
+              conflict_lookup_ok=true
+            else
+              conflict_lookup_ok=false
+              merge_status=""
+              echo "  WARNING: could not determine mergeStateStatus — this PR's conflict status was not actually checked this run"
+              had_errors=true
+            fi
+            conflict_marker="<!-- pr-reconciliation-conflict -->"
+            if existing_conflict_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate | jq --arg m "$conflict_marker" '.[] | select(.body | startswith($m)) | .id' | head -1); then
+              conflict_comment_lookup_ok=true
+            else
+              conflict_comment_lookup_ok=false
+              existing_conflict_id=""
+              echo "  WARNING: could not look up existing conflict comment — this PR's conflict status was not actually checked this run"
+              had_errors=true
+            fi
+
+            # Resolves the freshness question from check 1: an "already
+            # current" update-branch failure should never show BEHIND
+            # here (it wouldn't have needed updating), so BEHIND after a
+            # failed update is real evidence freshness wasn't achieved —
+            # and if this lookup itself failed too, we have no way to
+            # tell, which is exactly as bad. A failed update whose
+            # mergeStateStatus comes back CLEAN/DIRTY/BLOCKED/etc. is left
+            # alone — consistent with "already current" or "a real
+            # conflict step 1 can't fix anyway," neither of which is this
+            # step's problem to flag.
+            if [ "$update_failed" = "true" ]; then
+              if [ "$conflict_lookup_ok" != "true" ]; then
+                echo "  WARNING: update-branch failed and mergeStateStatus could not be verified afterward — freshness status for this PR is unknown"
+                had_errors=true
+              elif [ "$merge_status" = "BEHIND" ]; then
+                echo "  WARNING: update-branch failed and the PR is still BEHIND main — freshness was not actually achieved"
+                had_errors=true
+              fi
+            fi
+
+            conflict_action=$(node scripts/decide-conflict-action.mjs "$conflict_lookup_ok" "$conflict_comment_lookup_ok" "$merge_status" "$existing_conflict_id")
+            case "$conflict_action" in
+              flag)
+                echo "  Real merge conflict with main (mergeStateStatus=DIRTY)"
+                conflicted=$((conflicted + 1))
+                conflict_message="⚠️ **This PR has a merge conflict with \`main\`** and can't be auto-updated — it needs manual conflict resolution before it can merge."
+                body=$(printf '%s\n%s' "$conflict_marker" "$conflict_message")
+                if [ -n "$existing_conflict_id" ]; then
+                  if ! gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_conflict_id" -f body="$body" > /dev/null; then
+                    echo "  WARNING: failed to update conflict-flag comment"
+                    had_errors=true
+                  fi
+                else
+                  if ! gh pr comment "$pr" --repo "${{ github.repository }}" --body "$body"; then
+                    echo "  WARNING: failed to post conflict-flag comment"
+                    had_errors=true
+                  fi
+                fi
+                ;;
+              resolve)
+                # Was flagged before, isn't dirty anymore — update the same
+                # comment rather than leave a stale warning in place.
+                resolved_message="✅ This PR's merge conflict with \`main\` has been resolved."
+                body=$(printf '%s\n%s' "$conflict_marker" "$resolved_message")
+                if ! gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_conflict_id" -f body="$body" > /dev/null; then
+                  echo "  WARNING: failed to update conflict-resolved comment"
+                  had_errors=true
+                fi
+                ;;
+              skip) : ;;
+            esac
+
+            # 3. Stuck workflow approval: GitHub can require a maintainer
+            # to manually approve a PR's workflow runs before they even
+            # execute — Dependabot PRs commonly hit this (see CLAUDE.md's
+            # Dependabot section). Flag if it's been sitting unapproved
+            # for over a day rather than silently rotting.
+            #
+            # A live review caught that checking only the single most
+            # recent run (`gh run list --limit 1`) isn't enough — this
+            # repo genuinely has more than one workflow that triggers per
+            # push (CI and CodeQL, confirmed live), so the single most
+            # recent run across both could be the wrong one to look at:
+            # one could be action_required while the other has already
+            # resolved. `--commit` (a native gh run list filter, not a
+            # manual jq match) scopes to every run for the PR's *current*
+            # head commit specifically, across all workflows — isStuck in
+            # pr-reconciliation.mjs checks whether ANY of them is stuck.
+            stuck_lookup_ok=true
+            if ! head_sha=$(gh pr view "$pr" --repo "${{ github.repository }}" --json headRefOid --jq '.headRefOid'); then
+              stuck_lookup_ok=false
+            elif ! runs_json=$(gh run list --repo "${{ github.repository }}" --commit "$head_sha" --json conclusion,createdAt); then
+              stuck_lookup_ok=false
+            fi
+            if [ "$stuck_lookup_ok" != "true" ]; then
+              echo "  WARNING: could not determine workflow-run status — this PR's stuck-approval status was not actually checked this run"
+              had_errors=true
+              runs_json="[]"
+            fi
+            stuck_marker="<!-- pr-reconciliation-stuck-approval -->"
+            if existing_stuck_id=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate | jq --arg m "$stuck_marker" '.[] | select(.body | startswith($m)) | .id' | head -1); then
+              stuck_comment_lookup_ok=true
+            else
+              stuck_comment_lookup_ok=false
+              existing_stuck_id=""
+              echo "  WARNING: could not look up existing stuck-approval comment — this PR's stuck-approval status was not actually checked this run"
+              had_errors=true
+            fi
+
+            now_epoch=$(date -u +%s)
+            stuck_action=$(node scripts/decide-stuck-action.mjs "$stuck_lookup_ok" "$stuck_comment_lookup_ok" "$runs_json" "$now_epoch" "$existing_stuck_id")
+            case "$stuck_action" in
+              flag)
+                echo "  Workflow run awaiting approval for over 24h"
+                stuck=$((stuck + 1))
+                stuck_message="⏳ This PR's workflow runs have been awaiting maintainer approval for over 24 hours. Approve from the Checks tab (\"Approve workflows to run\") to let CI actually execute."
+                body=$(printf '%s\n%s' "$stuck_marker" "$stuck_message")
+                if [ -n "$existing_stuck_id" ]; then
+                  if ! gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_stuck_id" -f body="$body" > /dev/null; then
+                    echo "  WARNING: failed to update stuck-approval comment"
+                    had_errors=true
+                  fi
+                else
+                  if ! gh pr comment "$pr" --repo "${{ github.repository }}" --body "$body"; then
+                    echo "  WARNING: failed to post stuck-approval comment"
+                    had_errors=true
+                  fi
+                fi
+                ;;
+              resolve)
+                resolved_message="✅ This PR's workflow runs are no longer awaiting approval."
+                body=$(printf '%s\n%s' "$stuck_marker" "$resolved_message")
+                if ! gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing_stuck_id" -f body="$body" > /dev/null; then
+                  echo "  WARNING: failed to update stuck-approval-resolved comment"
+                  had_errors=true
+                fi
+                ;;
+              skip) : ;;
+            esac
+          done
+
+          echo "Summary: $updated updated, $conflicted with real conflicts, $stuck stuck on workflow approval"
+
+          if [ "$had_errors" = "true" ]; then
+            echo "One or more PRs could not be fully inspected, or a comment write failed, above — failing the step so this doesn't silently look like a fully successful run."
+            exit 1
+          fi

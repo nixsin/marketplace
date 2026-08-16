@@ -60,20 +60,51 @@ to merge past — only an actual failure blocks.
 Split into small independent jobs on purpose (parallel runners, not one long
 sequential job). Key structure:
 
-- **`changes`** — runs `dorny/paths-filter` first, produces `api`/`web`/`deps`
-  booleans, and posts/updates a PR comment (`<!-- ci-skip-logic-comment -->`
-  marker, edited in place across pushes) explaining which jobs will run vs.
-  skip and why. Read this comment on any PR before wondering why a check is
-  missing.
+- **`changes`** — runs `dorny/paths-filter` first, produces `api`/`web`/
+  `deps`/`docker` booleans, and posts/updates a PR comment
+  (`<!-- ci-skip-logic-comment -->` marker, edited in place across pushes)
+  explaining which jobs will run vs. skip and why. Read this comment on any
+  PR before wondering why a check is missing.
 - Path-filtered jobs (skip when irrelevant): `audit` (deps only),
   `test-api-unit`/`test-api-e2e`/`load-test` (api or deps), `test-web`/
-  `perf-budget` (web or deps).
+  `perf-budget` (web or deps), `docker-scan`/`docker-smoke` (`docker` — see
+  below).
 - **Never** path-filtered, deliberately: `lint` (lints both apps in one
-  command), `docker-scan`/`docker-smoke` (both Dockerfiles' `deps` stage runs
-  apps/api's `prisma generate` postinstall even for a web-only build — a
-  web-looking change can still affect the API image), `migrate` (too risky to
-  ever skip a real migration), `ai-failure-analysis` (reacts to `failure()`,
-  not to the diff).
+  command), `migrate` (too risky to ever skip a real migration),
+  `ai-failure-analysis` (reacts to `failure()`, not to the diff).
+- **The `docker` filter** — both jobs build off Docker's shared layer cache
+  across both Dockerfiles (a workspace-root `pnpm install` in the `deps`
+  stage runs apps/api's `prisma generate` postinstall even for a web-only
+  build, so a web-looking change can still affect the API image), which is
+  why the filter covers `apps/api/**` *and* `apps/web/**` together rather
+  than filtering each app's effect separately. Verified directly (not
+  assumed) before narrowing this: read both Dockerfiles' `COPY` instructions
+  (explicitly scoped, no `COPY . .` — `scripts/` and `.github/` genuinely
+  never enter either image), `docker-compose.yml` (build context is the repo
+  root; used by `scripts/dev.sh`), and `.dockerignore` (directly controls
+  the build context). The filter: `apps/api/**`, `apps/web/**`, both
+  Dockerfiles, `docker-compose.yml`, `.dockerignore`, `scripts/dev.sh`
+  specifically (not a broad `scripts/**` — a first draft would have
+  excluded the one file `docker-smoke`'s own job runs, `./scripts/dev.sh`,
+  along with the CI/review tooling that's actually safe to exclude), plus
+  the existing `deps` files.
+- **`docker-scan` (Trivy) is filtered here but *also* runs weekly,
+  unconditionally, in a separate workflow** — `docker-scan-scheduled.yml`.
+  Trivy checks against an external, time-varying CVE database, so a plain
+  path filter has a real gap docker-smoke's purely-deterministic behavioral
+  test doesn't: running only when the diff touches Docker-relevant paths
+  means a newly-disclosed CVE in an *unchanged* image goes uncaught until
+  the next such PR. The first version of this filter left docker-scan
+  unconditional to sidestep that gap entirely — deliberately reconsidered
+  once "unconditional forever" was recognized as relying on an accident
+  (every push happening to double as a re-scan) rather than an actual
+  design for CVE freshness. `docker-scan-scheduled.yml` is a real design
+  for it instead, mirroring `codeql.yml`'s own schedule trigger and
+  reasoning exactly ("a push-only trigger would miss newly-disclosed
+  vulnerability patterns in code that hasn't changed"). Informational only —
+  not wired into required checks or `migrate`'s `needs:`; a failure there
+  means the current `main` image has a new CVE, not that a specific push
+  introduced anything.
 - **`ai-failure-analysis`** — PR-only, fires on any real failure among its
   `needs:` (explicit `needs.*.result` contains-check + `always()`, not plain
   `failure()`, because skipped deps must not suppress or falsely trigger it).
@@ -87,13 +118,104 @@ sequential job). Key structure:
   (not failed) dependency doesn't block deploy.
 
 Other workflows: `dependency-freshness.yml` (weekly + push-to-main badge
-check, informational, not required), `codeql.yml`, `pr-comment-rerun.yml`
-(a PR comment can trigger `gh run rerun`), `auto-update-open-prs.yml`
-(triggers on `pull_request: types: [closed]` with a `merged == true`
-guard — updates every other open PR targeting `main` to the new tip via
-the same API `gh pr update-branch` calls, so a stale/BEHIND PR doesn't
-sit unnoticed), and the `/rerun-test` slash command
+check, informational, not required), `codeql.yml`, `docker-scan-scheduled
+.yml` (weekly Trivy re-scan of `main`'s images, informational, not
+required — see the `docker` filter note above for why it exists),
+`pr-comment-rerun.yml` (a PR comment can trigger `gh run rerun`),
+`pr-reconciliation.yml` (see its own section below), and the
+`/rerun-test` slash command
 (`.claude/commands/rerun-test.md`) for doing a rerun manually.
+
+## PR reconciliation (`pr-reconciliation.yml`)
+
+Keeps every open PR targeting `main` in sync on three axes, event-driven
+(`pull_request: types: [closed]`, merged-into-main guard) **and**
+scheduled (daily `cron`, since PR drift accumulates faster than the
+event-driven trigger alone catches — a failed update call, a PR opened in
+the gap between runs, drift from something other than a merge). Also
+triggerable by hand (`workflow_dispatch`). Started as just "auto-update
+open PRs after a merge" (the file's original name) and was broadened —
+renamed accordingly.
+
+For every open PR targeting `main`:
+1. **Freshness** — attempts `update-branch` (same operation as `gh pr
+   update-branch` / GitHub's "Update branch" button). A non-zero result is
+   expected/harmless when already current; not worth guessing at GitHub's
+   exact error wording to classify it.
+2. **Real conflicts** — `mergeStateStatus: DIRTY` means an actual merge
+   conflict step 1 can't fix on its own. Flagged with an edit-in-place PR
+   comment (`<!-- pr-reconciliation-conflict -->` marker) so it doesn't
+   sit invisible in an Actions log; updated to say "resolved" once it no
+   longer applies, rather than left as a stale warning.
+3. **Stuck workflow approval** — flags (`<!-- pr-reconciliation-stuck-approval -->`
+   marker) a PR whose latest run has sat at `action_required` (see the
+   Dependabot section below) for over 24 hours.
+
+All three only **surface or retry** — nothing here auto-resolves a real
+conflict or auto-approves a stuck workflow run; those stay human
+decisions. `set +e` (plus `pipefail`) throughout, same reasoning as the
+`ai-code-review` fix: one PR's failure must not stop the rest from being
+reconciled.
+
+**The actual flag/resolve/skip decisions live in a tested module, not
+inline bash.** `scripts/lib/pr-reconciliation.mjs` (`pr-reconciliation
+.test.mjs`) — this job's bash only gathers each decision function's
+inputs and acts on its output. That split exists because this job's
+introducing PR went through **four live review rounds and found six real
+bugs**, every one in the identical shape: a failed or non-conclusive
+lookup silently treated as a conclusive one.
+
+These tests also run in `ci.yml`'s own `test-ci-scripts` job — a plain,
+unconditional job (no path filter) on every regular PR, separate from
+`pr-reconciliation.yml`'s own steps. Needed because `pr-reconciliation
+.yml` never triggers on `pull_request` — without this, a regression to
+this file would ship straight to `main` unnoticed by the introducing PR's
+own CI, only surfacing later when `pr-reconciliation.yml` next actually
+ran (close, schedule, or manual dispatch). A live review caught this gap
+directly; `test-ci-scripts` closes it and is wired into `ai-code-review`,
+`ai-failure-analysis`, and `migrate`'s `needs:` lists the same way `lint`
+is.
+1. Every `gh pr view`/`gh pr comment` call needs `--repo` explicitly —
+   this job never runs `actions/checkout` for its main step, so without a
+   local git repo `gh` has no way to resolve a bare PR number.
+2. The marker-lookup pipelines must pipe `gh api --paginate` (no `--jq`)
+   into a separate `jq --arg m ...` — `gh api --jq` takes exactly one
+   string argument; passing jq's own `--arg` after it is a hard parse
+   error.
+3. A failed status lookup (`gh pr view`/`gh run list`) must not be read
+   as "confirmed clean/not stuck" — under `set +e` a failure and a
+   genuine clean result look identical unless the lookup's own exit
+   status is captured explicitly (`if var=$(cmd); then`, never a bare
+   assignment followed by a value check).
+4. `mergeStateStatus: UNKNOWN` is a real, documented value of the
+   `MergeStateStatus` GraphQL enum (GitHub still computing mergeability),
+   not an error — it needs its own branch, or it falls through to
+   "resolved" exactly like bug 3.
+5. The marker-lookup pipelines (`gh api | jq | head -1`) need `pipefail`
+   — without it, `head -1` exits 0 on empty input regardless of whether
+   that's a genuine zero-match result or an upstream `gh api`/`jq`
+   failure, so a real failure could produce a *duplicate* comment instead
+   of editing the existing one.
+6. `pr_numbers=$(gh pr list ...)` failing is indistinguishable from a
+   genuinely empty PR list unless its own exit status is captured too —
+   otherwise a real API/auth failure silently reports "no open PRs" and
+   exits 0, making the scheduled safety net look successful while doing
+   nothing.
+
+Every one of these was independently reproduced (a real bash repro, or a
+direct GraphQL schema/`gh` CLI check) before being fixed — see this
+workflow's own git history for each round. The lesson that stuck: after
+finding the same bug shape five times in untested inline bash, the sixth
+review round asked for actual test coverage directly, which is what
+produced the extraction — the same "pull the pure logic into a tested
+module" move already proven on `review-verdict.mjs` and
+`override-decisions.mjs` above.
+
+Comment bodies are built with `printf '%s\n%s'` (marker, message), not
+raw multi-line bash string literals inside the `run: |` block — a literal
+newline mid-string puts the continuation line at column 1, which breaks
+YAML's block-scalar indentation rule and is a real parse error. Caught by
+validating this file's YAML locally before it was ever pushed.
 
 ## AI code review gate (`ai-code-review` job)
 
@@ -114,6 +236,38 @@ shared training data, no shared RLHF blind spots, no shared susceptibility
 to the same framing of an injected instruction. Requires a
 `secrets.OPENAI_API_KEY` repo secret (added manually — never via Claude,
 since that would mean handling a live API key in this session).
+
+**GitHub blocks the default `GITHUB_TOKEN` from ever posting an APPROVE
+review** — a deliberate platform restriction (a workflow self-approving a
+PR would defeat `required_pull_request_reviews` entirely), not a
+permissions/scopes gap fixable from this repo's side. Discovered live:
+every PR tested through five+ review rounds happened to get
+`REQUEST_CHANGES` (which `GITHUB_TOKEN` posts fine), so this was latent
+and undiscovered until PR #20 — a simple Dependabot version bump — became
+the first PR the reviewer actually approved, and the job crashed on
+`GitHub Actions is not permitted to approve pull requests.`
+
+**Do not "fix" this with a personal access token — a live review already
+caught that mistake once (PR #36) and rejected it.** The first attempt
+used a `secrets.PR_REVIEW_PAT` (a real account's token) via an inline
+`GH_TOKEN` override to post the approval instead of `GITHUB_TOKEN`. That
+doesn't route around GitHub's restriction so much as defeat its actual
+purpose: the restriction exists specifically so an automated verdict can
+never satisfy `required_pull_request_reviews` on its own, and branch
+protection can't distinguish "the account holder reviewed this" from "a
+workflow posted this using the account holder's credentials." There's
+also no GitHub feature for an identity whose approval is deliberately
+excluded from the required-review count — any approving review from a
+collaborator with write access satisfies the gate, PAT-driven or not. The
+actual fix: `REQUEST_CHANGES` keeps posting as a real review (blocking is
+fine — it only ever adds friction, never satisfies anything); `APPROVE`
+never posts as a review, regardless of any secret being configured — it
+always degrades to a plain `gh pr comment`. A human decides a green,
+AI-approved PR is ready to merge, via the same admin-bypass this repo
+already uses deliberately and visibly for its one-contributor review gate
+(see "The one hard rule" above) — not something a credential should
+quietly stand in for. If a future change reintroduces PAT-based approval
+here, that's a regression of this exact finding, not a new idea.
 
 Runs only when nothing upstream has already failed (`if: ... &&
 !contains(needs.*.result, 'failure')`) — a failing required check already
@@ -173,21 +327,27 @@ approve past a real failure. The one thing it can get wrong is judging the
 
 **The reviewer can also force-run a skipped job it disagrees with.** The
 path filter is a static glob match — it can miss genuine cross-boundary
-effects the same way docker-scan/docker-smoke's Dockerfile gotcha already
-shows is possible. The prompt asks it to name skipped jobs (from a fixed
-whitelist: `audit`, `test-api-unit`, `test-api-e2e`, `test-web`,
-`perf-budget`, `load-test`) it believes should have run for this specific
-diff. Lower-stakes than the approve/reject verdict — an unnecessary
-force-run just costs some CI time, nothing worse — so it doesn't need the
-same paranoid cross-checking, but the job-ID list is still whitelist-
-validated twice (once in the prompt, once again by exact-match filtering
-in `extractForceRunJobs`) since it ends up passed to `gh workflow run`.
-GitHub Actions has no way to change a job's `if:` mid-run, so "force-run"
-means starting a genuinely separate `workflow_dispatch` run on the same
-branch (`ci.yml`'s `workflow_dispatch.inputs.force_jobs`) — it can't
-resurrect the job actually skipped in the run already in progress. Also
-useful by hand: trigger it manually from the Actions tab, or `gh workflow
-run ci.yml --ref <branch> -f force_jobs=test-api-e2e,load-test`.
+effects. Concrete, not hypothetical: a live review caught exactly this on
+the PR that narrowed `docker-scan`/`docker-smoke`'s own filter — the
+`docker` filter deliberately excludes workflow YAML itself (most `ci.yml`
+edits don't touch those two jobs' logic), so a PR that changes
+`docker-scan`'s own steps would otherwise skip past the one check that
+should have validated it. The prompt asks it to name skipped jobs (from a
+fixed whitelist: `audit`, `test-api-unit`, `test-api-e2e`, `test-web`,
+`perf-budget`, `load-test`, `docker-scan`, `docker-smoke` — the last two
+added specifically in response to that finding) it believes should have
+run for this specific diff. Lower-stakes than the approve/reject verdict —
+an unnecessary force-run just costs some CI time, nothing worse — so it
+doesn't need the same paranoid cross-checking, but the job-ID list is
+still whitelist-validated twice (once in the prompt, once again by
+exact-match filtering in `extractForceRunJobs`) since it ends up passed to
+`gh workflow run`. GitHub Actions has no way to change a job's `if:`
+mid-run, so "force-run" means starting a genuinely separate
+`workflow_dispatch` run on the same branch (`ci.yml`'s
+`workflow_dispatch.inputs.force_jobs`) — it can't resurrect the job
+actually skipped in the run already in progress. Also useful by hand:
+trigger it manually from the Actions tab, or `gh workflow run ci.yml --ref
+<branch> -f force_jobs=test-api-e2e,load-test`.
 
 **Same rule as Lighthouse applies here**: don't admin-bypass a
 `REQUEST_CHANGES` verdict to route around it without actually addressing
@@ -212,14 +372,90 @@ a review (proven live on this job's own introducing PR, 5+ real rounds):
    because an AI said so. Real, reproducible bugs are finite; fixing them
    converges naturally.
 2. A finding that repeats after you've already investigated it and
-   disagree doesn't get "fixed" again — it gets a PR comment stating your
-   reasoning once, then you stop touching it. Pushing another commit
-   hoping the stateless reviewer changes its mind is the actual loop risk,
-   since it never will on its own.
+   disagree doesn't get "fixed" again — it gets recorded in the
+   override-decision log (below) stating your reasoning once, then you
+   stop touching it. Pushing another commit hoping the stateless reviewer
+   changes its mind is the actual loop risk, since it never will on its
+   own — though now it also won't need to, since it reads that log.
 3. Two rounds of the same finding recurring with nothing new alongside it
    is converged, not "still in progress." At that point it's a human
    decision — admin-bypass with the reasoning already on record, or
    escalate — never a third attempt at the same fix.
+
+**Override-decision log — the implementer's half of not repeating step 2.**
+Every time a finding gets fixed or disputed rather than accepted at face
+value, maintain a single PR comment (marker `<!-- ai-review-override-log
+-->`, edited in place across pushes — same pattern as the `changes` job's
+skip-logic comment) with a table:
+
+| Reviewer finding | My resolution | Status |
+|---|---|---|
+| what the reviewer flagged | what happened — fixed in commit X, or why it's disputed | Resolved / Overridden |
+
+Escape any literal `|` inside a cell's text as `\|` (standard Markdown
+table syntax) — a finding or resolution that quotes a shell pipe, a
+TypeScript union type, or `a || b` will contain one. The parser only
+handles the escaped form correctly (see below); an unescaped `|` splits
+the row into extra cells and silently shifts resolution/status into the
+wrong column, same as it would in any real Markdown table renderer.
+
+...ending with a `**Recommendation:**` line stating the actual
+merge-readiness call — usually `APPROVE` once every row is accounted for
+and CI is green, but it must say so honestly, not by convention: if
+something real is still blocking, say that instead. This is not a status
+update for its own sake — it's the "reasoning already on record" that
+step 3 above requires before an admin-bypass, made explicit instead of
+scattered across ad hoc comments.
+
+**Ordering discipline: update the log in the same breath as the fix, not
+later, and on every PR you're touching, not just the one it's already a
+habit on.** This has actually been skipped once — juggling two PRs with
+review rounds in parallel, the log stayed a consistent habit on the one
+it started on early, and was simply never started on the other until the
+user noticed it missing. The fix isn't "remember better," it's a fixed
+order of operations: the moment you `git push` in response to a review
+finding, updating that PR's override-decision log is the *next action*,
+before checking CI status, before switching branches, before starting
+the next PR's work. If several PRs are in flight at once, each one's log
+is part of *that PR's own* fix-forward loop — never something to batch
+at the end or backfill once, since "once" only happens if someone
+notices it's missing.
+
+The `ai-code-review` job reads this comment back on every run (`Fetch
+prior override decisions` step) and feeds matched rows to the model as
+context, so it can skip re-flagging something already adjudicated instead
+of relying on a human to notice the repeat. Trust boundary: a row only
+counts if the *comment* comes from an authorized login (currently
+`github.repository_owner`, i.e. the repo owner) — the marker string alone
+is not enough, since this repo's PRs are publicly commentable and the
+marker alone would let anyone post a fake "already discussed and
+dismissed" comment to try to suppress a real finding. Parsing lives in
+`scripts/lib/override-decisions.mjs` (its own
+test suite, `override-decisions.test.mjs`, run as an actual CI step) — not
+security-critical the way verdict extraction is, since a botched parse
+here only ever means the reviewer gets less context, never a false
+approve; none of the mechanical fail-closed checks (files-reviewed match,
+truncation override, single-verdict-heading rule) read this output, and a
+missing/unreadable log file fails closed to "no override context," the
+same safe default as before this feature existed — but only because the
+`Fetch prior override decisions` step is itself written to never fail
+(see below); a step that fails outright, even for an unrelated reason
+like a transient `gh api` error, takes every later step in the job down
+with it by GitHub Actions' own default, `ai-code-review`'s actual review
+included, not just this feature's own context.
+
+The `Fetch prior override decisions` step fetches with `gh api ...
+--paginate --slurp` (raw pages, no `--jq`) rather than filtering inline —
+see "Known gotchas" below for why `--paginate --jq` silently breaks on a
+PR with enough comments to span multiple pages, and why `--slurp` can't
+just be added alongside it. The step also runs under `set +e` with an
+explicit `[ ! -s ... ] && echo "[]"` fallback so a `gh api` failure
+degrades to an empty comments list instead of failing the step — a live
+review caught that this step originally had neither, so a transient API
+error would fail the step outright, and because GitHub Actions skips
+every later step in a job by default once one fails, that would have
+skipped `Review with ChatGPT` entirely — not just lost override context,
+lost the whole review for that run.
 
 **Known, accepted risk**: `ai-code-review` (`secrets.OPENAI_API_KEY`) and
 `ai-failure-analysis` (`secrets.ANTHROPIC_API_KEY`) both run on
@@ -247,9 +483,14 @@ git checkout <dependabot-branch>
 ```
 
 If a Dependabot PR goes stale (`mergeStateStatus: BEHIND` after another PR
-merged to main), `auto-update-open-prs.yml` (above) now handles this
-automatically on every merge — `gh pr update-branch <number>` is still the
-manual fallback if you need it sooner than the next merge.
+merged to main), `pr-reconciliation.yml` (above) now handles this
+automatically on every merge and once daily — `gh pr update-branch
+<number>` is still the manual fallback if you need it sooner. A real
+merge conflict (`mergeStateStatus: DIRTY`) can't be auto-fixed by either —
+`pr-reconciliation.yml` will flag it with a PR comment, but resolving it
+is still a `git checkout <branch> && git merge main`, fix conflicts,
+push (same as any other Dependabot branch fix — see above, these are
+same-repo branches).
 
 **"2 workflows awaiting approval" on a Dependabot PR is not the same gate
 as "Review required."** GitHub automatically requires a maintainer to
@@ -267,6 +508,54 @@ care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
 
+- **`gh api -f key=@path` does NOT read the file — only `-F` does.** The
+  `@<path>` (or `@-` for stdin) file-reading syntax is documented under
+  `-F/--field` (typed parameters) only; `-f/--raw-field` treats an `@...`
+  value as a literal string. `gh api -X PATCH .../comments/$id -f
+  body=@/tmp/file.md` silently posts the seven-character string
+  `@/tmp/file.md` as the comment body, not the file's content. Caught by
+  hand while editing an override-decision-log comment, then found the
+  exact same bug already live in the `changes` job's "Comment skip logic
+  on PR" step — and it's self-hiding: corrupting the body also destroys
+  the `<!-- ci-skip-logic-comment -->` marker that step's own
+  find-existing-comment lookup depends on, so the *next* push can't find
+  the (now-corrupted) comment, falls through to creating a fresh one, and
+  the cycle repeats — one broken, orphaned comment left behind every
+  other push, forever, on any PR that gets more than one push. Fix is
+  just the one-character flag swap (`-f` → `-F`); grep for `-f [a-z_]*=@`
+  across `.github/workflows/` if this pattern ever gets copied elsewhere.
+- **`gh api --paginate --jq` runs the jq filter once PER PAGE, not once
+  over the combined result.** A multi-page response piped through
+  `--jq '[...]'` produces several complete JSON arrays emitted
+  back-to-back — not one valid JSON value — so anything downstream doing
+  a single `JSON.parse` on the output breaks silently once there's enough
+  data to paginate (a live review caught this on the override-decision
+  log's `Fetch prior override decisions` step, which only fetches PR
+  comments — fine on any PR tested so far, broken on a long thread).
+  `--slurp` wraps all pages into one outer array, but the gh CLI flatly
+  rejects combining `--slurp` with `--jq` — you can't just add it. The
+  actual fix: fetch raw with `--paginate --slurp` (no `--jq`) and do the
+  flattening/shaping downstream, in a language where it's unit-testable
+  against a real multi-page shape (see `flattenPaginatedComments` in
+  `scripts/lib/override-decisions.mjs`) — not in another bash/jq
+  one-liner that would have the exact same blind spot.
+- **A failed step skips every later step in the same job by default, not
+  just the failing one.** GitHub Actions' implicit `if:` on a step with no
+  explicit condition is `success()` — so a step that fails without
+  `continue-on-error: true` silently cancels everything after it too,
+  unless a later step opts back in with its own `if: always()` (as
+  `Post review verdict` does). Hit `ai-code-review`'s `Fetch prior
+  override decisions` step exactly this way: it fetches PR comments as
+  optional context and was never meant to be able to block anything, but
+  because it had no failure handling of its own, a transient `gh api`
+  error would fail the step outright and skip `Review with ChatGPT`
+  entirely on the same run — turning an optional context source into a
+  hard dependency for the whole review. Fix (and the general pattern for
+  any future "nice to have, must not become load-bearing" step): make the
+  step itself unable to fail, e.g. `set +e` plus an explicit fallback
+  value on empty/failed output, rather than reaching for
+  `continue-on-error` — that marks the step as failed-but-ignored in the
+  UI for something that isn't actually a failure once it's handled.
 - **`node:26-alpine` dropped bundling Corepack.** `RUN corepack enable` alone
   now fails with `corepack: not found`. Fix: `RUN npm install -g corepack &&
   corepack enable`. Hit this on both `apps/api/Dockerfile` and
