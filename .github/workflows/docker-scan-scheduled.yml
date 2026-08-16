@@ -1,0 +1,59 @@
+name: Docker image vulnerability scan (scheduled)
+
+# Same scan as ci.yml's docker-scan job, run independently of what any
+# given push touches — that job is now path-filtered (see the `docker`
+# filter in ci.yml's `changes` job), which is correct for "does this diff
+# affect the image" but wrong for "is the image still free of newly-
+# disclosed CVEs," since Trivy checks against an external, time-varying
+# database that changes independently of this repo's own commits. Same
+# reasoning codeql.yml already uses for its own schedule trigger: "a
+# push-only trigger would miss newly-disclosed vulnerability patterns in
+# code that hasn't changed."
+#
+# A separate workflow file, not a schedule trigger bolted onto ci.yml
+# itself — ci.yml's `on:` covers ~15 jobs, and a bare `schedule:` there
+# would need every one of them individually guarded against firing on a
+# trigger they were never meant to run on. codeql.yml is a real precedent
+# for exactly this: its own scheduled re-scan is a dedicated file too, not
+# folded into a larger pipeline.
+#
+# Informational only — not wired into required checks or `migrate`'s
+# `needs:`. A failure here means a newly-disclosed CVE exists in the
+# current main image, not that a specific push introduced anything; it
+# surfaces via GitHub's default failed-scheduled-workflow notification,
+# same as dependency-freshness.yml and codeql.yml's own scheduled runs.
+
+on:
+  schedule:
+    # Offset from codeql.yml's Monday 03:17 UTC and dependency-freshness
+    # .yml's Monday 06:00 UTC slots.
+    - cron: "37 4 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  docker-scan-scheduled:
+    name: Docker image vulnerability scan (scheduled)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build prod images (build-only — no secrets available here to run them with)
+        run: |
+          docker build --target prod -f apps/api/Dockerfile -t marketplace-api:prod .
+          docker build --target prod -f apps/web/Dockerfile -t marketplace-web:prod .
+
+      - name: Scan API prod image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: marketplace-api:prod
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Scan web prod image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: image
+          image-ref: marketplace-web:prod
+          severity: HIGH,CRITICAL
+          exit-code: "1"

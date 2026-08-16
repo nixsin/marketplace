@@ -26,20 +26,12 @@ jobs:
   # sequence for no reason — total wall-clock time was the sum of every
   # step, not the slowest one.
 
-  # Feeds the path-based `if:` conditions below. lint, docker-scan,
-  # migrate, and ai-failure-analysis remain NOT filtered:
+  # Feeds the path-based `if:` conditions below. lint, migrate, and
+  # ai-failure-analysis remain NOT filtered:
   #   - lint currently lints both apps in one combined command (not split
   #     per-app), so its real skip condition is the union of both apps'
   #     paths anyway — no separate filtering to be gained without first
   #     splitting the job itself.
-  #   - docker-scan (Trivy vulnerability scan) stays unconditional
-  #     deliberately, not just by default — it checks against an
-  #     external, time-varying CVE database, so running it on every push
-  #     to main (not just Docker-relevant ones) incidentally re-scans the
-  #     unchanged image often, catching newly-disclosed CVEs. Narrowing
-  #     its filter the same way as docker-smoke below would trade that
-  #     away for CI time, which isn't the same kind of "safe" skip as
-  #     everything else on this list.
   #   - migrate runs `prisma migrate deploy` against production, already a
   #     fast no-op with nothing new to apply — the risk of a filter
   #     incorrectly skipping a real migration outweighs the seconds saved.
@@ -47,15 +39,19 @@ jobs:
   #     doesn't make sense to path-filter something whose entire job is
   #     "respond to whatever just failed."
   # test-api-unit/test-api-e2e/test-web/audit/perf-budget/load-test/
-  # docker-smoke ARE filtered. docker-smoke (the dev-stack behavioral
-  # test, as opposed to docker-scan's CVE scan above) has no CVE-freshness
-  # concern — it's fully deterministic given the same source, so skipping
-  # it on a provably Docker-irrelevant diff loses nothing. Both Dockerfiles
-  # build off a SHARED `deps` stage (a workspace-root `pnpm install` that
+  # docker-smoke/docker-scan ARE filtered (`docker` — both Dockerfiles
+  # build off a SHARED `deps` stage: a workspace-root `pnpm install` that
   # runs apps/api's `prisma generate` postinstall even for the web image,
-  # see apps/web/Dockerfile's own comment) — the `docker` filter below
-  # accounts for this directly by covering both apps together, not by
-  # filtering each app's effect on the image separately.
+  # see apps/web/Dockerfile's own comment — so the filter covers both apps
+  # together, not each app's effect on the image separately).
+  # docker-scan (Trivy) has a real trade-off docker-smoke's purely-
+  # deterministic behavioral test doesn't: it checks against an external,
+  # time-varying CVE database, so filtering it means losing the
+  # incidental re-scan coverage it used to get from running on every
+  # push. That gap is closed properly instead of left as an accepted
+  # loss — see docker-scan-scheduled.yml, a weekly cron re-scan
+  # independent of what any given push touches, the same reasoning
+  # codeql.yml already uses for its own schedule trigger.
   changes:
     name: Detect changed paths
     runs-on: ubuntu-latest
@@ -153,9 +149,10 @@ jobs:
           | API load test (autocannon) | $(status "$api_or_deps") | api or deps changed |
           | Web build + tests | $(status "$web_or_deps") | web or deps changed |
           | Web performance budget (Lighthouse) | $(status "$web_or_deps") | web or deps changed |
-          | Docker dev stack smoke test | $(status "$DOCKER_CHANGED") | apps/api, apps/web, either Dockerfile, docker-compose.yml, .dockerignore, scripts/dev.sh, or deps changed |
+          | Docker image vulnerability scan | $(status "$DOCKER_CHANGED") | apps/api, apps/web, either Dockerfile, docker-compose.yml, .dockerignore, scripts/dev.sh, or deps changed |
+          | Docker dev stack smoke test | $(status "$DOCKER_CHANGED") | same as above |
 
-          Lint and Docker image vulnerability scan always run regardless of what changed — see the \`changes\` job's own comment in \`ci.yml\` for why.
+          Lint always runs regardless of what changed — see the \`changes\` job's own comment in \`ci.yml\` for why. Docker image vulnerability scan also runs weekly regardless of any push, in a separate scheduled workflow — see \`docker-scan-scheduled.yml\`.
           EOF
 
           existing_id=$(gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate --jq '.[] | select(.body | startswith("<!-- ci-skip-logic-comment -->")) | .id' | head -1)
@@ -338,15 +335,18 @@ jobs:
   docker-scan:
     name: Docker image vulnerability scan
     runs-on: ubuntu-latest
-    # Deliberately NOT path-filtered, unlike docker-smoke below — pending
-    # a decision on the CVE-freshness trade-off (see the `docker` filter
-    # comment in the `changes` job). Trivy scans against an external,
-    # time-varying CVE database; running unconditionally on every push to
-    # main (not just Docker-relevant ones) incidentally re-scans the same
-    # image often, catching newly-disclosed CVEs even when the code
-    # hasn't changed. Narrowing this the same way as docker-smoke would
-    # remove that, which docker-smoke's purely-deterministic behavioral
-    # test has no equivalent of.
+    needs: [changes]
+    # Now path-filtered the same as docker-smoke — the CVE-freshness
+    # concern (Trivy scans an external, time-varying database, so running
+    # on every push incidentally re-scans the unchanged image, catching
+    # newly-disclosed CVEs) is real, but the fix for it is an explicit
+    # scheduled re-scan, not leaving this job's path filter permanently
+    # loose as an accidental substitute. See
+    # docker-scan-scheduled.yml — same scan, weekly cron, independent of
+    # what any given push touches, mirroring codeql.yml's own reasoning
+    # for its schedule trigger ("a push-only trigger would miss newly-
+    # disclosed vulnerability patterns in code that hasn't changed").
+    if: needs.changes.outputs.docker == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'docker-scan'))
     steps:
       - uses: actions/checkout@v7
 
