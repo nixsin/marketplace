@@ -1,7 +1,10 @@
 # syntax=docker/dockerfile:1
 
 FROM node:26-alpine AS base
-RUN corepack enable
+# Node 26 stopped bundling corepack — install it explicitly before enabling
+# (it still reads the pnpm version to use from package.json's packageManager
+# field, same as before).
+RUN npm install -g corepack && corepack enable
 
 # ---- deps: installed once here, reused by both the dev and build stages
 # below via Docker's layer cache — only invalidates when a manifest, the
