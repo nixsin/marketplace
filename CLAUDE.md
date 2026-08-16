@@ -671,6 +671,29 @@ it there too the moment the prefix comes off.
   (byte-identical build output with vs. without the config flag). Next.js's
   own default `optimizePackageImports` list includes `lucide-react` but not
   `radix-ui`; that's fine, don't add it back without new evidence it helps.
+- **`ai-code-review`'s `OPENAI_API_KEY` was observed empty on a
+  `dependabot/github_actions/*` PR (#44, `dorny/paths-filter` v3→v4),
+  reproduced identically on a full `gh run rerun`** — the job crashed
+  with `OpenAIError: Missing credentials`, not the usual fail-closed
+  REQUEST_CHANGES-with-a-real-verdict path. `secrets.OPENAI_API_KEY`
+  exists at the repo level (confirmed via `gh secret list`) and other
+  Dependabot PRs the same day, on the `npm_and_yarn` ecosystem, got real
+  reviews with the secret present — so this isn't a blanket "Dependabot
+  never gets secrets" rule, and it wasn't transient (same result twice).
+  Not fully root-caused — the leading hypothesis is that it's specific to
+  `github_actions`-ecosystem Dependabot PRs and/or PRs that modify a
+  workflow file themselves (unverified; the historical PRs checked to
+  test this theory, #20-23, predate `ai-code-review`'s current form or
+  lack matching log data to confirm either way). If this recurs, that's
+  the first thing to check systematically — e.g., deliberately trigger
+  it on both a workflow-file-touching and a non-touching
+  `github_actions`-ecosystem PR side by side. In the meantime: this is
+  the same "review didn't complete" case the job already fails closed
+  for by design (see the AI code review gate section above) — verify the
+  change by hand (for an action-version bump, read its release notes via
+  `gh api repos/<owner>/<repo>/releases` for breaking changes) and
+  admin-bypass with the reasoning posted as a PR comment, same as any
+  other override.
 
 ## Deployment
 
