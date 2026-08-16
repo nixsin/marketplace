@@ -64,7 +64,23 @@ sequential job). Key structure:
   `deps`/`docker` booleans, and posts/updates a PR comment
   (`<!-- ci-skip-logic-comment -->` marker, edited in place across pushes)
   explaining which jobs will run vs. skip and why. Read this comment on any
-  PR before wondering why a check is missing.
+  PR before wondering why a check is missing. The filter step's own `if:`
+  must cover `push` as well as `pull_request` (`!= 'workflow_dispatch'`,
+  not an enumerated allowlist) — **a real regression here silently skipped
+  every path-filtered job on every push to main for ~14 hours** (PR #33 to
+  the fix), because the `if:` read only `== 'pull_request'`; the comment
+  justifying it only ever reasoned about excluding `workflow_dispatch`, not
+  about accidentally excluding `push` too. Runs still showed green the
+  whole time — a skipped job doesn't fail a run — so nothing surfaced it
+  until the coverage/Lighthouse badges stopped updating. Also needs
+  `base: ${{ github.ref }}` specifically for `push`: per dorny/paths-
+  filter's own docs, without it a push *to* the default branch compares
+  that commit against the default branch — i.e. against itself — and
+  finds an empty diff even with the `if:` fixed. `base` is documented as
+  ignored for `pull_request` events, so setting it unconditionally doesn't
+  affect PR behavior. If a path-filtered job goes suspiciously quiet on
+  `main` again, check this first before assuming the diff is genuinely
+  empty.
 - Path-filtered jobs (skip when irrelevant): `audit` (deps only),
   `test-api-unit`/`test-api-e2e`/`load-test` (api or deps), `test-web`/
   `perf-budget` (web or deps), `docker-scan`/`docker-smoke` (`docker` — see
