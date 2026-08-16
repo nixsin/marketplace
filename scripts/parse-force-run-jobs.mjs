@@ -20,6 +20,7 @@ const FORCEABLE_JOBS = [
   "load-test",
   "docker-scan",
   "docker-smoke",
+  "test-e2e-web",
 ];
 
 const [reviewPath] = process.argv.slice(2);
