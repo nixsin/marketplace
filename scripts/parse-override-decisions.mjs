@@ -2,10 +2,12 @@
 // Reads this PR's raw, paginated comments (fetched by the "Fetch prior
 // override decisions" step in ci.yml via `gh api .../issues/$PR_NUMBER
 // /comments --paginate --slurp`) and extracts the maintainer's
-// override-decision log, if one exists, so the next ai-code-review.mjs
-// run can avoid re-flagging a finding already fixed or explicitly
-// disputed earlier in this same PR's thread. See CLAUDE.md's "AI code
-// review gate" section for the full reasoning.
+// override-decision log, if one exists, so the next ai-code-review.mjs or
+// ai-ci-results-review.mjs run (this repo's two-pass AI review — see
+// CLAUDE.md's "AI code review gate" section) can avoid re-flagging a
+// finding already fixed or explicitly disputed earlier in this same PR's
+// thread. Both passes read the same log, so a finding resolved with
+// either one won't get re-raised by the other.
 //
 // Deliberately takes RAW `--slurp`ed pages, not a pre-shaped comments
 // array — `gh api --paginate --jq` runs its filter once per page, so a
