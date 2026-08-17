@@ -1336,18 +1336,29 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           JOB_RESULTS: ${{ toJSON(needs) }}
         run: |
+          # set +e scoped to just the lookup (need to inspect its exit
+          # code, not die on it immediately) -- restored to set -e right
+          # after, so anything later in the script (the jq transformation,
+          # or anything else) fails the step visibly instead of silently
+          # continuing to build and post a possibly-incomplete comment. A
+          # live review round caught that the original blanket set +e for
+          # the whole script conflated two genuinely different outcomes
+          # into the same silent exit 0: a real lookup FAILURE (auth/API/
+          # transient error -- a real problem worth surfacing, since
+          # nothing else depends on this job so failing it loudly costs
+          # nothing) and a legitimate EMPTY result (no PR for this commit,
+          # e.g. a direct admin push -- expected, not an error). Distinct
+          # exit codes now: 1 for the former, 0 for the latter.
           set +e
-
-          # A commit can have zero associated PRs (a direct admin push,
-          # bypassing the normal branch-off-main flow this repo otherwise
-          # always uses) -- not an error, just nothing to comment on.
-          # Verified this endpoint and both the populated and empty-array
-          # cases directly against real commits before relying on it.
           pr_number=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number' 2>/tmp/pr-lookup-error.txt)
           lookup_exit=$?
+          set -e
+
+          # Verified this endpoint and both the populated and empty-array
+          # cases directly against real commits before relying on it.
           if [ $lookup_exit -ne 0 ]; then
             echo "PR lookup failed: $(cat /tmp/pr-lookup-error.txt)"
-            exit 0
+            exit 1
           fi
           if [ -z "$pr_number" ] || [ "$pr_number" = "null" ]; then
             echo "No PR associated with this commit -- nothing to comment on."
