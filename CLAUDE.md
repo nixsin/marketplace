@@ -762,17 +762,18 @@ the reviewer's second-round finding was about) and is still only
 verified the way it always was: against a mocked `gh` CLI standing in
 for the real API calls, not a committed test.
 
-**Still structurally untestable pre-merge in the ways that actually
-matter** — same as the force-run mechanism elsewhere in this file: a job
-gated to `push` on `main` cannot fire for real on its own introducing PR,
-so the live poll-and-edit behavior (does GitHub actually let a bot-token
-comment be PATCHed repeatedly without issue? does the 20s cadence produce
-a reasonable number of edits over a real run's real duration?) is
-verified logic-by-logic pre-merge but only confirmed end-to-end on the
-first real post-merge firing. Treat that first firing's actual behavior
-as still being confirmed, not a settled fact, the same caution already
-documented for the original job's first firing above and for the
-force-run step.
+**First real firing confirmed the redesign worked** (PR #66's merge,
+2026-08-17): the comment appeared within seconds already showing real
+per-job results (not placeholder "pending" rows — `changes`/`lint`/
+`test-ci-scripts` had already finished by the time this job's first
+`refresh_status` ran), then was edited in place — same `created_at`,
+later `updated_at` — from "🔄 CI running" to the final "✅ All checks
+passed" as the remaining jobs (all correctly skipped except `migrate`)
+completed, about 90 seconds end to end. Confirms the core mechanics work
+as designed: repeated `gh api -X PATCH` against a bot-created comment,
+the `actions: read` permission actually being sufficient, and the
+`node`-via-`checkout`+`setup-node` addition not meaningfully slowing
+down the "starts almost immediately" goal.
 
 Edit-in-place (PATCH), not a new comment per update — deliberately, and
 now load-bearing in a way it wasn't for the original once-at-the-end
