@@ -1377,4 +1377,16 @@ jobs:
             "$job_table" \
             "$RUN_URL")
 
-          gh pr comment "$pr_number" --body "$body"
+          # --repo required: this job never runs actions/checkout (it
+          # doesn't need the repo's code, only gh CLI context), so there's
+          # no local git remote for `gh pr comment` to infer a repository
+          # from -- the same already-documented gotcha as pr-
+          # reconciliation.yml's own comment calls, missed here on the
+          # first pass despite reading that exact precedent while writing
+          # this job. A live review round caught it: on a fresh runner
+          # with no repo context, this would have failed as the script's
+          # last command, and since it's the last command, `set +e`
+          # doesn't turn that failure into success -- the step itself
+          # would show red, just not for the reason anyone reading the
+          # log would expect.
+          gh pr comment "$pr_number" --repo "${{ github.repository }}" --body "$body"
