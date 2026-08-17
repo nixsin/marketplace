@@ -31,6 +31,19 @@
   --destructive: var(--color-red-600);
   --destructive-foreground: #ffffff;
 
+  /* Same hues as the chart palette below (emerald/amber/sky), so the
+     semantic status colors and the chart's own "positive/caution/info"
+     associations stay visually consistent rather than picking an
+     unrelated set. Exact shades chosen for AA text contrast on
+     --background -- verified against real computed colors, not assumed;
+     see the contrast-check note in CLAUDE.md. */
+  --success: var(--color-emerald-700);
+  --success-foreground: #ffffff;
+  --warning: var(--color-amber-700);
+  --warning-foreground: #ffffff;
+  --info: var(--color-sky-700);
+  --info-foreground: #ffffff;
+
   --border: var(--color-slate-200);
   --input: var(--color-slate-200);
   --ring: var(--color-indigo-600);
@@ -42,6 +55,13 @@
   --chart-5: var(--color-sky-500);
 
   --radius: 0.5rem;
+
+  /* Plain (non-Tailwind-prefixed) name, referenced from the real
+     --shadow-sm/md/lg definitions in @theme inline below -- shadows don't
+     need light/dark indirection the way colors above do (no dark-mode
+     override defined for these), so the values themselves live directly
+     in @theme inline rather than needing a :root round-trip. */
+  --shadow-tint: var(--color-slate-950);
 }
 
 @theme inline {
@@ -66,6 +86,13 @@
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
 
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -80,6 +107,19 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
+
+  /* Subtle, layered shadows (Tailwind's own default recipe shape) -- Card
+     already has a ring-1 border for definition; this adds a touch of real
+     elevation on top without heavy visual weight, matching the flat,
+     professional B2B tone. Registering these here (not just as plain
+     :root variables) is what makes the existing shadow-sm/md/lg utility
+     classes actually pick up these values instead of Tailwind's built-in
+     defaults. */
+  --shadow-sm: 0 1px 2px 0 color-mix(in oklch, var(--shadow-tint) 6%, transparent);
+  --shadow-md: 0 2px 4px -1px color-mix(in oklch, var(--shadow-tint) 8%, transparent),
+    0 1px 2px -1px color-mix(in oklch, var(--shadow-tint) 6%, transparent);
+  --shadow-lg: 0 8px 16px -4px color-mix(in oklch, var(--shadow-tint) 10%, transparent),
+    0 2px 6px -2px color-mix(in oklch, var(--shadow-tint) 6%, transparent);
 
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
@@ -108,6 +148,13 @@
     --destructive: var(--color-red-500);
     --destructive-foreground: #ffffff;
 
+    --success: var(--color-emerald-500);
+    --success-foreground: #ffffff;
+    --warning: var(--color-amber-500);
+    --warning-foreground: #000000;
+    --info: var(--color-sky-500);
+    --info-foreground: #ffffff;
+
     --border: var(--color-slate-800);
     --input: var(--color-slate-800);
     --ring: var(--color-indigo-500);
@@ -119,7 +166,48 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
-    font-family: Arial, Helvetica, sans-serif;
+    /* font-sans resolves to --font-sans (var(--font-geist-sans), mapped
+       above) -- Geist has been loaded via next/font/google in layout.tsx
+       and mapped into the theme since this file's original color-only
+       change, but nothing ever actually applied it: this was still
+       rendering the plain Arial/Helvetica fallback the whole time.
+       next/font's generated variable value already carries its own
+       system-font fallback chain, so no separate fallback is needed here. */
+    @apply bg-background text-foreground font-sans;
   }
+
+  /* A deliberate heading scale, not just whatever size/weight a given
+     component happens to reach for -- covers any real h1-h6 markup
+     project-wide (also an accessibility win: consistent, predictable
+     heading styles help screen-reader users who navigate by heading
+     level match visual hierarchy to semantic hierarchy). */
+  h1 {
+    @apply text-3xl leading-tight font-semibold tracking-tight sm:text-4xl;
+  }
+  h2 {
+    @apply text-2xl leading-tight font-semibold tracking-tight sm:text-3xl;
+  }
+  h3 {
+    @apply text-xl leading-snug font-semibold sm:text-2xl;
+  }
+  h4 {
+    @apply text-lg leading-snug font-medium;
+  }
+  h5 {
+    @apply text-base leading-snug font-medium;
+  }
+  h6 {
+    @apply text-sm leading-snug font-medium;
+  }
+}
+
+/* Tinted with the brand color instead of the browser's default (usually
+   a flat blue unrelated to this theme) -- a semi-transparent mix, not
+   solid --primary, since fully opaque indigo behind selected text reduces
+   readability more than it needs to. color-mix/oklch already relied on
+   elsewhere in this codebase (see node_modules/shadcn's own shimmer
+   utility), so this isn't a new browser-support assumption. */
+::selection {
+  background-color: color-mix(in oklch, var(--color-primary) 30%, transparent);
+  color: var(--color-foreground);
 }
