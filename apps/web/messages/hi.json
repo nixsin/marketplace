@@ -28,7 +28,8 @@
     "meta": "{brand} · विक्रेता: {seller} · {location}",
     "deviceClass": "क्लास {class}",
     "priceOnRequest": "मूल्य के लिए संपर्क करें",
-    "sendInquiry": "पूछताछ भेजें"
+    "sendInquiry": "पूछताछ भेजें",
+    "sendInquiryAbout": "{productName} के बारे में पूछताछ भेजें"
   },
   "languageSwitcher": {
     "label": "भाषा"

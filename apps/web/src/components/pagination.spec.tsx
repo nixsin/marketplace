@@ -82,11 +82,34 @@ describe("Pagination", () => {
     expect(otherPage.className).not.toContain("bg-primary");
   });
 
+  it("marks the current page with aria-current=page, per WAI-ARIA APG's pagination pattern", () => {
+    renderPagination(3, 5);
+    expect(screen.getByText("3").getAttribute("aria-current")).toBe("page");
+    expect(screen.getByText("2").getAttribute("aria-current")).toBeNull();
+    expect(screen.getByText("4").getAttribute("aria-current")).toBeNull();
+  });
+
   it("disables Previous as a non-interactive span when currentPage <= 1", () => {
     renderPagination(1, 5);
     const prev = screen.getByText("Previous");
     expect(prev.tagName).toBe("SPAN");
     expect(prev.className).toContain("pointer-events-none");
+  });
+
+  it("keeps a link role and aria-disabled on the disabled span, not a roleless one", () => {
+    // A bare <span> with no role is invisible to a screen reader as
+    // anything more than stray text -- WAI-ARIA APG's documented pattern
+    // for a disabled link (since <a> has no native `disabled` attribute)
+    // is to keep the original role and add aria-disabled, so assistive
+    // tech still identifies "Previous, link" as dimmed/unavailable
+    // rather than unlabeled text with no indication it was ever a
+    // control. Verified live against the real accessibility tree before
+    // this fix existed: the disabled state showed up as a completely
+    // roleless `generic "Previous"`.
+    renderPagination(1, 5);
+    const prev = screen.getByRole("link", { name: "Previous" });
+    expect(prev.tagName).toBe("SPAN");
+    expect(prev.getAttribute("aria-disabled")).toBe("true");
   });
 
   it("renders Previous as an enabled Link when currentPage > 1", () => {
