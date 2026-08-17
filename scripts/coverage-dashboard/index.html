@@ -15,6 +15,7 @@
     --api: #4f8cff;
     --web: #34c37b;
     --lighthouse: #f5a623;
+    --accessibility: #a855f7;
     --grid: #262b31;
   }
   @media (prefers-color-scheme: light) {
@@ -50,6 +51,7 @@
   .dot.api { background: var(--api); }
   .dot.web { background: var(--web); }
   .dot.lighthouse { background: var(--lighthouse); }
+  .dot.accessibility { background: var(--accessibility); }
   .stat { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
   .stat b { color: var(--fg); font-weight: 600; }
   svg { width: 100%; height: auto; display: block; }
@@ -97,15 +99,26 @@
     <div id="lighthouse-chart"></div>
   </div>
 
+  <div class="panel">
+    <h2><span class="dot accessibility"></span>Accessibility (axe-core, WCAG 2.1 AA)</h2>
+    <p class="stat" id="accessibility-stat">Loading…</p>
+    <div id="accessibility-chart"></div>
+  </div>
+
   <footer>
     Raw data: <a href="api-history.json">api-history.json</a> ·
     <a href="web-history.json">web-history.json</a> ·
-    <a href="lighthouse-history.json">lighthouse-history.json</a>.
+    <a href="lighthouse-history.json">lighthouse-history.json</a> ·
+    <a href="accessibility-history.json">accessibility-history.json</a>.
     Coverage only appends when the corresponding CI job actually runs
     (path-filtered — see this repo's <code>CLAUDE.md</code>), so gaps mean
     "unchanged," not "missing." Lighthouse appends on every push-to-main run
     of that job regardless of pass/fail, so a real regression shows up here
-    rather than being hidden.
+    rather than being hidden. Accessibility is a hybrid of the two: it's
+    genuinely skipped (gap, not failure) on pushes that don't touch the web
+    app or dependencies, but whenever it *does* run, a real violation still
+    appends and shows up rather than freezing the badge at the last passing
+    value.
   </footer>
 </div>
 <div id="tooltip"></div>
@@ -189,14 +202,20 @@ function renderChart(containerId, statId, name, rows, unit = "%", deltaUnit = "p
 }
 
 (async function main() {
-  const [apiRows, webRows, lighthouseRows] = await Promise.all([
+  const [apiRows, webRows, lighthouseRows, accessibilityRows] = await Promise.all([
     loadHistory("api"),
     loadHistory("web"),
     loadHistory("lighthouse"),
+    loadHistory("accessibility"),
   ]);
   renderChart("api-chart", "api-stat", "api", apiRows);
   renderChart("web-chart", "web-stat", "web", webRows);
   renderChart("lighthouse-chart", "lighthouse-stat", "lighthouse", lighthouseRows, "/100", "pts");
+  // 100 = zero axe-core violations across both locales, 0 = at least one --
+  // a binary pass/fail stored on the same 0-100 scale as the other
+  // metrics so it reuses the exact same chart/badge machinery, not a
+  // partial-credit score.
+  renderChart("accessibility-chart", "accessibility-stat", "accessibility", accessibilityRows);
 })();
 </script>
 </body>

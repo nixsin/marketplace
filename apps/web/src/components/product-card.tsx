@@ -55,7 +55,18 @@ export function ProductCard({ product }: { product: Product }) {
                 </Badge>
               )}
             </div>
-            <CardTitle className="text-lg">{product.name}</CardTitle>
+            {/* leading-7 explicit: CardTitle's own base classes include
+                leading-snug, but tailwind-merge silently drops it once a
+                caller-supplied text-size utility (text-lg here) conflicts
+                with it -- verified directly this causes h2 and div to
+                render at genuinely different heights (22.5px vs 28px)
+                with the exact same final class list, purely from
+                tag-dependent line-height fallback once leading-snug is
+                gone. leading-7 (1.75rem/28px) restores the same line
+                height the div version always actually rendered at. */}
+            <CardTitle asChild className="text-lg leading-7">
+              <h2>{product.name}</h2>
+            </CardTitle>
             <CardDescription>
               {t("meta", {
                 brand: product.brand,
@@ -83,7 +94,24 @@ export function ProductCard({ product }: { product: Product }) {
             <span className="text-sm text-muted-foreground">
               {t("priceOnRequest")}
             </span>
-            <Button size="sm">{t("sendInquiry")}</Button>
+            {/* aria-label carries the product name; visible text stays
+                short ("Send Inquiry") for sighted users. Without this,
+                every card's button has the identical accessible name --
+                a screen-reader user tabbing directly to a button (the
+                only interactive element per card) hears "Send Inquiry,
+                button" with no indication which product it's for, since
+                Tab correctly skips the surrounding static title/
+                description/image entirely (that's standard, expected
+                browser behavior, not itself a bug) and provides no other
+                context on its own. Real WCAG 2.4.4 (Link Purpose in
+                Context) issue, caught by a live question about keyboard
+                navigation on 2026-08-17 -- axe-core doesn't reliably
+                flag ambiguous-but-technically-labeled button text like
+                this, since it requires understanding intent across
+                repeated elements, not just checking a rule. */}
+            <Button size="sm" aria-label={t("sendInquiryAbout", { productName: product.name })}>
+              {t("sendInquiry")}
+            </Button>
           </CardFooter>
         </div>
       </div>

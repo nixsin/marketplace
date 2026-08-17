@@ -674,10 +674,86 @@ jobs:
 
       - name: Run Playwright e2e suite
         working-directory: apps/web
-        run: pnpm test:e2e
+        # This whole job is gated on api-or-web-or-deps (not web-or-deps
+        # alone) because critical-flow.spec.ts's pagination test genuinely
+        # exercises real apps/api logic (findPaged) -- see CLAUDE.md. But
+        # accessibility.spec.ts only checks static markup/contrast/ARIA,
+        # never API behavior, so an API-only change has no reason to
+        # re-run it. Since both spec files run inside this one job,
+        # scoping happens here at test-selection rather than via a second
+        # job -- a separate job would duplicate the entire Postgres+API+
+        # web-server setup above just to skip two ~2-second checks, for
+        # no real time savings given this job already has to run that
+        # full setup for API-only changes anyway (for critical-flow's
+        # sake). A workflow_dispatch force-run always gets the full
+        # suite, including accessibility -- if something disagreed with
+        # the path filter enough to force this job to run at all, that's
+        # specifically a request for full coverage, not a partial one.
+        run: |
+          mkdir -p /tmp/accessibility-results
+          if [ "${{ needs.changes.outputs.web }}" = "true" ] || [ "${{ needs.changes.outputs.deps }}" = "true" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            pnpm exec playwright test
+          else
+            pnpm exec playwright test e2e/critical-flow.spec.ts
+          fi
         env:
           PLAYWRIGHT_BASE_URL: http://localhost:3000
           CI: true
+          ACCESSIBILITY_RESULT_DIR: /tmp/accessibility-results
+
+      # Badge for the coverage/lighthouse dashboard (see CLAUDE.md's
+      # "Badges and the metrics dashboard" section) -- same pattern as
+      # perf-budget's own badge-publish step, adapted for a pass/fail
+      # metric rather than a 0-100 score: 100 when zero violations were
+      # found across both locales, 0 otherwise. if: always() (not gated on
+      # the previous step succeeding) so a real accessibility failure
+      # still gets reflected in the badge/history instead of freezing it
+      # at the last passing value -- the exact same reasoning already
+      # documented for perf-budget's own always()-gated publish step.
+      # No result files exist at all when accessibility.spec.ts didn't run
+      # (an API-only push, per the conditional test-selection above) --
+      # that's not a failure, just nothing new to publish this run.
+      - name: Publish accessibility badge
+        if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          en_file=/tmp/accessibility-results/accessibility-en.json
+          hi_file=/tmp/accessibility-results/accessibility-hi.json
+          if [ ! -f "$en_file" ] && [ ! -f "$hi_file" ]; then
+            echo "No accessibility result files (tests didn't run this push, e.g. an API-only change) -- skipping badge publish."
+            exit 0
+          fi
+          # Exactly one file present means the other locale's test crashed
+          # before recordResult() ran (e.g. mid-navigation, or
+          # AxeBuilder.analyze() throwing) -- a real, reproduced failure
+          # mode, not hypothetical. Treating a missing file as "0
+          # violations" here would silently publish a green "0 violations"
+          # badge despite never having checked that locale at all,
+          # contradicting the description's own "across both locales"
+          # claim. Fail closed instead: an incomplete run reports as a
+          # failure, never as a pass.
+          if [ ! -f "$en_file" ] || [ ! -f "$hi_file" ]; then
+            echo "Incomplete accessibility results -- one locale's result file is missing, so its test didn't finish. Publishing as a failure rather than treating the missing file as zero violations."
+            pct=0
+            message="incomplete run"
+            color="red"
+          else
+            en_count=$(jq '.violationCount' "$en_file")
+            hi_count=$(jq '.violationCount' "$hi_file")
+            total=$((en_count + hi_count))
+            if [ "$total" -eq 0 ]; then
+              pct=100
+              message="0 violations"
+              color="brightgreen"
+            else
+              pct=0
+              message="${total} violation$([ "$total" != 1 ] && echo s)"
+              color="red"
+            fi
+          fi
+          echo "{\"schemaVersion\":1,\"label\":\"accessibility\",\"message\":\"${message}\",\"color\":\"${color}\"}" > /tmp/accessibility-badge.json
+          ./scripts/publish-badge.sh accessibility /tmp/accessibility-badge.json "$pct" "${{ github.sha }}"
 
       # A visual diff or a functional failure both need to be inspectable
       # after the fact — the terminal summary alone doesn't show *what*
