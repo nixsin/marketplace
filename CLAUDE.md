@@ -640,11 +640,57 @@ minutes) as a hard bound distinct from the job's own `timeout-minutes:
 35` — two independent limits, not one relying on the other, so a genuine
 runner outage gets a "still waiting, worth checking directly" comment
 instead of silently running for the full timeout with no explanation.
-`refresh_status`/`comment_body`/`post_comment` are bash functions with
+`refresh_status`/`comment_body`/`post_comment` remain bash functions with
 deliberately shared (non-`local`) state for the three status flags
 (`TABLE`/`DONE`/`HAS_FAILURE`/`HAS_CANCELLED`) — avoids three redundant
-`jq` passes per poll iteration at the cost of the function reading like
-it has side effects, which it does, on purpose.
+calls per poll iteration at the cost of the function reading like it has
+side effects, which it does, on purpose. The I/O (`gh api` calls) stays
+in bash; the actual decision logic they wrap does not — see below.
+
+**Decision logic extracted into `scripts/lib/ci-progress-comment.mjs`,
+same PR (#66), after two separate `ai-code-review` rounds** — round one
+caught a real bug (below); round two, once that was fixed, asked for
+committed test coverage of the surrounding logic on its own merits, since
+"verified manually and described in CLAUDE.md" isn't the same as an
+actual committed, CI-run test. Same "pull pure logic into a tested
+module" move already proven on `pr-reconciliation.mjs`/`review-
+verdict.mjs`/`override-decisions.mjs` — `computeProgress` (job
+classification + table + done/failure/cancelled flags), `buildCommentBody`,
+`shouldStopPolling`, and `decideStatusLine` are now pure, exported
+functions with their own suite
+(`scripts/lib/ci-progress-comment.test.mjs`, 22 cases, run in
+`test-ci-scripts` — necessary for the same reason `pr-reconciliation.mjs`
+is tested there: this job only ever triggers on `push` to `main`, so a
+regression would ship straight to `main` unnoticed by its own introducing
+PR without a plain, unconditional `pull_request`-triggered test job
+covering it). Three thin CLI wrappers (`scripts/compute-ci-progress.mjs`,
+`scripts/build-ci-comment-body.mjs`, `scripts/decide-ci-status-line.mjs`)
+are what the workflow's bash actually calls — following `scripts/decide-
+*.mjs`'s existing pattern exactly (args in, one value or one JSON object
+out on stdout) so the test suite exercises the real code path, not a
+parallel copy that could drift from it (the same mistake an earlier
+`decide-stuck-action.mjs` draft made, per the PR reconciliation section
+below).
+
+**The bug round one caught**: `HAS_FAILURE` originally checked only
+`conclusion === "failure"`. A completed GitHub Actions job can also
+conclude `timed_out`/`action_required`/`stale`/`neutral`, or have a null
+conclusion — none of those set `HAS_FAILURE`, so a genuinely timed-out
+job would have left the final comment reading "✅ All checks passed".
+Reproduced directly (fabricated a `timed_out` job, ran the exact jq,
+confirmed `HAS_FAILURE` came back `false`) before fixing. Fixed by
+flipping from a failure/cancelled denylist to a success/skipped
+allowlist — now carried in `computeProgress` as `isOkConclusion`, with
+all 8 conclusion values (success, skipped, cancelled, failure,
+timed_out, action_required, stale, neutral, plus null) covered in the
+committed test suite, not just the ones manually checked in the PR
+description.
+
+Because this job now runs `node scripts/*.mjs`, it also gained
+`actions/checkout` + `actions/setup-node` steps it never needed before
+(no repo code, no node, when it was pure `gh`/`jq`) — a small added
+startup cost, still far less than the old design's wait for the entire
+job list to finish.
 
 `if: always()`, gated to `github.event_name == 'push' && github.ref ==
 'refs/heads/main'`, **not additionally gated on `needs.changes.result`**

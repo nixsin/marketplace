@@ -268,6 +268,7 @@ jobs:
           node-version: 22
       - run: node --test scripts/lib/pr-reconciliation.test.mjs
       - run: node --test scripts/lib/pre-push-refs.test.mjs
+      - run: node --test scripts/lib/ci-progress-comment.test.mjs
       - run: node --test scripts/coverage-dashboard/chart-math.test.mjs
       - run: bash scripts/publish-badge.test.sh
       - run: bash scripts/check-outdated.test.sh
@@ -1415,6 +1416,22 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      # checkout + setup-node are new here -- the previous, once-at-the-
+      # end version of this job never needed either (no repo code, no
+      # node). The decision logic (job-status classification, table/
+      # comment-body building, the timeout/status-line decision) now
+      # lives in scripts/lib/ci-progress-comment.mjs -- extracted after
+      # ai-code-review caught a real conclusion-classification bug in the
+      # inline jq version (PR #66), then separately asked for committed
+      # test coverage of the surrounding logic. Same "pull pure logic
+      # into a tested module" move already proven on pr-reconciliation.mjs,
+      # review-verdict.mjs, and override-decisions.mjs. See
+      # scripts/lib/ci-progress-comment.test.mjs (run in test-ci-scripts)
+      # and CLAUDE.md's "Post-merge CI result" section.
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
       - name: Find originating PR, then post and live-update CI progress
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1454,57 +1471,31 @@ jobs:
           # own list plus the informational jobs migrate deliberately
           # excludes: perf-budget/load-test/test-e2e-web). Matched against
           # the API's `name` (display name), not the yaml job id, since
-          # that's what the jobs-list endpoint returns.
+          # that's what the jobs-list endpoint returns. codeql.yml isn't
+          # in this list -- it's a separate workflow file, not visible
+          # via this run's own jobs list.
           JOB_NAMES_JSON='["Detect changed paths","Lint","Test CI/reconciliation scripts","Dependency audit","API unit tests","API e2e tests","Web build + tests","Docker image vulnerability scan","Docker dev stack smoke test","Web performance budget (Lighthouse)","API load test (autocannon)","Web e2e (Playwright)","Apply prod DB migrations"]'
           MARKER="<!-- ci-result-comment -->"
+          NOTE="This is the CI run for the actual merge commit on \`main\` — separate from this PR's own checks, which only ever covered the pre-merge branch. See CLAUDE.md's git workflow section for why these can differ."
           COMMENT_ID=""
 
-          # jq, not node -- this job never runs actions/setup-node, so a
-          # bare `node` call would depend on an unverified assumption
-          # about the runner image; jq is already relied on extensively
-          # throughout this workflow and is part of the standard
-          # ubuntu-latest image.
-          #
-          # Sets TABLE/DONE/HAS_FAILURE/HAS_CANCELLED as shared state
-          # (not `local`) rather than returning values, so the poll loop
-          # below can call this once per iteration instead of repeating
-          # the same three jq passes inline. codeql.yml isn't in
-          # JOB_NAMES_JSON -- it's a separate workflow file, not visible
-          # via this run's own jobs list.
+          # Fetches (I/O) stay in bash; classification/table-building
+          # (pure logic) goes through the tested module via this CLI
+          # wrapper -- sets TABLE/DONE/HAS_FAILURE/HAS_CANCELLED as
+          # shared state so the poll loop below can call this once per
+          # iteration instead of repeating the parsing inline.
           refresh_status() {
-            local jobs_json rows_json
+            local jobs_json progress_json
             jobs_json=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" --jq '.jobs')
-            rows_json=$(jq -c -n --argjson jobs "$jobs_json" --argjson names "$JOB_NAMES_JSON" \
-              '[$names[] as $n | {name: $n, job: ($jobs | map(select(.name == $n)) | first)}]')
-            TABLE=$(echo "$rows_json" | jq -r '
-              def disp(j):
-                if j == null then "pending"
-                elif j.status != "completed" then j.status
-                else (j.conclusion // "unknown")
-                end;
-              map("| \(.name) | \(disp(.job)) |") | join("\n")')
-            DONE=$(echo "$rows_json" | jq -r 'all(.[]; .job != null and .job.status == "completed")')
-            HAS_CANCELLED=$(echo "$rows_json" | jq -r 'any(.[]; .job != null and .job.conclusion == "cancelled")')
-            # Allowlist success/skipped as the only "fine" conclusions,
-            # rather than denylisting failure/cancelled -- a completed job
-            # can also conclude timed_out/action_required/stale/neutral,
-            # or null (rendered "unknown" above), none of which were
-            # caught by only checking for "failure": a genuinely timed-out
-            # job would have left HAS_FAILURE false and the final banner
-            # would have said "All checks passed". Caught by a real
-            # AI-review round on this PR, verified by reproducing it
-            # directly against a fabricated timed_out job before fixing.
-            HAS_FAILURE=$(echo "$rows_json" | jq -r '
-              any(.[]; .job != null and .job.status == "completed"
-                and .job.conclusion != "success" and .job.conclusion != "skipped"
-                and .job.conclusion != "cancelled")')
+            progress_json=$(node scripts/compute-ci-progress.mjs "$jobs_json" "$JOB_NAMES_JSON")
+            TABLE=$(echo "$progress_json" | jq -r '.table')
+            DONE=$(echo "$progress_json" | jq -r '.done')
+            HAS_FAILURE=$(echo "$progress_json" | jq -r '.hasFailure')
+            HAS_CANCELLED=$(echo "$progress_json" | jq -r '.hasCancelled')
           }
 
           comment_body() {
-            printf '%s\n%s\n\n%s\n\n| Job | Result |\n|---|---|\n%s\n\nRun: %s' \
-              "$MARKER" "$1" \
-              "This is the CI run for the actual merge commit on \`main\` — separate from this PR's own checks, which only ever covered the pre-merge branch. See CLAUDE.md's git workflow section for why these can differ." \
-              "$TABLE" "$RUN_URL"
+            node scripts/build-ci-comment-body.mjs "$MARKER" "$1" "$NOTE" "$TABLE" "$RUN_URL"
           }
 
           # Create on first call, edit-in-place (PATCH) on every call
@@ -1544,13 +1535,5 @@ jobs:
             post_comment "$(comment_body "🔄 **CI running** for this merge — this comment updates as jobs finish. [Track live]($RUN_URL).")"
           done
 
-          if [ "$TIMED_OUT" = "true" ]; then
-            status_line="⏱️ Still waiting on this run after 30 minutes of polling — longer than any run in this workflow's history, worth checking directly."
-          elif [ "$HAS_FAILURE" = "true" ]; then
-            status_line="❌ **One or more checks failed** on the push-to-main run for this merge."
-          elif [ "$HAS_CANCELLED" = "true" ]; then
-            status_line="⚠️ One or more checks were **cancelled** on the push-to-main run for this merge."
-          else
-            status_line="✅ All checks passed on the push-to-main run for this merge."
-          fi
+          status_line=$(node scripts/decide-ci-status-line.mjs "$TIMED_OUT" "$HAS_FAILURE" "$HAS_CANCELLED")
           post_comment "$(comment_body "$status_line")"
