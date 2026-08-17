@@ -743,18 +743,24 @@ JSON error content to stdout, which would otherwise be misread as a
 value rather than recognized as a failure if the exit code weren't
 checked first.
 
-Builds the per-job table with `jq`, not `node` — this job never runs
-`actions/setup-node`, so a bare `node` call would rest on an unverified
-assumption about the runner image; `jq` is already relied on extensively
-throughout this workflow and is guaranteed present on the standard
-`ubuntu-latest` image. The `refresh_status` jq logic (pending/in-progress/
-conclusion resolution, the "is everything done" check, the failure/
-cancelled flags) was tested directly against fabricated job-list JSON
-covering three cases — a mid-run partial state, an all-done run with a
-real failure, and an empty jobs array (this job starting before anything
-else has appeared in the API yet) — before relying on it, not just
-eyeballed. The create-vs-PATCH branching in `post_comment` was likewise
-verified against a mocked `gh` standing in for the real API calls.
+A fourth `ai-code-review` round on this same PR caught this paragraph
+itself going stale: it used to describe a pure-`jq`, no-`node` design
+("this job never runs `actions/setup-node`") that the extraction above
+directly superseded — real, contradictory operational documentation
+left in place after the design it described stopped being true, exactly
+the kind of thing this file exists to keep current. What's accurate now:
+the classification/table-building logic (`computeProgress`,
+`buildCommentBody`, `shouldStopPolling`, `decideStatusLine`) is real,
+committed, `node --test`-covered code — see the extraction paragraph
+above, not a manually-verified-but-uncommitted jq script. `jq` is still
+used, just downstream of `node`, to pull individual fields (`.table`,
+`.done`, etc.) out of `compute-ci-progress.mjs`'s single JSON stdout
+value. `post_comment`'s create-vs-PATCH branching remains plain bash
+around `gh api` I/O (not extracted — it's a straightforward two-branch
+dispatch on whether `$COMMENT_ID` is set, not the kind of decision logic
+the reviewer's second-round finding was about) and is still only
+verified the way it always was: against a mocked `gh` CLI standing in
+for the real API calls, not a committed test.
 
 **Still structurally untestable pre-merge in the ways that actually
 matter** — same as the force-run mechanism elsewhere in this file: a job
