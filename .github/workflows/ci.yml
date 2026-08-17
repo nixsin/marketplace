@@ -593,6 +593,15 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.web == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'test-e2e-web'))
+    # contents: write is for the "Publish accessibility badge" step's push
+    # to gh-pages -- same reason test-web/test-api-unit/perf-budget all
+    # need it (repo default is read-only; see CLAUDE.md's "Known gotchas").
+    # Missing here until confirmed live on PR #62's post-merge push-to-main
+    # run: this step only executes on `push` to `main` (never on
+    # `pull_request`), so the PR's own green CI run never exercised it --
+    # a real 403 only surfaced after merge.
+    permissions:
+      contents: write
     services:
       postgres:
         image: postgres:16-alpine
