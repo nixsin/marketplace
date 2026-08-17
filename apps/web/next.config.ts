@@ -45,6 +45,12 @@ const cspHeader = `
   .replace(/\s{2,}/g, " ")
   .trim();
 
+// `preload` deliberately omitted -- it means submitting this domain to
+// browsers' hardcoded HSTS preload lists, which is effectively
+// irreversible. Add it later once this has been confirmed stable in
+// production for a while.
+const hstsHeaderValue = "max-age=63072000; includeSubDomains";
+
 const nextConfig: NextConfig = {
   // Ships .map files alongside minified prod JS — DevTools loads them only
   // when actually opened, so this costs nothing for normal page loads.
@@ -94,28 +100,36 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        // Deliberately global (unlike the two scoped blocks above) --
-        // baseline hardening every response should carry, not just pages.
+        // Scoped to actual page/document responses -- NOT literally global
+        // despite covering every real route (`/(.*)` would also match
+        // every /_next/static/* chunk and /_next/image request). That
+        // first version shipped and was caught live: `headers()` applies
+        // before the filesystem, per Next's own docs, so those headers
+        // rode along on every JS chunk response too -- real, deterministic
+        // bytes (confirmed identical across all 10 perf-budget.mjs runs on
+        // one CI run, not noise), pushing the JS transfer budget over by
+        // ~1.4KB for zero actual security benefit: CSP/HSTS/XFO/COOP only
+        // matter on the document that establishes them, not on each
+        // sub-resource's own response, and /_next/image already carries
+        // its own narrower, purpose-built CSP via `images.contentSecurityPolicy`
+        // above. Excludes `_next` broadly (not just `_next/static`) and
+        // the favicon (own scoped block above) -- same negative-lookahead
+        // style `src/proxy.ts`'s own matcher already uses in this repo,
+        // confirmed to work the same way here (both compile through
+        // Next's identical path-to-regexp matcher).
+        //
         // `require-trusted-types-for 'script'` (flagged by Lighthouse's
         // best-practices audit) is deliberately NOT included here: it
         // needs a policy name Next's own internals are confirmed to
         // register under, and getting that wrong fails silently (a
-        // blocked DOM write, not a loud error) rather than loudly -- not
-        // verified in this pass, so left as a known, documented gap
-        // rather than shipped unverified. Revisit if this is ever
-        // actually confirmed against a real Next.js Trusted Types policy
-        // name for this version.
-        source: "/(.*)",
+        // blocked DOM write, not a loud error) -- not verified in this
+        // pass, so left as a known, documented gap rather than shipped
+        // unverified. Revisit if this is ever actually confirmed against
+        // a real Next.js Trusted Types policy name for this version.
+        source: "/((?!_next|favicon\\.ico).*)",
         headers: [
           { key: "Content-Security-Policy", value: cspHeader },
-          {
-            // `preload` deliberately omitted -- it means submitting this
-            // domain to browsers' hardcoded HSTS preload lists, which is
-            // effectively irreversible. Add it later once this has been
-            // confirmed stable in production for a while.
-            key: "Strict-Transport-Security",
-            value: "max-age=63072000; includeSubDomains",
-          },
+          { key: "Strict-Transport-Security", value: hstsHeaderValue },
           // Belt-and-suspenders with the CSP frame-ancestors directive
           // above: browsers that don't honor frame-ancestors still fall
           // back to this. No legitimate embedding use case exists for
