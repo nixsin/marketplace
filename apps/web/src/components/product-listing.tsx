@@ -27,7 +27,24 @@ export function ProductListing() {
     items: Product[];
     totalPages: number;
     loading: boolean;
-  }>({ items: [], totalPages: 1, loading: true });
+    // Which page `items`/`totalPages` actually belong to -- distinct from
+    // the `page` variable above, which is the *requested* page from the
+    // URL right now. The two go out of sync for exactly one render on
+    // every transition to an uncached page: `state` still holds the old
+    // page's data (deliberately, see the comment below on why loading
+    // isn't reset synchronously) while `page` has already moved on. An
+    // AI review on PR #77 caught that the prefetch effect originally
+    // trusted `state.loading`/`state.totalPages` directly during that
+    // exact window -- both stale at that point, since they still describe
+    // the page being navigated *away* from -- which could fire a
+    // speculative fetch using the wrong page's totalPages, concurrently
+    // with the real fetch for the page actually being navigated *to*,
+    // contradicting the "never compete with the user's own fetch" design
+    // this whole feature depends on. `state.page` is what lets the
+    // prefetch effect tell "data has caught up with what's requested"
+    // apart from "data just happens to say loading: false right now".
+    page: number;
+  }>({ items: [], totalPages: 1, loading: true, page: 1 });
 
   // Cache of already-fetched pages, keyed by page number — a ref, not
   // state, since writing to it must never itself trigger a re-render (see
@@ -48,6 +65,7 @@ export function ProductListing() {
         items: cached.items,
         totalPages: cached.totalPages,
         loading: false,
+        page,
       });
       return;
     }
@@ -57,6 +75,9 @@ export function ProductListing() {
     // on the very first run `state.loading` is already true from the
     // initial useState value, and on later page changes `items.length`
     // is already > 0, so the skeleton guard below never reads it anyway.
+    // (`state.page` still lags `page` for this one render either way --
+    // see the prefetch effect below for why that's load-bearing, not
+    // just an unused-looking field.)
     fetchProductsPaged(page).then((result) => {
       if (cancelled) return;
       pageCache.current.set(page, result);
@@ -64,6 +85,7 @@ export function ProductListing() {
         items: result.items,
         totalPages: result.totalPages,
         loading: false,
+        page,
       });
     });
 
@@ -82,28 +104,47 @@ export function ProductListing() {
   // finish), the main effect above simply won't find a cache hit and
   // falls back to fetching that page fresh — the exact same path as
   // before this feature existed, not a special case.
+  //
+  // `state.page !== page` is the real guard, not `state.loading` alone —
+  // on a transition to an uncached page, `state` still holds the *old*
+  // page's data for one render (loading isn't reset synchronously, see
+  // the main effect above), so `state.loading`/`state.totalPages` are
+  // stale at exactly the moment this effect re-runs for the new `page`.
+  // Trusting them directly (an earlier version of this effect did)
+  // could fire a speculative fetch computed from the wrong page's
+  // totalPages, racing the real fetch for the page actually being
+  // navigated to — caught by review before it shipped.
   useEffect(() => {
-    if (state.loading) return;
+    if (state.page !== page || state.loading) return;
     const nextPage = page + 1;
     if (nextPage > state.totalPages) return;
     if (pageCache.current.has(nextPage)) return;
 
     let cancelled = false;
-    fetchProductsPaged(nextPage).then((result) => {
-      // Deliberately never calls setState — a prefetch must only warm the
-      // cache, never affect what's currently on screen. If `cancelled`,
-      // the user has already moved past this page before the speculative
-      // fetch resolved; drop the result rather than caching data for a
-      // page number that may no longer mean what it did when this fired
-      // (e.g. product data changed in between).
-      if (cancelled) return;
-      pageCache.current.set(nextPage, result);
-    });
+    fetchProductsPaged(nextPage)
+      .then((result) => {
+        // Deliberately never calls setState — a prefetch must only warm
+        // the cache, never affect what's currently on screen. If
+        // `cancelled`, the user has already moved past this page before
+        // the speculative fetch resolved; drop the result rather than
+        // caching data for a page number that may no longer mean what it
+        // did when this fired (e.g. product data changed in between).
+        if (cancelled) return;
+        pageCache.current.set(nextPage, result);
+      })
+      .catch(() => {
+        // Purely speculative — a failure here must never surface as an
+        // unhandled rejection or otherwise disturb the page the user is
+        // actually looking at. Silently dropped; if the user does
+        // navigate to `nextPage`, the main effect's cache miss falls back
+        // to a completely normal fresh fetch, same as if this prefetch
+        // had never run at all.
+      });
 
     return () => {
       cancelled = true;
     };
-  }, [page, state.loading, state.totalPages]);
+  }, [page, state.page, state.loading, state.totalPages]);
 
   if (state.loading && state.items.length === 0) {
     return (

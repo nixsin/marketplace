@@ -4,7 +4,7 @@ import { render, screen, within } from "@testing-library/react";
 import { ProductListing } from "./product-listing";
 import { LocaleProvider } from "./locale-provider";
 import type { Product } from "./product-card";
-import { fetchProductsPaged } from "@/lib/api";
+import { fetchProductsPaged, type ProductsPaged } from "@/lib/api";
 import en from "../../messages/en.json";
 
 // ProductListing reads the current page directly from next/navigation's
@@ -313,5 +313,134 @@ describe("ProductListing", () => {
       expect(mockedFetchProductsPaged).toHaveBeenCalledWith(3);
     });
     await screen.findByText("Portable Ultrasound Scanner");
+  });
+
+  // The two tests below cover a real race an AI review caught on PR #77
+  // before it shipped: state.loading/state.totalPages are stale for one
+  // render on every transition to an uncached page (the main effect
+  // deliberately doesn't reset loading synchronously -- see its own
+  // comment), so a prefetch guard that trusted them directly could fire a
+  // speculative fetch using the *previous* page's totalPages while the
+  // newly-requested page's own fetch was still in flight -- exactly the
+  // "must never compete with the user's own fetch" rule this feature
+  // depends on.
+  it("does not prefetch from stale totalPages while the newly-requested page is still loading", async () => {
+    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=1"));
+
+    // Page 3's fetch is held open deliberately -- lets this test inspect
+    // calls made *during* that window, not just the eventual outcome.
+    let resolvePage3!: (result: ProductsPaged) => void;
+    const page3Promise = new Promise<ProductsPaged>((resolve) => {
+      resolvePage3 = resolve;
+    });
+
+    mockedFetchProductsPaged.mockImplementation(async (page = 1) => {
+      if (page === 1) {
+        return {
+          items: [product1],
+          page: 1,
+          pageSize: 4,
+          totalCount: 1,
+          totalPages: 5,
+        };
+      }
+      if (page === 3) return page3Promise;
+      if (page === 4) {
+        return {
+          items: [product3],
+          page: 4,
+          pageSize: 4,
+          totalCount: 1,
+          totalPages: 5,
+        };
+      }
+      throw new Error(`unexpected page ${page} requested in this test`);
+    });
+
+    const { rerender } = renderListing();
+    await screen.findByText("Digital Blood Pressure Monitor");
+
+    // Jump straight from page 1 to page 3 -- out of sequence, skipping
+    // page 2 entirely, and page 1's own totalPages (5) would wrongly
+    // permit "page 4" as a plausible next page if trusted directly.
+    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=3"));
+    rerender(
+      <LocaleProvider initialLocale="en" initialMessages={en}>
+        <ProductListing />
+      </LocaleProvider>,
+    );
+
+    // While page 3's own fetch is still pending, nothing should have
+    // asked for page 4 yet.
+    expect(mockedFetchProductsPaged).not.toHaveBeenCalledWith(4);
+
+    resolvePage3({
+      items: [product2],
+      page: 3,
+      pageSize: 4,
+      totalCount: 1,
+      totalPages: 5,
+    });
+    await screen.findByText("Surgical Forceps Set");
+
+    // Only now, once state has actually caught up with page 3, should
+    // its own next page get prefetched.
+    await vi.waitFor(() => {
+      expect(mockedFetchProductsPaged).toHaveBeenCalledWith(4);
+    });
+  });
+
+  it("does not crash or block later navigation when a background prefetch fails", async () => {
+    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=1"));
+    mockedFetchProductsPaged.mockImplementation(async (page = 1) => {
+      if (page === 1) {
+        return {
+          items: [product1],
+          page: 1,
+          pageSize: 4,
+          totalCount: 1,
+          totalPages: 2,
+        };
+      }
+      if (page === 2) throw new Error("simulated network failure");
+      throw new Error(`unexpected page ${page} requested in this test`);
+    });
+    const { rerender } = renderListing();
+
+    await screen.findByText("Digital Blood Pressure Monitor");
+    // Let the (failing) background prefetch actually run and settle. If
+    // its rejection weren't handled, this is where Vitest would surface
+    // it -- the test failing here (or with an unhandled-rejection
+    // warning) despite the assertion below passing is exactly the
+    // failure mode a missing .catch() produces.
+    await vi.waitFor(() => {
+      expect(mockedFetchProductsPaged).toHaveBeenCalledWith(2);
+    });
+
+    // A failed prefetch never populates the cache -- re-arm page 2 to
+    // succeed, simulating this having been a transient failure, and
+    // confirm the user's own subsequent navigation still works via a
+    // completely normal fresh fetch.
+    mockedFetchProductsPaged.mockImplementation(async (page = 1) => {
+      if (page === 2) {
+        return {
+          items: [product2],
+          page: 2,
+          pageSize: 4,
+          totalCount: 1,
+          totalPages: 2,
+        };
+      }
+      throw new Error(`unexpected page ${page} requested in this test`);
+    });
+
+    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=2"));
+    rerender(
+      <LocaleProvider initialLocale="en" initialMessages={en}>
+        <ProductListing />
+      </LocaleProvider>,
+    );
+
+    await screen.findByText("Surgical Forceps Set");
   });
 });
