@@ -66,12 +66,29 @@ describe("ProductCard", () => {
     expect(screen.getByText("ISO 13485")).toBeInTheDocument();
   });
 
-  it("renders the translated 'Price on request' and 'Send Inquiry' strings", () => {
+  it("renders the translated 'Price on request' string and a Send Inquiry button", () => {
     renderCard(fullProduct);
     expect(screen.getByText("Price on request")).toBeInTheDocument();
+    // Accessible name includes the product name (aria-label), not just
+    // the visible "Send Inquiry" text -- every card's button would
+    // otherwise share the identical accessible name, which a
+    // screen-reader user tabbing directly to it (the only interactive
+    // element per card) can't distinguish from any other product's
+    // button. Visible text itself is asserted separately below.
     expect(
-      screen.getByRole("button", { name: "Send Inquiry" }),
+      screen.getByRole("button", {
+        name: "Send inquiry about Digital Blood Pressure Monitor",
+      }),
     ).toBeInTheDocument();
+  });
+
+  it("keeps the Send Inquiry button's visible text short regardless of the aria-label", () => {
+    renderCard(fullProduct);
+    expect(
+      screen.getByRole("button", {
+        name: "Send inquiry about Digital Blood Pressure Monitor",
+      }),
+    ).toHaveTextContent("Send Inquiry");
   });
 
   it("does not render an image block when imageUrl is absent", () => {
@@ -99,7 +116,19 @@ describe("ProductCard", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Price on request")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Send Inquiry" }),
+      screen.getByRole("button", {
+        name: "Send inquiry about Surgical Forceps Set",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the product name as a real heading, not just styled text", () => {
+    renderCard(fullProduct);
+    expect(
+      screen.getByRole("heading", {
+        name: "Digital Blood Pressure Monitor",
+        level: 2,
+      }),
     ).toBeInTheDocument();
   });
 });

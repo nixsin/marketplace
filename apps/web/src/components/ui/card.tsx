@@ -1,4 +1,5 @@
 import * as React from "react"
+import { Slot } from "radix-ui"
 
 import { cn } from "@/lib/utils"
 
@@ -33,9 +34,26 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
-function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
+function CardTitle({
+  className,
+  asChild = false,
+  ...props
+}: React.ComponentProps<"div"> & { asChild?: boolean }) {
+  // asChild (Radix Slot, same pattern Badge already uses) lets a consumer
+  // pass a real heading tag (<h2>, <h3>, ...) in place of the plain <div>
+  // default -- CardTitle's own classes merge onto that element rather
+  // than wrapping it. Card is a generic container used in many contexts
+  // where "title" isn't always semantically a heading, so this stays
+  // opt-in rather than changing the default tag; ProductCard uses it
+  // specifically because product titles need to be real headings for
+  // screen-reader "jump between headings" navigation -- axe-core's
+  // automated audit can't catch a missing-but-visually-present heading
+  // like this (it requires knowing intent, not just checking a rule),
+  // caught instead by a live question about keyboard/screen-reader
+  // navigation on 2026-08-17.
+  const Comp = asChild ? Slot.Root : "div"
   return (
-    <div
+    <Comp
       data-slot="card-title"
       className={cn(
         "text-base leading-snug font-medium group-data-[size=sm]/card:text-sm",

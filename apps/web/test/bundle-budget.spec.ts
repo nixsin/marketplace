@@ -40,9 +40,27 @@ const execFileAsync = promisify(execFile);
 //     not a deliberate tradeoff. Raised at the user's direction to give a
 //     small margin over the current real number rather than investigating
 //     the drift's source right now.
+//   189KB -> 191KB: the previous raise's margin turned out to be exactly
+//     as thin as its own comment warned ("nearly exhausted... next
+//     addition needs to earn its bytes") — the very next real addition
+//     broke it. PR #62's 3 accessibility fixes (aria-label product-name
+//     interpolation in both locales, WAI-ARIA pagination attributes, the
+//     Radix Slot/asChild plumbing for a real <h2> heading) added a real,
+//     verified 160 bytes client-side (curl-measured, side-by-side git
+//     worktree diff against main: 190069 -> 190229 bytes). That alone
+//     shouldn't have been enough to fail an 189KB budget, but the
+//     pre-existing margin was already down to 15 bytes locally
+//     (193521/193536 measured via a real local `pnpm test:perf` run) —
+//     thin enough that CI's Linux build (vs. this measurement's macOS
+//     build) tipped over it while local stayed just under. This is a
+//     deliberate, user-approved raise, not a silent bypass of a failing
+//     required check (see this repo's CLAUDE.md "hard rule") — the bytes
+//     are real accessibility-fix cost, not bloat to trim, and 2KB of
+//     margin is meant to survive this exact cross-platform noise next
+//     time rather than needing a raise again immediately.
 // Budget is nearly exhausted again — next addition needs to earn its
 // bytes, or that island-component optimization needs to actually happen.
-const JS_BUDGET_BYTES = 189 * 1024;
+const JS_BUDGET_BYTES = 191 * 1024;
 
 async function compressedSize(url: string): Promise<number> {
   // Node's fetch (undici) transparently decompresses gzip/br bodies, and

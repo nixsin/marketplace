@@ -28,7 +28,8 @@
     "meta": "{brand} · Sold by {seller} · {location}",
     "deviceClass": "Class {class}",
     "priceOnRequest": "Price on request",
-    "sendInquiry": "Send Inquiry"
+    "sendInquiry": "Send Inquiry",
+    "sendInquiryAbout": "Send inquiry about {productName}"
   },
   "languageSwitcher": {
     "label": "Language"

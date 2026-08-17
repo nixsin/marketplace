@@ -8,10 +8,11 @@
 [![API coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nixsin/marketplace/gh-pages/coverage/api-badge.json)](https://nixsin.github.io/marketplace/coverage/index.html)
 [![Web coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nixsin/marketplace/gh-pages/coverage/web-badge.json)](https://nixsin.github.io/marketplace/coverage/index.html)
 [![Lighthouse](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nixsin/marketplace/gh-pages/coverage/lighthouse-badge.json)](https://nixsin.github.io/marketplace/coverage/index.html)
+[![Accessibility](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/nixsin/marketplace/gh-pages/coverage/accessibility-badge.json)](https://nixsin.github.io/marketplace/coverage/index.html)
 
 B2B marketplace for medical & surgical instruments. Full architecture, rationale, and roadmap live in [TECHNICAL_PLAN.md](./TECHNICAL_PLAN.md) — read that first.
 
-CI metrics over time (coverage for both apps, Lighthouse performance score, all charted): **https://nixsin.github.io/marketplace/coverage/index.html** — accumulates automatically on every push to `main` that actually re-runs the relevant job (path-filtered for coverage, so gaps mean "unchanged," not "missing"; Lighthouse appends on every run regardless of pass/fail).
+CI metrics over time (coverage for both apps, Lighthouse performance score, axe-core WCAG 2.1 AA accessibility, all charted): **https://nixsin.github.io/marketplace/coverage/index.html** — accumulates automatically on every push to `main` that actually re-runs the relevant job (path-filtered for coverage and accessibility, so gaps mean "unchanged," not "missing"; Lighthouse appends on every run regardless of pass/fail, and accessibility does too whenever it actually ran).
 
 ## Repo layout
 
