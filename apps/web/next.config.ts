@@ -3,6 +3,48 @@ import createNextIntlPlugin from "next-intl/plugin";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
+const isDev = process.env.NODE_ENV === "development";
+
+// Same origin the app actually calls for GraphQL (see src/lib/api.ts's
+// identical fallback) -- derived from the same env var so connect-src
+// tracks whatever API this build is really pointed at (local API in dev,
+// medinstru-api.onrender.com in prod per render.yaml) instead of a
+// hardcoded prod-only domain that would break CSP locally.
+const apiOrigin = new URL(
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql",
+).origin;
+
+// Nonce-based CSP (Next's own stricter recommended option) requires every
+// page to render dynamically -- Next can only inject a nonce during SSR, so
+// a page prerendered at build time has nowhere to put it. That's a direct
+// conflict with this repo's existing, deliberate architecture:
+// product-listing.tsx keeps the page shell statically prerenderable
+// specifically so it stays browser-cacheable (see its own comment, and the
+// Cache-Control block below) and fetches product data client-side for
+// exactly that reason. The static, no-nonce CSP form below (Next's own
+// documented "Without Nonces" pattern) keeps that intact, at the cost of
+// 'unsafe-inline' for script/style -- needed for Next's inline hydration
+// scripts and the inline `style` attributes React/next-image both emit.
+// Still real protection against what CSP's other directives cover
+// (external script injection, clickjacking via frame-ancestors, mixed
+// content, base/form-action hijacking) -- just not full inline-script XSS
+// mitigation. Revisit with nonces if this app later needs dynamic
+// rendering anyway (e.g. a real auth-gated page).
+const cspHeader = `
+  default-src 'self';
+  script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""};
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' blob: data:;
+  font-src 'self';
+  connect-src 'self' ${apiOrigin};
+  object-src 'none';
+  base-uri 'self';
+  form-action 'self';
+  frame-ancestors 'none';${isDev ? "" : " upgrade-insecure-requests;"}
+`
+  .replace(/\s{2,}/g, " ")
+  .trim();
+
 const nextConfig: NextConfig = {
   // Ships .map files alongside minified prod JS — DevTools loads them only
   // when actually opened, so this costs nothing for normal page loads.
@@ -49,6 +91,37 @@ const nextConfig: NextConfig = {
             key: "Cache-Control",
             value: "public, max-age=0, must-revalidate",
           },
+        ],
+      },
+      {
+        // Deliberately global (unlike the two scoped blocks above) --
+        // baseline hardening every response should carry, not just pages.
+        // `require-trusted-types-for 'script'` (flagged by Lighthouse's
+        // best-practices audit) is deliberately NOT included here: it
+        // needs a policy name Next's own internals are confirmed to
+        // register under, and getting that wrong fails silently (a
+        // blocked DOM write, not a loud error) rather than loudly -- not
+        // verified in this pass, so left as a known, documented gap
+        // rather than shipped unverified. Revisit if this is ever
+        // actually confirmed against a real Next.js Trusted Types policy
+        // name for this version.
+        source: "/(.*)",
+        headers: [
+          { key: "Content-Security-Policy", value: cspHeader },
+          {
+            // `preload` deliberately omitted -- it means submitting this
+            // domain to browsers' hardcoded HSTS preload lists, which is
+            // effectively irreversible. Add it later once this has been
+            // confirmed stable in production for a while.
+            key: "Strict-Transport-Security",
+            value: "max-age=63072000; includeSubDomains",
+          },
+          // Belt-and-suspenders with the CSP frame-ancestors directive
+          // above: browsers that don't honor frame-ancestors still fall
+          // back to this. No legitimate embedding use case exists for
+          // this marketplace site.
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
         ],
       },
     ];
