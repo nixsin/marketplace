@@ -1484,8 +1484,20 @@ jobs:
                 end;
               map("| \(.name) | \(disp(.job)) |") | join("\n")')
             DONE=$(echo "$rows_json" | jq -r 'all(.[]; .job != null and .job.status == "completed")')
-            HAS_FAILURE=$(echo "$rows_json" | jq -r 'any(.[]; .job != null and .job.conclusion == "failure")')
             HAS_CANCELLED=$(echo "$rows_json" | jq -r 'any(.[]; .job != null and .job.conclusion == "cancelled")')
+            # Allowlist success/skipped as the only "fine" conclusions,
+            # rather than denylisting failure/cancelled -- a completed job
+            # can also conclude timed_out/action_required/stale/neutral,
+            # or null (rendered "unknown" above), none of which were
+            # caught by only checking for "failure": a genuinely timed-out
+            # job would have left HAS_FAILURE false and the final banner
+            # would have said "All checks passed". Caught by a real
+            # AI-review round on this PR, verified by reproducing it
+            # directly against a fabricated timed_out job before fixing.
+            HAS_FAILURE=$(echo "$rows_json" | jq -r '
+              any(.[]; .job != null and .job.status == "completed"
+                and .job.conclusion != "success" and .job.conclusion != "skipped"
+                and .job.conclusion != "cancelled")')
           }
 
           comment_body() {
