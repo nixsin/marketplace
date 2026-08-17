@@ -267,6 +267,7 @@ jobs:
         with:
           node-version: 22
       - run: node --test scripts/lib/pr-reconciliation.test.mjs
+      - run: node --test scripts/lib/pre-push-refs.test.mjs
       - run: node --test scripts/coverage-dashboard/chart-math.test.mjs
       - run: bash scripts/publish-badge.test.sh
       - run: bash scripts/check-outdated.test.sh

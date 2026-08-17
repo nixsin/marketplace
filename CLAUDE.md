@@ -634,6 +634,55 @@ already has more direct paths to the same secrets. If this repo ever adds
 outside contributors, revisit — e.g. a GitHub Environment with
 required-reviewer protection on each secret.
 
+## Local pre-push AI review precheck (`.husky/pre-push`)
+
+`scripts/ai-code-review-precheck.mjs` runs the same reviewer as the
+`ai-code-review` CI job, but locally, on every `git push` — a fast preview
+before spending a full CI round-trip on a finding you could've caught
+yourself. Two goals: catch real issues before they cost a CI cycle, and
+converge the eventual CI review faster (see the "How to avoid a perpetual
+review/fix cycle" section above) by feeding the same PR's existing
+override-decision log back in, so something already disputed with the
+real reviewer doesn't get re-raised here too.
+
+**Deliberately not the same guarantee as the CI gate — three real
+differences, not oversights:**
+- **No CI grounding.** At push time no test/job results exist yet, so this
+  reviews the diff alone; the prompt explicitly tells the model not to
+  claim anything about CI/test status, unlike the CI version which treats
+  real job results as ground truth.
+- **Lower reasoning effort** (`low` vs CI's `medium`) — this runs on every
+  push, not once per PR, so latency matters more here than review depth.
+- **Fails OPEN, not closed.** A missing local `OPENAI_API_KEY` (it's
+  optional — most contributors won't have one set locally), a network
+  error, or any other failure to get a usable review prints a warning and
+  lets the push through, unlike `ai-code-review.mjs`'s fail-closed design.
+  The real CI job still runs on the PR regardless and still fails closed
+  exactly as documented above — this is a convenience layer in front of
+  that gate, not a replacement for it. A REQUEST_CHANGES verdict *does*
+  block the push (non-zero exit, same as the existing `pre-commit`
+  lint-staged hook) — override with `git push --no-verify` if you disagree
+  with a specific finding, same escape hatch as any other husky hook.
+
+Reuses `scripts/lib/review-verdict.mjs` and `scripts/lib/override-
+decisions.mjs` unchanged — same tested parsing logic as the CI job, not a
+second copy that could drift from it. The override-decision log fetch
+(`gh pr view` → `gh api .../issues/<n>/comments --paginate --slurp`) is
+best-effort: if no PR exists yet for the current branch, `gh pr view`
+fails and this falls through to empty context, the same fail-open default
+the CI job's own "Fetch prior override decisions" step uses when it can't
+reach the data.
+
+Verified directly before landing (no real `OPENAI_API_KEY` available in
+this working session, so the actual-success path — a real API call
+producing a genuine APPROVE/REQUEST_CHANGES — wasn't exercised end to
+end; every other path was, for real, not by inspection): the no-key skip,
+a real OpenAI 401 on an invalid key correctly failing open, the no-diff
+skip (comparing a ref against itself), `decideVerdict`'s four branches
+(APPROVE, REQUEST_CHANGES, files-reviewed mismatch override, truncation
+override) against the actual imported function, and the override-log
+fetch's fail-open path against a real branch with no PR.
+
 ## Dependabot
 
 `.github/dependabot.yml`: weekly (Monday), grouped minor/patch for npm and
