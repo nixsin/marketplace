@@ -1,26 +1,125 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
+/* Slate neutral base + Indigo primary/accent. Colors reference Tailwind's
+   own built-in palette variables (var(--color-slate-*), var(--color-
+   indigo-*)) rather than hardcoded values, so they stay exact and in sync
+   with whatever Tailwind version ships. Dark mode still follows
+   prefers-color-scheme, not a .dark class -- next-themes is a dependency
+   (used by sonner.tsx for toast styling) but no ThemeProvider is mounted
+   anywhere yet, so there's no class-based toggle actually wired up to
+   switch to. */
 :root {
   --background: #ffffff;
-  --foreground: #171717;
+  --foreground: var(--color-slate-950);
+
+  --card: #ffffff;
+  --card-foreground: var(--color-slate-950);
+  --popover: #ffffff;
+  --popover-foreground: var(--color-slate-950);
+
+  --primary: var(--color-indigo-600);
+  --primary-foreground: #ffffff;
+  --secondary: var(--color-slate-100);
+  --secondary-foreground: var(--color-slate-900);
+
+  --muted: var(--color-slate-100);
+  --muted-foreground: var(--color-slate-500);
+  --accent: var(--color-indigo-50);
+  --accent-foreground: var(--color-indigo-900);
+
+  --destructive: var(--color-red-600);
+  --destructive-foreground: #ffffff;
+
+  --border: var(--color-slate-200);
+  --input: var(--color-slate-200);
+  --ring: var(--color-indigo-600);
+
+  --chart-1: var(--color-indigo-600);
+  --chart-2: var(--color-emerald-500);
+  --chart-3: var(--color-amber-500);
+  --chart-4: var(--color-rose-500);
+  --chart-5: var(--color-sky-500);
+
+  --radius: 0.5rem;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: var(--color-slate-950);
+    --foreground: var(--color-slate-50);
+
+    --card: var(--color-slate-900);
+    --card-foreground: var(--color-slate-50);
+    --popover: var(--color-slate-900);
+    --popover-foreground: var(--color-slate-50);
+
+    --primary: var(--color-indigo-500);
+    --primary-foreground: #ffffff;
+    --secondary: var(--color-slate-800);
+    --secondary-foreground: var(--color-slate-50);
+
+    --muted: var(--color-slate-800);
+    --muted-foreground: var(--color-slate-400);
+    --accent: var(--color-indigo-950);
+    --accent-foreground: var(--color-indigo-100);
+
+    --destructive: var(--color-red-500);
+    --destructive-foreground: #ffffff;
+
+    --border: var(--color-slate-800);
+    --input: var(--color-slate-800);
+    --ring: var(--color-indigo-500);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: Arial, Helvetica, sans-serif;
+  }
 }
