@@ -1287,3 +1287,94 @@ jobs:
         run: pnpm exec prisma migrate deploy
         env:
           DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+
+  comment-ci-result-on-pr:
+    name: Comment CI result on the merged PR
+    runs-on: ubuntu-latest
+    # Closes a real gap hit live in this repo: squash-merging creates a
+    # brand-new commit, and `push` fires an entirely separate CI run for
+    # it -- a genuinely different result, not a redisplay of the PR's own
+    # run (see the git workflow section's step 6 above; a PR passed clean
+    # while the very next push-to-main run on the identical squash-merged
+    # commit failed, on 2026-08-17). The closed PR's own Checks tab only
+    # ever shows the pull_request-triggered runs from while it was open,
+    # never this one -- so without this job, finding out this run even
+    # exists means already knowing to check the Actions tab separately.
+    #
+    # always() so this reports a real failure too, not just successes --
+    # arguably more valuable in the failure case: it's exactly the
+    # situation that took manual digging to explain earlier the same day
+    # this job was written.
+    if: |
+      always() &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      [
+        changes,
+        lint,
+        test-ci-scripts,
+        audit,
+        test-api-unit,
+        test-api-e2e,
+        test-web,
+        docker-scan,
+        docker-smoke,
+        perf-budget,
+        load-test,
+        test-e2e-web,
+        migrate,
+      ]
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Find originating PR and post CI result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HAS_FAILURE: ${{ contains(needs.*.result, 'failure') }}
+          HAS_CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set +e
+
+          # A commit can have zero associated PRs (a direct admin push,
+          # bypassing the normal branch-off-main flow this repo otherwise
+          # always uses) -- not an error, just nothing to comment on.
+          # Verified this endpoint and both the populated and empty-array
+          # cases directly against real commits before relying on it.
+          pr_number=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number' 2>/tmp/pr-lookup-error.txt)
+          lookup_exit=$?
+          if [ $lookup_exit -ne 0 ]; then
+            echo "PR lookup failed: $(cat /tmp/pr-lookup-error.txt)"
+            exit 0
+          fi
+          if [ -z "$pr_number" ] || [ "$pr_number" = "null" ]; then
+            echo "No PR associated with this commit -- nothing to comment on."
+            exit 0
+          fi
+
+          if [ "$HAS_FAILURE" = "true" ]; then
+            status_line="❌ **One or more checks failed** on the push-to-main run for this merge."
+          elif [ "$HAS_CANCELLED" = "true" ]; then
+            status_line="⚠️ One or more checks were **cancelled** on the push-to-main run for this merge."
+          else
+            status_line="✅ All checks passed on the push-to-main run for this merge."
+          fi
+
+          # jq, not node -- this job never runs actions/setup-node, so a
+          # bare `node` call would depend on an unverified assumption
+          # about the runner image; jq is already relied on extensively
+          # throughout this workflow and is part of the standard
+          # ubuntu-latest image. codeql.yml's own job isn't in this list --
+          # it's a separate workflow file, not reachable via this
+          # workflow's own `needs` context.
+          job_table=$(echo "$JOB_RESULTS" | jq -r 'to_entries | map("| \(.key) | \(.value.result) |") | join("\n")')
+
+          body=$(printf '%s\n\n%s\n\n| Job | Result |\n|---|---|\n%s\n\nRun: %s' \
+            "$status_line" \
+            "This is the CI run for the actual merge commit on \`main\` — separate from this PR's own checks, which only ever covered the pre-merge branch. See CLAUDE.md's git workflow section for why these can differ." \
+            "$job_table" \
+            "$RUN_URL")
+
+          gh pr comment "$pr_number" --body "$body"

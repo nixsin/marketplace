@@ -44,10 +44,21 @@ itself belongs here for the same reason: it shouldn't need to be repeated.
    failing post-merge is exactly the situation the hard rule above exists
    for — investigate and fix forward on a new branch, the same as any
    other failing required check; don't treat "but the PR was green" as a
-   reason to leave it. Check via `gh run list --branch main --workflow
-   ci.yml --limit 1`, not the (now-closed) PR's own Checks tab — a closed
-   PR only shows the `pull_request`-triggered runs from while it was
-   open, never the `push` run its merge commit gets.
+   reason to leave it.
+
+   **Now partially automated** — the `comment-ci-result-on-pr` job (added
+   2026-08-17, see its own section below) posts the push-to-main result
+   directly on the merged PR once that run finishes, with a per-job
+   breakdown and a direct link, specifically so this doesn't require
+   already knowing to check the Actions tab separately. Still worth
+   confirming by hand the first several times this fires for real —
+   like the force-run mechanism elsewhere in this file, a job that only
+   triggers on `push` to `main` is structurally untestable before its
+   own introducing PR actually merges, so treat its first few live
+   firings as still-being-verified, not a settled fact. Manual fallback
+   unchanged: `gh run list --branch main --workflow ci.yml --limit 1` —
+   never the (now-closed) PR's own Checks tab, which only ever shows the
+   `pull_request`-triggered runs from while it was open.
 
 Branch protection on `main` currently requires: **Lint, Dependency audit,
 Docker image vulnerability scan, Docker dev stack smoke test, CodeQL
@@ -482,6 +493,68 @@ raw multi-line bash string literals inside the `run: |` block — a literal
 newline mid-string puts the continuation line at column 1, which breaks
 YAML's block-scalar indentation rule and is a real parse error. Caught by
 validating this file's YAML locally before it was ever pushed.
+
+## Post-merge CI result (`comment-ci-result-on-pr` job, in `ci.yml`)
+
+Posts the push-to-main CI result directly onto the PR that produced it,
+once that run finishes — a per-job pass/fail/skip table plus a direct
+link to the run. Exists specifically to close the gap documented in the
+git workflow section's step 6 above: squash-merging creates a brand-new
+commit, `push` fires a genuinely separate CI run for it, and a closed
+PR's own Checks tab never shows that run — so without this, finding out
+it even exists (let alone whether it passed) means already knowing to
+check the Actions tab separately. Discovered the hard way the same day
+this job was written.
+
+`if: always()`, gated to `github.event_name == 'push' && github.ref ==
+'refs/heads/main'` — deliberately reports a real failure too, not just
+successes; a failure is arguably the more valuable case to surface here,
+since that's exactly the scenario that took manual digging to explain
+before this job existed. `needs:` lists every job whose result is
+meaningful for "did this push actually succeed" (mirrors `migrate`'s own
+list, plus the informational jobs `perf-budget`/`load-test`/
+`test-e2e-web` that `migrate` deliberately excludes but this job wants
+visibility into) — `codeql.yml` isn't included since it's a separate
+workflow file, not reachable via this workflow's own `needs` context.
+
+Finds the originating PR via `GET /repos/{owner}/{repo}/commits/{sha}/
+pulls` (`gh api repos/.../commits/${{ github.sha }}/pulls --jq
+'.[0].number'`) — verified directly against both a real merge commit
+(returns the right PR number) and a commit with no associated PR (empty
+array, `.[0].number` correctly evaluates to the literal string `"null"`)
+before relying on it. The failure-vs-empty distinction is handled the
+same careful way `pr-reconciliation.mjs` above already established as
+required: `lookup_exit=$?` is captured and checked *before* ever
+inspecting `$pr_number`'s value — verified directly against a real `gh
+api` failure (a genuinely invalid SHA) that a failed lookup prints raw
+JSON error content to stdout, which would otherwise be misread as a
+value rather than recognized as a failure if the exit code weren't
+checked first.
+
+Builds the per-job table with `jq`, not `node` — this job never runs
+`actions/setup-node`, so a bare `node` call would rest on an unverified
+assumption about the runner image; `jq` is already relied on extensively
+throughout this workflow and is guaranteed present on the standard
+`ubuntu-latest` image.
+
+**Untestable pre-merge, structurally, same as the force-run mechanism
+elsewhere in this file** — a job gated to `push` on `main` cannot fire
+on its own introducing PR; its first real firing is on the merge commit
+this PR itself produces. Everything else verifiable pre-merge was
+verified directly (the commit-to-PR API in both the populated and
+empty-array cases, the failed-lookup-exit-code case, the `jq` table
+transformation, the full comment-body assembly for both the pass and
+fail cases) — but treat the first several real firings as still being
+confirmed, not a settled fact, the same caution already documented for
+the force-run step.
+
+No duplicate-comment guard (unlike the override-decision-log pattern
+elsewhere in this file) — deliberately: this fires once per real merge
+under normal use, a manual `gh run rerun` of a stale push-to-main run is
+rare, and the worst case of not guarding against it is a redundant
+informational comment, not a functional or security problem. Revisit
+with marker-based edit-in-place logic only if repeated firings on the
+same PR actually become a real annoyance in practice.
 
 ## AI code review gate (`ai-code-review` job)
 
