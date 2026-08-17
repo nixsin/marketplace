@@ -245,6 +245,24 @@ README badge line pointing at `coverage/<new-name>-badge.json`. No changes
 needed to `publish-badge.sh` or `chart-math.mjs` — both are already fully
 generic over the metric name.
 
+**`accessibility` (2026-08-17)** — the fourth metric, added by following
+this exact recipe. Published from `test-e2e-web`'s "Publish accessibility
+badge" step, `always()`-gated the same way Lighthouse's own publish step
+is (a real violation must still show up, not freeze the badge at the
+last passing run) but *also* genuinely conditional on `push`-to-`main` —
+skips cleanly with no result files when `accessibility.spec.ts` didn't
+run this push at all (an API-only change, per the test-selection scoping
+in the Web e2e section below), which is a gap, not a failure. Binary, not
+a partial score: `pct` is 100 when `accessibility.spec.ts` found zero
+violations across both `/en` and `/hi`, 0 otherwise — deliberately stored
+on the same 0-100 scale the other metrics use (so it reuses the identical
+chart/badge machinery) rather than inventing a new unit for what's really
+a pass/fail signal. Each test writes its own violation count to a
+uniquely-named file (`accessibility-en.json` / `accessibility-hi.json`
+under `$ACCESSIBILITY_RESULT_DIR`) rather than a single shared file with
+read-modify-write — Playwright runs these tests in parallel workers
+(`fullyParallel: true`), and a shared file would race.
+
 ## Web e2e testing (`test-e2e-web` job, Playwright)
 
 The first test in this repo that runs in a real browser engine at all —
@@ -347,6 +365,79 @@ that icon-only controls (the mobile menu button) expose a real accessible
 name, not just an icon. Both real Radix/shadcn defaults, not something
 this repo added — worth knowing before assuming a clean axe run means
 the UI is fully accessible.
+
+**Three real findings axe-core's clean run missed entirely, surfaced by
+live follow-up questions the same day, not by any tool:**
+1. **`ProductCard`'s title was a styled `<div>` (`CardTitle`'s default
+   tag), not a real heading.** Visually identical to a heading, but
+   invisible to a screen reader's "jump between headings" navigation —
+   one of the most common ways to skim a listing page. Axe-core can't
+   catch this class of gap; it requires knowing something *should* be a
+   heading, not just checking whether existing headings are well-formed.
+   Fixed by adding `asChild` (Radix `Slot`, same pattern `Badge` already
+   uses) to `CardTitle` and rendering a real `<h2>` in `ProductCard` —
+   verified via the real accessibility tree (`heading "..."` appearing
+   for each product, not `generic`) and a pixel-diff screenshot
+   comparison, which caught a *second*, real bug from the same fix:
+   `CardTitle`'s own `leading-snug` base class is silently dropped by
+   `tailwind-merge` whenever a caller's `text-size` utility conflicts
+   with it (already true for the old `<div>` too, just invisible there)
+   — but the resulting *fallback* line-height differs by tag (div vs h2),
+   which a real Docker/Linux Playwright run caught as a genuine ~5.5px
+   layout shift compounding down the page. Fixed with an explicit
+   `leading-7` override restoring the exact line-height the shipped div
+   version always actually rendered at — confirmed via direct DOM
+   measurement (`getBoundingClientRect().height`), not assumed from the
+   className alone.
+2. **The disabled "Previous" pagination control had no role at all.**
+   `<a>` has no native `disabled` attribute, so `pagination.tsx` rendered
+   it as a bare `<span>` when inactive — confirmed live via the real
+   accessibility tree: `generic "Previous"`, indistinguishable from
+   stray page text, versus its enabled siblings' `link "N"`. WAI-ARIA
+   APG's documented pattern for exactly this (a link with no native
+   disabled state) is to keep the original role and add
+   `aria-disabled="true"` rather than drop the role entirely — applied
+   here, plus `aria-current="page"` on the active page number (the same
+   APG pagination pattern), which was simply missing.
+3. **Every "Send Inquiry" button had the identical accessible name.**
+   Tab correctly skips static content (title/description/image) by
+   design — that's normal, expected browser behavior, not a bug — but
+   the consequence here is that a card's *only* interactive element is
+   its button, and "Send Inquiry" alone gives a screen-reader user no
+   way to tell which product it's for once they've tabbed directly to
+   it. A real WCAG 2.4.4 (Link Purpose in Context) issue axe-core
+   doesn't reliably flag, since it requires recognizing that N
+   *technically*-labeled buttons are ambiguous *in aggregate*, not
+   examining one in isolation. Fixed with an `aria-label` carrying the
+   product name (new `sendInquiryAbout` translation key, both locales)
+   while leaving the visible button text unchanged — confirmed via the
+   real DOM (`aria-label` present, `textContent` still exactly "Send
+   Inquiry") in both languages.
+
+All three verified against real computed DOM/accessibility-tree state,
+not assumed from the diff — matching this repo's own established
+"verify, don't just trust the plausible-looking fix" discipline for
+everything else in this file.
+
+**Accessibility tests only actually run for changes that could plausibly
+affect the UI — not merely whenever the job itself runs.** The whole
+`test-e2e-web` job stays gated on `api-or-web-or-deps` (not `web-or-deps`
+alone), because `critical-flow.spec.ts`'s pagination test genuinely
+exercises real `apps/api` logic (`findPaged`) and needs API-only changes
+to trigger it too. But `accessibility.spec.ts` only checks static markup/
+contrast/ARIA, never API behavior — an API-only change has no reason to
+re-verify it. Since both spec files run inside this one job, scoping
+happens at the *test-selection* level inside the "Run Playwright e2e
+suite" step, not via a second job: `pnpm exec playwright test`
+(everything) when `web` or `deps` changed, `pnpm exec playwright test
+e2e/critical-flow.spec.ts` (accessibility skipped) otherwise. A
+`workflow_dispatch` force-run always gets the full suite regardless —
+if something disagreed with the path filter enough to force this job to
+run at all, that's a request for full coverage, not a partial one. A
+second CI job was deliberately rejected here too, same reasoning as
+above: it would duplicate the entire Postgres+API+web-server setup just
+to skip two ~2-second checks, for no real time savings given the job
+already has to run that full setup for API-only changes anyway.
 
 ## Design system / theme (`apps/web/src/app/globals.css`)
 
