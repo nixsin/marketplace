@@ -34,7 +34,7 @@ import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import OpenAI from "openai";
 import { decideVerdict } from "./lib/review-verdict.mjs";
-import { selectPushedCommit } from "./lib/pre-push-refs.mjs";
+import { selectPushedCommit, branchNameFromRef } from "./lib/pre-push-refs.mjs";
 import {
   flattenPaginatedComments,
   selectOverrideLogComment,
@@ -57,9 +57,31 @@ function sh(cmd) {
 // "Fetch prior override decisions" step uses when it can't reach the data
 // (see CLAUDE.md: a missing/unreadable log never removes a safety check
 // here, it just means the reviewer sees less context than it could).
-function fetchOverrideDecisions() {
+//
+// Takes the pushed branch explicitly (from selectPushedCommit's localRef,
+// via branchNameFromRef) rather than relying on `gh pr view`'s default of
+// "whatever's currently checked out" — a second AI review round caught
+// that the first version did exactly that, so a push targeting a
+// different, non-checked-out branch (`git push origin fix-branch:main`)
+// would correctly diff fix-branch's commit but fetch override context for
+// the WRONG PR (whatever the checked-out branch's PR happened to be),
+// potentially suppressing a finding that should have been raised.
+// Git's own ref-name rules (see `git check-ref-format`) reject spaces and
+// several special characters but not shell metacharacters like `;` or `` ` ``
+// — branchName here is about to be interpolated into a shell command via
+// sh()/execSync, so a conservative allowlist guards against an unusual
+// local branch name being interpreted as shell syntax rather than a
+// literal argument. Local-only input (this never sees untrusted external
+// content the way the CI job's PR diff does), but cheap to close properly
+// while already touching this exact line.
+const SAFE_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
+
+function fetchOverrideDecisions(branchName) {
+  if (!branchName || !SAFE_BRANCH_NAME.test(branchName)) {
+    return { rows: [], recommendation: null };
+  }
   try {
-    const prNumber = sh("gh pr view --json number --jq .number");
+    const prNumber = sh(`gh pr view ${branchName} --json number --jq .number`);
     const ownerLogin = sh("gh repo view --json owner --jq .owner.login");
     const pagesRaw = sh(
       `gh api repos/{owner}/{repo}/issues/${prNumber}/comments --paginate --slurp`,
@@ -103,6 +125,7 @@ if (pushedRef.skip) {
   warnSkip(pushedRef.skip);
 }
 const pushedSha = pushedRef.sha;
+const pushedBranch = branchNameFromRef(pushedRef.localRef);
 
 let diff, changedFiles;
 try {
@@ -122,7 +145,7 @@ if (!diff) {
 const truncated = diff.length > MAX_DIFF_CHARS;
 if (truncated) diff = diff.slice(0, MAX_DIFF_CHARS);
 
-const overrideDecisions = fetchOverrideDecisions();
+const overrideDecisions = fetchOverrideDecisions(pushedBranch);
 
 const instructions = `You are an independent code reviewer giving a fast, local, pre-push preview of a change — NOT the final review. You have no CI results and no test output, because none of that exists yet at this point in the workflow. Do not claim or imply anything about test/CI status; review the diff itself only.
 

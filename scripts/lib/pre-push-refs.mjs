@@ -14,13 +14,23 @@
 
 const ZERO_SHA = "0".repeat(40);
 
-// Returns { sha } for the single commit to review, or { skip: reason } when
-// there's nothing to review (delete-only push) or more than one non-delete
-// ref is being pushed at once. Declining is deliberate: reviewing the wrong
-// one silently (or picking one arbitrarily) would produce a verdict that
-// looks authoritative but isn't actually about what's being pushed — same
-// "unclear or malformed input fails open with a warning" philosophy as the
-// rest of this script, not an attempt to guess the "right" ref.
+// Returns { sha, localRef } for the single commit to review, or { skip:
+// reason } when there's nothing to review (delete-only push) or more than
+// one non-delete ref is being pushed at once. Declining is deliberate:
+// reviewing the wrong one silently (or picking one arbitrarily) would
+// produce a verdict that looks authoritative but isn't actually about what's
+// being pushed — same "unclear or malformed input fails open with a
+// warning" philosophy as the rest of this script, not an attempt to guess
+// the "right" ref.
+//
+// localRef is returned alongside sha (not just sha alone) because a second
+// AI review round caught that selecting the right commit to diff isn't
+// enough on its own: the caller also needs to know WHICH branch that commit
+// belongs to, to look up the right PR's override-decision log via
+// branchNameFromRef below — a first version of this fix diffed the correct
+// pushed commit but still fetched override context for whatever branch
+// happened to be checked out, which could be a different PR entirely for a
+// `git push origin fix-branch:main`-style push.
 export function selectPushedCommit(stdinText) {
   const lines = (stdinText ?? "")
     .split("\n")
@@ -42,5 +52,16 @@ export function selectPushedCommit(stdinText) {
       skip: `${nonDelete.length} refs pushed at once — reviewing more than one ref per push isn't supported yet`,
     };
   }
-  return { sha: nonDelete[0].localSha };
+  return { sha: nonDelete[0].localSha, localRef: nonDelete[0].localRef };
+}
+
+// A pushed ref might not be a branch at all (a tag push, e.g.
+// `refs/tags/v1.0`) — there's no PR/override-log concept for that, so
+// callers should treat a null return as "don't try to fetch override
+// context, there's nothing to map it to" rather than an error.
+export function branchNameFromRef(localRef) {
+  const prefix = "refs/heads/";
+  return typeof localRef === "string" && localRef.startsWith(prefix)
+    ? localRef.slice(prefix.length)
+    : null;
 }
