@@ -595,26 +595,73 @@ validating this file's YAML locally before it was ever pushed.
 
 ## Post-merge CI result (`comment-ci-result-on-pr` job, in `ci.yml`)
 
-Posts the push-to-main CI result directly onto the PR that produced it,
-once that run finishes — a per-job pass/fail/skip table plus a direct
-link to the run. Exists specifically to close the gap documented in the
-git workflow section's step 6 above: squash-merging creates a brand-new
-commit, `push` fires a genuinely separate CI run for it, and a closed
-PR's own Checks tab never shows that run — so without this, finding out
-it even exists (let alone whether it passed) means already knowing to
-check the Actions tab separately. Discovered the hard way the same day
-this job was written.
+Posts the push-to-main CI result directly onto the PR that produced it —
+a per-job status table plus a direct link to the run — and now updates
+that same comment **live as the run progresses**, not just once at the
+end. Exists specifically to close the gap documented in the git workflow
+section's step 6 above: squash-merging creates a brand-new commit,
+`push` fires a genuinely separate CI run for it, and a closed PR's own
+Checks tab never shows that run — so without this, finding out it even
+exists (let alone whether it passed) means already knowing to check the
+Actions tab separately. Discovered the hard way the same day this job
+was originally written.
+
+**First real firing confirmed the design worked** (PR #62's merge,
+2026-08-17): a comment posted correctly with an accurate per-job table
+and the right run link, on the first live push-to-main run it ever saw.
+That same run also surfaced two real, unrelated problems it was built to
+surface in the first place — a Lighthouse LCP budget miss (investigated
+separately and confirmed as shared-runner timing noise: identical commit
+measured 2.3s on the PR's own run, 2.6s on push-to-main, then 2.3s again
+on a rerun) and a genuine 403 on the new accessibility badge's publish
+step (`test-e2e-web` missing `permissions: contents: write` — see "Known
+gotchas" below) — both would have taken manual Actions-tab digging to
+notice without this job.
+
+**Redesigned same-day (still PR #62's aftermath) to start immediately
+and update live, not just once at the end** — requested directly: a
+comment that only appears once the entire run has already finished
+gives nothing to "track" *during* the run, which defeats linking it in
+the first place. `needs: [changes]` only (not the full job list), so
+this starts within seconds of `changes` completing rather than waiting
+on the slowest job (Docker scan, ~3 minutes). The real tradeoff: reduced
+`needs:` means it can no longer read other jobs' results via the
+`needs.*.result` context (that context only ever reflects jobs actually
+listed in `needs:`) — so it polls `GET /repos/{owner}/{repo}/actions/
+runs/{run_id}/jobs` directly instead, matched against the API's job
+`name` (display name) rather than the yaml job id, since that's what the
+endpoint returns. This is what live progress requires anyway; the old
+`needs.*.result` approach could only ever report a finished state.
+
+Posts an initial "🔄 CI running" comment immediately, then loops
+(`sleep 20`, refetch, re-render, PATCH the same comment) until every
+tracked job reaches `status: completed`, capped at 90 iterations (30
+minutes) as a hard bound distinct from the job's own `timeout-minutes:
+35` — two independent limits, not one relying on the other, so a genuine
+runner outage gets a "still waiting, worth checking directly" comment
+instead of silently running for the full timeout with no explanation.
+`refresh_status`/`comment_body`/`post_comment` are bash functions with
+deliberately shared (non-`local`) state for the three status flags
+(`TABLE`/`DONE`/`HAS_FAILURE`/`HAS_CANCELLED`) — avoids three redundant
+`jq` passes per poll iteration at the cost of the function reading like
+it has side effects, which it does, on purpose.
 
 `if: always()`, gated to `github.event_name == 'push' && github.ref ==
-'refs/heads/main'` — deliberately reports a real failure too, not just
-successes; a failure is arguably the more valuable case to surface here,
-since that's exactly the scenario that took manual digging to explain
-before this job existed. `needs:` lists every job whose result is
-meaningful for "did this push actually succeed" (mirrors `migrate`'s own
-list, plus the informational jobs `perf-budget`/`load-test`/
-`test-e2e-web` that `migrate` deliberately excludes but this job wants
-visibility into) — `codeql.yml` isn't included since it's a separate
-workflow file, not reachable via this workflow's own `needs` context.
+'refs/heads/main'`, **not additionally gated on `needs.changes.result`**
+— deliberately: if `changes` itself fails (e.g. its own path-filter
+self-check catching a regression), downstream `needs: [changes]` jobs
+still get created in the run with `conclusion: skipped` rather than
+vanishing from the API, so the poll loop still converges and reports a
+real `changes: failure` row instead of silently posting nothing — that's
+exactly the case where a report matters most, so an earlier draft that
+added this extra condition (skipping the whole job when `changes` failed)
+was reverted before merge.
+
+The tracked job list mirrors `migrate`'s own list plus the informational
+jobs `perf-budget`/`load-test`/`test-e2e-web` that `migrate` deliberately
+excludes but this job wants visibility into — `codeql.yml` isn't
+included since it's a separate workflow file, not reachable via this
+run's own jobs list either way.
 
 Finds the originating PR via `GET /repos/{owner}/{repo}/commits/{sha}/
 pulls` (`gh api repos/.../commits/${{ github.sha }}/pulls --jq
@@ -634,26 +681,33 @@ Builds the per-job table with `jq`, not `node` — this job never runs
 `actions/setup-node`, so a bare `node` call would rest on an unverified
 assumption about the runner image; `jq` is already relied on extensively
 throughout this workflow and is guaranteed present on the standard
-`ubuntu-latest` image.
+`ubuntu-latest` image. The `refresh_status` jq logic (pending/in-progress/
+conclusion resolution, the "is everything done" check, the failure/
+cancelled flags) was tested directly against fabricated job-list JSON
+covering three cases — a mid-run partial state, an all-done run with a
+real failure, and an empty jobs array (this job starting before anything
+else has appeared in the API yet) — before relying on it, not just
+eyeballed. The create-vs-PATCH branching in `post_comment` was likewise
+verified against a mocked `gh` standing in for the real API calls.
 
-**Untestable pre-merge, structurally, same as the force-run mechanism
-elsewhere in this file** — a job gated to `push` on `main` cannot fire
-on its own introducing PR; its first real firing is on the merge commit
-this PR itself produces. Everything else verifiable pre-merge was
-verified directly (the commit-to-PR API in both the populated and
-empty-array cases, the failed-lookup-exit-code case, the `jq` table
-transformation, the full comment-body assembly for both the pass and
-fail cases) — but treat the first several real firings as still being
-confirmed, not a settled fact, the same caution already documented for
-the force-run step.
+**Still structurally untestable pre-merge in the ways that actually
+matter** — same as the force-run mechanism elsewhere in this file: a job
+gated to `push` on `main` cannot fire for real on its own introducing PR,
+so the live poll-and-edit behavior (does GitHub actually let a bot-token
+comment be PATCHed repeatedly without issue? does the 20s cadence produce
+a reasonable number of edits over a real run's real duration?) is
+verified logic-by-logic pre-merge but only confirmed end-to-end on the
+first real post-merge firing. Treat that first firing's actual behavior
+as still being confirmed, not a settled fact, the same caution already
+documented for the original job's first firing above and for the
+force-run step.
 
-No duplicate-comment guard (unlike the override-decision-log pattern
-elsewhere in this file) — deliberately: this fires once per real merge
-under normal use, a manual `gh run rerun` of a stale push-to-main run is
-rare, and the worst case of not guarding against it is a redundant
-informational comment, not a functional or security problem. Revisit
-with marker-based edit-in-place logic only if repeated firings on the
-same PR actually become a real annoyance in practice.
+Edit-in-place (PATCH), not a new comment per update — deliberately, and
+now load-bearing in a way it wasn't for the original once-at-the-end
+design: without it, a run with a dozen poll iterations would leave a
+dozen separate comments on the PR instead of one evolving one. Same
+discipline as this repo's other status comments (skip-logic comment,
+override-decision log, pr-reconciliation flags).
 
 ## AI code review gate (`ai-code-review` job)
 
