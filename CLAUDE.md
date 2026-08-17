@@ -308,6 +308,89 @@ or the API — same prerequisites README.md's "Testing" section already
 assumes for `apps/api`'s own e2e suite, not a new pattern. Run
 `scripts/dev.sh` (or start the API by hand) first.
 
+**Accessibility checks (`e2e/accessibility.spec.ts`) live in this same
+job, not a separate one.** Uses `@axe-core/playwright` against the app's
+one real page (`src/app/[locale]/page.tsx` — genuinely the only route
+that exists right now, so testing `/en` and `/hi` is full UI-surface
+coverage, not a partial sample), checking the `wcag2a`/`wcag2aa`/
+`wcag21a`/`wcag21aa` rule tags. Deliberately not split into its own CI
+job: `playwright.config.ts`'s `testDir: "./e2e"` has no narrower
+`testMatch`, so any `*.spec.ts` file placed here is automatically picked
+up by the existing job — a separate job would duplicate the entire
+build+Postgres+API+web-server setup just to isolate one spec file, for
+no real benefit (this job is already informational, matching what a new
+check would start as anyway; `describe`/test names already make an
+accessibility failure clearly attributable in the log without needing a
+separate check-bucket name). If a genuinely separate job is ever
+justified (e.g. a much heavier a11y suite, or wanting independent
+required-check status later), split it out then — not preemptively.
+
+Axe-core's own stated limitation: it catches roughly 30-50% of WCAG
+issues automatically (contrast, missing labels/alt text, ARIA misuse,
+landmark structure) — it is not a substitute for manual testing
+(keyboard-only navigation, screen readers). A real audit (2026-08-17)
+found zero automated violations on both locales; supplemented with a
+manual keyboard-focus check (tabbed through the page, confirmed visible
+focus rings via the existing global `outline-ring/50` rule) and a check
+that icon-only controls (the mobile menu button) expose a real accessible
+name, not just an icon. Both real Radix/shadcn defaults, not something
+this repo added — worth knowing before assuming a clean axe run means
+the UI is fully accessible.
+
+## Design system / theme (`apps/web/src/app/globals.css`)
+
+Slate neutral base + Indigo primary/accent (chosen 2026-08-17 for a
+professional, trustworthy B2B tone), built entirely on Tailwind's own
+built-in palette variables (`var(--color-slate-*)`, `var(--color-
+indigo-*)`, etc.) rather than hardcoded values, so the whole palette
+stays exact and in sync with whatever Tailwind version ships. Two-tier
+token indirection (`:root` plain names -> `@theme inline` `--color-*`
+names) exists specifically so `@media (prefers-color-scheme: dark)` can
+override the plain names and have every Tailwind utility built on the
+`--color-*` names follow along automatically — `@theme inline`
+(not a plain `@theme` block) is what makes Tailwind re-resolve the
+`var()` reference at the point of use instead of baking in a static
+value at build time, which is required for the dark-mode override to
+work at all.
+
+**Semantic status colors** (`--success`/`--warning`/`--info`, plus
+`-foreground` pairs) intentionally reuse the same hues as the existing
+chart palette (emerald/amber/sky) rather than picking an unrelated set,
+so the whole palette's "positive/caution/info" associations stay
+consistent. Applied concretely to `Badge`'s new `success`/`warning`/
+`info` variants (same subtle `bg-color/10 text-color` pattern as the
+existing `destructive` variant) — `ProductCard`'s certification badges
+(ISO 13485, CDSCO Registered, etc.) use `variant="success"` specifically,
+not left as latent unused tokens the way `--chart-*` currently is.
+
+**Contrast values were verified against real computed colors on the live
+page, not assumed from memory or hand-calculated from Tailwind's OKLCH
+values.** Method: resolve each CSS variable through a real DOM element
+(`getComputedStyle` — required to actually evaluate `var()`; a `<canvas>`
+`fillStyle` does NOT understand CSS custom properties on its own), then
+paint that resolved color onto a 1x1 canvas and read the pixel back —
+this reliably yields concrete sRGB bytes regardless of whether the
+browser reports the color as `rgb()`, `oklch()`, or a `color-mix()`
+result, sidestepping color-space string-parsing entirely. This caught two
+real WCAG AA failures on the first pass: `--success` (emerald-600 was
+3.65:1, `--info` (sky-600) was 4.02:1 — both below the 4.5:1 normal-text
+threshold, and neither is "large text" by WCAG's definition at the actual
+12px badge size these render at. Fixed by moving to emerald-700/sky-700
+(5.36:1 / 5.86:1). A genuinely different, tree-shaking-related gotcha
+surfaced while iterating on this — see "Known gotchas" below.
+
+**Known, accepted gap, not fixed**: the *solid* pairing (`--success-
+foreground` on `--success`, same for `--info`/`--destructive`) fails AA
+badly in dark mode (2.47:1 / 2.71:1 / 3.81:1) — but this exact tradeoff
+already existed for `--destructive` before this pass touched anything,
+and none of `success`/`warning`/`info`/`destructive`'s `Badge` variants
+actually render the solid pairing (all four use the subtle `/10`-tint
+style). `--primary` as direct text color in dark mode is a similar near-
+miss (4.4:1, just under 4.5) on the unused `link` button/badge variant —
+confirmed via `grep` that nothing in the app currently uses
+`variant="link"`. Revisit any of these three specifically if a future
+change actually starts using the solid/link variant, not before.
+
 ## PR reconciliation (`pr-reconciliation.yml`)
 
 Keeps every open PR targeting `main` in sync on three axes, event-driven
@@ -739,6 +822,30 @@ CI to actually execute using repo secrets, so treat it with the same
 care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
+
+**Regenerating Playwright Linux baselines via Docker (bind-mounting the
+full repo) leaves a stray `.pnpm-store/` at the repo root that corrupts
+the HOST's `node_modules` with Linux-native binaries** — hit this twice
+independently in the same session before writing it down. The Docker
+command mounts the whole repo (`-v "$(pwd):/repo"`, required for pnpm
+workspace symlinks to resolve) and runs `pnpm install` *inside* the Linux
+container against that same bind-mounted directory — since it's the same
+directory the host sees, native addons (`@swc/core`, `esbuild`, `@parcel/
+watcher`, `unrs-resolver`) get rebuilt for Linux and overwrite the host's
+macOS-native ones in place. Symptom: the next `git commit` on the host
+fails husky's pre-commit hook with `[ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_
+NO_TTY]` (pnpm's own dependency-status check detects the platform
+mismatch and wants to purge+reinstall, but can't prompt non-interactively
+inside a hook). Fix: `rm -rf .pnpm-store/` at the repo root, then
+`CI=true pnpm install` from the host (the `CI=true` skips the interactive
+confirmation prompt pnpm would otherwise block on) to rebuild
+`node_modules` with correct macOS-native binaries. Verify recovery with a
+real test run (`pnpm test`), not just a clean install exit code — confirm
+the actual host toolchain (vitest, esbuild, etc.) works again before
+continuing. Not yet worth engineering around (e.g. an isolated Docker
+volume for `node_modules` instead of the bind mount) since this only
+happens during the relatively rare Docker-based baseline-regen flow, not
+routine development — but if it becomes routine, that's the fix.
 
 **A CI job with no explicit `permissions:` block gets read-only access,
 not read-write — this repo's `default_workflow_permissions` is `read`**

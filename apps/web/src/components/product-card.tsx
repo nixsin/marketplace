@@ -45,7 +45,7 @@ export function ProductCard({ product }: { product: Product }) {
           </div>
         )}
 
-        <div className="flex flex-1 flex-col">
+        <div className="flex flex-1 flex-col gap-(--card-spacing)">
           <CardHeader className="pt-4">
             <div className="flex items-center justify-between">
               <Badge variant="secondary">{product.category}</Badge>
@@ -71,7 +71,7 @@ export function ProductCard({ product }: { product: Product }) {
             </p>
             <div className="flex flex-wrap gap-1.5">
               {product.certifications.map((cert) => (
-                <Badge key={cert} variant="outline" className="gap-1">
+                <Badge key={cert} variant="success" className="gap-1">
                   <ShieldCheck className="size-3" />
                   {cert}
                 </Badge>
