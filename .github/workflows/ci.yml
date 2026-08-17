@@ -509,6 +509,17 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'perf-budget'))
+    # contents: write only matters for the badge-publish step below, which
+    # is itself gated to push-to-main only -- PRs never touch gh-pages.
+    # Same reasoning as test-api-unit/test-web's identical block. This job
+    # was missing it: the repo's default_workflow_permissions is "read"
+    # (confirmed via `gh api repos/nixsin/marketplace/actions/permissions/
+    # workflow`), so without an explicit override the badge-publish step's
+    # push to gh-pages fails with a 403 -- discovered live when this job
+    # failed on a push-to-main run (test-web's own badge-publish, on the
+    # same run, succeeded specifically because it already had this block).
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
