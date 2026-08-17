@@ -30,6 +30,24 @@ itself belongs here for the same reason: it shouldn't need to be repeated.
 4. Wait for CI. Fix forward on the same branch if something fails — don't
    force-push over history unless specifically asked.
 5. Squash-merge (`gh pr merge --squash`).
+6. **After merging, check CI on `main` itself — a PR's own green run does
+   not guarantee the post-merge push-to-main run is green too.** Squash-
+   merging creates a brand-new commit, and `push` triggers an entirely
+   separate CI run for it — a genuinely different data point, not a re-
+   display of the PR's result, and it's what actually gates Render's
+   `autoDeployTrigger: checksPass`. Confirmed live (PR #54, 2026-08-17):
+   the PR's own Lighthouse run passed clean (LCP 2.3s), but the very next
+   push-to-main run on the identical squash-merged commit failed —
+   `perf-budget` was missing an explicit `permissions: contents: write`
+   block, which `test-api-unit`/`test-web` already had for the same
+   badge-publish reason (see "Known gotchas" below). A required check
+   failing post-merge is exactly the situation the hard rule above exists
+   for — investigate and fix forward on a new branch, the same as any
+   other failing required check; don't treat "but the PR was green" as a
+   reason to leave it. Check via `gh run list --branch main --workflow
+   ci.yml --limit 1`, not the (now-closed) PR's own Checks tab — a closed
+   PR only shows the `pull_request`-triggered runs from while it was
+   open, never the `push` run its merge commit gets.
 
 Branch protection on `main` currently requires: **Lint, Dependency audit,
 Docker image vulnerability scan, Docker dev stack smoke test, CodeQL
@@ -721,6 +739,22 @@ CI to actually execute using repo secrets, so treat it with the same
 care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
+
+**A CI job with no explicit `permissions:` block gets read-only access,
+not read-write — this repo's `default_workflow_permissions` is `read`**
+(confirmed via `gh api repos/nixsin/marketplace/actions/permissions/
+workflow`). `test-api-unit` and `test-web` both declare `permissions:
+contents: write` specifically for their badge-publish steps; `perf-budget`
+didn't, and its badge-publish step to `gh-pages` failed with `403
+Permission ... denied to github-actions[bot]` on every push-to-main run —
+not flaky, not intermittent, a deterministic permission denial every
+single time, discovered live when it broke a required check post-merge
+(see the git workflow section's step 6). Fixed by adding the identical
+`permissions: contents: write` block `test-web` already had. Grepped
+every `publish-badge.sh` call site in `.github/workflows/` (3 total, all
+in `ci.yml`) to confirm this was the only job missing it — if a new
+badge-publishing job is ever added, it needs this block too; it will not
+work by inheriting the repo default.
 
 **Convention: prefix a PR's title with `[blocked]` when it's stuck on a
 genuine upstream gap** (confirmed via direct verification, not just an
