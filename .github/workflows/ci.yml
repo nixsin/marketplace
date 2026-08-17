@@ -268,6 +268,7 @@ jobs:
           node-version: 22
       - run: node --test scripts/lib/pr-reconciliation.test.mjs
       - run: node --test scripts/lib/pre-push-refs.test.mjs
+      - run: node --test scripts/lib/ci-progress-comment.test.mjs
       - run: node --test scripts/coverage-dashboard/chart-math.test.mjs
       - run: bash scripts/publish-badge.test.sh
       - run: bash scripts/check-outdated.test.sh
@@ -1386,54 +1387,81 @@ jobs:
     # never this one -- so without this job, finding out this run even
     # exists means already knowing to check the Actions tab separately.
     #
-    # always() so this reports a real failure too, not just successes --
-    # arguably more valuable in the failure case: it's exactly the
-    # situation that took manual digging to explain earlier the same day
-    # this job was written.
+    # needs: [changes] only (not the full job list) so this starts almost
+    # immediately after push, not after everything else finishes --
+    # requested directly (2026-08-17): a comment only appearing once the
+    # whole run is already done means there's nothing to "track" during
+    # the run itself, defeating the point of linking it. The tradeoff:
+    # since this job no longer needs: the other jobs, it can't read their
+    # results via the `needs.*.result` context (that only ever reflects
+    # needs actually listed) -- so it polls the Actions API for live job
+    # status instead, which is what live progress requires anyway.
+    #
+    # timeout-minutes as an explicit safety net on top of the loop's own
+    # 90-iteration/30-minute bound below -- two independent limits, not
+    # one relying on the other.
+    timeout-minutes: 35
+    # always(), unconditional on changes' own result -- deliberately, same
+    # as the original job. If `changes` itself fails (e.g. its own path-
+    # filter self-check catching a regression), downstream needs:[changes]
+    # jobs still get created in the run with conclusion=skipped rather
+    # than vanishing, so the poll loop below still converges and reports
+    # a real "changes: failure" row instead of silently posting nothing --
+    # exactly the case where a report matters most.
     if: |
       always() &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs:
-      [
-        changes,
-        lint,
-        test-ci-scripts,
-        audit,
-        test-api-unit,
-        test-api-e2e,
-        test-web,
-        docker-scan,
-        docker-smoke,
-        perf-budget,
-        load-test,
-        test-e2e-web,
-        migrate,
-      ]
+    needs: [changes]
+    # actions: read is for refresh_status()'s GET .../actions/runs/{id}/
+    # jobs call, added by this same redesign -- the original job never
+    # called any actions/* endpoint (it read job results via needs.*
+    # context instead), so it never needed this. Declaring an explicit
+    # permissions: block sets every unlisted scope to none, not the repo
+    # default, so this had to be added explicitly rather than assumed --
+    # missed on the first pass of this redesign, caught by a real
+    # AI-review round, confirmed against two other jobs in this same file
+    # that call the identical endpoint and already declare it correctly:
+    # ai-failure-analysis (actions: read) and ai-code-review (actions:
+    # write, for its force-run capability).
     permissions:
       contents: read
       pull-requests: write
+      actions: read
     steps:
-      - name: Find originating PR and post CI result
+      # checkout + setup-node are new here -- the previous, once-at-the-
+      # end version of this job never needed either (no repo code, no
+      # node). The decision logic (job-status classification, table/
+      # comment-body building, the timeout/status-line decision) now
+      # lives in scripts/lib/ci-progress-comment.mjs -- extracted after
+      # ai-code-review caught a real conclusion-classification bug in the
+      # inline jq version (PR #66), then separately asked for committed
+      # test coverage of the surrounding logic. Same "pull pure logic
+      # into a tested module" move already proven on pr-reconciliation.mjs,
+      # review-verdict.mjs, and override-decisions.mjs. See
+      # scripts/lib/ci-progress-comment.test.mjs (run in test-ci-scripts)
+      # and CLAUDE.md's "Post-merge CI result" section.
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Find originating PR, then post and live-update CI progress
         env:
           GH_TOKEN: ${{ github.token }}
-          HAS_FAILURE: ${{ contains(needs.*.result, 'failure') }}
-          HAS_CANCELLED: ${{ contains(needs.*.result, 'cancelled') }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          JOB_RESULTS: ${{ toJSON(needs) }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           # set +e scoped to just the lookup (need to inspect its exit
           # code, not die on it immediately) -- restored to set -e right
-          # after, so anything later in the script (the jq transformation,
-          # or anything else) fails the step visibly instead of silently
-          # continuing to build and post a possibly-incomplete comment. A
-          # live review round caught that the original blanket set +e for
-          # the whole script conflated two genuinely different outcomes
-          # into the same silent exit 0: a real lookup FAILURE (auth/API/
-          # transient error -- a real problem worth surfacing, since
-          # nothing else depends on this job so failing it loudly costs
-          # nothing) and a legitimate EMPTY result (no PR for this commit,
-          # e.g. a direct admin push -- expected, not an error). Distinct
-          # exit codes now: 1 for the former, 0 for the latter.
+          # after, so anything later in the script fails the step visibly
+          # instead of silently continuing. A live review round caught
+          # that a blanket set +e for the whole script conflated two
+          # genuinely different outcomes into the same silent exit 0: a
+          # real lookup FAILURE (auth/API/transient error -- worth
+          # surfacing, since nothing else depends on this job so failing
+          # it loudly costs nothing) and a legitimate EMPTY result (no PR
+          # for this commit, e.g. a direct admin push -- expected, not an
+          # error). Distinct exit codes: 1 for the former, 0 for the
+          # latter.
           set +e
           pr_number=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number' 2>/tmp/pr-lookup-error.txt)
           lookup_exit=$?
@@ -1450,39 +1478,74 @@ jobs:
             exit 0
           fi
 
-          if [ "$HAS_FAILURE" = "true" ]; then
-            status_line="❌ **One or more checks failed** on the push-to-main run for this merge."
-          elif [ "$HAS_CANCELLED" = "true" ]; then
-            status_line="⚠️ One or more checks were **cancelled** on the push-to-main run for this merge."
-          else
-            status_line="✅ All checks passed on the push-to-main run for this merge."
-          fi
+          # Every job meaningful for "did this push actually succeed" --
+          # same list this job's `needs:` used to carry (mirrors migrate's
+          # own list plus the informational jobs migrate deliberately
+          # excludes: perf-budget/load-test/test-e2e-web). Matched against
+          # the API's `name` (display name), not the yaml job id, since
+          # that's what the jobs-list endpoint returns. codeql.yml isn't
+          # in this list -- it's a separate workflow file, not visible
+          # via this run's own jobs list.
+          JOB_NAMES_JSON='["Detect changed paths","Lint","Test CI/reconciliation scripts","Dependency audit","API unit tests","API e2e tests","Web build + tests","Docker image vulnerability scan","Docker dev stack smoke test","Web performance budget (Lighthouse)","API load test (autocannon)","Web e2e (Playwright)","Apply prod DB migrations"]'
+          MARKER="<!-- ci-result-comment -->"
+          NOTE="This is the CI run for the actual merge commit on \`main\` — separate from this PR's own checks, which only ever covered the pre-merge branch. See CLAUDE.md's git workflow section for why these can differ."
+          COMMENT_ID=""
 
-          # jq, not node -- this job never runs actions/setup-node, so a
-          # bare `node` call would depend on an unverified assumption
-          # about the runner image; jq is already relied on extensively
-          # throughout this workflow and is part of the standard
-          # ubuntu-latest image. codeql.yml's own job isn't in this list --
-          # it's a separate workflow file, not reachable via this
-          # workflow's own `needs` context.
-          job_table=$(echo "$JOB_RESULTS" | jq -r 'to_entries | map("| \(.key) | \(.value.result) |") | join("\n")')
+          # Fetches (I/O) stay in bash; classification/table-building
+          # (pure logic) goes through the tested module via this CLI
+          # wrapper -- sets TABLE/DONE/HAS_FAILURE/HAS_CANCELLED as
+          # shared state so the poll loop below can call this once per
+          # iteration instead of repeating the parsing inline.
+          refresh_status() {
+            local jobs_json progress_json
+            jobs_json=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" --jq '.jobs')
+            progress_json=$(node scripts/compute-ci-progress.mjs "$jobs_json" "$JOB_NAMES_JSON")
+            TABLE=$(echo "$progress_json" | jq -r '.table')
+            DONE=$(echo "$progress_json" | jq -r '.done')
+            HAS_FAILURE=$(echo "$progress_json" | jq -r '.hasFailure')
+            HAS_CANCELLED=$(echo "$progress_json" | jq -r '.hasCancelled')
+          }
 
-          body=$(printf '%s\n\n%s\n\n| Job | Result |\n|---|---|\n%s\n\nRun: %s' \
-            "$status_line" \
-            "This is the CI run for the actual merge commit on \`main\` — separate from this PR's own checks, which only ever covered the pre-merge branch. See CLAUDE.md's git workflow section for why these can differ." \
-            "$job_table" \
-            "$RUN_URL")
+          comment_body() {
+            node scripts/build-ci-comment-body.mjs "$MARKER" "$1" "$NOTE" "$TABLE" "$RUN_URL"
+          }
 
-          # --repo required: this job never runs actions/checkout (it
-          # doesn't need the repo's code, only gh CLI context), so there's
-          # no local git remote for `gh pr comment` to infer a repository
-          # from -- the same already-documented gotcha as pr-
-          # reconciliation.yml's own comment calls, missed here on the
-          # first pass despite reading that exact precedent while writing
-          # this job. A live review round caught it: on a fresh runner
-          # with no repo context, this would have failed as the script's
-          # last command, and since it's the last command, `set +e`
-          # doesn't turn that failure into success -- the step itself
-          # would show red, just not for the reason anyone reading the
-          # log would expect.
-          gh pr comment "$pr_number" --repo "${{ github.repository }}" --body "$body"
+          # Create on first call, edit-in-place (PATCH) on every call
+          # after -- same discipline as this repo's other status comments
+          # (skip-logic comment, override-decision log, pr-reconciliation
+          # flags): one evolving comment, not a new one per update.
+          #
+          # -f (not -F) is correct here: $body is an already-resolved
+          # shell string, not an @path -- the documented gotcha is
+          # specifically about -f not reading a file behind @path, which
+          # doesn't apply to a plain inline value.
+          post_comment() {
+            local body="$1"
+            if [ -z "$COMMENT_ID" ]; then
+              COMMENT_ID=$(gh api -X POST "repos/${{ github.repository }}/issues/$pr_number/comments" -f body="$body" --jq '.id')
+            else
+              gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" -f body="$body" > /dev/null
+            fi
+          }
+
+          refresh_status
+          post_comment "$(comment_body "🔄 **CI running** for this merge — this comment updates as jobs finish. [Track live]($RUN_URL).")"
+
+          # 90 x 20s = 30 minutes -- generous margin over any real run in
+          # this workflow's history (a few minutes end to end), but a
+          # hard bound so a genuine runner outage can't leave this job
+          # polling for its full 35-minute timeout-minutes cap without
+          # ever telling the PR why.
+          TIMED_OUT=true
+          for i in $(seq 1 90); do
+            sleep 20
+            refresh_status
+            if [ "$DONE" = "true" ]; then
+              TIMED_OUT=false
+              break
+            fi
+            post_comment "$(comment_body "🔄 **CI running** for this merge — this comment updates as jobs finish. [Track live]($RUN_URL).")"
+          done
+
+          status_line=$(node scripts/decide-ci-status-line.mjs "$TIMED_OUT" "$HAS_FAILURE" "$HAS_CANCELLED")
+          post_comment "$(comment_body "$status_line")"
