@@ -724,17 +724,33 @@ jobs:
             echo "No accessibility result files (tests didn't run this push, e.g. an API-only change) -- skipping badge publish."
             exit 0
           fi
-          en_count=$([ -f "$en_file" ] && jq '.violationCount' "$en_file" || echo 0)
-          hi_count=$([ -f "$hi_file" ] && jq '.violationCount' "$hi_file" || echo 0)
-          total=$((en_count + hi_count))
-          if [ "$total" -eq 0 ]; then
-            pct=100
-            message="0 violations"
-            color="brightgreen"
-          else
+          # Exactly one file present means the other locale's test crashed
+          # before recordResult() ran (e.g. mid-navigation, or
+          # AxeBuilder.analyze() throwing) -- a real, reproduced failure
+          # mode, not hypothetical. Treating a missing file as "0
+          # violations" here would silently publish a green "0 violations"
+          # badge despite never having checked that locale at all,
+          # contradicting the description's own "across both locales"
+          # claim. Fail closed instead: an incomplete run reports as a
+          # failure, never as a pass.
+          if [ ! -f "$en_file" ] || [ ! -f "$hi_file" ]; then
+            echo "Incomplete accessibility results -- one locale's result file is missing, so its test didn't finish. Publishing as a failure rather than treating the missing file as zero violations."
             pct=0
-            message="${total} violation$([ "$total" != 1 ] && echo s)"
+            message="incomplete run"
             color="red"
+          else
+            en_count=$(jq '.violationCount' "$en_file")
+            hi_count=$(jq '.violationCount' "$hi_file")
+            total=$((en_count + hi_count))
+            if [ "$total" -eq 0 ]; then
+              pct=100
+              message="0 violations"
+              color="brightgreen"
+            else
+              pct=0
+              message="${total} violation$([ "$total" != 1 ] && echo s)"
+              color="red"
+            fi
           fi
           echo "{\"schemaVersion\":1,\"label\":\"accessibility\",\"message\":\"${message}\",\"color\":\"${color}\"}" > /tmp/accessibility-badge.json
           ./scripts/publish-badge.sh accessibility /tmp/accessibility-badge.json "$pct" "${{ github.sha }}"
