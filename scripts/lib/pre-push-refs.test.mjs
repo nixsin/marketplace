@@ -6,11 +6,12 @@ const ZERO = "0".repeat(40);
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 
-test("single non-delete ref returns its local sha and ref", () => {
+test("single non-delete ref returns its local sha, local ref, and remote ref", () => {
   const stdin = `refs/heads/feature ${SHA_A} refs/heads/feature ${ZERO}\n`;
   assert.deepEqual(selectPushedCommit(stdin), {
     sha: SHA_A,
     localRef: "refs/heads/feature",
+    remoteRef: "refs/heads/feature",
   });
 });
 
@@ -47,20 +48,22 @@ test("one delete ref alongside one real ref returns the real one", () => {
   assert.deepEqual(selectPushedCommit(stdin), {
     sha: SHA_B,
     localRef: "refs/heads/feature",
+    remoteRef: "refs/heads/feature",
   });
 });
 
-test("pushing local branch to a differently-named remote ref still uses the local sha/ref", () => {
-  // e.g. `git push origin fix-branch:main` — the exact case the first AI
-  // review finding named: reviewing the pushed sha, not whatever HEAD
-  // happens to be. localRef here is fix-branch, NOT main, since that's
-  // what the override-decision-log lookup needs to key off of too (see the
-  // second finding, which caught that fetchOverrideDecisions used the
-  // checked-out branch instead of this).
+test("renamed push keeps localRef and remoteRef distinct — sha still follows the local commit", () => {
+  // e.g. `git push origin fix-branch:main` — the diffed commit must be
+  // fix-branch's actual content (localSha), but the PR this update
+  // logically belongs to (if any) is main's, not any PR that happens to
+  // share the name "fix-branch" — see branchNameFromRef(remoteRef) below.
+  // A second AI review round caught that using localRef here was wrong for
+  // exactly this reason.
   const stdin = `refs/heads/fix-branch ${SHA_A} refs/heads/main ${SHA_B}\n`;
   assert.deepEqual(selectPushedCommit(stdin), {
     sha: SHA_A,
     localRef: "refs/heads/fix-branch",
+    remoteRef: "refs/heads/main",
   });
 });
 
@@ -74,4 +77,14 @@ test("branchNameFromRef returns null for a tag ref (no PR/override-log concept)"
 
 test("branchNameFromRef returns null for undefined/missing input", () => {
   assert.equal(branchNameFromRef(undefined), null);
+});
+
+test("override-decision lookup must use remoteRef, not localRef, for a renamed push", () => {
+  // Directly exercises the third review round's finding: for
+  // `fix-branch:main`, the branch name used to look up a PR's override
+  // log must be "main" (remoteRef), never "fix-branch" (localRef).
+  const stdin = `refs/heads/fix-branch ${SHA_A} refs/heads/main ${SHA_B}\n`;
+  const selected = selectPushedCommit(stdin);
+  assert.equal(branchNameFromRef(selected.remoteRef), "main");
+  assert.notEqual(branchNameFromRef(selected.remoteRef), branchNameFromRef(selected.localRef));
 });

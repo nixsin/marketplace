@@ -58,14 +58,17 @@ function sh(cmd) {
 // (see CLAUDE.md: a missing/unreadable log never removes a safety check
 // here, it just means the reviewer sees less context than it could).
 //
-// Takes the pushed branch explicitly (from selectPushedCommit's localRef,
+// Takes the pushed branch explicitly (from selectPushedCommit's remoteRef,
 // via branchNameFromRef) rather than relying on `gh pr view`'s default of
-// "whatever's currently checked out" — a second AI review round caught
-// that the first version did exactly that, so a push targeting a
-// different, non-checked-out branch (`git push origin fix-branch:main`)
-// would correctly diff fix-branch's commit but fetch override context for
-// the WRONG PR (whatever the checked-out branch's PR happened to be),
-// potentially suppressing a finding that should have been raised.
+// "whatever's currently checked out". Two AI review rounds landed on this
+// in sequence: the second caught that the first version relied on gh pr
+// view's checked-out-branch default, so a push targeting a different,
+// non-checked-out branch (`git push origin fix-branch:main`) would
+// correctly diff fix-branch's commit but fetch override context for the
+// WRONG PR. The third then caught that keying off localRef (fix-branch)
+// instead of remoteRef (main) is ALSO wrong — `gh pr view <name>` resolves
+// against the remote head branch GitHub actually sees, not any local
+// branch name, so a renamed push still needs remoteRef specifically.
 // Git's own ref-name rules (see `git check-ref-format`) reject spaces and
 // several special characters but not shell metacharacters like `;` or `` ` ``
 // — branchName here is about to be interpolated into a shell command via
@@ -125,7 +128,7 @@ if (pushedRef.skip) {
   warnSkip(pushedRef.skip);
 }
 const pushedSha = pushedRef.sha;
-const pushedBranch = branchNameFromRef(pushedRef.localRef);
+const pushedBranch = branchNameFromRef(pushedRef.remoteRef);
 
 let diff, changedFiles;
 try {

@@ -14,23 +14,30 @@
 
 const ZERO_SHA = "0".repeat(40);
 
-// Returns { sha, localRef } for the single commit to review, or { skip:
-// reason } when there's nothing to review (delete-only push) or more than
-// one non-delete ref is being pushed at once. Declining is deliberate:
-// reviewing the wrong one silently (or picking one arbitrarily) would
-// produce a verdict that looks authoritative but isn't actually about what's
-// being pushed — same "unclear or malformed input fails open with a
+// Returns { sha, localRef, remoteRef } for the single commit to review, or
+// { skip: reason } when there's nothing to review (delete-only push) or
+// more than one non-delete ref is being pushed at once. Declining is
+// deliberate: reviewing the wrong one silently (or picking one arbitrarily)
+// would produce a verdict that looks authoritative but isn't actually about
+// what's being pushed — same "unclear or malformed input fails open with a
 // warning" philosophy as the rest of this script, not an attempt to guess
 // the "right" ref.
 //
-// localRef is returned alongside sha (not just sha alone) because a second
-// AI review round caught that selecting the right commit to diff isn't
-// enough on its own: the caller also needs to know WHICH branch that commit
-// belongs to, to look up the right PR's override-decision log via
-// branchNameFromRef below — a first version of this fix diffed the correct
-// pushed commit but still fetched override context for whatever branch
-// happened to be checked out, which could be a different PR entirely for a
-// `git push origin fix-branch:main`-style push.
+// sha always comes from localSha — that's the actual code content being
+// pushed, regardless of what remote branch name it lands on. But which PR
+// (if any) this update belongs to is a question about the REMOTE branch,
+// not the local one: `gh pr view <name>` resolves <name> against remote
+// head branches on GitHub, and a local branch's own name has no PR
+// identity at all unless a same-named remote branch happens to exist. Two
+// AI review rounds landed on this in sequence: the first caught that
+// override context was being fetched for gh's checked-out-branch default
+// instead of any pushed ref at all; the second then caught that even
+// keying off localRef (not remoteRef) is wrong for a renamed push like
+// `git push origin fix-branch:main` — the relevant PR (if any) is main's,
+// not whatever PR (if any) happens to share the name "fix-branch". Both
+// localRef and remoteRef are returned so callers can use the right one for
+// the right purpose (localRef for git operations against the local repo,
+// remoteRef for anything that has to match GitHub's own view of the push).
 export function selectPushedCommit(stdinText) {
   const lines = (stdinText ?? "")
     .split("\n")
@@ -52,16 +59,22 @@ export function selectPushedCommit(stdinText) {
       skip: `${nonDelete.length} refs pushed at once — reviewing more than one ref per push isn't supported yet`,
     };
   }
-  return { sha: nonDelete[0].localSha, localRef: nonDelete[0].localRef };
+  return {
+    sha: nonDelete[0].localSha,
+    localRef: nonDelete[0].localRef,
+    remoteRef: nonDelete[0].remoteRef,
+  };
 }
 
 // A pushed ref might not be a branch at all (a tag push, e.g.
 // `refs/tags/v1.0`) — there's no PR/override-log concept for that, so
 // callers should treat a null return as "don't try to fetch override
-// context, there's nothing to map it to" rather than an error.
-export function branchNameFromRef(localRef) {
+// context, there's nothing to map it to" rather than an error. Works on
+// either localRef or remoteRef — it's a plain refs/heads/ prefix strip,
+// agnostic to which one the caller passes.
+export function branchNameFromRef(ref) {
   const prefix = "refs/heads/";
-  return typeof localRef === "string" && localRef.startsWith(prefix)
-    ? localRef.slice(prefix.length)
+  return typeof ref === "string" && ref.startsWith(prefix)
+    ? ref.slice(prefix.length)
     : null;
 }
