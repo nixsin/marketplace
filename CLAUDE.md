@@ -243,7 +243,15 @@ from the relevant CI job (same pattern as the three above), add a
 `renderChart(...)` call to `scripts/coverage-dashboard/index.html`, and a
 README badge line pointing at `coverage/<new-name>-badge.json`. No changes
 needed to `publish-badge.sh` or `chart-math.mjs` — both are already fully
-generic over the metric name.
+generic over the metric name. **The job doing the publishing needs its own
+`permissions: contents: write` block** (repo default is read-only — see
+"Known gotchas" below) — add it even if the job already exists for other
+reasons and even though a PR adding this can't verify it directly: the
+publish step only runs on `push` to `main`, never on `pull_request`, so
+the introducing PR's own CI can't exercise it either way. Missing this
+has now caused a real, deterministic post-merge 403 twice (`perf-budget`,
+then `test-e2e-web` for the `accessibility` metric) — don't let it be a
+third.
 
 **`accessibility` (2026-08-17)** — the fourth metric, added by following
 this exact recipe. Published from `test-e2e-web`'s "Publish accessibility
@@ -1026,6 +1034,22 @@ every `publish-badge.sh` call site in `.github/workflows/` (3 total, all
 in `ci.yml`) to confirm this was the only job missing it — if a new
 badge-publishing job is ever added, it needs this block too; it will not
 work by inheriting the repo default.
+
+**This exact gap recurred on `test-e2e-web` (PR #62, 2026-08-17)** — when
+the `accessibility` metric's "Publish accessibility badge" step was added
+to that job, it didn't get this block either, for the same underlying
+reason the grep-based check above didn't catch it in advance: the step
+only runs `if: ... && github.event_name == 'push'`, so it's structurally
+unexercised by the introducing PR's own `pull_request`-triggered CI run —
+the exact same "untestable pre-merge" shape already documented for
+`comment-ci-result-on-pr` and the `workflow_dispatch` force-run mechanism
+elsewhere in this file. First real evidence was a live push-to-main run
+failing with the identical `403 unable to access ... The requested URL
+returned error: 403` after retrying 5 times with backoff (`publish-
+badge.sh`'s own retry logic, which correctly can't help here since the
+problem is a permission denial, not a push conflict). Confirms the
+"Adding a new metric" recipe below needs this called out explicitly, not
+left implicit in "same pattern as the three above" — added there too.
 
 **Convention: prefix a PR's title with `[blocked]` when it's stuck on a
 genuine upstream gap** (confirmed via direct verification, not just an
