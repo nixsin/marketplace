@@ -692,6 +692,26 @@ Because this job now runs `node scripts/*.mjs`, it also gained
 startup cost, still far less than the old design's wait for the entire
 job list to finish.
 
+**A third `ai-code-review` round caught one more gap the same redesign
+introduced**: `refresh_status`'s `GET .../actions/runs/{id}/jobs` call
+needs `actions: read`, which this job's `permissions:` block didn't have
+— the *original* job never called any `actions/*` endpoint (it read
+results via the `needs.*` context instead), so this requirement is new
+to the redesign, not something carried over and merely forgotten from
+before. Declaring an explicit `permissions:` block sets every unlisted
+scope to `none`, not the repo default — same mechanism as the `contents:
+write` badge-publish gotcha below, different scope. Confirmed against
+precedent already in this same file rather than taking the finding at
+face value: `ai-failure-analysis` calls the identical endpoint and
+already declares `actions: read`; `ai-code-review` declares `actions:
+write` (for its own force-run capability). Fixed by adding `actions:
+read`. **Three real `ai-code-review` rounds on one PR (#66), three
+distinct genuine findings, none repeated** — the conclusion-
+classification bug, the missing test coverage, and this permissions
+gap — worth noting as a data point for how much a careful review pass
+catches on infrastructure code that's structurally hard to test
+end-to-end before merge.
+
 `if: always()`, gated to `github.event_name == 'push' && github.ref ==
 'refs/heads/main'`, **not additionally gated on `needs.changes.result`**
 — deliberately: if `changes` itself fails (e.g. its own path-filter

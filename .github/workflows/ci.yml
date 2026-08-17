@@ -1412,9 +1412,21 @@ jobs:
       always() &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [changes]
+    # actions: read is for refresh_status()'s GET .../actions/runs/{id}/
+    # jobs call, added by this same redesign -- the original job never
+    # called any actions/* endpoint (it read job results via needs.*
+    # context instead), so it never needed this. Declaring an explicit
+    # permissions: block sets every unlisted scope to none, not the repo
+    # default, so this had to be added explicitly rather than assumed --
+    # missed on the first pass of this redesign, caught by a real
+    # AI-review round, confirmed against two other jobs in this same file
+    # that call the identical endpoint and already declare it correctly:
+    # ai-failure-analysis (actions: read) and ai-code-review (actions:
+    # write, for its force-run capability).
     permissions:
       contents: read
       pull-requests: write
+      actions: read
     steps:
       # checkout + setup-node are new here -- the previous, once-at-the-
       # end version of this job never needed either (no repo code, no
