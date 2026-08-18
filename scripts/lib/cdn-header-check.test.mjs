@@ -115,6 +115,18 @@ test("evaluateCdnCheck: normal 2xx statuses other than 200 (e.g. 206 Partial Con
   assert.equal(result.ok, true);
 });
 
+test("evaluateCdnCheck: mismatched 2xx statuses (e.g. origin 200, CDN 206) fail even when headers happen to match -- an eighth review round found comparing headers between two different kinds of response proves nothing", () => {
+  const result = evaluateCdnCheck({ ...OK_INPUT, originStatus: 200, cdnStatus: 206 });
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /different statuses/);
+});
+
+test("evaluateCdnCheck: a 204 No Content response fails even when both sides return it identically -- there's no representation on either side for the header comparison to actually mean anything against", () => {
+  const result = evaluateCdnCheck({ ...OK_INPUT, originStatus: 204, cdnStatus: 204, originHeaders: {}, cdnHeaders: {} });
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /HTTP 204/);
+});
+
 test("evaluateCdnCheck: a CDN URL that redirects straight through to the origin's requested host never actually exercised the CDN -- a real gap a live AI review found", () => {
   const result = evaluateCdnCheck({
     ...OK_INPUT,

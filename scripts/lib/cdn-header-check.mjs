@@ -90,8 +90,14 @@ export function evaluateCdnCheck({
   // neither side actually returned the real resource -- there's nothing
   // meaningful to compare, the same reasoning already applied to a hard
   // 4xx/5xx failure.
-  const originOk = originStatus >= 200 && originStatus < 300;
-  const cdnOk = cdnStatus >= 200 && cdnStatus < 300;
+  // 204 is deliberately excluded from the "ok" range too (an eighth
+  // review round's finding): a No-Content response carries no
+  // representation at all, so there's nothing for the Cache-Control
+  // comparison below to actually be checking *against* -- the same
+  // "nothing meaningful to compare" reasoning already applied to a hard
+  // 4xx/5xx failure and a surviving 3xx, just for a different reason.
+  const originOk = originStatus >= 200 && originStatus < 300 && originStatus !== 204;
+  const cdnOk = cdnStatus >= 200 && cdnStatus < 300 && cdnStatus !== 204;
   if (!originOk) problems.push(`origin request failed: HTTP ${originStatus} (${originRequestUrl})`);
   if (!cdnOk) problems.push(`CDN request failed: HTTP ${cdnStatus} (${cdnRequestUrl})`);
 
@@ -99,6 +105,23 @@ export function evaluateCdnCheck({
   // -- report the failure directly rather than letting two broken
   // responses compare as equal.
   if (!originOk || !cdnOk) {
+    return { ok: false, problems, mismatches: [] };
+  }
+
+  // The same review round found that two otherwise-healthy 2xx statuses
+  // were never actually required to be the *same* status -- origin
+  // returning 200 (real content) and the CDN returning 206 (Partial
+  // Content, implying byte-range serving the client never asked for) or
+  // 201 would both individually pass the range check above, and then
+  // compare as "ok" whenever their Cache-Control values happened to
+  // match or were both absent. Comparing headers between two genuinely
+  // different kinds of response proves nothing about whether the CDN
+  // altered caching behavior for a given real response -- so the
+  // statuses themselves must match before headers are compared at all.
+  if (originStatus !== cdnStatus) {
+    problems.push(
+      `origin and CDN returned different statuses (origin: HTTP ${originStatus}, CDN: HTTP ${cdnStatus}) -- comparing headers between two different kinds of response isn't meaningful`,
+    );
     return { ok: false, problems, mismatches: [] };
   }
 
