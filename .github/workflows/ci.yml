@@ -552,6 +552,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.docker == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'docker-web-prod-boot'))
+    # Belt-and-suspenders on top of the readiness loop's own per-request
+    # curl timeouts below — a real build (~1-2 minutes) plus a 30s
+    # readiness poll leaves generous margin without risking the default
+    # 6-hour job timeout as the only backstop.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -564,7 +569,14 @@ jobs:
 
           ready=false
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:3000/en > /dev/null; then
+            # --connect-timeout/--max-time bound each individual request —
+            # without them, a container that accepts the connection but
+            # never finishes responding (e.g. a stalled render, as opposed
+            # to the boot-time crash this job is mainly looking for) could
+            # hang this curl indefinitely, since -f alone doesn't impose
+            # any timeout of its own. The job-level default (6 hours) would
+            # otherwise be the only thing eventually killing this.
+            if curl -sf --connect-timeout 2 --max-time 5 http://localhost:3000/en > /dev/null; then
               ready=true
               break
             fi
