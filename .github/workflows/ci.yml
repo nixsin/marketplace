@@ -553,9 +553,10 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.docker == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'docker-web-prod-boot'))
     # Belt-and-suspenders on top of the readiness loop's own per-request
-    # curl timeouts below — a real build (~1-2 minutes) plus a 30s
-    # readiness poll leaves generous margin without risking the default
-    # 6-hour job timeout as the only backstop.
+    # curl timeouts below — a real build (~1-2 minutes) plus up to ~3
+    # minutes worst-case for the readiness poll (30 iterations x up to a
+    # 5s request + 1s sleep each) leaves generous margin without risking
+    # the default 6-hour job timeout as the only backstop.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -582,8 +583,9 @@ jobs:
             fi
             # A boot-time crash (this job's whole reason to exist — see the
             # comment above) exits the container immediately rather than
-            # hanging, so there's no point spending the full 30s retry
-            # budget polling a container that's already dead.
+            # hanging, so there's no point spending the full retry budget
+            # (up to ~3 minutes worst case) polling a container that's
+            # already dead.
             if [ "$(docker inspect -f '{{.State.Running}}' web-prod-boot-test)" != "true" ]; then
               echo "Container exited before ever becoming ready."
               break

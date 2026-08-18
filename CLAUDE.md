@@ -230,15 +230,25 @@ this exact blind spot is what let the outage ship.
 **What this job does**: `docker build --target prod -f apps/web/Dockerfile`
 (the identical build command already used by `docker-scan` above it — same
 image, different purpose), then `docker run -d` the real container (no
-bind mount, no dev-target shortcut) and poll `curl -sf http://localhost:3000/en`
-for up to 30s. A boot-time crash exits the container immediately rather
-than hanging, so the loop also checks `docker inspect -f '{{.State.Running}}'`
-each iteration and bails out early instead of spending the full 30s budget
-polling a container that's already dead. Fails the job (with the
-container's logs printed) if a successful response is never obtained —
-critically, `docker run -d` succeeding is not sufficient on its own to
-prove anything, since it returns immediately regardless of what the
-container does immediately after starting.
+bind mount, no dev-target shortcut) and poll `curl -sf --connect-timeout 2
+--max-time 5 http://localhost:3000/en` for up to 30 iterations (~3 minutes
+worst case — each iteration can take up to a 5s request plus a 1s sleep;
+not literally "30 seconds" despite the loop count, an inaccuracy an AI
+review round on this job's own introducing PR caught). The per-request
+`--connect-timeout`/`--max-time` matter on their own too, not just for the
+overall budget: without them a container that accepts the connection but
+never finishes responding could hang the one `curl` call indefinitely,
+since `-f` alone imposes no timeout. A boot-time crash exits the container
+immediately rather than hanging, so the loop also checks `docker inspect
+-f '{{.State.Running}}'` each iteration and bails out early instead of
+spending the full retry budget polling a container that's already dead.
+Fails the job (with the container's logs printed) if a successful
+response is never obtained — critically, `docker run -d` succeeding is
+not sufficient on its own to prove anything, since it returns immediately
+regardless of what the container does immediately after starting. A
+job-level `timeout-minutes: 10` is a second backstop on top of the loop's
+own bound, same reasoning as `comment-ci-result-on-pr`'s identical
+two-independent-limits pattern documented above.
 
 **Scoped to `apps/web` only, not `apps/api` too** — this is the app the
 actual outage happened on, and the root cause (a config-time import
