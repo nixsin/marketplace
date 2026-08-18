@@ -9,8 +9,9 @@ overrides:
   # so there's no upstream bump that resolves this on its own; this
   # override forces the fixed version regardless of what prisma's own
   # package.json declares. Remove once a prisma release bumps its own
-  # deepmerge-ts dependency past 8.0.0. Same fix as PR #79 -- pre-existing
-  # on main, unrelated to either PR's own diff, blocking a required check.
+  # deepmerge-ts dependency past 8.0.0. Same fix as PR #79/#80 -- pre-
+  # existing on main, unrelated to any of these PRs' own diffs, blocking
+  # a required check.
   deepmerge-ts: ^8.0.1
 allowBuilds:
   '@apollo/protobufjs': true
