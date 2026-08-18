@@ -127,8 +127,8 @@ sequential job). Key structure:
   needs to block deploy.
 - Path-filtered jobs (skip when irrelevant): `audit` (deps only),
   `test-api-unit`/`test-api-e2e`/`load-test` (api or deps), `test-web`/
-  `perf-budget` (web or deps), `docker-scan`/`docker-smoke` (`docker` — see
-  below).
+  `perf-budget` (web or deps), `docker-scan`/`docker-smoke`/
+  `docker-web-prod-boot` (`docker` — see below).
 - **Never** path-filtered, deliberately: `lint` (lints both apps in one
   command), `migrate` (too risky to ever skip a real migration),
   `ai-failure-analysis` (reacts to `failure()`, not to the diff).
@@ -189,6 +189,89 @@ it exists),
 `pr-reconciliation.yml` (see its own section below), and the
 `/rerun-test` slash command
 (`.claude/commands/rerun-test.md`) for doing a rerun manually.
+
+## Docker prod-image boot test (`docker-web-prod-boot` job)
+
+Added 2026-08-17, same day as a real production outage this job exists
+specifically to catch a repeat of. `apps/web` on Render crashed on every
+single boot with:
+
+```
+Failed to load next.config.ts
+Error: Cannot find module './src/i18n/routing'
+code: 'MODULE_NOT_FOUND'
+```
+
+**Root cause**: `next.config.ts` gained real local imports
+(`src/lib/security-headers.ts`, `src/lib/config.ts` — see their own
+sections above) across #69 and #84. `apps/web/Dockerfile`'s `prod` stage
+only ever `COPY`ed `next.config.ts` itself into the final image, never
+`apps/web/src`. Next.js transpiles and loads `next.config.ts` at container
+**boot**, not just at build time (visible in the crash stack as
+`next-config-ts/transpile-config.js`), so every boot hit `MODULE_NOT_FOUND`
+and the container exited immediately — a hard crash, not a degraded
+fallback. With the container exiting on every boot, Render's load balancer
+had no healthy origin at all, hence total unreachability rather than
+slowness. Fixed in #86 by copying the whole `apps/web/src` tree into the
+prod stage, not just the two files `next.config.ts` happens to import
+today — so a future import from anywhere else under `src/` doesn't
+silently reintroduce this same class of outage.
+
+**Why neither existing Docker job could have caught this**: `docker-scan`
+builds the exact same `prod` target this outage came from, but only ever
+scans it for CVEs with Trivy — it never runs the container. `docker-smoke`
+boots a real stack, but via `docker-compose.yml`'s `dev` target, which
+bind-mounts the full host source tree — `apps/web/src` is always present
+there regardless of what the `prod` stage's own `COPY` instructions say,
+so it structurally cannot exercise the "did the image actually get built
+with everything it needs" question at all. Neither gap was theoretical:
+this exact blind spot is what let the outage ship.
+
+**What this job does**: `docker build --target prod -f apps/web/Dockerfile`
+(the identical build command already used by `docker-scan` above it — same
+image, different purpose), then `docker run -d` the real container (no
+bind mount, no dev-target shortcut) and poll `curl -sf http://localhost:3000/en`
+for up to 30s. A boot-time crash exits the container immediately rather
+than hanging, so the loop also checks `docker inspect -f '{{.State.Running}}'`
+each iteration and bails out early instead of spending the full 30s budget
+polling a container that's already dead. Fails the job (with the
+container's logs printed) if a successful response is never obtained —
+critically, `docker run -d` succeeding is not sufficient on its own to
+prove anything, since it returns immediately regardless of what the
+container does immediately after starting.
+
+**Scoped to `apps/web` only, not `apps/api` too** — this is the app the
+actual outage happened on, and the root cause (a config-time import
+evaluated at process boot, specific to `next.config.ts`'s transpile-at-
+boot behavior) is Next.js-specific, not a known general pattern that also
+threatens `apps/api`'s prod image today. Add an equivalent job for
+`apps/api` if a comparable boot-time-import failure is ever found there —
+don't preemptively duplicate this for a risk that hasn't materialized.
+
+**No live API needed** — same reasoning as `perf-budget`'s own build step:
+this only checks whether the container boots and serves a response at
+all, not whether product data renders correctly. The default
+`NEXT_PUBLIC_API_URL` (unreachable in this job) just means the page
+renders its fetch-error state, which still requires `next.config.ts` to
+have loaded successfully and still returns a real `200`.
+
+**Verified directly before writing this as a CI step** (not just assumed
+to work from reading the Dockerfile diff): built and booted the pre-#86
+image locally, reproduced the identical `MODULE_NOT_FOUND` crash and
+`exit 1`; then built and booted the #86-fixed image, confirmed a real
+`curl /en` returns `200` and the container stays running. Same discipline
+as this file's own "verify, don't assume" convention throughout.
+
+**Path-filtered on `docker`, same as `docker-scan`/`docker-smoke`** — same
+shared-`deps`-stage reasoning already documented above. **Informational,
+not required, to start** — not yet in `migrate`'s `needs:` or branch
+protection's required checks, following the same track record this repo
+already requires before promoting a new check (`perf-budget`, then
+`test-e2e-web`, both proven stable across real runs first — see their own
+sections). Given this job exists specifically because of a real
+production outage, it's a strong candidate to promote quickly once it's
+proven stable across a few real runs — don't leave it informational
+indefinitely the way a lower-stakes new check might reasonably stay.
 
 ## Badges and the metrics dashboard (`gh-pages` branch)
 
