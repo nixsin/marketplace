@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
+import { routing } from "./src/i18n/routing";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
@@ -23,6 +24,13 @@ const cspHeader = buildCspHeader({
   isDev,
   apiUrl: process.env.NEXT_PUBLIC_API_URL,
 });
+
+// Derived from routing.ts's own locale list rather than hardcoded a second
+// time here -- a previously-separate "/(en|hi)" literal would silently
+// leave a new locale without this route's Cache-Control fix (no test or
+// type error would catch the mismatch, since Next.js header `source`
+// patterns are just strings).
+const localeRoutePattern = `/(${routing.locales.join("|")})`;
 
 const nextConfig: NextConfig = {
   // Ships .map files alongside minified prod JS — DevTools loads them only
@@ -94,7 +102,7 @@ const nextConfig: NextConfig = {
         // makes the browser always send a conditional request (using the
         // ETag Next.js already sets) on reuse, and only actually
         // transfer/re-render the page if the ETag no longer matches.
-        source: "/(en|hi)",
+        source: localeRoutePattern,
         headers: [
           {
             key: "Cache-Control",
