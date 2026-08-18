@@ -271,6 +271,10 @@ jobs:
       - run: node --test scripts/lib/pr-reconciliation.test.mjs
       - run: node --test scripts/lib/pre-push-refs.test.mjs
       - run: node --test scripts/lib/ci-progress-comment.test.mjs
+      - run: node --test scripts/lib/cdn-header-check.test.mjs
+      - run: node --test scripts/verify-cdn-headers.test.mjs
+      - run: node --test scripts/lib/render-deploy-status.test.mjs
+      - run: node --test scripts/wait-for-render-deploy.test.mjs
       - run: node --test scripts/coverage-dashboard/chart-math.test.mjs
       - run: bash scripts/publish-badge.test.sh
       - run: bash scripts/check-outdated.test.sh
