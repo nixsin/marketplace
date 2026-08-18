@@ -86,9 +86,23 @@ COPY --from=build /repo/apps/web/package.json ./package.json
 # particular) rather than the prebuilt manifest — without it, `next start`
 # silently falls back to default config instead of erroring, so this was a
 # quiet breakage: images.dangerouslyAllowSVG reverted to its default `false`
-# and every SVG product image 400'd in production. next.config.ts's only
-# import (next-intl/plugin) is a real runtime dependency, already present in
-# node_modules above, so this is safe to load with no other deps.
+# and every SVG product image 400'd in production.
+#
+# next.config.ts no longer has *zero* local imports -- it now pulls in
+# security-headers.ts and config.ts from src/lib (added for CSP/HSTS
+# generation and centralized config). This caused a real production
+# outage: Next transpiles+loads next.config.ts itself at boot (visible in
+# a crash stack as next-config-ts/transpile-config.js), and without
+# apps/web/src present in this image at all, that import threw
+# `Error: Cannot find module './src/lib/security-headers'`
+# (MODULE_NOT_FOUND) -- not a silent fallback this time, a hard crash
+# that took the container down immediately on every boot, confirmed via
+# both a real Render deploy log and reproducing the identical crash
+# locally (`docker run` on this exact image, same stack trace). Copying
+# the whole src/ tree, not just the two files next.config.ts happens to
+# import today, so a future next.config.ts import from anywhere else
+# under src/ doesn't silently reintroduce this same class of outage.
+COPY --from=build /repo/apps/web/src ./src
 COPY --from=build /repo/apps/web/next.config.ts ./next.config.ts
 EXPOSE 3000
 CMD ["node_modules/.bin/next", "start"]
