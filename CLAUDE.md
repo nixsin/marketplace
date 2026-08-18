@@ -1359,6 +1359,70 @@ care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
 
+**A local import added to `next.config.ts` can crash prod at boot, not
+build — and a real production outage happened this exact way
+(2026-08-18, `apps/web`, ~40 minutes, confirmed resolved by #86).**
+`next.config.ts` gained real local imports (`src/lib/security-headers.ts`
+for CSP/HSTS generation, `src/lib/config.ts` for centralized config)
+across several merges. `apps/web/Dockerfile`'s prod stage only ever
+copied `next.config.ts` itself into the final image — never
+`apps/web/src`. The critical, non-obvious fact: Next.js transpiles and
+loads `next.config.ts` at container **boot** (visible in a crash stack
+as `next-config-ts/transpile-config.js`), not only at `next build` time
+— so every single boot hit `Error: Cannot find module
+'./src/lib/security-headers'` (`MODULE_NOT_FOUND`) and the container
+exited immediately. Not a silent fallback (that only happens for a
+*missing* `next.config.ts` file itself, already documented below) — a
+present-but-broken-import is a hard crash. With the container exiting on
+every boot, Render's load balancer had no healthy origin at all: total
+outage, not degraded service. Confirmed via a real Render deploy log and
+by reproducing the identical crash locally (`docker build --target prod`
++ `docker run` on the exact image, same stack trace).
+
+**Neither existing CI job would have caught this** — `Web build + tests`
+runs `pnpm build` against the full checked-out repo (`src/` always
+present there); `Docker dev stack smoke test` uses `docker-compose.yml`'s
+dev target, which bind-mounts full source. Neither ever builds *and
+boots* the actual `prod` Dockerfile target the way Render does. Tracked
+in #88 (a CI job that builds+boots the real prod image and asserts a
+real `200`, not just "container started" — this container's own logs
+printed "Ready" before crashing on the `next.config.ts` load).
+
+**Fix applied**: `apps/web/Dockerfile`'s prod stage now copies the whole
+`apps/web/src` tree, not just the specific files `next.config.ts` happens
+to import today — so a future `next.config.ts` import from anywhere else
+under `src/` doesn't silently reintroduce this same class of outage.
+
+**A real, live example of admin-bypassing a required check correctly**,
+worth reading alongside "The one hard rule" section above: while
+recovering from this outage, `perf-budget` (Lighthouse) failed twice in a
+row on the hotfix PR (#86) — a PR that changes exactly one Dockerfile
+`COPY` line, which cannot plausibly move frontend LCP. Both failures were
+the same marginal `/hi?page=2` overage (2.6s vs. 2.5s budget) already
+documented as shared-runner noise elsewhere in this file, and the exact
+same route had already independently flaked on three *other* unrelated
+PRs earlier the same session. Rather than unilaterally admin-bypassing
+(this file's own hard rule: never do that without explicit sign-off),
+explicit confirmation was obtained from the repo owner given the active
+outage, and the reasoning was posted as a PR comment before merging —
+matching the override-decision-log discipline this file already
+establishes for AI review findings, applied here to a CI check override
+instead.
+
+**Multiple rapid merges can leave Render deploying a stale, still-broken
+commit for longer than expected.** Four PRs merged within roughly 10
+minutes during this same incident, each independently triggering
+`autoDeployTrigger: checksPass`. Real evidence this caused a queue, not
+just build latency: a Render log captured *after* the fix (#86) had
+already merged still showed the crash citing `./src/i18n/routing` — an
+import path from an *earlier* merge, superseded before #86 ever landed —
+confirming Render was still working through older queued (and still
+broken) commits rather than jumping straight to the latest fix. If a
+deploy seems stuck after a fix has genuinely merged and gone green on
+`main`, check the Render dashboard's Deploys tab for a backlog before
+assuming the fix itself is wrong — a manual "Deploy latest commit" from
+the dashboard skips the queue.
+
 **Regenerating Playwright Linux baselines via Docker (bind-mounting the
 full repo) leaves a stray `.pnpm-store/` at the repo root that corrupts
 the HOST's `node_modules` with Linux-native binaries** — hit this twice
