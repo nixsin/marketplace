@@ -127,8 +127,8 @@ sequential job). Key structure:
   needs to block deploy.
 - Path-filtered jobs (skip when irrelevant): `audit` (deps only),
   `test-api-unit`/`test-api-e2e`/`load-test` (api or deps), `test-web`/
-  `perf-budget` (web or deps), `docker-scan`/`docker-smoke` (`docker` — see
-  below).
+  `perf-budget` (web or deps), `docker-scan`/`docker-smoke`/
+  `docker-web-prod-boot` (`docker` — see below).
 - **Never** path-filtered, deliberately: `lint` (lints both apps in one
   command), `migrate` (too risky to ever skip a real migration),
   `ai-failure-analysis` (reacts to `failure()`, not to the diff).
@@ -189,6 +189,148 @@ it exists),
 `pr-reconciliation.yml` (see its own section below), and the
 `/rerun-test` slash command
 (`.claude/commands/rerun-test.md`) for doing a rerun manually.
+
+## Docker prod-image boot test (`docker-web-prod-boot` job)
+
+Added 2026-08-17, same day as a real production outage this job exists
+specifically to catch a repeat of. `apps/web` on Render crashed on every
+single boot with:
+
+```
+Failed to load next.config.ts
+Error: Cannot find module './src/i18n/routing'
+code: 'MODULE_NOT_FOUND'
+```
+
+**Root cause**: `next.config.ts` gained real local imports
+(`src/lib/security-headers.ts`, `src/lib/config.ts` — see their own
+sections above) across #69 and #84. `apps/web/Dockerfile`'s `prod` stage
+only ever `COPY`ed `next.config.ts` itself into the final image, never
+`apps/web/src`. Next.js transpiles and loads `next.config.ts` at container
+**boot**, not just at build time (visible in the crash stack as
+`next-config-ts/transpile-config.js`), so every boot hit `MODULE_NOT_FOUND`
+and the container exited immediately — a hard crash, not a degraded
+fallback. With the container exiting on every boot, Render's load balancer
+had no healthy origin at all, hence total unreachability rather than
+slowness. Fixed in #86 by copying the whole `apps/web/src` tree into the
+prod stage, not just the two files `next.config.ts` happens to import
+today — so a future import from anywhere else under `src/` doesn't
+silently reintroduce this same class of outage.
+
+**Why neither existing Docker job could have caught this**: `docker-scan`
+builds the exact same `prod` target this outage came from, but only ever
+scans it for CVEs with Trivy — it never runs the container. `docker-smoke`
+boots a real stack, but via `docker-compose.yml`'s `dev` target, which
+bind-mounts the full host source tree — `apps/web/src` is always present
+there regardless of what the `prod` stage's own `COPY` instructions say,
+so it structurally cannot exercise the "did the image actually get built
+with everything it needs" question at all. Neither gap was theoretical:
+this exact blind spot is what let the outage ship.
+
+**What this job does**: `docker build --target prod -f apps/web/Dockerfile`
+(the identical build command already used by `docker-scan` above it — same
+image, different purpose), then `docker run -d` the real container (no
+bind mount, no dev-target shortcut) and poll for up to 30 iterations
+(~3 minutes worst case — each iteration can take up to a 5s request plus a
+1s sleep; not literally "30 seconds" despite the loop count, an inaccuracy
+an AI review round on this job's own introducing PR caught). Each
+iteration captures the actual status code
+(`curl -s --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}'`)
+and requires it equal exactly `200` — not `curl -f`, which only fails on
+`>= 400` and would treat a 3xx redirect or a `204` as "ready" too. That
+gap isn't hypothetical for this app specifically: next-intl's own locale
+routing is exactly the kind of layer that could redirect `/en` somewhere
+under some future misconfiguration, and `-f` alone wouldn't catch that —
+a second real finding from the same AI review round, after the loop
+already had `--connect-timeout`/`--max-time` added for a different
+reason: without them, a container that accepts the connection but never
+finishes responding could hang a single request indefinitely. A boot-time
+crash exits the container immediately rather than hanging, so the loop
+also checks `docker inspect -f '{{.State.Running}}'` each iteration and
+bails out early instead of spending the full retry budget polling a
+container that's already dead. Fails the job (with the container's logs
+printed) if a real `200` is never obtained — critically, `docker run -d`
+succeeding is not sufficient on its own to prove anything, since it
+returns immediately
+regardless of what the container does immediately after starting. A
+job-level `timeout-minutes: 10` is a second backstop on top of the loop's
+own bound, same reasoning as `comment-ci-result-on-pr`'s identical
+two-independent-limits pattern documented above.
+
+**Scoped to `apps/web` only, not `apps/api` too** — this is the app the
+actual outage happened on, and the root cause (a config-time import
+evaluated at process boot, specific to `next.config.ts`'s transpile-at-
+boot behavior) is Next.js-specific, not a known general pattern that also
+threatens `apps/api`'s prod image today. Add an equivalent job for
+`apps/api` if a comparable boot-time-import failure is ever found there —
+don't preemptively duplicate this for a risk that hasn't materialized.
+
+**No live API needed** — same reasoning as `perf-budget`'s own build step:
+this only checks whether the container boots and serves a response at
+all, not whether product data renders correctly. The default
+`NEXT_PUBLIC_API_URL` (unreachable in this job) just means the page
+renders its fetch-error state, which still requires `next.config.ts` to
+have loaded successfully and still returns a real `200`.
+
+**Verified directly before writing this as a CI step** (not just assumed
+to work from reading the Dockerfile diff): built and booted the pre-#86
+image locally, reproduced the identical `MODULE_NOT_FOUND` crash and
+`exit 1`; then built and booted the #86-fixed image, confirmed a real
+`curl /en` returns `200` and the container stays running. Same discipline
+as this file's own "verify, don't assume" convention throughout.
+
+**Confirmed a second time live in real CI, both directions, not just
+locally**: this job's own introducing PR (#87) only touches
+`ci.yml`/`CLAUDE.md`/scripts, which the `docker` path filter deliberately
+excludes (workflow YAML itself isn't in it — same reasoning as
+`ai-ci-results-review`'s force-run mechanism existing at all), so
+`docker-web-prod-boot` correctly showed "skipping" on that PR's own checks
+— not a bug, the filter working as designed. Force-run by hand instead
+(`gh workflow run ci.yml --ref <branch> -f force_jobs=docker-web-prod-boot`)
+twice: once against `main` before #86 had merged — the job failed, and its
+real log shows the exact same crash reproduced locally (`Failed to load
+next.config.ts` / `Error: Cannot find module './src/lib/security-headers'`
+/ `MODULE_NOT_FOUND`) — then again after merging #86 into this branch —
+the job passed, log showing `✓ Running next.config.ts took 89ms` and a
+real successful `/en` response. Confirms the design catches the real bug
+*and* doesn't false-positive on the fix, in the actual GitHub Actions
+environment, not only in a local Docker Desktop instance that could
+plausibly behave differently.
+
+**A third AI review round on the same PR caught a genuinely serious bug
+introduced by the second round's own fix** (the exact-`200` status check
+above): `status=$(curl ...)` propagates curl's exit code through the
+assignment, and GitHub Actions runs steps under `bash -e` (confirmed
+directly in this job's own real log: `shell: /usr/bin/bash -e {0}`) — so
+`set -e` aborted the whole step on the *very first* connection attempt
+that failed because the container hadn't opened its listening socket yet,
+a real race on every single run right after `docker run -d`, not a rare
+edge case. This would have silently defeated the entire 30-iteration
+retry loop, making the job flake unpredictably on timing rather than
+reliably retry as designed — worth noting as a concrete example of a fix
+for one finding introducing a worse bug than the one it fixed. Fixed with
+`|| true` *outside* the command substitution (verified `-w
+'%{http_code}'` already prints `000` on a connection failure regardless
+of curl's own exit code, so `|| echo 000` *inside* the substitution — the
+first instinct — would have doubled up into `000000` instead). Verified
+directly, not just reasoned about: reproduced the abort with a real
+`bash -e` repro before fixing, confirmed the fix under `bash -e` against
+both a real container that boots successfully (retries, then succeeds)
+and one that exits immediately (still correctly detected and failed),
+then force-ran the job a third time in real CI — passed, same
+`shell: /usr/bin/bash -e {0}` log confirming the fix works under the
+exact execution model that exposed the bug in the first place.
+
+**Path-filtered on `docker`, same as `docker-scan`/`docker-smoke`** — same
+shared-`deps`-stage reasoning already documented above. **Informational,
+not required, to start** — not yet in `migrate`'s `needs:` or branch
+protection's required checks, following the same track record this repo
+already requires before promoting a new check (`perf-budget`, then
+`test-e2e-web`, both proven stable across real runs first — see their own
+sections). Given this job exists specifically because of a real
+production outage, it's a strong candidate to promote quickly once it's
+proven stable across a few real runs — don't leave it informational
+indefinitely the way a lower-stakes new check might reasonably stay.
 
 ## Badges and the metrics dashboard (`gh-pages` branch)
 
@@ -1383,10 +1525,12 @@ by reproducing the identical crash locally (`docker build --target prod`
 runs `pnpm build` against the full checked-out repo (`src/` always
 present there); `Docker dev stack smoke test` uses `docker-compose.yml`'s
 dev target, which bind-mounts full source. Neither ever builds *and
-boots* the actual `prod` Dockerfile target the way Render does. Tracked
-in #88 (a CI job that builds+boots the real prod image and asserts a
-real `200`, not just "container started" — this container's own logs
-printed "Ready" before crashing on the `next.config.ts` load).
+boots* the actual `prod` Dockerfile target the way Render does. Closed by
+#88 — see the "Docker prod-image boot test (`docker-web-prod-boot` job)"
+section above for the actual CI job: builds+boots the real prod image and
+asserts a real `200`, not just "container started" (this container's own
+logs printed "Ready" before crashing on the `next.config.ts` load, so
+"did it start" alone wouldn't have caught it).
 
 **Fix applied**: `apps/web/Dockerfile`'s prod stage now copies the whole
 `apps/web/src` tree, not just the specific files `next.config.ts` happens
