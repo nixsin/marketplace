@@ -47,3 +47,20 @@ export function buildCspHeader({ isDev, apiUrl }: SecurityHeadersInput): string 
 // production for a while. Not environment-dependent, so not a function --
 // a plain constant is the honest shape for it.
 export const HSTS_HEADER_VALUE = "max-age=63072000; includeSubDomains";
+
+// Whether the header is *emitted at all* is environment-dependent, even
+// though its value isn't -- caught by an AI review: HSTS was being added
+// unconditionally, unlike CSP's own isDev-gated directives. A browser
+// persists HSTS per hostname for the full max-age once it sees the
+// header even once, then refuses plain HTTP to that host until it
+// expires -- genuinely disruptive for a local dev server ever accessed
+// over HTTPS (e.g. via a local TLS proxy), not just a theoretical
+// mismatch. A plain isDev check inlined in next.config.ts would have
+// left this exact same gap invisible to tests again, the same problem
+// that got buildCspHeader extracted in the first place -- so this is a
+// function, not a conditional at the call site, specifically so the
+// gating itself is unit-tested, not just the header value's contents.
+export function hstsHeaderEntries(isDev: boolean): { key: string; value: string }[] {
+  if (isDev) return [];
+  return [{ key: "Strict-Transport-Security", value: HSTS_HEADER_VALUE }];
+}

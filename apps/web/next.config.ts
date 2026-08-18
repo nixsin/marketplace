@@ -1,6 +1,6 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
-import { buildCspHeader, HSTS_HEADER_VALUE } from "./src/lib/security-headers";
+import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
@@ -132,7 +132,10 @@ const nextConfig: NextConfig = {
         source: "/((?!_next|favicon\\.ico).*)",
         headers: [
           { key: "Content-Security-Policy", value: cspHeader },
-          { key: "Strict-Transport-Security", value: HSTS_HEADER_VALUE },
+          // Emitted in production only -- see hstsHeaderEntries's own
+          // comment for why this must be a gated function, not the plain
+          // constant unconditionally spread in here.
+          ...hstsHeaderEntries(isDev),
           // Belt-and-suspenders with the CSP frame-ancestors directive
           // above: browsers that don't honor frame-ancestors still fall
           // back to this. No legitimate embedding use case exists for

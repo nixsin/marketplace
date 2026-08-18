@@ -3,6 +3,7 @@ import {
   buildCspHeader,
   computeApiOrigin,
   HSTS_HEADER_VALUE,
+  hstsHeaderEntries,
 } from "./security-headers";
 
 describe("computeApiOrigin", () => {
@@ -85,5 +86,22 @@ describe("HSTS_HEADER_VALUE", () => {
     expect(HSTS_HEADER_VALUE).toContain("includeSubDomains");
     expect(HSTS_HEADER_VALUE).not.toContain("preload");
     expect(HSTS_HEADER_VALUE).toMatch(/max-age=\d+/);
+  });
+});
+
+describe("hstsHeaderEntries", () => {
+  it("emits nothing in dev", () => {
+    // A browser persists HSTS per hostname for the full max-age the
+    // moment it sees the header even once, then refuses plain HTTP to
+    // that host until it expires -- genuinely disruptive for a local dev
+    // server ever accessed over HTTPS, not just a theoretical mismatch.
+    // An AI review caught that this was previously emitted unconditionally.
+    expect(hstsHeaderEntries(true)).toEqual([]);
+  });
+
+  it("emits the Strict-Transport-Security header in production", () => {
+    expect(hstsHeaderEntries(false)).toEqual([
+      { key: "Strict-Transport-Security", value: HSTS_HEADER_VALUE },
+    ]);
   });
 });
