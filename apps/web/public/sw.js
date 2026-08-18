@@ -43,17 +43,56 @@ async function staleWhileRevalidate(request) {
   return cached ?? networkFetch;
 }
 
+// Cache Storage matches by request, not by who's asking — it does not
+// partition entries by user identity. Caching every GET to /graphql by
+// pathname alone (the original design) is only safe as long as every such
+// response is genuinely public, which stopped being guaranteed the moment
+// an authenticated query (apps/api/src/auth/auth.resolver.ts's `me`,
+// guarded by JwtAuthGuard) existed in the schema — nothing at the
+// transport level stops a future GET from carrying it, since Apollo
+// Server's GET support isn't restricted to specific operations. Two
+// independent checks below, deliberately not relying on either one alone:
+// an explicit allowlist of known-public operation names, and a hard
+// refusal to touch anything carrying credentials, regardless of what
+// operation it claims to be.
+
+// Only operations confirmed public and side-effect-free. Add to this list
+// deliberately, not by default, when a new public query is introduced.
+const PUBLIC_GRAPHQL_OPERATIONS = new Set(["ProductsPaged"]);
+
+function graphqlOperationName(url) {
+  const query = url.searchParams.get("query");
+  if (!query) return null;
+  // GraphQL-over-GET puts the full query text in this param -- named
+  // operations start "query <Name>(" or "query <Name>{"; anonymous
+  // queries (no name) are never treated as public, since there's nothing
+  // to allowlist against.
+  const match = /^\s*query\s+(\w+)/.exec(query);
+  return match ? match[1] : null;
+}
+
+function isPublicGraphqlRead(request, url) {
+  if (url.pathname !== "/graphql") return false;
+  // Independent of the operation-name check below -- a request carrying
+  // credentials is never cacheable, full stop, regardless of what
+  // operation it claims to be. This is the check that must not depend on
+  // the allowlist being kept correct.
+  if (request.headers.has("Authorization")) return false;
+  const operation = graphqlOperationName(url);
+  return operation !== null && PUBLIC_GRAPHQL_OPERATIONS.has(operation);
+}
+
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return; // never cache mutations
 
   const url = new URL(request.url);
   const isNavigation = request.mode === "navigate";
-  // Matched on pathname alone, not origin: NEXT_PUBLIC_API_URL is inlined
-  // into the client bundle at build time, and this is a static file that
-  // can't read it — but the API's GraphQL endpoint is always at /graphql
-  // regardless of which host serves it.
-  const isGraphqlRead = url.pathname === "/graphql";
+  // Matched on pathname alone (plus the safety checks above), not origin:
+  // NEXT_PUBLIC_API_URL is inlined into the client bundle at build time,
+  // and this is a static file that can't read it — but the API's GraphQL
+  // endpoint is always at /graphql regardless of which host serves it.
+  const isGraphqlRead = isPublicGraphqlRead(request, url);
 
   if (isNavigation || isGraphqlRead) {
     event.respondWith(staleWhileRevalidate(request));
