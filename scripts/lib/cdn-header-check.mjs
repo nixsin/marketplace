@@ -46,24 +46,33 @@ export function compareCacheHeaders(originHeaders, cdnHeaders) {
   return { ok: mismatches.length === 0, mismatches };
 }
 
-// Full decision for one checked path, covering the two real gaps a live
-// AI review found in the original header-only version:
+// Full decision for one checked path, covering the real gaps two live AI
+// review rounds found in the original header-only version:
 //
 // 1. Comparing headers is meaningless if either request itself failed --
 //    two error responses can trivially carry the same (absent)
 //    Cache-Control and compare as "ok", silently passing a check that
 //    never actually exercised anything. Both status codes are checked
 //    directly, before headers are ever compared.
-// 2. A CDN URL that redirects straight through to the origin host proves
-//    nothing about the CDN's own behavior -- fetch()'s `redirect: "follow"`
-//    makes this invisible unless the *final* URL is checked against where
-//    the request was actually sent.
+// 2. A CDN URL that redirects straight through to the origin's own actual
+//    destination proves nothing about the CDN's own behavior --
+//    fetch()'s `redirect: "follow"` makes this invisible unless the
+//    *final* URL is checked against where the request was actually sent.
+//    Both origin and CDN legs are treated symmetrically here (request URL
+//    vs. final URL after any redirect) -- a first version of this
+//    compared the CDN's *final* host against the origin's *requested*
+//    host, which a second review round caught as its own gap: if origin
+//    itself redirects (origin.example.com -> app.example.com) and the CDN
+//    also redirects straight to that same real destination, comparing
+//    against the origin's merely-requested host would miss it, since
+//    app.example.com never equals origin.example.com.
 //
 // All inputs are plain values (no Response/Headers objects) so this stays
 // a pure function the CLI wrapper's fetch results get normalized into --
 // see verify-cdn-headers.mjs.
 export function evaluateCdnCheck({
-  originUrl,
+  originRequestUrl,
+  originFinalUrl,
   originStatus,
   originHeaders,
   cdnRequestUrl,
@@ -75,7 +84,7 @@ export function evaluateCdnCheck({
 
   const originOk = originStatus >= 200 && originStatus < 400;
   const cdnOk = cdnStatus >= 200 && cdnStatus < 400;
-  if (!originOk) problems.push(`origin request failed: HTTP ${originStatus} (${originUrl})`);
+  if (!originOk) problems.push(`origin request failed: HTTP ${originStatus} (${originRequestUrl})`);
   if (!cdnOk) problems.push(`CDN request failed: HTTP ${cdnStatus} (${cdnRequestUrl})`);
 
   // If either leg failed outright, comparing headers can't mean anything
@@ -85,12 +94,17 @@ export function evaluateCdnCheck({
     return { ok: false, problems, mismatches: [] };
   }
 
-  const originHost = new URL(originUrl).host;
+  // The origin's own *actual* destination, not merely what was requested
+  // -- origin itself may redirect (e.g. a bare domain to www, or http to
+  // https), and what matters is whether the CDN request ended up
+  // somewhere that bypasses the CDN entirely, not whether it matches the
+  // literal URL this check happened to be pointed at.
+  const originFinalHost = new URL(originFinalUrl).host;
   const cdnRequestHost = new URL(cdnRequestUrl).host;
   const cdnFinalHost = new URL(cdnFinalUrl).host;
-  if (cdnFinalHost === originHost && cdnRequestHost !== originHost) {
+  if (cdnFinalHost === originFinalHost && cdnRequestHost !== originFinalHost) {
     problems.push(
-      `CDN URL (${cdnRequestUrl}) redirected straight through to the origin host (${originHost}) -- this never actually exercised the CDN`,
+      `CDN URL (${cdnRequestUrl}) redirected straight through to origin's own destination (${originFinalHost}) -- this never actually exercised the CDN`,
     );
     return { ok: false, problems, mismatches: [] };
   }

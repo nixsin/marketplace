@@ -69,6 +69,26 @@ test("fetchDeploys: a non-ok API response throws with the status and body, not a
   );
 });
 
+test("fetchDeploys: a request that never resolves is aborted after requestTimeoutMs, not left to hang forever -- a real AI review found MAX_ATTEMPTS's own 'hard bound' comment was false without this", () => {
+  // A real fetch() rejects with an AbortError once its signal fires --
+  // this stub reacts the same way, rather than actually never resolving,
+  // so the test itself doesn't hang if the timeout mechanism is broken.
+  const fetchImpl = (url, options) =>
+    new Promise((resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        const error = new Error("The operation was aborted.");
+        error.name = "AbortError";
+        reject(error);
+      });
+      // Deliberately never calls resolve() on its own -- simulates a
+      // genuinely stalled request with no server-side timeout of its own.
+    });
+  return assert.rejects(
+    () => fetchDeploys("svc-1", "key", fetchImpl, 10), // 10ms timeout, not the real 30s
+    /aborted/i,
+  );
+});
+
 // --- waitForDeploy ---
 
 function instantSleep() {

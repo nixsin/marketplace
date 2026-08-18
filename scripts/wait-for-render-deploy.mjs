@@ -45,7 +45,35 @@ const PAGE_LIMIT = 20;
 // than to paginate indefinitely against a typo'd commit SHA.
 const MAX_PAGES = 5;
 
-export async function fetchDeploys(serviceId, apiKey, fetchImpl = fetch) {
+// A second AI review round caught that MAX_ATTEMPTS's own "10 minutes --
+// a hard bound" comment was false: no individual request had a timeout,
+// so one stalled Render API call could block the whole loop indefinitely,
+// regardless of how few attempts were configured. Meaningfully shorter
+// than POLL_INTERVAL_MS below, so a timed-out request doesn't itself eat
+// into the next poll's own gap.
+const REQUEST_TIMEOUT_MS = 30_000;
+
+// Wraps one fetchImpl call with a real, enforced timeout via
+// AbortController -- fetchImpl is still injectable (tests pass a stub
+// that reacts to the abort signal the same way real fetch() does), and
+// requestTimeoutMs is its own parameter so tests can use a short timeout
+// instead of waiting 30 real seconds to prove the abort actually fires.
+async function fetchWithTimeout(fetchImpl, url, options, requestTimeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
+  try {
+    return await fetchImpl(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+export async function fetchDeploys(
+  serviceId,
+  apiKey,
+  fetchImpl = fetch,
+  requestTimeoutMs = REQUEST_TIMEOUT_MS,
+) {
   const deploys = [];
   let cursor;
   for (let page = 0; page < MAX_PAGES; page++) {
@@ -53,9 +81,12 @@ export async function fetchDeploys(serviceId, apiKey, fetchImpl = fetch) {
     url.searchParams.set("limit", String(PAGE_LIMIT));
     if (cursor) url.searchParams.set("cursor", cursor);
 
-    const res = await fetchImpl(url.toString(), {
-      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-    });
+    const res = await fetchWithTimeout(
+      fetchImpl,
+      url.toString(),
+      { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
+      requestTimeoutMs,
+    );
     if (!res.ok) {
       throw new Error(`Render API returned ${res.status}: ${await res.text()}`);
     }
@@ -74,8 +105,9 @@ export async function fetchDeploys(serviceId, apiKey, fetchImpl = fetch) {
 const POLL_INTERVAL_MS = 10_000;
 const MAX_ATTEMPTS = 60; // 10 minutes -- a hard bound distinct from Render's own build time, same reasoning ci.yml's comment-ci-result-on-pr job already uses for its own poll loop (never silently run forever on a genuine stuck deploy).
 
-// sleepImpl/pollIntervalMs/maxAttempts are all injectable so tests can run
-// the full poll loop instantly instead of waiting on real timers.
+// sleepImpl/pollIntervalMs/maxAttempts/requestTimeoutMs are all injectable
+// so tests can run the full poll loop instantly instead of waiting on
+// real timers.
 export async function waitForDeploy(
   serviceId,
   targetCommitSha,
@@ -85,11 +117,12 @@ export async function waitForDeploy(
     sleepImpl = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     pollIntervalMs = POLL_INTERVAL_MS,
     maxAttempts = MAX_ATTEMPTS,
+    requestTimeoutMs = REQUEST_TIMEOUT_MS,
     onAttempt = () => {},
   } = {},
 ) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const deploys = await fetchDeploys(serviceId, apiKey, fetchImpl);
+    const deploys = await fetchDeploys(serviceId, apiKey, fetchImpl, requestTimeoutMs);
     const deploy = findDeployForCommit(deploys, targetCommitSha);
     const readiness = classifyDeployReadiness(deploy);
     onAttempt({ attempt, readiness, deploy });

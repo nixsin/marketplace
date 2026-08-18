@@ -60,7 +60,8 @@ test("compareCacheHeaders: is case-sensitive on header *values*, not just presen
 // --- evaluateCdnCheck ---
 
 const OK_INPUT = {
-  originUrl: "https://origin.example.com/en",
+  originRequestUrl: "https://origin.example.com/en",
+  originFinalUrl: "https://origin.example.com/en",
   originStatus: 200,
   originHeaders: { "cache-control": "public, max-age=0, must-revalidate" },
   cdnRequestUrl: "https://cdn.example.com/en",
@@ -108,24 +109,43 @@ test("evaluateCdnCheck: a redirect status code alone (3xx) is treated as ok -- f
   assert.equal(result.ok, true);
 });
 
-test("evaluateCdnCheck: a CDN URL that redirects straight through to the origin host never actually exercised the CDN -- the other real gap a live AI review found", () => {
+test("evaluateCdnCheck: a CDN URL that redirects straight through to the origin's requested host never actually exercised the CDN -- a real gap a live AI review found", () => {
   const result = evaluateCdnCheck({
     ...OK_INPUT,
     cdnRequestUrl: "https://cdn.example.com/en",
     cdnFinalUrl: "https://origin.example.com/en", // followed a redirect back to origin
   });
   assert.equal(result.ok, false);
-  assert.match(result.problems.join(" "), /redirected straight through to the origin host/);
+  assert.match(result.problems.join(" "), /redirected straight through to origin's own destination/);
+});
+
+test("evaluateCdnCheck: a CDN redirecting to origin's OWN real destination is caught even when origin itself also redirects -- the follow-up gap a second review round found", () => {
+  // origin.example.com redirects to app.example.com (a legitimate,
+  // unrelated redirect -- e.g. a bare domain to www, or http to https).
+  // The CDN bypasses itself by also landing on app.example.com. Comparing
+  // against origin's merely-*requested* host (origin.example.com) would
+  // miss this, since app.example.com never equals origin.example.com --
+  // only comparing against origin's own *final* destination catches it.
+  const result = evaluateCdnCheck({
+    ...OK_INPUT,
+    originRequestUrl: "https://origin.example.com/en",
+    originFinalUrl: "https://app.example.com/en",
+    cdnRequestUrl: "https://cdn.example.com/en",
+    cdnFinalUrl: "https://app.example.com/en",
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /redirected straight through to origin's own destination/);
 });
 
 test("evaluateCdnCheck: the CDN and origin legitimately being the same host (e.g. local smoke-testing with one URL for both) is NOT flagged -- only an actual redirect-to-origin is", () => {
   // Distinguishes "I deliberately pointed both args at the same place to
   // sanity-check the tool itself" from "the CDN silently bounced to
   // origin" -- the former only looks suspicious if cdnRequestHost already
-  // differed from originHost before any redirect happened.
+  // differed from originFinalHost before any redirect happened.
   const result = evaluateCdnCheck({
     ...OK_INPUT,
-    originUrl: "https://same-host.example.com/en",
+    originRequestUrl: "https://same-host.example.com/en",
+    originFinalUrl: "https://same-host.example.com/en",
     cdnRequestUrl: "https://same-host.example.com/en",
     cdnFinalUrl: "https://same-host.example.com/en",
   });

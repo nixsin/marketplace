@@ -27,16 +27,23 @@ function headersToRecord(headers) {
 // original version had no test coverage of this wrapper's own logic
 // (status handling, redirect detection, URL construction) at all.
 export async function checkPath(originBase, cdnBase, path, fetchImpl = fetch) {
-  const originUrl = new URL(path, originBase).toString();
+  const originRequestUrl = new URL(path, originBase).toString();
   const cdnRequestUrl = new URL(path, cdnBase).toString();
 
   const [originRes, cdnRes] = await Promise.all([
-    fetchImpl(originUrl, { redirect: "follow" }),
+    fetchImpl(originRequestUrl, { redirect: "follow" }),
     fetchImpl(cdnRequestUrl, { redirect: "follow" }),
   ]);
 
   const result = evaluateCdnCheck({
-    originUrl,
+    originRequestUrl,
+    // res.url is the *final* URL after any redirect origin itself made --
+    // a second review round caught that comparing the CDN's final host
+    // against origin's merely-*requested* host misses the case where
+    // origin also redirects to its own real destination. Falls back to
+    // the requested URL only if a stub/fixture omits .url (real fetch()
+    // always sets it).
+    originFinalUrl: originRes.url || originRequestUrl,
     originStatus: originRes.status,
     originHeaders: headersToRecord(originRes.headers),
     cdnRequestUrl,
