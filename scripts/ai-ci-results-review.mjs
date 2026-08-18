@@ -63,6 +63,7 @@ const FORCEABLE_JOBS = [
   "load-test",
   "docker-scan",
   "docker-smoke",
+  "docker-web-prod-boot",
   "test-e2e-web",
 ];
 
@@ -70,7 +71,7 @@ const instructions = `You are validating the CI process for a pull request on th
 
 Your job has exactly two parts:
 
-1. Did the CI skip/run decisions make sense for this diff? This repo path-filters CI: jobs like test-api-unit, test-api-e2e, test-web, audit, perf-budget, load-test, docker-scan, docker-smoke, and test-e2e-web are deliberately SKIPPED (not run) when the diff doesn't touch the paths they cover — e.g. a PR that only touches .github/workflows or docs will show most test jobs as "skipped" by design, not because anything is wrong. You are given the actual path-filter booleans (api/web/deps/docker) alongside the diff so you can check them directly, not just infer them from which jobs skipped. Treat "skipped" on those specific jobs as a neutral non-signal UNLESS the diff clearly does touch code those jobs should have covered but the path filter missed (e.g. a root config file that isn't in the filter's glob list but genuinely affects apps/api or apps/web behavior, or a change to docker-scan/docker-smoke's own job definitions in ci.yml or docker-scan-scheduled.yml — the docker path filter deliberately excludes workflow YAML itself, since most ci.yml edits don't touch those two jobs' logic, so this is the one case you're specifically relied on to catch). Judge this from what the diff actually touches, not from the fact that a job happened to skip.
+1. Did the CI skip/run decisions make sense for this diff? This repo path-filters CI: jobs like test-api-unit, test-api-e2e, test-web, audit, perf-budget, load-test, docker-scan, docker-smoke, docker-web-prod-boot, and test-e2e-web are deliberately SKIPPED (not run) when the diff doesn't touch the paths they cover — e.g. a PR that only touches .github/workflows or docs will show most test jobs as "skipped" by design, not because anything is wrong. You are given the actual path-filter booleans (api/web/deps/docker) alongside the diff so you can check them directly, not just infer them from which jobs skipped. Treat "skipped" on those specific jobs as a neutral non-signal UNLESS the diff clearly does touch code those jobs should have covered but the path filter missed (e.g. a root config file that isn't in the filter's glob list but genuinely affects apps/api or apps/web behavior, or a change to docker-scan/docker-smoke/docker-web-prod-boot's own job definitions in ci.yml or docker-scan-scheduled.yml — the docker path filter deliberately excludes workflow YAML itself, since most ci.yml edits don't touch those jobs' logic, so this is the one case you're specifically relied on to catch). Judge this from what the diff actually touches, not from the fact that a job happened to skip.
 
 If you conclude a specific skipped job should actually have run for this diff, you may request it be force-run — but be conservative: force-running costs real CI time and should only happen when you have a specific reason grounded in the diff, not a general "better safe than sorry" instinct. The only job IDs you may ever name are exactly these, verbatim: ${FORCEABLE_JOBS.join(", ")}. Never name any other job (lint, migrate, ai-failure-analysis, ai-code-review, ai-ci-results-review are never force-runnable and naming them will be ignored).
 
