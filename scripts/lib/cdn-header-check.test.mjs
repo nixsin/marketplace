@@ -104,8 +104,14 @@ test("evaluateCdnCheck: CDN failing alone is reported, not masked by a healthy o
   assert.match(result.problems.join(" "), /CDN request failed: HTTP 502/);
 });
 
-test("evaluateCdnCheck: a redirect status code alone (3xx) is treated as ok -- fetch's redirect:'follow' already resolved it, cdnStatus here is the final response's own status", () => {
+test("evaluateCdnCheck: a 3xx surviving as the *final* status fails -- a third review round found this passed before, which is wrong: it means neither side actually returned the real resource, so there's nothing meaningful to compare", () => {
   const result = evaluateCdnCheck({ ...OK_INPUT, cdnStatus: 304, originStatus: 304 });
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /HTTP 304/);
+});
+
+test("evaluateCdnCheck: normal 2xx statuses other than 200 (e.g. 206 Partial Content) are still ok", () => {
+  const result = evaluateCdnCheck({ ...OK_INPUT, cdnStatus: 206, originStatus: 206 });
   assert.equal(result.ok, true);
 });
 

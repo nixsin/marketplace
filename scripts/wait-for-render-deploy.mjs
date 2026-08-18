@@ -53,16 +53,32 @@ const MAX_PAGES = 5;
 // into the next poll's own gap.
 const REQUEST_TIMEOUT_MS = 30_000;
 
-// Wraps one fetchImpl call with a real, enforced timeout via
-// AbortController -- fetchImpl is still injectable (tests pass a stub
-// that reacts to the abort signal the same way real fetch() does), and
-// requestTimeoutMs is its own parameter so tests can use a short timeout
-// instead of waiting 30 real seconds to prove the abort actually fires.
-async function fetchWithTimeout(fetchImpl, url, options, requestTimeoutMs) {
+// Fetches one page and returns its parsed items, with a real, enforced
+// timeout via AbortController -- fetchImpl is still injectable (tests
+// pass a stub that reacts to the abort signal the same way real fetch()
+// does), and requestTimeoutMs is its own parameter so tests can use a
+// short timeout instead of waiting 30 real seconds to prove the abort
+// actually fires.
+//
+// A third review round caught that an earlier version only wrapped the
+// fetchImpl() call itself in the timeout, clearing it as soon as headers
+// arrived -- fetch() can resolve once headers are in while the body is
+// still streaming, so a stalled *body* read (res.json()/res.text()) had
+// no timeout protection at all. The abort controller now stays armed
+// through body consumption too: everything from the request through
+// parsing the JSON lives inside the same try block, so an abort firing
+// at any point -- including mid-body-read -- rejects it (per the Fetch
+// spec, aborting a request's signal cancels its response body stream as
+// well, not just the initial connection).
+async function fetchPageWithTimeout(fetchImpl, url, options, requestTimeoutMs) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
   try {
-    return await fetchImpl(url, { ...options, signal: controller.signal });
+    const res = await fetchImpl(url, { ...options, signal: controller.signal });
+    if (!res.ok) {
+      throw new Error(`Render API returned ${res.status}: ${await res.text()}`);
+    }
+    return await res.json();
   } finally {
     clearTimeout(timeoutId);
   }
@@ -81,19 +97,15 @@ export async function fetchDeploys(
     url.searchParams.set("limit", String(PAGE_LIMIT));
     if (cursor) url.searchParams.set("cursor", cursor);
 
-    const res = await fetchWithTimeout(
+    // Each item is {deploy, cursor} -- the cursor for fetching the page
+    // that starts after *this specific* item, not one shared cursor for
+    // the whole response (confirmed via api-docs.render.com).
+    const items = await fetchPageWithTimeout(
       fetchImpl,
       url.toString(),
       { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
       requestTimeoutMs,
     );
-    if (!res.ok) {
-      throw new Error(`Render API returned ${res.status}: ${await res.text()}`);
-    }
-    // Each item is {deploy, cursor} -- the cursor for fetching the page
-    // that starts after *this specific* item, not one shared cursor for
-    // the whole response (confirmed via api-docs.render.com).
-    const items = await res.json();
     deploys.push(...items.map((item) => item.deploy));
 
     if (items.length < PAGE_LIMIT) break; // fewer than requested = last page

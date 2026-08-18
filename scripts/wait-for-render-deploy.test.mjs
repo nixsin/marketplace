@@ -89,6 +89,34 @@ test("fetchDeploys: a request that never resolves is aborted after requestTimeou
   );
 });
 
+test("fetchDeploys: a response whose headers arrive but whose BODY never finishes is also aborted, not left to hang -- a third review round found the timeout was cleared before the body was even read", () => {
+  // fetch() itself can resolve as soon as headers are in, while the body
+  // is still streaming -- a stub that resolves fetchImpl() quickly but
+  // whose .json() hangs forever (unless the signal fires) reproduces
+  // exactly that gap. Per the real Fetch spec, aborting a request's
+  // signal cancels its response body stream too, not just the initial
+  // connection -- this stub's .json() mirrors that by listening to the
+  // same signal it was handed.
+  const fetchImpl = async (url, options) => ({
+    ok: true,
+    status: 200,
+    json: () =>
+      new Promise((resolve, reject) => {
+        options.signal.addEventListener("abort", () => {
+          const error = new Error("The operation was aborted.");
+          error.name = "AbortError";
+          reject(error);
+        });
+        // Never resolves on its own -- the headers "arrived" (this
+        // function was called), but the body read itself stalls.
+      }),
+  });
+  return assert.rejects(
+    () => fetchDeploys("svc-1", "key", fetchImpl, 10),
+    /aborted/i,
+  );
+});
+
 // --- waitForDeploy ---
 
 function instantSleep() {

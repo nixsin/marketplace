@@ -82,8 +82,16 @@ export function evaluateCdnCheck({
 }) {
   const problems = [];
 
-  const originOk = originStatus >= 200 && originStatus < 400;
-  const cdnOk = cdnStatus >= 200 && cdnStatus < 400;
+  // Strictly 2xx, not the earlier >=200 && <400 -- a third review round
+  // caught that a 3xx surviving as the *final* status (redirect:"follow"
+  // doesn't blindly follow every 3xx, e.g. 300 Multiple Choices has no
+  // single Location to follow, and a stray 304 outside a real conditional
+  // request isn't a legitimate response to a plain GET here) means
+  // neither side actually returned the real resource -- there's nothing
+  // meaningful to compare, the same reasoning already applied to a hard
+  // 4xx/5xx failure.
+  const originOk = originStatus >= 200 && originStatus < 300;
+  const cdnOk = cdnStatus >= 200 && cdnStatus < 300;
   if (!originOk) problems.push(`origin request failed: HTTP ${originStatus} (${originRequestUrl})`);
   if (!cdnOk) problems.push(`CDN request failed: HTTP ${cdnStatus} (${cdnRequestUrl})`);
 
