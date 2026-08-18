@@ -122,7 +122,7 @@ test("evaluateCdnCheck: a CDN URL that redirects straight through to the origin'
     cdnFinalUrl: "https://origin.example.com/en", // followed a redirect back to origin
   });
   assert.equal(result.ok, false);
-  assert.match(result.problems.join(" "), /redirected straight through to origin's own destination/);
+  assert.match(result.problems.join(" "), /converged on the same final destination/);
 });
 
 test("evaluateCdnCheck: a CDN redirecting to origin's OWN real destination is caught even when origin itself also redirects -- the follow-up gap a second review round found", () => {
@@ -140,7 +140,19 @@ test("evaluateCdnCheck: a CDN redirecting to origin's OWN real destination is ca
     cdnFinalUrl: "https://app.example.com/en",
   });
   assert.equal(result.ok, false);
-  assert.match(result.problems.join(" "), /redirected straight through to origin's own destination/);
+  assert.match(result.problems.join(" "), /converged on the same final destination/);
+});
+
+test("evaluateCdnCheck: the REVERSE direction is also caught -- origin's own request redirecting onto the CDN's host means origin was never actually exercised, a gap a fifth review round found the original one-directional guard missed", () => {
+  const result = evaluateCdnCheck({
+    ...OK_INPUT,
+    originRequestUrl: "https://origin.example.com/en",
+    originFinalUrl: "https://cdn.example.com/en", // origin redirected onto the CDN's own host
+    cdnRequestUrl: "https://cdn.example.com/en",
+    cdnFinalUrl: "https://cdn.example.com/en", // CDN request never redirected at all
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /converged on the same final destination/);
 });
 
 test("evaluateCdnCheck: the CDN and origin legitimately being the same host (e.g. local smoke-testing with one URL for both) is NOT flagged -- only an actual redirect-to-origin is", () => {

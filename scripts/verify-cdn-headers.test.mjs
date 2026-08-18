@@ -103,6 +103,23 @@ test("checkPath: mismatched cache-control fails", async () => {
   assert.equal(ok, false);
 });
 
+test("checkPath: a stalled response is aborted after requestTimeoutMs, not left to hang forever -- a fifth review round found checkPath had no timeout at all", async () => {
+  const fetchImpl = (url, options) =>
+    new Promise((resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        const error = new Error("The operation was aborted.");
+        error.name = "AbortError";
+        reject(error);
+      });
+      // Never resolves on its own -- simulates a genuinely stalled
+      // request with no server-side timeout of its own.
+    });
+  await assert.rejects(
+    () => checkPath("https://origin.example.com", "https://cdn.example.com", "/en", fetchImpl, 10),
+    /aborted/i,
+  );
+});
+
 test("checkPath: constructs URLs by joining base + path correctly", async () => {
   let calledUrls = [];
   const fetchImpl = async (url) => {

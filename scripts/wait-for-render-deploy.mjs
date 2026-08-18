@@ -165,7 +165,25 @@ export async function waitForDeploy(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     if (nowImpl() >= deadline) break; // overall deadline already passed -- don't start a doomed attempt
 
-    const deploys = await fetchDeploys(serviceId, apiKey, fetchImpl, requestTimeoutMs, deadline, nowImpl);
+    let deploys;
+    try {
+      deploys = await fetchDeploys(serviceId, apiKey, fetchImpl, requestTimeoutMs, deadline, nowImpl);
+    } catch (error) {
+      // A fifth review round found that fetchDeploys clamping a request's
+      // own timeout to the remaining deadline budget (see its own comment
+      // above) means an in-flight request can now be aborted simply
+      // because we ran out of overall time, not because it genuinely
+      // stalled -- that's an *expected* way to run out of budget, the same
+      // as exhausting maxAttempts, not a real failure worth crashing the
+      // whole CLI over. Only treat it that way once the deadline has
+      // actually been reached, though -- a genuine stall against the full,
+      // un-clamped requestTimeoutMs (or any other real error) still
+      // propagates and crashes loudly, unchanged from before.
+      if (nowImpl() >= deadline) {
+        return { readiness: "timed_out", shouldPurge: false };
+      }
+      throw error;
+    }
     const deploy = findDeployForCommit(deploys, targetCommitSha);
     const readiness = classifyDeployReadiness(deploy);
     onAttempt({ attempt, readiness, deploy });

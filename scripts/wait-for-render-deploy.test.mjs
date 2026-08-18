@@ -251,6 +251,45 @@ test("waitForDeploy: an overall maxRuntimeMs deadline stops polling even if maxA
   assert.equal(attempts.length, 10);
 });
 
+test("waitForDeploy: reaching the overall deadline mid-request returns a clean timed_out result instead of crashing -- a fifth review round found the round-4 deadline clamp let the resulting abort propagate as an uncaught error", async () => {
+  const fetchImpl = (url, options) =>
+    new Promise((resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        const error = new Error("The operation was aborted.");
+        error.name = "AbortError";
+        reject(error);
+      });
+      // Never resolves on its own -- simulates a request still in flight
+      // when the overall deadline expires.
+    });
+  const result = await waitForDeploy("svc-1", "aaa", "key", {
+    fetchImpl,
+    sleepImpl: async () => {}, // not reached in this scenario
+    maxRuntimeMs: 20, // real ms -- deliberately tiny so the deadline expires mid-request
+    requestTimeoutMs: 30_000, // would hang for 30s if the deadline clamp weren't cutting it short
+    maxAttempts: 5,
+  });
+  assert.deepEqual(result, { readiness: "timed_out", shouldPurge: false });
+});
+
+test("waitForDeploy: a genuine error unrelated to the deadline (e.g. a real API failure) still propagates and is not swallowed as timed_out", async () => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 500,
+    text: async () => "internal error",
+  });
+  await assert.rejects(
+    () =>
+      waitForDeploy("svc-1", "aaa", "key", {
+        fetchImpl,
+        sleepImpl: async () => {},
+        maxRuntimeMs: 60_000, // plenty of budget left -- this isn't a deadline timeout
+        maxAttempts: 5,
+      }),
+    /Render API returned 500/,
+  );
+});
+
 test("waitForDeploy: does not sleep after the final attempt (no wasted delay once maxAttempts is reached)", async () => {
   let sleepCount = 0;
   const fetchImpl = async () => jsonResponse([]);

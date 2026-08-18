@@ -14,6 +14,29 @@
 
 import { evaluateCdnCheck, formatCheckReport } from "./lib/cdn-header-check.mjs";
 
+// A fifth review round found checkPath() had no timeout at all -- a
+// stalled origin or CDN response would hang the Promise.all() below
+// indefinitely, contradicting this file's own comments about running as
+// a bounded, scheduled CI check. Mirrors wait-for-render-deploy.mjs's
+// timeout pattern. Only wraps the fetchImpl() call itself, not a
+// subsequent body read -- checkPath() only ever reads .status/.url/
+// .headers, all available as soon as the response resolves, never
+// .text()/.json(), so there's no streaming-body gap to protect against
+// the way wait-for-render-deploy.mjs's own fetchPageWithTimeout needed to
+// (see that file's round-3 fix). Revisit if this ever starts consuming a
+// response body.
+const REQUEST_TIMEOUT_MS = 30_000;
+
+async function fetchWithTimeout(fetchImpl, url, options, requestTimeoutMs) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
+  try {
+    return await fetchImpl(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function headersToRecord(headers) {
   const record = {};
   for (const [key, value] of headers.entries()) {
@@ -26,13 +49,22 @@ function headersToRecord(headers) {
 // making real network calls -- a real AI review flagged that the
 // original version had no test coverage of this wrapper's own logic
 // (status handling, redirect detection, URL construction) at all.
-export async function checkPath(originBase, cdnBase, path, fetchImpl = fetch) {
+// requestTimeoutMs is its own parameter for the same reason
+// wait-for-render-deploy.mjs's equivalent is -- tests use a short timeout
+// instead of waiting 30 real seconds to prove the abort actually fires.
+export async function checkPath(
+  originBase,
+  cdnBase,
+  path,
+  fetchImpl = fetch,
+  requestTimeoutMs = REQUEST_TIMEOUT_MS,
+) {
   const originRequestUrl = new URL(path, originBase).toString();
   const cdnRequestUrl = new URL(path, cdnBase).toString();
 
   const [originRes, cdnRes] = await Promise.all([
-    fetchImpl(originRequestUrl, { redirect: "follow" }),
-    fetchImpl(cdnRequestUrl, { redirect: "follow" }),
+    fetchWithTimeout(fetchImpl, originRequestUrl, { redirect: "follow" }, requestTimeoutMs),
+    fetchWithTimeout(fetchImpl, cdnRequestUrl, { redirect: "follow" }, requestTimeoutMs),
   ]);
 
   const result = evaluateCdnCheck({

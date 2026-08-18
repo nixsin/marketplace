@@ -102,19 +102,35 @@ export function evaluateCdnCheck({
     return { ok: false, problems, mismatches: [] };
   }
 
-  // The origin's own *actual* destination, not merely what was requested
-  // -- origin itself may redirect (e.g. a bare domain to www, or http to
-  // https), and what matters is whether the CDN request ended up
-  // somewhere that bypasses the CDN entirely, not whether it matches the
+  // Both legs' own *actual* destinations, not merely what was requested --
+  // either side may redirect (e.g. a bare domain to www, or http to
+  // https), and what matters is whether the two responses actually came
+  // from two independent endpoints, not whether either matches the
   // literal URL this check happened to be pointed at.
+  const originRequestHost = new URL(originRequestUrl).host;
   const originFinalHost = new URL(originFinalUrl).host;
   const cdnRequestHost = new URL(cdnRequestUrl).host;
   const cdnFinalHost = new URL(cdnFinalUrl).host;
-  if (cdnFinalHost === originFinalHost && cdnRequestHost !== originFinalHost) {
-    problems.push(
-      `CDN URL (${cdnRequestUrl}) redirected straight through to origin's own destination (${originFinalHost}) -- this never actually exercised the CDN`,
-    );
-    return { ok: false, problems, mismatches: [] };
+
+  // A fifth review round found the original version of this guard only
+  // ever checked one direction (a CDN URL redirecting through to origin's
+  // destination) -- but the same problem exists in reverse: if origin's
+  // own request redirects onto the CDN's host while the CDN request stays
+  // put there, both responses again come from the same single endpoint
+  // (the CDN, this time), and origin was never really exercised. Treated
+  // symmetrically: flag any case where both legs converge on the same
+  // final host UNLESS neither leg redirected to get there (a deliberate
+  // same-host smoke test, where both request hosts already equalled that
+  // host with no redirect involved).
+  if (cdnFinalHost === originFinalHost) {
+    const cdnRedirected = cdnRequestHost !== cdnFinalHost;
+    const originRedirected = originRequestHost !== originFinalHost;
+    if (cdnRedirected || originRedirected) {
+      problems.push(
+        `origin and CDN converged on the same final destination (${originFinalHost}) after at least one of them redirected there -- at least one leg never actually exercised its own distinct endpoint`,
+      );
+      return { ok: false, problems, mismatches: [] };
+    }
   }
 
   const headerResult = compareCacheHeaders(originHeaders, cdnHeaders);
