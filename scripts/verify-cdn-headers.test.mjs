@@ -120,6 +120,32 @@ test("checkPath: a stalled response is aborted after requestTimeoutMs, not left 
   );
 });
 
+test("checkPath: an absolute-URL path argument is rejected, not silently allowed to override both bases -- a sixth review round found this could send both requests to the same unrelated host with matching (absent) headers and no redirect involved, exactly the case the round-5 same-host guard is designed to let through as OK", async () => {
+  const fetchImpl = async () => {
+    throw new Error("fetchImpl should never be called -- the path should be rejected before any request is made");
+  };
+  await assert.rejects(
+    () => checkPath("https://origin.example.com", "https://cdn.example.com", "https://evil.example.com/en", fetchImpl),
+    /not a safe relative path/,
+  );
+});
+
+test("checkPath: a protocol-relative path argument (//host/path) is also rejected -- it overrides the host the same way an absolute URL does", async () => {
+  const fetchImpl = async () => {
+    throw new Error("fetchImpl should never be called -- the path should be rejected before any request is made");
+  };
+  await assert.rejects(
+    () => checkPath("https://origin.example.com", "https://cdn.example.com", "//evil.example.com/en", fetchImpl),
+    /not a safe relative path/,
+  );
+});
+
+test("checkPath: a genuine relative path (with or without a leading slash) is still allowed through unchanged", async () => {
+  const fetchImpl = async (url) => fakeResponse({ url, headers: { "cache-control": "public, max-age=0" } });
+  assert.equal(await checkPath("https://origin.example.com", "https://cdn.example.com", "/en", fetchImpl), true);
+  assert.equal(await checkPath("https://origin.example.com", "https://cdn.example.com", "/hi?page=2", fetchImpl), true);
+});
+
 test("checkPath: constructs URLs by joining base + path correctly", async () => {
   let calledUrls = [];
   const fetchImpl = async (url) => {

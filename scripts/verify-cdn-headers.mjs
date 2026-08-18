@@ -45,6 +45,28 @@ function headersToRecord(headers) {
   return record;
 }
 
+// A sixth review round found that `new URL(path, base)` ignores `base`
+// entirely when `path` is itself absolute (e.g. "https://evil.example.com/en")
+// or protocol-relative ("//evil.example.com/en") -- per the WHATWG URL
+// spec, either form replaces the base outright. Combined with
+// cdn-header-check.mjs's own round-5 fix (which deliberately permits
+// identical final hosts when *neither* leg redirected, for the legitimate
+// same-host smoke-test case), a hijacked `path` argument would send both
+// requests to the same unrelated host with no redirect involved on either
+// side -- exactly the "neither redirected" case that guard is designed to
+// let through -- so a matching response would report OK without ever
+// exercising the configured origin or CDN. `path` is always CLI input
+// (see main() below), so this validates it rather than trusting it.
+function isSafeRelativePath(path) {
+  if (path.startsWith("//")) return false; // protocol-relative -- overrides the host
+  try {
+    new URL(path); // succeeds only if `path` is already a standalone absolute URL
+    return false;
+  } catch {
+    return true; // a genuine relative path throws when parsed with no base
+  }
+}
+
 // fetchImpl is injectable so tests can substitute a stub instead of
 // making real network calls -- a real AI review flagged that the
 // original version had no test coverage of this wrapper's own logic
@@ -59,6 +81,12 @@ export async function checkPath(
   fetchImpl = fetch,
   requestTimeoutMs = REQUEST_TIMEOUT_MS,
 ) {
+  if (!isSafeRelativePath(path)) {
+    throw new Error(
+      `checkPath: "${path}" is not a safe relative path -- an absolute or protocol-relative path would override the configured origin/CDN base entirely, silently skipping the check`,
+    );
+  }
+
   const originRequestUrl = new URL(path, originBase).toString();
   const cdnRequestUrl = new URL(path, cdnBase).toString();
 
