@@ -31,6 +31,11 @@ enum DeviceClass {
   D
 }
 
+"""
+The `JSONObject` scalar type represents JSON objects as specified by [ECMA-404](http://www.ecma-international.org/publications/files/ECMA-ST/ECMA-404.pdf).
+"""
+scalar JSONObject
+
 enum KycStatus {
   APPROVED
   PENDING
@@ -64,12 +69,14 @@ type Product {
   certifications: [String!]!
   createdAt: DateTime!
   description: String!
+  details: JSONObject
   deviceClass: DeviceClass
   id: ID!
   imageUrl: String
   location: String!
   name: String!
   seller: Organization!
+  updatedAt: DateTime!
 }
 
 type ProductPage {
@@ -88,6 +95,7 @@ type ProductsPaged {
 type Query {
   me: User!
   myOrganization: Organization!
+  product(id: ID!): Product!
   products(cursor: String, limit: Int): ProductPage!
   productsPaged(page: Int, pageSize: Int): ProductsPaged!
 }

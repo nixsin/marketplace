@@ -1,9 +1,30 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ProductCard, type Product } from "./product-card";
 import { LocaleProvider } from "./locale-provider";
 import en from "../../messages/en.json";
+
+// ProductCard's heading now renders next-intl's <Link> (from
+// @/i18n/navigation), which needs app-router context jsdom doesn't
+// provide -- same mock, same reasoning, as pagination.spec.tsx/
+// header.spec.tsx already established for this exact situation.
+vi.mock("@/i18n/navigation", () => ({
+  Link: ({
+    href,
+    className,
+    children,
+    ...props
+  }: {
+    href: string;
+    className?: string;
+    children?: React.ReactNode;
+  }) => (
+    <a href={href} className={className} {...props}>
+      {children}
+    </a>
+  ),
+}));
 
 const fullProduct: Product = {
   id: "1",
@@ -130,6 +151,13 @@ describe("ProductCard", () => {
         level: 2,
       }),
     ).toBeInTheDocument();
+  });
+
+  it("links the heading to the product's detail page", () => {
+    renderCard(fullProduct);
+    expect(
+      screen.getByRole("link", { name: "Digital Blood Pressure Monitor" }),
+    ).toHaveAttribute("href", "/products/1");
   });
 
   it("lazy-loads the image by default", () => {

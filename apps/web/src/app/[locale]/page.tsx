@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { setRequestLocale } from "next-intl/server";
 import { HomeHeading } from "@/components/home-heading";
 import { ProductListing } from "@/components/product-listing";
+import { Skeleton } from "@/components/skeleton";
 
 interface HomeProps {
   params: Promise<{ locale: string }>;
@@ -22,10 +23,7 @@ export default async function Home({ params }: HomeProps) {
           fallback={
             <div className="flex flex-col gap-4">
               {Array.from({ length: 4 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="h-48 w-full animate-pulse rounded-xl bg-muted"
-                />
+                <Skeleton key={i} className="h-48 w-full" />
               ))}
             </div>
           }

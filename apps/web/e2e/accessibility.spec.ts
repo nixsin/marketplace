@@ -58,4 +58,48 @@ test.describe("accessibility", () => {
     recordResult("hi", results.violations.length);
     expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
   });
+
+  // No recordResult() call here -- the existing accessibility-<locale>.json
+  // files are keyed by locale only (one per locale, home page), and the
+  // dashboard badge tracks that single metric. Aggregating a second page
+  // into the same metric, or introducing a new one, is more than this
+  // first slice needs -- revisit if/when the badge itself needs to cover
+  // more than the home page.
+  test("product details page (en) has no automatically detectable violations", async ({
+    page,
+  }) => {
+    await page.goto("/en");
+    await expect(page.locator('[data-slot="card-title"] a').first()).toBeVisible();
+    const href = await page
+      .locator('[data-slot="card-title"] a')
+      .first()
+      .getAttribute("href");
+    await page.goto(href!);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+
+    expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+  });
+
+  test("product details page (hi) has no automatically detectable violations", async ({
+    page,
+  }) => {
+    await page.goto("/hi");
+    await expect(page.locator('[data-slot="card-title"] a').first()).toBeVisible();
+    const href = await page
+      .locator('[data-slot="card-title"] a')
+      .first()
+      .getAttribute("href");
+    await page.goto(href!);
+    await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+
+    const results = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
+      .analyze();
+
+    expect(results.violations, JSON.stringify(results.violations, null, 2)).toEqual([]);
+  });
 });

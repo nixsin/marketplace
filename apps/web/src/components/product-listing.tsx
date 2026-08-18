@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ProductCard, type Product } from "@/components/product-card";
 import { Pagination } from "@/components/pagination";
+import { Skeleton } from "@/components/skeleton";
 import { fetchProductsPaged, type ProductsPaged } from "@/lib/api";
 
 // Items for sale are fetched independently of the page shell — on mount,
@@ -150,10 +151,7 @@ export function ProductListing() {
     return (
       <div className="flex flex-col gap-4">
         {Array.from({ length: 4 }).map((_, i) => (
-          <div
-            key={i}
-            className="h-48 w-full animate-pulse rounded-xl bg-muted"
-          />
+          <Skeleton key={i} className="h-48 w-full" />
         ))}
       </div>
     );

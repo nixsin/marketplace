@@ -54,6 +54,11 @@ COPY apps/web apps/web
 # it to the `next build` process.
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+# Same mechanism, same reason -- generateMetadata's metadataBase (needed
+# for the product-details page's OpenGraph images) is also inlined at
+# build time, not read at runtime.
+ARG NEXT_PUBLIC_SITE_URL=http://localhost:3000
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 # Same mechanism, same reason: next.config.ts's `deploymentId` gets baked
 # into the build the same way NEXT_PUBLIC_API_URL does, so it needs to be
 # a build arg too, not just a runtime env var -- a runtime-only value

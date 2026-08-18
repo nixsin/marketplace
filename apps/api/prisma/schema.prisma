@@ -103,7 +103,20 @@ model Product {
   location       String
   description    String       @default("")
   imageUrl       String?
+  // Category-specific specs (blade size, power rating, etc.) that can't all
+  // be anticipated up front across every product category -- see #92.
+  // Nullable, no backfill needed. A JSONB column, not a separate document
+  // database: schema-less per row within one column, while still living in
+  // the same database/transaction/migration story as everything else.
+  details        Json?
   createdAt      DateTime     @default(now())
+  // Paired with an explicit default (not bare @updatedAt, unlike
+  // Organization/User above) because Product already has real seeded rows
+  // -- a bare @updatedAt with no default makes `prisma migrate dev` prompt
+  // interactively for a backfill value. The default just means existing
+  // rows' updatedAt becomes "the moment this column was added", an honest
+  // synthetic value, not a real backfill.
+  updatedAt      DateTime     @default(now()) @updatedAt
 
   @@index([sellerId])
 }

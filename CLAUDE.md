@@ -1501,6 +1501,42 @@ care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Known gotchas (already solved once — don't re-derive)
 
+**Never run `apps/api`'s e2e suite via `docker compose exec api ...`
+against this repo's persistent dev container — it silently runs against
+the real dev database, not the test database, and can wipe real seed
+data.** Hit this directly (2026-08-18, while building the `product(id)`
+query for #92): ran `docker compose exec api pnpm exec jest --config
+./test/jest-e2e.json products`, and the suite's `beforeEach` (`TRUNCATE
+TABLE "Product", "License", "User", "Organization" RESTART IDENTITY
+CASCADE`) wiped the local dev catalog, replacing it with the last test
+file's own fixtures. Root cause, confirmed by reading the actual
+mechanism rather than guessing: `test/jest-e2e.json`'s `setupFiles`
+(`test/setup-env.ts`) runs `dotenv.config({ path: '.env.test' })`
+unconditionally, on every invocation — but `docker-compose.yml` sets
+`DATABASE_URL` for the `api` service as a real container-level
+environment variable pointing at `medinstru` (the dev DB), which is
+already present in `process.env` by the time Node starts. `dotenv`'s
+`config()` never overrides an existing `process.env` value by default —
+so `.env.test`'s own `DATABASE_URL` (`medinstru_test`) is silently
+skipped, and the suite runs against dev regardless of which command
+invokes jest (`pnpm test:e2e` has the identical exposure — this is not
+about which npm script you use, it's about running inside this
+specific, persistent container at all). Recovered by re-running
+`prisma/seed.ts` (its own delete is scoped to its own seller, so also
+manually deleted one stray leftover org/product by id that belonged to a
+different test fixture and outlived the reseed). **Fix/safe pattern**:
+run `apps/api` e2e tests natively on the host (`pnpm --filter api
+test:e2e`, with the host's own `.env.test` pointing at a real, separate
+`medinstru_test` database Postgres server it can actually reach) or in a
+genuinely fresh process/container that never inherited `docker-
+compose.yml`'s `DATABASE_URL` — never via `docker compose exec` against
+the long-running dev container. If a container-exec invocation is ever
+truly necessary, override `DATABASE_URL` explicitly at exec time
+(`docker compose exec -e DATABASE_URL=<test-db-url> api ...`), which
+takes precedence over the container's baked-in environment for that one
+command — untested here, but follows directly from how env-var
+precedence actually works.
+
 **A local import added to `next.config.ts` can crash prod at boot, not
 build — and a real production outage happened this exact way
 (2026-08-18, `apps/web`, ~40 minutes, confirmed resolved by #86).**

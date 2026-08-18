@@ -127,6 +127,90 @@ describe('Products pagination (e2e)', () => {
   });
 });
 
+const PRODUCT_QUERY = `
+  query Product($id: ID!) {
+    product(id: $id) {
+      id name details updatedAt
+      seller { name gstin kycStatus }
+    }
+  }
+`;
+
+// Confirms end-to-end the exact shape the frontend's fetchProduct() needs to
+// detect: a matched "not found" GraphQL error on an otherwise-200 response,
+// not a 500 -- see products.resolver.ts's own comment for why product(id)
+// is safe to expose unauthenticated in the first place.
+describe('Product by id (e2e)', () => {
+  let app: INestApplication<App>;
+  let prisma: PrismaService;
+
+  beforeAll(async () => {
+    const moduleFixture: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
+
+    app = moduleFixture.createNestApplication();
+    configureApp(app);
+    await app.init();
+
+    prisma = moduleFixture.get(PrismaService);
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  beforeEach(async () => {
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "Product", "License", "User", "Organization" RESTART IDENTITY CASCADE',
+    );
+  });
+
+  it('returns the product with the seller relation resolved', async () => {
+    const seller = await prisma.organization.create({
+      data: {
+        name: 'Detail Test Co',
+        gstin: '29AAACD1234A1Z5',
+        type: 'SELLER',
+        kycStatus: 'APPROVED',
+      },
+    });
+    const product = await prisma.product.create({
+      data: {
+        sellerId: seller.id,
+        name: 'Portable Ultrasound',
+        brand: 'Test Brand',
+        category: 'Diagnostic Imaging',
+        certifications: [],
+        location: 'Test City',
+        details: { probeType: 'convex', displaySize: '7in' },
+      },
+    });
+
+    const res = await gql(app)(PRODUCT_QUERY, { id: product.id });
+
+    expect(res.body.data.product).toMatchObject({
+      id: product.id,
+      name: 'Portable Ultrasound',
+      details: { probeType: 'convex', displaySize: '7in' },
+      seller: {
+        name: 'Detail Test Co',
+        gstin: '29AAACD1234A1Z5',
+        kycStatus: 'APPROVED',
+      },
+    });
+    expect(res.body.data.product.updatedAt).toBeTruthy();
+  });
+
+  it('returns a GraphQL error, not a 500, for a nonexistent id', async () => {
+    const res = await gql(app)(PRODUCT_QUERY, { id: 'does-not-exist' });
+
+    expect(res.body.data).toBeNull();
+    expect(res.body.errors).toBeDefined();
+    expect(res.body.errors[0].message).toMatch(/not found/i);
+  });
+});
+
 // Automates what was manually curl-verified: GraphQL-over-GET for the
 // read-only productsPaged query, specifically so it can be conditionally
 // cached (ETag/304) the way a POST request never can be under standard

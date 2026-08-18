@@ -31,6 +31,22 @@
     "sendInquiry": "पूछताछ भेजें",
     "sendInquiryAbout": "{productName} के बारे में पूछताछ भेजें"
   },
+  "productDetails": {
+    "deviceClass": "क्लास {class}",
+    "brandLocation": "{brand} · {location}",
+    "specifications": "विशिष्टियाँ",
+    "noSpecifications": "कोई अतिरिक्त विशिष्टियाँ सूचीबद्ध नहीं हैं।",
+    "seller": "विक्रेता",
+    "gstin": "GSTIN: {gstin}",
+    "sellerVerification": "विक्रेता KYC स्थिति: {status}",
+    "lastUpdated": "अंतिम अपडेट {date}",
+    "notFoundTitle": "उत्पाद नहीं मिला",
+    "notFoundMessage": "यह उत्पाद हटा दिया गया है या अब सूचीबद्ध नहीं है।",
+    "backToListing": "लिस्टिंग पर वापस जाएँ",
+    "errorTitle": "कुछ गड़बड़ हो गई",
+    "errorMessage": "हम इस उत्पाद को लोड नहीं कर सके। कृपया पुनः प्रयास करें।",
+    "retry": "पुनः प्रयास करें"
+  },
   "languageSwitcher": {
     "label": "भाषा"
   }

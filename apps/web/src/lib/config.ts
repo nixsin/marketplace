@@ -10,6 +10,12 @@
 
 export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql";
 
+// This app's own public origin -- needed for generateMetadata's
+// metadataBase (OpenGraph image URLs are relative, e.g. seeded product
+// imageUrls, and Next.js errors at build time on a relative image URL
+// with no metadataBase configured).
+export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+
 // English + Hindi for MVP (TECHNICAL_PLAN.md §14) — additional regional
 // languages land in Phase 3, prioritized by where signups concentrate.
 // Raw values live here, not in src/i18n/routing.ts, so anything that

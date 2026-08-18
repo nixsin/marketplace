@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Link } from "@/i18n/navigation";
 
 export interface Product {
   id: string;
@@ -77,8 +78,18 @@ export function ProductCard({
                 tag-dependent line-height fallback once leading-snug is
                 gone. leading-7 (1.75rem/28px) restores the same line
                 height the div version always actually rendered at. */}
+            {/* Link wraps only the heading text, not the whole Card --
+                wrapping the whole card would nest the "Send Inquiry"
+                button below inside an <a>, invalid HTML and a real a11y
+                problem. No prefetch={false}: this is a genuinely distinct
+                destination, and the route's own lack of a loading.tsx
+                (see product-details/page.tsx's comment) already keeps
+                Next's default scroll-into-view prefetch from triggering
+                eager per-card GraphQL fetches on its own. */}
             <CardTitle asChild className="text-lg leading-7">
-              <h2>{product.name}</h2>
+              <h2>
+                <Link href={`/products/${product.id}`}>{product.name}</Link>
+              </h2>
             </CardTitle>
             <CardDescription>
               {t("meta", {

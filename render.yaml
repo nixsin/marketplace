@@ -53,3 +53,10 @@ services:
       # runtime env var, for a Docker-based Next.js deploy.
       - key: NEXT_PUBLIC_API_URL
         value: https://medinstru-api.onrender.com/graphql
+      # Same mechanism, same reason -- required for generateMetadata's
+      # metadataBase (product-details page OpenGraph images). Since this
+      # file isn't an active Blueprint sync (see the header comment
+      # above), this also needs to be set by hand in Render's dashboard
+      # for medinstru-web before it takes effect in production.
+      - key: NEXT_PUBLIC_SITE_URL
+        value: https://medinstru-web.onrender.com

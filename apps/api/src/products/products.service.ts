@@ -1,9 +1,23 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  // Mirrors OrganizationsService.findById exactly -- NotFoundException
+  // thrown here (the service), not the resolver; Apollo's Nest integration
+  // converts it to a GraphQL error automatically. See products.resolver.ts's
+  // own comment for why a client-supplied id lookup is safe for this model
+  // specifically, unlike the removed organization(id) query.
+  async findById(id: string) {
+    const product = await this.prisma.product.findUnique({
+      where: { id },
+      include: { seller: true },
+    });
+    if (!product) throw new NotFoundException(`Product ${id} not found`);
+    return product;
+  }
 
   async findPage(cursor?: string, limit = 6) {
     // Cursor-based, not offset-based (see TECHNICAL_PLAN.md §12B) — degrades

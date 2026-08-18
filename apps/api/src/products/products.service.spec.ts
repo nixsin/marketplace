@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -7,11 +8,36 @@ function makeProduct(id: string) {
 
 describe('ProductsService', () => {
   let service: ProductsService;
-  let prisma: { product: { findMany: jest.Mock } };
+  let prisma: {
+    product: { findMany: jest.Mock; findUnique: jest.Mock };
+  };
 
   beforeEach(() => {
-    prisma = { product: { findMany: jest.fn() } };
+    prisma = { product: { findMany: jest.fn(), findUnique: jest.fn() } };
     service = new ProductsService(prisma as unknown as PrismaService);
+  });
+
+  describe('findById', () => {
+    it('returns the product with the seller relation included when found', async () => {
+      const product = makeProduct('p1');
+      prisma.product.findUnique.mockResolvedValue(product);
+
+      const result = await service.findById('p1');
+
+      expect(prisma.product.findUnique).toHaveBeenCalledWith({
+        where: { id: 'p1' },
+        include: { seller: true },
+      });
+      expect(result).toBe(product);
+    });
+
+    it('throws NotFoundException when no product matches the id', async () => {
+      prisma.product.findUnique.mockResolvedValue(null);
+
+      await expect(service.findById('missing')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
   });
 
   it('defaults to a page size of 6, ordered newest first, with seller included', async () => {
