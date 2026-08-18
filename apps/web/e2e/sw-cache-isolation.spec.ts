@@ -28,42 +28,42 @@ import { test, expect, type Page } from "@playwright/test";
 const REAL_PRODUCTS_PAGED_QUERY =
   "query ProductsPaged($page: Int, $pageSize: Int) { productsPaged(page: $page, pageSize: $pageSize) { page pageSize totalCount totalPages items { id name brand category deviceClass certifications location description imageUrl seller { name } } } }";
 
-// Not hardcoded to a specific literal cache name -- sw.js's own CACHE_NAME
-// is free to change (its own comment says to bump it when the caching
-// *strategy* changes), and this test shouldn't silently stop meaning
-// anything if it does. Discovers whichever cache the active service
-// worker is actually using, the same way a real client would.
-async function graphqlCacheKeyCount(page: Page) {
-  return page.evaluate(async () => {
-    const names = await caches.keys();
-    let count = 0;
-    for (const name of names) {
-      const cache = await caches.open(name);
-      const keys = await cache.keys();
-      count += keys.filter((req) => new URL(req.url).pathname === "/graphql").length;
-    }
-    return count;
-  });
-}
-
-// Waits for the real page load's own fetchProductsPaged call (query
-// ProductsPaged(...)) to finish being cached by the SW's background
-// revalidation fetch, and returns the real GraphQL origin it used. The
-// request listener is registered *before* navigating -- registering it
-// after page.goto() (an earlier version of this test did) races the
-// page's own request, which can fire during navigation/initial render
-// and be missed entirely, a real flake caught by review.
+// Waits for a real fetchProductsPaged call (query ProductsPaged(...)) to
+// finish being cached by the SW's background revalidation fetch, and
+// returns the real GraphQL origin it used.
+//
+// Loads the page first, then reloads once service-worker control is
+// confirmed, rather than relying on the *first* load's own request --
+// clients.claim() in sw.js's activate handler resolves asynchronously,
+// so on a fast page the initial fetchProductsPaged() call can fire
+// before the SW is actually controlling that page, leaving it uncached
+// even though the controller check would go on to pass moments later.
+// A reload issued *after* control is confirmed is guaranteed to be
+// controlled from its very first request -- the standard pattern for
+// this exact race in service-worker testing. Flagged by an AI review
+// (2026-08-18); the request listener is still registered before the
+// action that triggers it (the reload), for the same reason noted
+// below -- registering it after would race the reload's own request.
 async function loadPageAndWaitForRealCacheEntry(page: Page) {
-  const graphqlRequestPromise = page.waitForRequest(
-    (req) => new URL(req.url()).pathname === "/graphql",
-  );
   await page.goto("/en");
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null, {
     timeout: 15_000,
   });
+  const graphqlRequestPromise = page.waitForRequest(
+    (req) => new URL(req.url()).pathname === "/graphql",
+  );
+  await page.reload();
   const graphqlRequest = await graphqlRequestPromise;
   await expect(page.locator('[data-slot="card"]').first()).toBeVisible();
-  await expect.poll(() => graphqlCacheKeyCount(page), { timeout: 10_000 }).toBe(1);
+  // Waits for this *specific* request's URL to appear in cache, not an
+  // aggregate /graphql key count -- product-listing.tsx also eagerly
+  // prefetches the next page in the background once the current page has
+  // loaded (see its own comment), which is a second, entirely legitimate
+  // /graphql cache entry (different page/variables) once the service
+  // worker is reliably controlling the page. A blanket count of exactly 1
+  // was already fragile against that; reload() above making SW control
+  // deterministic just surfaces it reliably instead of by timing luck.
+  await expect.poll(() => cacheHasEntry(page, graphqlRequest.url()), { timeout: 10_000 }).toBe(true);
   return new URL(graphqlRequest.url()).origin;
 }
 
