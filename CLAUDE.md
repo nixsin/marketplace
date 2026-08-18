@@ -297,6 +297,30 @@ real successful `/en` response. Confirms the design catches the real bug
 environment, not only in a local Docker Desktop instance that could
 plausibly behave differently.
 
+**A third AI review round on the same PR caught a genuinely serious bug
+introduced by the second round's own fix** (the exact-`200` status check
+above): `status=$(curl ...)` propagates curl's exit code through the
+assignment, and GitHub Actions runs steps under `bash -e` (confirmed
+directly in this job's own real log: `shell: /usr/bin/bash -e {0}`) — so
+`set -e` aborted the whole step on the *very first* connection attempt
+that failed because the container hadn't opened its listening socket yet,
+a real race on every single run right after `docker run -d`, not a rare
+edge case. This would have silently defeated the entire 30-iteration
+retry loop, making the job flake unpredictably on timing rather than
+reliably retry as designed — worth noting as a concrete example of a fix
+for one finding introducing a worse bug than the one it fixed. Fixed with
+`|| true` *outside* the command substitution (verified `-w
+'%{http_code}'` already prints `000` on a connection failure regardless
+of curl's own exit code, so `|| echo 000` *inside* the substitution — the
+first instinct — would have doubled up into `000000` instead). Verified
+directly, not just reasoned about: reproduced the abort with a real
+`bash -e` repro before fixing, confirmed the fix under `bash -e` against
+both a real container that boots successfully (retries, then succeeds)
+and one that exits immediately (still correctly detected and failed),
+then force-ran the job a third time in real CI — passed, same
+`shell: /usr/bin/bash -e {0}` log confirming the fix works under the
+exact execution model that exposed the bug in the first place.
+
 **Path-filtered on `docker`, same as `docker-scan`/`docker-smoke`** — same
 shared-`deps`-stage reasoning already documented above. **Informational,
 not required, to start** — not yet in `migrate`'s `needs:` or branch
