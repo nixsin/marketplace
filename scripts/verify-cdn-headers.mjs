@@ -48,22 +48,33 @@ function headersToRecord(headers) {
 // A sixth review round found that `new URL(path, base)` ignores `base`
 // entirely when `path` is itself absolute (e.g. "https://evil.example.com/en")
 // or protocol-relative ("//evil.example.com/en") -- per the WHATWG URL
-// spec, either form replaces the base outright. Combined with
-// cdn-header-check.mjs's own round-5 fix (which deliberately permits
-// identical final hosts when *neither* leg redirected, for the legitimate
-// same-host smoke-test case), a hijacked `path` argument would send both
-// requests to the same unrelated host with no redirect involved on either
-// side -- exactly the "neither redirected" case that guard is designed to
-// let through -- so a matching response would report OK without ever
-// exercising the configured origin or CDN. `path` is always CLI input
-// (see main() below), so this validates it rather than trusting it.
-function isSafeRelativePath(path) {
-  if (path.startsWith("//")) return false; // protocol-relative -- overrides the host
-  try {
-    new URL(path); // succeeds only if `path` is already a standalone absolute URL
-    return false;
-  } catch {
-    return true; // a genuine relative path throws when parsed with no base
+// spec, either form replaces the base outright. A seventh round then found
+// that the lexical fix for that (checking the *input string's* shape) had
+// its own gap: the WHATWG URL parser treats a backslash as equivalent to
+// a forward slash for special schemes like https, so inputs like
+// "\\evil.example.com\en" or "/\\evil.example.com/en" don't look absolute
+// or protocol-relative as *strings*, yet still resolve to a completely
+// different host once parsed -- verified directly (`new URL("\\\\evil.
+// example.com\\en", "https://origin.example.com").href` really does come
+// back as "https://evil.example.com/en"). Trying to enumerate every
+// string shape the URL parser might treat specially is exactly the wrong
+// approach -- fixed instead by validating the *outcome*: after resolving
+// each request URL against its base, confirm its host still equals the
+// base's own host. Combined with cdn-header-check.mjs's round-5 fix
+// (which deliberately permits identical final hosts when *neither* leg
+// redirected, for the legitimate same-host smoke-test case), any path
+// that hijacks the host -- by any mechanism, known or not -- is caught
+// here before a request is even made, rather than depending on the
+// redirect-convergence guard to catch it after the fact. `path` is always
+// CLI input (see main() below), so this validates it rather than
+// trusting it.
+function assertResolvesOnBase(requestUrl, base, label) {
+  const requestHost = new URL(requestUrl).host;
+  const baseHost = new URL(base).host;
+  if (requestHost !== baseHost) {
+    throw new Error(
+      `checkPath: the ${label} path resolved to host "${requestHost}", not the configured "${baseHost}" -- an absolute, protocol-relative, or backslash-based path can override the intended base entirely, silently skipping the check`,
+    );
   }
 }
 
@@ -81,14 +92,11 @@ export async function checkPath(
   fetchImpl = fetch,
   requestTimeoutMs = REQUEST_TIMEOUT_MS,
 ) {
-  if (!isSafeRelativePath(path)) {
-    throw new Error(
-      `checkPath: "${path}" is not a safe relative path -- an absolute or protocol-relative path would override the configured origin/CDN base entirely, silently skipping the check`,
-    );
-  }
-
   const originRequestUrl = new URL(path, originBase).toString();
   const cdnRequestUrl = new URL(path, cdnBase).toString();
+
+  assertResolvesOnBase(originRequestUrl, originBase, "origin");
+  assertResolvesOnBase(cdnRequestUrl, cdnBase, "CDN");
 
   const [originRes, cdnRes] = await Promise.all([
     fetchWithTimeout(fetchImpl, originRequestUrl, { redirect: "follow" }, requestTimeoutMs),

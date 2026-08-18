@@ -126,7 +126,7 @@ test("checkPath: an absolute-URL path argument is rejected, not silently allowed
   };
   await assert.rejects(
     () => checkPath("https://origin.example.com", "https://cdn.example.com", "https://evil.example.com/en", fetchImpl),
-    /not a safe relative path/,
+    /resolved to host "evil\.example\.com"/,
   );
 });
 
@@ -136,8 +136,20 @@ test("checkPath: a protocol-relative path argument (//host/path) is also rejecte
   };
   await assert.rejects(
     () => checkPath("https://origin.example.com", "https://cdn.example.com", "//evil.example.com/en", fetchImpl),
-    /not a safe relative path/,
+    /resolved to host "evil\.example\.com"/,
   );
+});
+
+test("checkPath: a backslash-based path argument is rejected too -- a seventh review round found the WHATWG URL parser treats backslashes as slashes for https, so a purely lexical (string-shape) check missed this even though the round-6 fix already covered absolute and protocol-relative forms", async () => {
+  const fetchImpl = async () => {
+    throw new Error("fetchImpl should never be called -- the path should be rejected before any request is made");
+  };
+  for (const evilPath of ["\\\\evil.example.com\\en", "/\\evil.example.com/en"]) {
+    await assert.rejects(
+      () => checkPath("https://origin.example.com", "https://cdn.example.com", evilPath, fetchImpl),
+      /resolved to host "evil\.example\.com"/,
+    );
+  }
 });
 
 test("checkPath: a genuine relative path (with or without a leading slash) is still allowed through unchanged", async () => {
