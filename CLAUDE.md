@@ -3,10 +3,11 @@
 This file is for an agent (Claude Code or otherwise) doing ongoing maintenance
 on `nixsin/marketplace` — CI/CD, dependency upgrades, workflow changes, bug
 fixes. For product/architecture context (data model, roles, roadmap), read
-[TECHNICAL_PLAN.md](./TECHNICAL_PLAN.md) first. For local dev setup, testing
-commands, and CI job descriptions, read [README.md](./README.md). This file
-covers the parts neither of those does: how to work in this repo day to day,
-and the non-obvious operational knowledge accumulated so far.
+[TECHNICAL_PLAN.md](./TECHNICAL_PLAN.md) first. For local dev setup and
+testing commands, read [docs/development.md](./docs/development.md). This
+file covers the parts neither of those does: how to work in this repo day
+to day, and the non-obvious operational knowledge accumulated so far
+(including full CI job descriptions).
 
 `apps/web/AGENTS.md` has a Next.js-version-specific note (this repo runs a
 recent Next.js whose APIs may differ from training data) — read it before
@@ -25,7 +26,7 @@ itself belongs here for the same reason: it shouldn't need to be repeated.
 1. Branch off `main` (`git checkout main && git pull --ff-only`, then a new
    branch — never commit directly to `main`).
 2. Make the change, verify it locally (build/test/lint as relevant — see
-   README.md's Testing section), commit.
+   docs/development.md's Testing section), commit.
 3. Push, open a PR (`gh pr create`).
 4. Wait for CI. Fix forward on the same branch if something fails — don't
    force-push over history unless specifically asked.
@@ -341,8 +342,8 @@ just `pnpm start`, which has nothing to serve on a fresh checkout with
 no prior `.next` build; fixed to `pnpm build && pnpm start` (confirmed
 by reproducing the original failure directly: `rm -rf .next && pnpm
 test:e2e`). What's still deliberately not automated: starting Postgres
-or the API — same prerequisites README.md's "Testing" section already
-assumes for `apps/api`'s own e2e suite, not a new pattern. Run
+or the API — same prerequisites docs/development.md's "Testing" section
+already assumes for `apps/api`'s own e2e suite, not a new pattern. Run
 `scripts/dev.sh` (or start the API by hand) first.
 
 **Accessibility checks (`e2e/accessibility.spec.ts`) live in this same
