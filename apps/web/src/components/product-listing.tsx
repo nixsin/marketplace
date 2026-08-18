@@ -162,8 +162,16 @@ export function ProductListing() {
   return (
     <>
       <div className="flex flex-col gap-4">
-        {state.items.map((product) => (
-          <ProductCard key={product.id} product={product} />
+        {state.items.map((product, index) => (
+          // index 0, not page === 1 && index === 0 -- whichever page a
+          // direct navigation lands on (e.g. /hi?page=2 from a shared
+          // link), its first-rendered item is that load's LCP candidate,
+          // not necessarily page 1's.
+          <ProductCard
+            key={product.id}
+            product={product}
+            priority={index === 0}
+          />
         ))}
       </div>
       <Pagination currentPage={page} totalPages={state.totalPages} />

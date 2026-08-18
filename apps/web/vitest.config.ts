@@ -9,7 +9,11 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["test/**/*.spec.ts", "src/**/*.spec.tsx"],
+    // src/**/*.spec.ts (not just .spec.tsx) added for src/lib/*.ts unit
+    // tests -- pure-logic modules with no JSX, same reasoning as this
+    // repo's scripts/lib/*.test.mjs convention, just under Vitest instead
+    // of node:test since these run inside the web app's own suite.
+    include: ["test/**/*.spec.ts", "src/**/*.spec.ts", "src/**/*.spec.tsx"],
     setupFiles: ["./vitest.setup.ts"],
     testTimeout: 30_000,
     hookTimeout: 30_000,

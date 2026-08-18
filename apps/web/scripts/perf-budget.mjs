@@ -35,6 +35,21 @@ const BUDGETS = {
   jsBudgetBytes: 191 * 1024,
 };
 
+// A manual Lighthouse audit against the deployed site found a real LCP
+// regression (3.1s, over budget) on /hi?page=2 specifically — the default
+// page below never exercises a non-default locale or a paginated result,
+// so it couldn't have caught this. Root cause (product-card.tsx /
+// product-listing.tsx, same PR as this) was the LCP image missing
+// `priority`; this second page is what makes that class of regression a
+// CI failure instead of something only found by chance via a manual
+// audit. Same budgets as the default page apply — the JS bundle is
+// identical either way, and the LCP budget is a property of the page
+// experience, not the locale.
+const PAGES = [
+  { label: "default (/)", path: "" },
+  { label: "/hi?page=2", path: "/hi?page=2" },
+];
+
 async function waitForReady(url, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -58,10 +73,10 @@ function median(numbers) {
 // Fresh Chrome per run — reusing one instance across runs risks warm-cache/
 // process-state carrying over between them, which would defeat the point of
 // independent samples for the median.
-async function runOnce(n) {
+async function runOnce(url, n) {
   const chrome = await chromeLauncher.launch({ chromeFlags: ["--headless"] });
   try {
-    const result = await lighthouse(BASE_URL, {
+    const result = await lighthouse(url, {
       port: chrome.port,
       onlyCategories: ["performance"],
       formFactor: "mobile",
@@ -81,6 +96,33 @@ async function runOnce(n) {
   }
 }
 
+async function auditPage(label, url) {
+  console.log(`Running Lighthouse ${LIGHTHOUSE_RUNS}x against ${label} (mobile, simulated throttling)...`);
+  const runs = [];
+  for (let n = 1; n <= LIGHTHOUSE_RUNS; n++) {
+    runs.push(await runOnce(url, n));
+  }
+
+  const score = median(runs.map((r) => r.score));
+  const lcpMs = median(runs.map((r) => r.lcpMs));
+  const jsBytes = median(runs.map((r) => r.jsBytes));
+
+  console.log(`
+Median of ${LIGHTHOUSE_RUNS} runs for ${label}:
+  Performance score: ${(score * 100).toFixed(0)}/100  (budget: >=${BUDGETS.performanceScore * 100})
+  LCP: ${(lcpMs / 1000).toFixed(1)}s  (budget: <=${BUDGETS.lcpMs / 1000}s)
+  JS transferred: ${(jsBytes / 1024).toFixed(1)}KB  (budget: <=${BUDGETS.jsBudgetBytes / 1024}KB)
+`);
+
+  const failures = [];
+  if (score < BUDGETS.performanceScore) failures.push("performance score below budget");
+  if (lcpMs > BUDGETS.lcpMs) failures.push("LCP exceeds budget");
+  if (jsBytes > BUDGETS.jsBudgetBytes) failures.push("JS transfer exceeds budget");
+  for (const f of failures) console.error(`FAIL (${label}): ${f}`);
+
+  return { label, score, lcpMs, jsBytes, failed: failures.length > 0 };
+}
+
 async function run() {
   console.log(`Starting production server on ${BASE_URL}...`);
   console.log('(Run "pnpm build" first if this fails to find a build.)');
@@ -93,22 +135,10 @@ async function run() {
   try {
     await waitForReady(BASE_URL, 20_000);
 
-    console.log(`Running Lighthouse ${LIGHTHOUSE_RUNS}x (mobile, simulated throttling)...`);
-    const runs = [];
-    for (let n = 1; n <= LIGHTHOUSE_RUNS; n++) {
-      runs.push(await runOnce(n));
+    const results = [];
+    for (const page of PAGES) {
+      results.push(await auditPage(page.label, `${BASE_URL}${page.path}`));
     }
-
-    const score = median(runs.map((r) => r.score));
-    const lcpMs = median(runs.map((r) => r.lcpMs));
-    const jsBytes = median(runs.map((r) => r.jsBytes));
-
-    console.log(`
-Median of ${LIGHTHOUSE_RUNS} runs:
-  Performance score: ${(score * 100).toFixed(0)}/100  (budget: >=${BUDGETS.performanceScore * 100})
-  LCP: ${(lcpMs / 1000).toFixed(1)}s  (budget: <=${BUDGETS.lcpMs / 1000}s)
-  JS transferred: ${(jsBytes / 1024).toFixed(1)}KB  (budget: <=${BUDGETS.jsBudgetBytes / 1024}KB)
-`);
 
     // Written unconditionally, before the pass/fail check below — CI's
     // Lighthouse badge/history publishing step (gated on push-to-main,
@@ -116,27 +146,31 @@ Median of ${LIGHTHOUSE_RUNS} runs:
     // was met, so the dashboard shows a real regression instead of
     // silently freezing at the last passing score. Opt-in via env var so
     // a plain local `pnpm test:perf` run is unaffected.
+    //
+    // Scoped to the default page's result only, deliberately — the
+    // dashboard's existing history is a single time series measuring that
+    // one page; /hi?page=2 is a budget gate only (still fails the whole
+    // job below if it regresses), not a second badge/history series. Add
+    // one if a non-default page's own trend line ever becomes worth
+    // tracking on its own.
     if (process.env.PERF_BUDGET_RESULT_FILE) {
+      const [defaultResult] = results;
       writeFileSync(
         process.env.PERF_BUDGET_RESULT_FILE,
-        JSON.stringify({ score: Math.round(score * 100), lcpMs, jsBytes }, null, 2),
+        JSON.stringify(
+          {
+            score: Math.round(defaultResult.score * 100),
+            lcpMs: defaultResult.lcpMs,
+            jsBytes: defaultResult.jsBytes,
+          },
+          null,
+          2,
+        ),
       );
     }
 
-    let failed = false;
-    if (score < BUDGETS.performanceScore) {
-      console.error(`FAIL: performance score below budget`);
-      failed = true;
-    }
-    if (lcpMs > BUDGETS.lcpMs) {
-      console.error(`FAIL: LCP exceeds budget`);
-      failed = true;
-    }
-    if (jsBytes > BUDGETS.jsBudgetBytes) {
-      console.error(`FAIL: JS transfer exceeds budget`);
-      failed = true;
-    }
-    if (!failed) console.log("OK — within all budgets.");
+    const failed = results.some((r) => r.failed);
+    if (!failed) console.log("OK — within all budgets, on every page tested.");
     process.exitCode = failed ? 1 : 0;
   } finally {
     server.kill();

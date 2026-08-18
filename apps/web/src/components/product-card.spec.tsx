@@ -131,4 +131,34 @@ describe("ProductCard", () => {
       }),
     ).toBeInTheDocument();
   });
+
+  it("lazy-loads the image by default", () => {
+    const { container } = renderCard(fullProduct);
+    expect(container.querySelector("img")).toHaveAttribute(
+      "loading",
+      "lazy",
+    );
+  });
+
+  it("does not lazy-load the image when priority is set", () => {
+    // Regression coverage for the LCP finding a live Lighthouse audit
+    // caught on /hi?page=2 (see perf-budget.mjs's own comment): the
+    // above-the-fold card on a direct page load must not be lazy-loaded.
+    // Only asserts on `loading` -- confirmed directly (via the real
+    // rendered outerHTML) that next/image sets fetchPriority as a DOM
+    // property in this Next version's React 19 render path, not as a
+    // static "fetchpriority" HTML attribute, so jsdom's attribute-based
+    // queries can't observe it the way a real browser would; that part is
+    // real-browser territory (see the Web e2e section's own jsdom-vs-
+    // real-browser distinction), not something a component test can cover.
+    const { container } = render(
+      <LocaleProvider initialLocale="en" initialMessages={en}>
+        <ProductCard product={fullProduct} priority />
+      </LocaleProvider>,
+    );
+    expect(container.querySelector("img")).not.toHaveAttribute(
+      "loading",
+      "lazy",
+    );
+  });
 });
