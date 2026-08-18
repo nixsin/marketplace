@@ -262,12 +262,34 @@ test("waitForDeploy: reaching the overall deadline mid-request returns a clean t
       // Never resolves on its own -- simulates a request still in flight
       // when the overall deadline expires.
     });
+  // A first version of this test raced real wall-clock time (a 20ms
+  // maxRuntimeMs against a real setTimeout-scheduled abort) and flaked on
+  // a loaded CI runner -- the catch block's own nowImpl() re-check could
+  // read a value a fraction of a millisecond *before* the deadline it was
+  // itself derived from, since the abort still fires via a real timer
+  // (fetchPageWithTimeout's AbortController isn't nowImpl-aware) while
+  // the classification decision is. Fixed by making nowImpl's return
+  // value deterministic by call count instead of real elapsed time: the
+  // first three calls (computing the deadline, the loop's own pre-check,
+  // and fetchDeploys's remainingMs calculation -- all of which need to
+  // read as "before the deadline" so a real, short timeout actually gets
+  // scheduled) return a fixed small value; every call after that
+  // (starting with the catch block's post-abort re-check) reads a value
+  // far in the future. The real setTimeout still takes real wall-clock
+  // ms to fire -- that part can't be faked away -- but the decision being
+  // tested no longer races against it.
+  let callCount = 0;
+  const nowImpl = () => {
+    callCount++;
+    return callCount <= 3 ? 0 : 1_000_000;
+  };
   const result = await waitForDeploy("svc-1", "aaa", "key", {
     fetchImpl,
     sleepImpl: async () => {}, // not reached in this scenario
-    maxRuntimeMs: 20, // real ms -- deliberately tiny so the deadline expires mid-request
+    maxRuntimeMs: 20, // real ms -- short enough to keep the test fast; no longer load-bearing for correctness, since nowImpl above is what actually decides the outcome
     requestTimeoutMs: 30_000, // would hang for 30s if the deadline clamp weren't cutting it short
     maxAttempts: 5,
+    nowImpl,
   });
   assert.deepEqual(result, { readiness: "timed_out", shouldPurge: false });
 });
