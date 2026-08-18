@@ -8,7 +8,7 @@ import { LocaleProvider } from "@/components/locale-provider";
 import { Header } from "@/components/header";
 import { Footer } from "@/components/footer";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
-import { API_URL } from "@/lib/api";
+import { API_URL } from "@/lib/config";
 import "../globals.css";
 
 const geistSans = Geist({
@@ -26,12 +26,13 @@ const geistMono = Geist_Mono({
 // executes and calls fetch(), today. Preconnecting lets the browser open
 // that connection in parallel with CSS/JS loading instead of after,
 // which matters most on the high-latency connections this app is
-// prioritizing (see CLAUDE.md's caching/CDN plan). Imports API_URL
-// directly from api.ts (rather than re-reading NEXT_PUBLIC_API_URL and
-// re-declaring its fallback here) so this can never point at a different
-// origin than the fetch that actually follows it -- two independent
-// copies of the same fallback literal previously could (and, per a real
-// PR review comment, did prompt the question) silently drift apart.
+// prioritizing (see CLAUDE.md's caching/CDN plan). Imports API_URL from
+// the shared src/lib/config.ts (rather than re-reading
+// NEXT_PUBLIC_API_URL and re-declaring its fallback here) so this can
+// never point at a different origin than the fetch that actually follows
+// it -- two independent copies of the same fallback literal previously
+// could (and, per a real PR review comment, did prompt the question)
+// silently drift apart.
 //
 // The link below sets crossOrigin="anonymous" to match: browsers keep a
 // separate connection pool per origin for anonymous-CORS vs. same-origin/
