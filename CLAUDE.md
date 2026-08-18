@@ -448,7 +448,159 @@ above: it would duplicate the entire Postgres+API+web-server setup just
 to skip two ~2-second checks, for no real time savings given the job
 already has to run that full setup for API-only changes anyway.
 
+## Security headers (`apps/web/next.config.ts`)
+
+Added 2026-08-17 after a manual Lighthouse best-practices audit against the
+deployed site found no CSP, no HSTS, no COOP, no clickjacking mitigation,
+and no Trusted Types header on any real page — all scored "informative" so
+none of it hurt the Lighthouse score itself, but they were real,
+unaddressed gaps on a site that already handles seller/buyer accounts.
+All four (minus Trusted Types, see below) are set via `headers()`'s
+existing array, in a new block alongside the two pre-existing scoped
+blocks (favicon caching, locale page Cache-Control) — this repo already
+had a `headers()` function for those, extended rather than duplicated.
+
+**Scoped to actual page/document responses, not literally every route —
+the first version shipped as `source: "/(.*)"` and that was a real,
+caught-live bug, not a style choice.** `headers()` applies before the
+filesystem (per Next's own docs), so that matcher also applied CSP/HSTS/
+XFO/COOP to every `/_next/static/*` chunk response — real header bytes on
+every script request, identical across all 10 of `perf-budget.mjs`'s
+runs on the CI run that caught it (not noise; JS transfer size is
+deterministic, unlike LCP), pushing the JS budget over by ~1.4KB for zero
+actual security benefit — none of these headers do anything on a
+sub-resource's own response, only on the document that establishes them.
+Fixed to `source: "/((?!_next|favicon\\.ico).*)"` — same negative-
+lookahead style `src/proxy.ts`'s own matcher already uses in this repo,
+confirmed to compile the same way here (both go through Next's identical
+path-to-regexp matcher). Verified directly post-fix: a real page response
+still carries all four headers, a real static chunk carries none of them,
+and `perf-budget.mjs`'s JS-transfer measurement dropped back to 189.0KB
+(budget 191KB).
+
+**The actual header-value computation lives in `src/lib/security-
+headers.ts`, not inline in `next.config.ts`** — pulled out specifically
+because an `ai-code-review` pass flagged (twice, across two pushes to the
+same PR) that the manual `curl`/browser verification documented below
+isn't repeatable regression coverage for security-critical, environment-
+dependent logic (dev-vs-prod CSP directives, the API-origin
+interpolation). `next.config.ts` can't easily be imported and exercised
+by a normal test the way most code can — it's the file Next.js itself
+loads to boot — so the fix is the same "pull pure logic into a tested
+module" pattern already established elsewhere in this repo
+(`pr-reconciliation.mjs`, `review-verdict.mjs`, `ci-progress-comment.mjs`):
+`buildCspHeader({ isDev, apiUrl })` and `computeApiOrigin` are now plain,
+unit-tested functions (`security-headers.spec.ts`), and `next.config.ts`
+just wires their output into `headers()`. Needed a small, deliberate
+`vitest.config.ts` change too — its `include` glob only ever matched
+`src/**/*.spec.tsx` (component tests) and `test/**/*.spec.ts`, neither of
+which fit a plain-logic module under `src/lib/`; widened to also match
+`src/**/*.spec.ts`.
+
+**CSP is the static, no-nonce form — deliberately, not as a shortcut.**
+Next's own docs (`node_modules/next/dist/docs/01-app/02-guides/content-
+security-policy.md` for this exact version — see `apps/web/AGENTS.md`,
+this is the kind of thing that's genuinely changed release to release, and
+did: this Next version renamed `middleware.js` to `proxy.js` entirely,
+confirmed directly in that same doc tree rather than assumed from training
+data) recommend a nonce-based CSP as the stricter option, generated
+per-request in `proxy.ts` (this repo already has one, for next-intl's
+locale routing — see its own file). But nonces require **every page to
+render dynamically** — Next can only inject a nonce during SSR, so a page
+prerendered at build time has nowhere to put it. That's a direct conflict
+with this repo's own existing, deliberate architecture:
+`product-listing.tsx`'s own comment explains the page shell is kept
+statically prerenderable specifically so it stays browser-cacheable (see
+also the `/(en|hi)` Cache-Control block already in this same file), with
+product data fetched client-side for exactly that reason. Going nonce-based
+would mean giving that up. Used Next's own documented "Without Nonces"
+pattern instead: a fixed CSP header value in `next.config.ts`, no `proxy.ts`
+involvement at all. Trade-off, stated plainly: `'unsafe-inline'` is
+required for both `script-src` (Next's inline hydration `self.__next_f...`
+scripts) and `style-src` (the inline `style` attributes both React and
+`next/image` emit, e.g. `next/image`'s `fill` positioning) — real, not
+full, XSS hardening. Still meaningfully blocks external script injection,
+clickjacking (`frame-ancestors 'none'`), mixed content, and base/form-
+action hijacking. Revisit with nonces if this app ever needs dynamic
+rendering anyway (e.g. a real auth-gated page — there's no login/onboarding
+UI yet per the Web e2e section above).
+
+**`connect-src` is derived from `NEXT_PUBLIC_API_URL`, not hardcoded** —
+`new URL(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql").origin`,
+the identical fallback `src/lib/api.ts` already uses. Verified directly
+(not assumed) that `next.config.ts` can read this at all: Next's own
+`loadEnvConfig` call happens before the config file is even located,
+confirmed by reading `next/dist/server/config.js` directly — so `.env.local`
+values are already in `process.env` by the time this module's top-level
+code runs. This is what lets the same CSP work correctly against a local
+API in dev and `medinstru-api.onrender.com` in prod without a separate
+dev/prod branch for this specific directive.
+
+**`upgrade-insecure-requests` is prod-only** (`isDev` gate, same variable
+already gating `'unsafe-eval'` per Next's own documented dev-mode
+requirement) — deliberately, not just to mirror the eval gate. It upgrades
+any `http:` sub-resource URL a page references to `https:`, including
+fetch/XHR targets governed by `connect-src`; in dev, that directive's value
+is `http://localhost:4000` (from `.env.local`), and forcing that to
+`https://localhost:4000` would break every local GraphQL call against a
+plain-HTTP local API server. Whether `localhost` is actually exempt from
+this upgrade in practice wasn't verified either way — the `isDev` gate
+sidesteps needing to know, at zero real cost (the directive's actual
+purpose is protecting a deployed HTTPS origin from accidentally serving
+mixed content, which doesn't apply to local dev regardless).
+
+**Verified directly, not assumed**: header values via `curl -sD -` against
+both a real `next dev` server and a real `next start` (production) build on
+a separate port — confirmed dev mode carries `'unsafe-eval'` and omits
+`upgrade-insecure-requests`, prod mode is the reverse, and both carry the
+right `connect-src` origin. Then loaded the dev server in a real browser
+and confirmed zero CSP violations in the console — the only errors present
+were plain `net::ERR_CONNECTION_REFUSED` / "Failed to fetch" against the
+local API (which wasn't running in that session), not the distinctly-
+different "Refused to connect... violates the following Content Security
+Policy directive" message Chrome emits for an actual CSP block. A full
+Docker-based local stack (Postgres + API) wasn't spun up to verify an
+actual successful cross-origin fetch end-to-end — the `connect-src` origin
+is verified by construction (same source as `src/lib/api.ts`'s own env var)
+rather than by a live successful call.
+
+**HSTS omits `preload` deliberately** — `max-age=63072000; includeSubDomains`
+only. Submitting to the HSTS preload list is effectively irreversible
+(baked into browser binaries), so it's being deferred until this header has
+run in production for a while, not added reflexively alongside the rest.
+
+**Trusted Types (`require-trusted-types-for 'script'`) is a known,
+deliberate gap, not an oversight** — Lighthouse's best-practices audit
+flags its absence, but it wasn't added: it requires declaring a policy name
+that matches whatever Next.js's own internals actually register under (if
+any), and getting that wrong fails *silently* — a blocked DOM write, not a
+loud error — which isn't something this pass could verify without
+exhaustive live testing across every page and interaction. Confirmed there's
+no `dangerouslySetInnerHTML` and no `<form>` anywhere in `apps/web/src`
+(grepped directly), which lowers the app's own risk surface for this, but
+that alone isn't the same as confirming compatibility with Next's internals.
+Revisit only once actually verified against a real, confirmed Trusted Types
+policy name for this Next.js version — not before.
+
 ## Design system / theme (`apps/web/src/app/globals.css`)
+
+**Only `apps/web/src/components/ui/**` is shadcn-vendored — nothing else
+under `apps/web/src/components/` is, confirmed via `apps/web/components.json`
+(its `aliases.ui` maps to exactly `@/components/ui`, the only path the
+`shadcn` CLI ever writes to) plus git history (every other component —
+`product-card.tsx`, `product-listing.tsx`, `header.tsx`, etc. — was
+hand-authored in the initial scaffold commit, never generated by a
+`shadcn add`).** Came up as a real question (2026-08-17): does directly
+editing `product-card.tsx` (e.g. adding a new prop) risk losing the
+change on a future shadcn update? No — a future `shadcn add card` only
+ever touches `ui/card.tsx`, has no knowledge of or relationship to
+`product-card.tsx`. Worth knowing even for the files that *are*
+shadcn-vendored: shadcn's own philosophy is "this is your code now, not a
+locked dependency" — direct edits are the expected workflow (this repo
+already does exactly that for `badge.tsx`'s custom `success`/`warning`/
+`info` variants, below), and the CLI never auto-updates already-generated
+files on `pnpm update` — regenerating one requires manually re-running
+`shadcn add <component>`, which prompts before overwriting.
 
 Slate neutral base + Indigo primary/accent (chosen 2026-08-17 for a
 professional, trustworthy B2B tone), built entirely on Tailwind's own
@@ -1396,6 +1548,29 @@ it there too the moment the prefix comes off.
   Chrome's DevTools Protocol counts and curl's body-only measurement doesn't,
   not a real size difference. Verified directly: same 8 chunks, same code,
   185.5KB via curl vs. 188.7KB via Lighthouse.
+- **`perf-budget.mjs` audits two pages, not one — the default page alone
+  provably couldn't have caught a real regression.** A manual Lighthouse
+  audit against the deployed site (2026-08-17) found LCP at 3.1s (over the
+  2.5s budget) on `/hi?page=2` specifically, while the script's own
+  default-page check was passing cleanly the whole time. Root cause,
+  confirmed via the audit's own `lcp-discovery-insight` (score 0):
+  `product-card.tsx`'s `<Image fill>` never passed `priority`, so Next
+  defaulted every card — including the first, above-the-fold one that's
+  the actual LCP element on a direct-navigation page load — to
+  `loading="lazy"`. Fixed two ways, not one: `ProductCard` now takes a
+  `priority` prop and `product-listing.tsx` passes `priority={index === 0}`
+  (deliberately keyed on array index, not `page === 1` — whichever page a
+  direct navigation actually lands on, e.g. a shared `?page=2` link, its
+  first-rendered item is *that* load's LCP candidate, not necessarily page
+  1's); and `perf-budget.mjs` now audits `/hi?page=2` as a second page
+  alongside the default, both gated on the identical budgets (same JS
+  bundle either way; LCP budget is a property of the experience, not the
+  locale). The badge/history dashboard publish step still reads only the
+  default page's result, deliberately — that's an existing single time
+  series, and the second page is a budget gate (still fails the whole job
+  on regression) rather than a second tracked metric. Doubles this job's
+  Lighthouse run count (10 audits instead of 5) — an accepted, bounded
+  cost for closing a real blind spot, not added speculatively.
 - **Lighthouse's performance *score* is genuinely noisy on GitHub's shared
   runners** — the same commit scored 70, then 85, then passed cleanly (98-99)
   across consecutive runs, while 5 back-to-back local runs on unshared

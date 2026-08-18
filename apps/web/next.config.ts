@@ -1,8 +1,29 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
+import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
 import { routing } from "./src/i18n/routing";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
+
+const isDev = process.env.NODE_ENV === "development";
+
+// The actual header-value computation lives in src/lib/security-headers.ts,
+// as plain, unit-tested functions (src/lib/security-headers.spec.ts) --
+// pulled out specifically because an AI review on the PR that introduced
+// this flagged that the manual verification documented in CLAUDE.md isn't
+// repeatable regression coverage for security-critical, environment-
+// dependent logic. next.config.ts itself can't easily be imported and
+// exercised by a test the normal way (it's the thing Next.js itself loads
+// to boot), so this file now only wires the computed values into
+// `headers()` -- see CLAUDE.md's "Security headers" section for the full
+// reasoning behind each directive (nonce-vs-static CSP tradeoff, why
+// connect-src is derived from NEXT_PUBLIC_API_URL, why
+// upgrade-insecure-requests and 'unsafe-eval' are environment-gated, why
+// HSTS omits preload, why Trusted Types is a deliberate, documented gap).
+const cspHeader = buildCspHeader({
+  isDev,
+  apiUrl: process.env.NEXT_PUBLIC_API_URL,
+});
 
 // Derived from routing.ts's own locale list rather than hardcoded a second
 // time here -- a previously-separate "/(en|hi)" literal would silently
@@ -87,6 +108,48 @@ const nextConfig: NextConfig = {
             key: "Cache-Control",
             value: "public, max-age=0, must-revalidate",
           },
+        ],
+      },
+      {
+        // Scoped to actual page/document responses -- NOT literally global
+        // despite covering every real route (`/(.*)` would also match
+        // every /_next/static/* chunk and /_next/image request). That
+        // first version shipped and was caught live: `headers()` applies
+        // before the filesystem, per Next's own docs, so those headers
+        // rode along on every JS chunk response too -- real, deterministic
+        // bytes (confirmed identical across all 10 perf-budget.mjs runs on
+        // one CI run, not noise), pushing the JS transfer budget over by
+        // ~1.4KB for zero actual security benefit: CSP/HSTS/XFO/COOP only
+        // matter on the document that establishes them, not on each
+        // sub-resource's own response, and /_next/image already carries
+        // its own narrower, purpose-built CSP via `images.contentSecurityPolicy`
+        // above. Excludes `_next` broadly (not just `_next/static`) and
+        // the favicon (own scoped block above) -- same negative-lookahead
+        // style `src/proxy.ts`'s own matcher already uses in this repo,
+        // confirmed to work the same way here (both compile through
+        // Next's identical path-to-regexp matcher).
+        //
+        // `require-trusted-types-for 'script'` (flagged by Lighthouse's
+        // best-practices audit) is deliberately NOT included here: it
+        // needs a policy name Next's own internals are confirmed to
+        // register under, and getting that wrong fails silently (a
+        // blocked DOM write, not a loud error) -- not verified in this
+        // pass, so left as a known, documented gap rather than shipped
+        // unverified. Revisit if this is ever actually confirmed against
+        // a real Next.js Trusted Types policy name for this version.
+        source: "/((?!_next|favicon\\.ico).*)",
+        headers: [
+          { key: "Content-Security-Policy", value: cspHeader },
+          // Emitted in production only -- see hstsHeaderEntries's own
+          // comment for why this must be a gated function, not the plain
+          // constant unconditionally spread in here.
+          ...hstsHeaderEntries(isDev),
+          // Belt-and-suspenders with the CSP frame-ancestors directive
+          // above: browsers that don't honor frame-ancestors still fall
+          // back to this. No legitimate embedding use case exists for
+          // this marketplace site.
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
         ],
       },
     ];
