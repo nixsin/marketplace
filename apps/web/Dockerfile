@@ -54,6 +54,16 @@ COPY apps/web apps/web
 # it to the `next build` process.
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+# Same mechanism, same reason: next.config.ts's `deploymentId` gets baked
+# into the build the same way NEXT_PUBLIC_API_URL does, so it needs to be
+# a build arg too, not just a runtime env var -- a runtime-only value
+# would be too late, since the build has already finished by then.
+# Render exposes RENDER_GIT_COMMIT at build time for Docker services
+# (confirmed via Render's own docs); defaults to empty for a local
+# `docker build` with no --build-arg, which next.config.ts treats as
+# "not configured" rather than a misleading placeholder value.
+ARG RENDER_GIT_COMMIT=""
+ENV RENDER_GIT_COMMIT=$RENDER_GIT_COMMIT
 RUN pnpm --filter web build
 RUN pnpm --filter web deploy --prod --legacy /out
 
