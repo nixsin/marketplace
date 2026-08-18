@@ -67,25 +67,64 @@ async function loadPageAndWaitForRealCacheEntry(page: Page) {
   return new URL(graphqlRequest.url()).origin;
 }
 
+// Cache Storage's put() replaces an existing entry at the same key rather
+// than adding a new one -- so a synthetic request reusing the exact same
+// URL as an already-cached legitimate entry (the Authorization and
+// credentials tests both do, since they exercise the real, allowlisted
+// query+variables) could get cached by a vulnerable worker without the
+// key COUNT changing at all. A real AI review caught this (2026-08-18):
+// the previous version of this helper compared graphqlCacheKeyCount()
+// before/after, which is blind to exactly that in-place replacement.
+// Deleting the specific key first, then checking for its absence after,
+// closes the gap regardless of whether the URL was already cached.
+async function deleteCacheEntry(page: Page, url: string) {
+  await page.evaluate(async (url) => {
+    const names = await caches.keys();
+    for (const name of names) {
+      const cache = await caches.open(name);
+      await cache.delete(url);
+    }
+  }, url);
+}
+
+async function cacheHasEntry(page: Page, url: string) {
+  return page.evaluate(async (url) => {
+    const names = await caches.keys();
+    for (const name of names) {
+      const cache = await caches.open(name);
+      if (await cache.match(url)) return true;
+    }
+    return false;
+  }, url);
+}
+
 async function assertRequestNeverCached(
   page: Page,
-  graphqlOrigin: string,
   url: string,
   init: RequestInit,
 ) {
-  const baseline = await graphqlCacheKeyCount(page);
-  await page.evaluate(
+  await deleteCacheEntry(page, url);
+
+  const fetchOk = await page.evaluate(
     async ({ url, init }) => {
-      await fetch(url, init).catch(() => {
-        // A CORS/network failure here is fine -- these assertions only
-        // care whether Cache Storage gained an entry, not whether the
-        // synthetic request succeeded end to end.
-      });
+      try {
+        const res = await fetch(url, init);
+        return res.ok;
+      } catch {
+        return false;
+      }
     },
     { url, init },
   );
-  expect(await graphqlCacheKeyCount(page)).toBe(baseline);
-  void graphqlOrigin;
+  // The synthetic request must actually reach a real response for this
+  // assertion to mean anything -- the same review flagged that a blanket
+  // swallowed fetch failure (a CORS/network error, unrelated to the
+  // service worker's own eligibility check) could make a broken check
+  // look like it's working. See the credentials:"include" test below for
+  // the one case where this can't be a real cross-origin request at all.
+  expect(fetchOk, "synthetic request must succeed for this assertion to be meaningful").toBe(true);
+
+  expect(await cacheHasEntry(page, url)).toBe(false);
 }
 
 test.describe("service worker GraphQL cache isolation", () => {
@@ -101,7 +140,7 @@ test.describe("service worker GraphQL cache isolation", () => {
       REAL_PRODUCTS_PAGED_QUERY,
     )}&variables=${encodeURIComponent(JSON.stringify({ page: 1, pageSize: 4 }))}`;
 
-    await assertRequestNeverCached(page, graphqlOrigin, url, {
+    await assertRequestNeverCached(page, url, {
       headers: {
         Authorization: "Bearer test-token-should-never-be-cached",
         "apollo-require-preflight": "true",
@@ -113,12 +152,52 @@ test.describe("service worker GraphQL cache isolation", () => {
   test("never caches a /graphql request sent with credentials included, even for the allowlisted query", async ({
     page,
   }) => {
-    const graphqlOrigin = await loadPageAndWaitForRealCacheEntry(page);
-    const url = `${graphqlOrigin}/graphql?query=${encodeURIComponent(
+    await loadPageAndWaitForRealCacheEntry(page);
+
+    // Deliberately NOT the real cross-origin API here, unlike the other
+    // three negative tests. Verified directly (curl -X OPTIONS against a
+    // live local API): apps/api's bare app.enableCors() never sends
+    // Access-Control-Allow-Credentials, and its Access-Control-Allow-
+    // Origin is the literal wildcard "*" -- per the Fetch spec, a browser
+    // refuses to expose a credentialed cross-origin response under that
+    // combination regardless of what the service worker does. A real
+    // fetch(..., {credentials:"include"}) against the actual API would
+    // therefore always fail at the browser's own CORS layer, making this
+    // test pass vacuously whether or not sw.js's own `credentials !==
+    // "omit"` check exists at all -- proving nothing about the code this
+    // test is named for.
+    //
+    // isPublicGraphqlRead() matches on pathname alone, not origin (see
+    // its own comment in sw.js), so a same-origin request exercises the
+    // exact same decision path without the CORS confound -- no
+    // Access-Control-* headers needed in the mock below since CORS
+    // enforcement never applies to a same-origin request in the first
+    // place. Routing through a context-level mock (rather than the real
+    // Next.js app, which has no /graphql route of its own to answer this)
+    // isolates what's being tested to the service worker's own check.
+    // Confirmed empirically before relying on this: page.context().route()
+    // does reach the service worker's own internal fetch (not just the
+    // page's outer call) -- with a temporarily-reverted vulnerable sw.js
+    // (the credentials check disabled), this exact setup showed the mock
+    // response actually landing in the cache; with the real, correct
+    // sw.js, it doesn't.
+    const sameOriginUrl = `/graphql?query=${encodeURIComponent(
       REAL_PRODUCTS_PAGED_QUERY,
     )}&variables=${encodeURIComponent(JSON.stringify({ page: 1, pageSize: 4 }))}`;
 
-    await assertRequestNeverCached(page, graphqlOrigin, url, {
+    await page.context().route("**/graphql**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            productsPaged: { page: 1, pageSize: 4, totalCount: 0, totalPages: 0, items: [] },
+          },
+        }),
+      });
+    });
+
+    await assertRequestNeverCached(page, sameOriginUrl, {
       headers: { "apollo-require-preflight": "true" },
       credentials: "include",
     });
@@ -136,7 +215,7 @@ test.describe("service worker GraphQL cache isolation", () => {
       spoofedQuery,
     )}&variables=${encodeURIComponent("{}")}`;
 
-    await assertRequestNeverCached(page, graphqlOrigin, url, {
+    await assertRequestNeverCached(page, url, {
       headers: { "apollo-require-preflight": "true" },
       credentials: "omit",
     });
@@ -155,7 +234,7 @@ test.describe("service worker GraphQL cache isolation", () => {
       multiOpQuery,
     )}&variables=${encodeURIComponent("{}")}&operationName=Me`;
 
-    await assertRequestNeverCached(page, graphqlOrigin, url, {
+    await assertRequestNeverCached(page, url, {
       headers: { "apollo-require-preflight": "true" },
       credentials: "omit",
     });
