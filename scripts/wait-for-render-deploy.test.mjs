@@ -15,6 +15,20 @@ function deployItem(status, commitSha, cursor) {
   return { deploy: { id: `dep-${commitSha}`, status, commit: { id: commitSha } }, cursor };
 }
 
+// A fake, manually-advanced clock -- lets tests simulate wall-clock time
+// passing (across sleeps or simulated request durations) without any real
+// waiting, so deadline-related behavior can be asserted deterministically
+// and fast.
+function makeFakeClock(startMs = 0) {
+  let now = startMs;
+  return {
+    now: () => now,
+    advance: (ms) => {
+      now += ms;
+    },
+  };
+}
+
 // --- fetchDeploys ---
 
 test("fetchDeploys: a single short page (fewer than the limit) is the whole result, no extra request", async () => {
@@ -117,6 +131,49 @@ test("fetchDeploys: a response whose headers arrive but whose BODY never finishe
   );
 });
 
+test("fetchDeploys: a single request's own timeout is clamped to the remaining overall deadline, not the full requestTimeoutMs, when the deadline is closer -- a fourth review round found MAX_ATTEMPTS * POLL_INTERVAL_MS was never a real bound since each attempt's own fetchDeploys() could still take far longer via its per-page requestTimeoutMs", async () => {
+  const fetchImpl = (url, options) =>
+    new Promise((resolve, reject) => {
+      options.signal.addEventListener("abort", () => {
+        const error = new Error("The operation was aborted.");
+        error.name = "AbortError";
+        reject(error);
+      });
+      // Never resolves on its own -- if the deadline weren't actually
+      // clamping the request's own timeout, this would hang for the full
+      // 30s requestTimeoutMs instead of the ~20ms deadline below.
+    });
+  const deadline = Date.now() + 20;
+  const start = Date.now();
+  await assert.rejects(
+    () => fetchDeploys("svc-1", "key", fetchImpl, 30_000, deadline, Date.now),
+    /aborted/i,
+  );
+  const elapsed = Date.now() - start;
+  assert.ok(
+    elapsed < 5000,
+    `expected the request to abort well under the full 30s timeout (clamped to ~20ms), took ${elapsed}ms`,
+  );
+});
+
+test("fetchDeploys: stops paginating early once the overall deadline is hit mid-pagination, returning what it already has rather than issuing one more doomed request", async () => {
+  const clock = makeFakeClock();
+  let callCount = 0;
+  const fetchImpl = async () => {
+    callCount++;
+    clock.advance(60_000); // simulate each page taking 60s
+    // Full pages, so without the deadline check this would keep
+    // paginating up to MAX_PAGES.
+    return jsonResponse(
+      Array.from({ length: 20 }, (_, i) => deployItem("live", `c-${callCount}-${i}`, `cur-${callCount}-${i}`)),
+    );
+  };
+  const deadline = 50_000; // less than two simulated page-fetches' worth of time
+  const deploys = await fetchDeploys("svc-1", "key", fetchImpl, 30_000, deadline, clock.now);
+  assert.equal(callCount, 1); // only the first page's request was ever made
+  assert.equal(deploys.length, 20); // the partial result from that one page, not discarded
+});
+
 // --- waitForDeploy ---
 
 function instantSleep() {
@@ -173,6 +230,25 @@ test("waitForDeploy: exhausting maxAttempts on a commit that never resolves time
   });
   assert.equal(result.readiness, "timed_out");
   assert.equal(result.shouldPurge, false);
+});
+
+test("waitForDeploy: an overall maxRuntimeMs deadline stops polling even if maxAttempts hasn't been reached -- a fourth review round found MAX_ATTEMPTS * POLL_INTERVAL_MS alone (the original '10 minutes -- a hard bound' claim) was never a real bound once fetchDeploys's own per-page retries are counted", async () => {
+  const clock = makeFakeClock();
+  const fetchImpl = async () => jsonResponse([]); // commit never appears
+  const attempts = [];
+  const result = await waitForDeploy("svc-1", "never-shows-up", "key", {
+    fetchImpl,
+    sleepImpl: async (ms) => {
+      clock.advance(ms);
+    },
+    nowImpl: clock.now,
+    maxAttempts: 1000, // deliberately far higher than the deadline should ever let it reach
+    pollIntervalMs: 10_000,
+    maxRuntimeMs: 100_000, // 100s of simulated time -- should allow exactly 10 attempts (10s apart) before the deadline stops it
+    onAttempt: (info) => attempts.push(info.readiness),
+  });
+  assert.equal(result.readiness, "timed_out");
+  assert.equal(attempts.length, 10);
 });
 
 test("waitForDeploy: does not sleep after the final attempt (no wasted delay once maxAttempts is reached)", async () => {

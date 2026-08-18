@@ -84,15 +84,27 @@ async function fetchPageWithTimeout(fetchImpl, url, options, requestTimeoutMs) {
   }
 }
 
+// deadline/nowImpl let a caller bound the *total* time this function may
+// spend across all MAX_PAGES requests, not just each individual request --
+// a fourth review round found that fetchDeploys could make up to MAX_PAGES
+// sequential requests, each up to requestTimeoutMs, so a caller only
+// bounding requestTimeoutMs had no real bound on fetchDeploys as a whole.
+// Defaults (Infinity / Date.now) preserve the original unbounded-by-caller
+// behavior for direct callers/tests that don't pass a deadline.
 export async function fetchDeploys(
   serviceId,
   apiKey,
   fetchImpl = fetch,
   requestTimeoutMs = REQUEST_TIMEOUT_MS,
+  deadline = Infinity,
+  nowImpl = Date.now,
 ) {
   const deploys = [];
   let cursor;
   for (let page = 0; page < MAX_PAGES; page++) {
+    const remainingMs = deadline - nowImpl();
+    if (remainingMs <= 0) break; // overall deadline already passed -- return what we have rather than issue a doomed request
+
     const url = new URL(`${RENDER_API_BASE}/services/${serviceId}/deploys`);
     url.searchParams.set("limit", String(PAGE_LIMIT));
     if (cursor) url.searchParams.set("cursor", cursor);
@@ -104,7 +116,7 @@ export async function fetchDeploys(
       fetchImpl,
       url.toString(),
       { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
-      requestTimeoutMs,
+      Math.min(requestTimeoutMs, remainingMs), // never let one request's own timeout outlive the overall deadline
     );
     deploys.push(...items.map((item) => item.deploy));
 
@@ -115,11 +127,24 @@ export async function fetchDeploys(
 }
 
 const POLL_INTERVAL_MS = 10_000;
-const MAX_ATTEMPTS = 60; // 10 minutes -- a hard bound distinct from Render's own build time, same reasoning ci.yml's comment-ci-result-on-pr job already uses for its own poll loop (never silently run forever on a genuine stuck deploy).
+const MAX_ATTEMPTS = 60; // an outer cap on iteration count, kept as a backstop -- MAX_RUNTIME_MS below is what actually bounds wall-clock time now (see its own comment for why this alone was never a real bound).
 
-// sleepImpl/pollIntervalMs/maxAttempts/requestTimeoutMs are all injectable
-// so tests can run the full poll loop instantly instead of waiting on
-// real timers.
+// A fourth review round caught that MAX_ATTEMPTS * POLL_INTERVAL_MS (10
+// minutes) was never the real worst-case bound: fetchDeploys can make up
+// to MAX_PAGES sequential requests per attempt, each up to
+// REQUEST_TIMEOUT_MS, so a run of stalled requests could take roughly
+// MAX_ATTEMPTS * (MAX_PAGES * REQUEST_TIMEOUT_MS + POLL_INTERVAL_MS) ~= 160
+// minutes -- 16x the claimed bound. MAX_RUNTIME_MS is a real wall-clock
+// deadline computed once at the start of waitForDeploy and threaded through
+// every fetchDeploys call (and clamped into each individual request's own
+// timeout, see fetchDeploys above) so the actual worst case is bounded by
+// this value plus, at most, the tail of one in-flight request that was
+// already under way when the deadline hit -- not by attempt count alone.
+const MAX_RUNTIME_MS = 10 * 60 * 1000;
+
+// sleepImpl/pollIntervalMs/maxAttempts/requestTimeoutMs/maxRuntimeMs/
+// nowImpl are all injectable so tests can run the full poll loop instantly
+// (and simulate elapsed wall-clock time) instead of waiting on real timers.
 export async function waitForDeploy(
   serviceId,
   targetCommitSha,
@@ -130,11 +155,17 @@ export async function waitForDeploy(
     pollIntervalMs = POLL_INTERVAL_MS,
     maxAttempts = MAX_ATTEMPTS,
     requestTimeoutMs = REQUEST_TIMEOUT_MS,
+    maxRuntimeMs = MAX_RUNTIME_MS,
     onAttempt = () => {},
+    nowImpl = Date.now,
   } = {},
 ) {
+  const deadline = nowImpl() + maxRuntimeMs;
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const deploys = await fetchDeploys(serviceId, apiKey, fetchImpl, requestTimeoutMs);
+    if (nowImpl() >= deadline) break; // overall deadline already passed -- don't start a doomed attempt
+
+    const deploys = await fetchDeploys(serviceId, apiKey, fetchImpl, requestTimeoutMs, deadline, nowImpl);
     const deploy = findDeployForCommit(deploys, targetCommitSha);
     const readiness = classifyDeployReadiness(deploy);
     onAttempt({ attempt, readiness, deploy });
@@ -142,7 +173,11 @@ export async function waitForDeploy(
     if (shouldStopPolling(readiness)) {
       return { readiness, shouldPurge: shouldPurge(readiness) };
     }
-    if (attempt < maxAttempts) await sleepImpl(pollIntervalMs);
+
+    const remainingMs = deadline - nowImpl();
+    if (attempt < maxAttempts && remainingMs > 0) {
+      await sleepImpl(Math.min(pollIntervalMs, remainingMs));
+    }
   }
   return { readiness: "timed_out", shouldPurge: false };
 }
