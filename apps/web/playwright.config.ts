@@ -71,8 +71,8 @@ export default defineConfig({
   // the fix with a real `pnpm build` from a clean state.
   //
   // What this still doesn't do, deliberately: start Postgres or the API.
-  // Those are the same prerequisites README.md's own "Testing" section
-  // already assumes for apps/api's e2e suite (a running Postgres, with
+  // Those are the same prerequisites docs/development.md's own "Testing"
+  // section already assumes for apps/api's e2e suite (a running Postgres, with
   // `apps/api` started separately) — this suite needs the identical
   // setup, not a new pattern. Automating that from inside a Playwright
   // config would duplicate what `scripts/dev.sh` already does for the
