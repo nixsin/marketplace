@@ -12,6 +12,7 @@
 // URL to point this at today. Usage, once there is one:
 //   node scripts/verify-cdn-headers.mjs <origin-url> <cdn-url> [path...]
 
+import { pathToFileURL } from "node:url";
 import { evaluateCdnCheck, formatCheckReport } from "./lib/cdn-header-check.mjs";
 
 // A fifth review round found checkPath() had no timeout at all -- a
@@ -144,7 +145,19 @@ async function main() {
 
 // Only run main() when executed directly (node scripts/verify-cdn-headers.mjs
 // ...), not when imported by the test file for checkPath's own coverage.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// A ninth review round found the naive `file://${process.argv[1]}`
+// comparison breaks whenever the script's path needs URL escaping --
+// import.meta.url is always percent-encoded (a space becomes %20), while
+// process.argv[1] is the raw, unescaped filesystem path, so a checkout
+// path containing a space (or any other character needing escaping)
+// would make this guard silently false even when the script IS being run
+// directly -- main() would just never run, with no error, exit 0.
+// Verified directly: pathToFileURL("/tmp/some dir/foo.mjs").href produces
+// "file:///tmp/some%20dir/foo.mjs", which the naive template-string
+// version could never match. pathToFileURL is Node's own documented way
+// to build a correctly-escaped file URL from a filesystem path (also
+// handles Windows path separators correctly, unlike the naive version).
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     console.error("verify-cdn-headers.mjs crashed:", error);
     process.exit(1);

@@ -25,6 +25,7 @@
 // fewer items than the requested limit", with a hard page-count cap as a
 // backstop regardless of whether that convention holds).
 
+import { pathToFileURL } from "node:url";
 import {
   findDeployForCommit,
   classifyDeployReadiness,
@@ -230,8 +231,13 @@ async function main() {
 }
 
 // Only run main() when executed directly, not when imported by the test
-// file for fetchDeploys/waitForDeploy's own coverage.
-if (import.meta.url === `file://${process.argv[1]}`) {
+// file for fetchDeploys/waitForDeploy's own coverage. A ninth review round
+// found the naive `file://${process.argv[1]}` comparison breaks whenever
+// the script's path needs URL escaping (import.meta.url is always
+// percent-encoded, process.argv[1] is the raw filesystem path) -- see
+// verify-cdn-headers.mjs's identical fix for the full reasoning and a
+// direct verification of the mismatch.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     console.error("wait-for-render-deploy.mjs crashed:", error);
     process.exit(1);

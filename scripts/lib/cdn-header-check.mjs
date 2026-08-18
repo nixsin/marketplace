@@ -90,14 +90,20 @@ export function evaluateCdnCheck({
   // neither side actually returned the real resource -- there's nothing
   // meaningful to compare, the same reasoning already applied to a hard
   // 4xx/5xx failure.
-  // 204 is deliberately excluded from the "ok" range too (an eighth
-  // review round's finding): a No-Content response carries no
-  // representation at all, so there's nothing for the Cache-Control
-  // comparison below to actually be checking *against* -- the same
-  // "nothing meaningful to compare" reasoning already applied to a hard
-  // 4xx/5xx failure and a surviving 3xx, just for a different reason.
-  const originOk = originStatus >= 200 && originStatus < 300 && originStatus !== 204;
-  const cdnOk = cdnStatus >= 200 && cdnStatus < 300 && cdnStatus !== 204;
+  // 204 and 205 are deliberately excluded from the "ok" range too (an
+  // eighth review round found 204, a ninth found 205 was the identical
+  // gap left unclosed): neither carries a response body per the HTTP
+  // spec (RFC 9110 -- 205 "does not carry content" exactly like 204), so
+  // there's nothing for the Cache-Control comparison below to actually be
+  // checking *against* -- the same "nothing meaningful to compare"
+  // reasoning already applied to a hard 4xx/5xx failure and a surviving
+  // 3xx, just for a different reason. Named as a set, not two separate
+  // !== checks, so a future no-body status doesn't need its own
+  // independent discovery the way 205 just did.
+  const NO_REPRESENTATION_STATUSES = new Set([204, 205]);
+  const originOk =
+    originStatus >= 200 && originStatus < 300 && !NO_REPRESENTATION_STATUSES.has(originStatus);
+  const cdnOk = cdnStatus >= 200 && cdnStatus < 300 && !NO_REPRESENTATION_STATUSES.has(cdnStatus);
   if (!originOk) problems.push(`origin request failed: HTTP ${originStatus} (${originRequestUrl})`);
   if (!cdnOk) problems.push(`CDN request failed: HTTP ${cdnStatus} (${cdnRequestUrl})`);
 

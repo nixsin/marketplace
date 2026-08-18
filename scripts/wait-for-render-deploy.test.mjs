@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, copyFileSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fetchDeploys, waitForDeploy } from "./wait-for-render-deploy.mjs";
+
+const scriptsDir = dirname(fileURLToPath(import.meta.url));
 
 function jsonResponse(body, status = 200) {
   return {
@@ -323,4 +330,28 @@ test("waitForDeploy: does not sleep after the final attempt (no wasted delay onc
     maxAttempts: 3,
   });
   assert.equal(sleepCount, 2); // slept between attempts 1->2 and 2->3, not after 3
+});
+
+test("wait-for-render-deploy.mjs: the direct-execution guard still runs main() when the script's own path needs URL escaping (e.g. contains a space) -- a ninth review round found the naive file://+argv comparison silently no-ops in that case, with no error at all. Importing the module (every other test in this file) never exercises this guard, so this test actually runs the script as a real subprocess.", () => {
+  // realpathSync sidesteps a macOS-specific confound (/tmp is a symlink
+  // to /private/tmp there) that would otherwise fail this test for an
+  // unrelated reason -- reproduced and confirmed directly before writing
+  // this test. On Linux (where CI actually runs) this is a no-op.
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "wait render-")));
+  try {
+    mkdirSync(join(dir, "lib"), { recursive: true });
+    copyFileSync(join(scriptsDir, "wait-for-render-deploy.mjs"), join(dir, "wait-for-render-deploy.mjs"));
+    copyFileSync(join(scriptsDir, "lib", "render-deploy-status.mjs"), join(dir, "lib", "render-deploy-status.mjs"));
+
+    const result = spawnSync(process.execPath, [join(dir, "wait-for-render-deploy.mjs")], { encoding: "utf8" });
+
+    // Before the fix, the broken guard meant main() never ran at all --
+    // a silent exit 0 with no output whatsoever. After the fix, main()
+    // runs, sees no CLI args, and prints its usage message with exit
+    // code 2.
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /Usage:/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

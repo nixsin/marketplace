@@ -127,6 +127,12 @@ test("evaluateCdnCheck: a 204 No Content response fails even when both sides ret
   assert.match(result.problems.join(" "), /HTTP 204/);
 });
 
+test("evaluateCdnCheck: a 205 Reset Content response also fails, for the identical reason as 204 -- a ninth review round found 205 carries no response body either (RFC 9110) and was the exact same gap left unclosed by the 204 fix alone", () => {
+  const result = evaluateCdnCheck({ ...OK_INPUT, originStatus: 205, cdnStatus: 205, originHeaders: {}, cdnHeaders: {} });
+  assert.equal(result.ok, false);
+  assert.match(result.problems.join(" "), /HTTP 205/);
+});
+
 test("evaluateCdnCheck: a CDN URL that redirects straight through to the origin's requested host never actually exercised the CDN -- a real gap a live AI review found", () => {
   const result = evaluateCdnCheck({
     ...OK_INPUT,
