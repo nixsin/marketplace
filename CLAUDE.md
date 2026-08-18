@@ -1484,10 +1484,12 @@ by reproducing the identical crash locally (`docker build --target prod`
 runs `pnpm build` against the full checked-out repo (`src/` always
 present there); `Docker dev stack smoke test` uses `docker-compose.yml`'s
 dev target, which bind-mounts full source. Neither ever builds *and
-boots* the actual `prod` Dockerfile target the way Render does. Tracked
-in #88 (a CI job that builds+boots the real prod image and asserts a
-real `200`, not just "container started" — this container's own logs
-printed "Ready" before crashing on the `next.config.ts` load).
+boots* the actual `prod` Dockerfile target the way Render does. Closed by
+#88 — see the "Docker prod-image boot test (`docker-web-prod-boot` job)"
+section above for the actual CI job: builds+boots the real prod image and
+asserts a real `200`, not just "container started" (this container's own
+logs printed "Ready" before crashing on the `next.config.ts` load, so
+"did it start" alone wouldn't have caught it).
 
 **Fix applied**: `apps/web/Dockerfile`'s prod stage now copies the whole
 `apps/web/src` tree, not just the specific files `next.config.ts` happens
