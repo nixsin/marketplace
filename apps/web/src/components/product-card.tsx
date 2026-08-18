@@ -27,7 +27,19 @@ export interface Product {
   location: string;
 }
 
-export function ProductCard({ product }: { product: Product }) {
+export function ProductCard({
+  product,
+  priority = false,
+}: {
+  product: Product;
+  // For the first, above-the-fold card only -- Next's <Image> defaults to
+  // loading="lazy" otherwise, which a live Lighthouse audit against /hi?page=2
+  // caught as the LCP image itself being lazy-loaded (lcp-discovery-insight
+  // scored 0: not eagerly loaded, not fetchpriority=high, not discoverable
+  // from the initial HTML). priority disables lazy-loading and sets
+  // fetchpriority="high" for exactly that element.
+  priority?: boolean;
+}) {
   const t = useTranslations("productCard");
 
   return (
@@ -41,6 +53,7 @@ export function ProductCard({ product }: { product: Product }) {
               fill
               sizes="(min-width: 640px) 192px, 100vw"
               className="object-cover"
+              priority={priority}
             />
           </div>
         )}
