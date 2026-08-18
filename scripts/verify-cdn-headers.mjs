@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 // Thin CLI wrapper around scripts/lib/cdn-header-check.mjs's pure
-// comparison logic -- see that file for why this check exists (#78
-// §1.2). Fetches the same path from an origin URL and a CDN-fronted URL,
-// compares the caching-relevant headers, exits non-zero on a mismatch so
-// this can run as a scheduled CI check (mirroring
-// docker-scan-scheduled.yml's own "catch drift on a schedule, not just
-// on push" pattern) once a real CDN endpoint exists.
+// evaluateCdnCheck logic -- see that file for why this check exists and
+// what it does/doesn't catch (#78 §1.2). Fetches the same path from an
+// origin URL and a CDN-fronted URL, evaluates the result, exits non-zero
+// on any problem so this can run as a scheduled CI check (mirroring
+// docker-scan-scheduled.yml's own "catch drift on a schedule, not just on
+// push" pattern) once a real CDN endpoint exists.
 //
 // Not wired into any workflow yet -- #78 Part 1's own blocking
 // prerequisite (a custom domain) isn't resolved, so there's no real CDN
 // URL to point this at today. Usage, once there is one:
 //   node scripts/verify-cdn-headers.mjs <origin-url> <cdn-url> [path...]
 
-import { compareCacheHeaders, formatMismatchReport } from "./lib/cdn-header-check.mjs";
+import { evaluateCdnCheck, formatCheckReport } from "./lib/cdn-header-check.mjs";
 
 function headersToRecord(headers) {
   const record = {};
@@ -22,20 +22,29 @@ function headersToRecord(headers) {
   return record;
 }
 
-async function checkPath(originBase, cdnBase, path) {
+// fetchImpl is injectable so tests can substitute a stub instead of
+// making real network calls -- a real AI review flagged that the
+// original version had no test coverage of this wrapper's own logic
+// (status handling, redirect detection, URL construction) at all.
+export async function checkPath(originBase, cdnBase, path, fetchImpl = fetch) {
   const originUrl = new URL(path, originBase).toString();
-  const cdnUrl = new URL(path, cdnBase).toString();
+  const cdnRequestUrl = new URL(path, cdnBase).toString();
 
   const [originRes, cdnRes] = await Promise.all([
-    fetch(originUrl, { redirect: "follow" }),
-    fetch(cdnUrl, { redirect: "follow" }),
+    fetchImpl(originUrl, { redirect: "follow" }),
+    fetchImpl(cdnRequestUrl, { redirect: "follow" }),
   ]);
 
-  const result = compareCacheHeaders(
-    headersToRecord(originRes.headers),
-    headersToRecord(cdnRes.headers),
-  );
-  console.log(formatMismatchReport(cdnUrl, result));
+  const result = evaluateCdnCheck({
+    originUrl,
+    originStatus: originRes.status,
+    originHeaders: headersToRecord(originRes.headers),
+    cdnRequestUrl,
+    cdnFinalUrl: cdnRes.url || cdnRequestUrl,
+    cdnStatus: cdnRes.status,
+    cdnHeaders: headersToRecord(cdnRes.headers),
+  });
+  console.log(formatCheckReport(cdnRequestUrl, result));
   return result.ok;
 }
 
@@ -49,18 +58,20 @@ async function main() {
   }
   const targetPaths = paths.length > 0 ? paths : ["/en"];
 
-  const results = await Promise.all(
-    targetPaths.map((path) => checkPath(originBase, cdnBase, path)),
-  );
+  const results = await Promise.all(targetPaths.map((path) => checkPath(originBase, cdnBase, path)));
 
   if (results.some((ok) => !ok)) {
-    console.error("\nCDN header check FAILED -- see mismatches above.");
+    console.error("\nCDN header check FAILED -- see problems above.");
     process.exit(1);
   }
   console.log("\nAll paths OK.");
 }
 
-main().catch((error) => {
-  console.error("verify-cdn-headers.mjs crashed:", error);
-  process.exit(1);
-});
+// Only run main() when executed directly (node scripts/verify-cdn-headers.mjs
+// ...), not when imported by the test file for checkPath's own coverage.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    console.error("verify-cdn-headers.mjs crashed:", error);
+    process.exit(1);
+  });
+}

@@ -11,13 +11,19 @@
 //   RENDER_API_KEY=... node scripts/wait-for-render-deploy.mjs <service-id> <commit-sha>
 //
 // Verification status, honestly: the classification logic itself
-// (render-deploy-status.test.mjs) is real, committed, node --test-covered
-// code, exercised against Render's actual documented deploy-status enum
-// (confirmed via api-docs.render.com, not guessed). The live API call
-// below has NOT been exercised against a real Render API key in this
-// session -- no RENDER_API_KEY was available. Treat fetchDeploys as
-// unverified against the real endpoint until it's actually run once with
-// real credentials.
+// (render-deploy-status.test.mjs) and this wrapper's own request/
+// pagination/polling logic (wait-for-render-deploy.test.mjs, against a
+// stubbed fetch) are real, committed, node --test-covered code. The
+// *live* Render API call has NOT been exercised against a real API key
+// in this session -- none was available. Treat the actual network
+// request/response shape as unverified against the real endpoint until
+// it's run once with real credentials, even though the pagination logic
+// itself is tested against the documented mechanics (confirmed via
+// api-docs.render.com: cursor-based, `?cursor=<last item's cursor>` to
+// get the next page -- the exact end-of-results signal isn't documented,
+// so this stops on the standard, safe convention of "a page returned
+// fewer items than the requested limit", with a hard page-count cap as a
+// backstop regardless of whether that convention holds).
 
 import {
   findDeployForCommit,
@@ -27,20 +33,73 @@ import {
 } from "./lib/render-deploy-status.mjs";
 
 const RENDER_API_BASE = "https://api.render.com/v1";
+const PAGE_LIMIT = 20;
+// A real AI review caught that the original version only ever fetched one
+// page, silently reporting "not_found" forever for any commit outside the
+// most recent 20 deploys even though it may have a real, terminal deploy
+// further back. Bounded at 5 pages (100 deploys) rather than unbounded --
+// a target commit's own deploy realistically should be near the front
+// (this is meant to run right after that commit's own CI passes), so
+// needing more than 100 deploys back to find it means something is
+// already wrong; better to fail with "not found after a bounded search"
+// than to paginate indefinitely against a typo'd commit SHA.
+const MAX_PAGES = 5;
+
+export async function fetchDeploys(serviceId, apiKey, fetchImpl = fetch) {
+  const deploys = [];
+  let cursor;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const url = new URL(`${RENDER_API_BASE}/services/${serviceId}/deploys`);
+    url.searchParams.set("limit", String(PAGE_LIMIT));
+    if (cursor) url.searchParams.set("cursor", cursor);
+
+    const res = await fetchImpl(url.toString(), {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    });
+    if (!res.ok) {
+      throw new Error(`Render API returned ${res.status}: ${await res.text()}`);
+    }
+    // Each item is {deploy, cursor} -- the cursor for fetching the page
+    // that starts after *this specific* item, not one shared cursor for
+    // the whole response (confirmed via api-docs.render.com).
+    const items = await res.json();
+    deploys.push(...items.map((item) => item.deploy));
+
+    if (items.length < PAGE_LIMIT) break; // fewer than requested = last page
+    cursor = items[items.length - 1].cursor;
+  }
+  return deploys;
+}
+
 const POLL_INTERVAL_MS = 10_000;
 const MAX_ATTEMPTS = 60; // 10 minutes -- a hard bound distinct from Render's own build time, same reasoning ci.yml's comment-ci-result-on-pr job already uses for its own poll loop (never silently run forever on a genuine stuck deploy).
 
-async function fetchDeploys(serviceId, apiKey) {
-  const res = await fetch(`${RENDER_API_BASE}/services/${serviceId}/deploys?limit=20`, {
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-  });
-  if (!res.ok) {
-    throw new Error(`Render API returned ${res.status}: ${await res.text()}`);
+// sleepImpl/pollIntervalMs/maxAttempts are all injectable so tests can run
+// the full poll loop instantly instead of waiting on real timers.
+export async function waitForDeploy(
+  serviceId,
+  targetCommitSha,
+  apiKey,
+  {
+    fetchImpl = fetch,
+    sleepImpl = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    pollIntervalMs = POLL_INTERVAL_MS,
+    maxAttempts = MAX_ATTEMPTS,
+    onAttempt = () => {},
+  } = {},
+) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const deploys = await fetchDeploys(serviceId, apiKey, fetchImpl);
+    const deploy = findDeployForCommit(deploys, targetCommitSha);
+    const readiness = classifyDeployReadiness(deploy);
+    onAttempt({ attempt, readiness, deploy });
+
+    if (shouldStopPolling(readiness)) {
+      return { readiness, shouldPurge: shouldPurge(readiness) };
+    }
+    if (attempt < maxAttempts) await sleepImpl(pollIntervalMs);
   }
-  const pages = await res.json();
-  // The list endpoint wraps each item as {deploy, cursor} for pagination
-  // -- unwrap to the plain deploy objects the pure logic operates on.
-  return pages.map((page) => page.deploy);
+  return { readiness: "timed_out", shouldPurge: false };
 }
 
 async function main() {
@@ -58,29 +117,25 @@ async function main() {
     process.exit(2);
   }
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    const deploys = await fetchDeploys(serviceId, apiKey);
-    const deploy = findDeployForCommit(deploys, targetCommitSha);
-    const readiness = classifyDeployReadiness(deploy);
-    console.log(`attempt ${attempt}: ${readiness}${deploy ? ` (status=${deploy.status})` : ""}`);
+  const result = await waitForDeploy(serviceId, targetCommitSha, apiKey, {
+    onAttempt: ({ attempt, readiness, deploy }) => {
+      console.log(`attempt ${attempt}: ${readiness}${deploy ? ` (status=${deploy.status})` : ""}`);
+    },
+  });
 
-    if (shouldStopPolling(readiness)) {
-      if (shouldPurge(readiness)) {
-        console.log(`Commit ${targetCommitSha} is live. Safe to purge.`);
-        process.exit(0);
-      }
-      console.error(`Commit ${targetCommitSha} will not go live (${readiness}). Not purging.`);
-      process.exit(1);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+  if (result.shouldPurge) {
+    console.log(`Commit ${targetCommitSha} is live. Safe to purge.`);
+    process.exit(0);
   }
-
-  console.error(`Timed out after ${MAX_ATTEMPTS} attempts waiting for ${targetCommitSha} to deploy.`);
+  console.error(`Commit ${targetCommitSha} will not go live (${result.readiness}). Not purging.`);
   process.exit(1);
 }
 
-main().catch((error) => {
-  console.error("wait-for-render-deploy.mjs crashed:", error);
-  process.exit(1);
-});
+// Only run main() when executed directly, not when imported by the test
+// file for fetchDeploys/waitForDeploy's own coverage.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    console.error("wait-for-render-deploy.mjs crashed:", error);
+    process.exit(1);
+  });
+}
