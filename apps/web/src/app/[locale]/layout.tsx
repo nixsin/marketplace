@@ -20,6 +20,18 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// The product-data fetch (src/lib/api.ts) is the first request to a
+// *second* origin -- DNS+TCP+TLS for it doesn't start until client JS
+// executes and calls fetch(), today. Preconnecting lets the browser open
+// that connection in parallel with CSS/JS loading instead of after,
+// which matters most on the high-latency connections this app is
+// prioritizing (see CLAUDE.md's caching/CDN plan). Same fallback URL
+// api.ts itself uses, so this never points at a different origin than
+// the fetch that actually follows it.
+const API_ORIGIN = new URL(
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql",
+).origin;
+
 export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
 }
@@ -54,6 +66,9 @@ export default async function LocaleLayout({
       lang={locale}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        <link rel="preconnect" href={API_ORIGIN} />
+      </head>
       <body className="min-h-full flex flex-col">
         <LocaleProvider initialLocale={locale as Locale} initialMessages={messages}>
           <ServiceWorkerRegistration />
