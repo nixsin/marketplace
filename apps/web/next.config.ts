@@ -1,15 +1,15 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
-import { routing } from "./src/i18n/routing";
+import { LOCALES } from "./src/lib/config";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
-// Derived from routing.ts's own locale list rather than hardcoded a second
-// time here -- a previously-separate "/(en|hi)" literal would silently
-// leave a new locale without this route's Cache-Control fix (no test or
-// type error would catch the mismatch, since Next.js header `source`
-// patterns are just strings).
-const localeRoutePattern = `/(${routing.locales.join("|")})`;
+// Derived from src/lib/config.ts's own LOCALES rather than hardcoded a
+// second time here -- a previously-separate "/(en|hi)" literal would
+// silently leave a new locale without this route's Cache-Control fix (no
+// test or type error would catch the mismatch, since Next.js header
+// `source` patterns are just strings).
+const localeRoutePattern = `/(${LOCALES.join("|")})`;
 
 const nextConfig: NextConfig = {
   // Ships .map files alongside minified prod JS — DevTools loads them only

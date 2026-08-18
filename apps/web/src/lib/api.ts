@@ -1,12 +1,5 @@
 import type { Product } from "@/components/product-card";
-
-// Exported (not module-private) so layout.tsx's preconnect hint can derive
-// its origin from the exact same value this file actually fetches from,
-// instead of re-declaring the "http://localhost:4000/graphql" fallback a
-// second time -- two independent copies of that literal previously could
-// drift out of sync with no test or type error to catch it (flagged via a
-// real PR review comment, 2026-08-18: "why do we have this hardcoded url?").
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql";
+import { API_URL } from "@/lib/config";
 
 // GraphQL doesn't care about whitespace/formatting, but this goes in a URL
 // (GraphQL-over-GET, see fetchProductsPaged) where every character costs a
