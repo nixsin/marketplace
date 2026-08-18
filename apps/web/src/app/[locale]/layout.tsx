@@ -28,9 +28,32 @@ const geistMono = Geist_Mono({
 // prioritizing (see CLAUDE.md's caching/CDN plan). Same fallback URL
 // api.ts itself uses, so this never points at a different origin than
 // the fetch that actually follows it.
-const API_ORIGIN = new URL(
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql",
-).origin;
+//
+// The link below sets crossOrigin="anonymous" to match: browsers keep a
+// separate connection pool per origin for anonymous-CORS vs. same-origin/
+// no-CORS requests, so a preconnect without a matching crossorigin mode
+// opens a connection in the wrong pool and can't be reused by the actual
+// fetch that follows -- an AI review caught this (2026-08-18). "anonymous"
+// specifically, not "use-credentials", because fetchProductsPaged sets
+// credentials: "omit" on its real request.
+//
+// new URL() requires an absolute URL -- NEXT_PUBLIC_API_URL is a plain
+// string with no guarantee of that (a relative value like "/graphql"
+// would throw TypeError: Invalid URL). Caught by an AI review: unlike a
+// client-side fetch() call, this runs at module load, which for a layout
+// happens during Next's static generation -- an invalid value here would
+// crash every page's build, not just one API call. A relative/same-origin
+// value also has no separate origin worth preconnecting to in the first
+// place, so skipping the hint entirely is the correct behavior here, not
+// just a defensive workaround.
+function getApiOrigin(): string | null {
+  try {
+    return new URL(process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql").origin;
+  } catch {
+    return null;
+  }
+}
+const API_ORIGIN = getApiOrigin();
 
 export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
@@ -67,7 +90,9 @@ export default async function LocaleLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <head>
-        <link rel="preconnect" href={API_ORIGIN} />
+        {API_ORIGIN !== null && (
+          <link rel="preconnect" href={API_ORIGIN} crossOrigin="anonymous" />
+        )}
       </head>
       <body className="min-h-full flex flex-col">
         <LocaleProvider initialLocale={locale as Locale} initialMessages={messages}>
