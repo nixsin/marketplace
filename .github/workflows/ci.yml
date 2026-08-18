@@ -574,10 +574,18 @@ jobs:
             # without them, a container that accepts the connection but
             # never finishes responding (e.g. a stalled render, as opposed
             # to the boot-time crash this job is mainly looking for) could
-            # hang this curl indefinitely, since -f alone doesn't impose
-            # any timeout of its own. The job-level default (6 hours) would
-            # otherwise be the only thing eventually killing this.
-            if curl -sf --connect-timeout 2 --max-time 5 http://localhost:3000/en > /dev/null; then
+            # hang this curl indefinitely. The job-level default (6 hours)
+            # would otherwise be the only thing eventually killing this.
+            #
+            # Explicit status-code check, not `curl -f` -- `-f` only fails
+            # on >= 400, so it would treat a 3xx redirect or a 204 as
+            # "ready" too. That's not hypothetical for this app
+            # specifically: next-intl's locale routing is exactly the kind
+            # of layer that could redirect /en somewhere under some future
+            # misconfiguration, and `-f` alone wouldn't catch that as a
+            # failure -- only an explicit `= 200` check does.
+            status=$(curl -s --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:3000/en)
+            if [ "$status" = "200" ]; then
               ready=true
               break
             fi

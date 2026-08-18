@@ -230,21 +230,28 @@ this exact blind spot is what let the outage ship.
 **What this job does**: `docker build --target prod -f apps/web/Dockerfile`
 (the identical build command already used by `docker-scan` above it — same
 image, different purpose), then `docker run -d` the real container (no
-bind mount, no dev-target shortcut) and poll `curl -sf --connect-timeout 2
---max-time 5 http://localhost:3000/en` for up to 30 iterations (~3 minutes
-worst case — each iteration can take up to a 5s request plus a 1s sleep;
-not literally "30 seconds" despite the loop count, an inaccuracy an AI
-review round on this job's own introducing PR caught). The per-request
-`--connect-timeout`/`--max-time` matter on their own too, not just for the
-overall budget: without them a container that accepts the connection but
-never finishes responding could hang the one `curl` call indefinitely,
-since `-f` alone imposes no timeout. A boot-time crash exits the container
-immediately rather than hanging, so the loop also checks `docker inspect
--f '{{.State.Running}}'` each iteration and bails out early instead of
-spending the full retry budget polling a container that's already dead.
-Fails the job (with the container's logs printed) if a successful
-response is never obtained — critically, `docker run -d` succeeding is
-not sufficient on its own to prove anything, since it returns immediately
+bind mount, no dev-target shortcut) and poll for up to 30 iterations
+(~3 minutes worst case — each iteration can take up to a 5s request plus a
+1s sleep; not literally "30 seconds" despite the loop count, an inaccuracy
+an AI review round on this job's own introducing PR caught). Each
+iteration captures the actual status code
+(`curl -s --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}'`)
+and requires it equal exactly `200` — not `curl -f`, which only fails on
+`>= 400` and would treat a 3xx redirect or a `204` as "ready" too. That
+gap isn't hypothetical for this app specifically: next-intl's own locale
+routing is exactly the kind of layer that could redirect `/en` somewhere
+under some future misconfiguration, and `-f` alone wouldn't catch that —
+a second real finding from the same AI review round, after the loop
+already had `--connect-timeout`/`--max-time` added for a different
+reason: without them, a container that accepts the connection but never
+finishes responding could hang a single request indefinitely. A boot-time
+crash exits the container immediately rather than hanging, so the loop
+also checks `docker inspect -f '{{.State.Running}}'` each iteration and
+bails out early instead of spending the full retry budget polling a
+container that's already dead. Fails the job (with the container's logs
+printed) if a real `200` is never obtained — critically, `docker run -d`
+succeeding is not sufficient on its own to prove anything, since it
+returns immediately
 regardless of what the container does immediately after starting. A
 job-level `timeout-minutes: 10` is a second backstop on top of the loop's
 own bound, same reasoning as `comment-ci-result-on-pr`'s identical
