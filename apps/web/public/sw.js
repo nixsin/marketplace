@@ -50,36 +50,58 @@ async function staleWhileRevalidate(request) {
 // an authenticated query (apps/api/src/auth/auth.resolver.ts's `me`,
 // guarded by JwtAuthGuard) existed in the schema — nothing at the
 // transport level stops a future GET from carrying it, since Apollo
-// Server's GET support isn't restricted to specific operations. Two
-// independent checks below, deliberately not relying on either one alone:
-// an explicit allowlist of known-public operation names, and a hard
-// refusal to touch anything carrying credentials, regardless of what
-// operation it claims to be.
+// Server's GET support isn't restricted to specific operations.
+//
+// An earlier version of this file allowlisted by *operation name*
+// (extracted from the query text) rather than the query itself — a real
+// review caught that this is trivially bypassable two ways: (1) a GraphQL
+// document can name multiple operations and select which one actually
+// runs via a separate `operationName` parameter, so trusting only the
+// first name in the text can be tricked into treating a request as public
+// when a *different* operation is what actually executes; (2) nothing
+// stops a request from simply naming an unrelated, sensitive query
+// "ProductsPaged" — the name is caller-controlled and says nothing about
+// which fields are actually selected. Checking only for an `Authorization`
+// header had the same shape of gap: it says nothing about cookie-carried
+// credentials.
+//
+// Fixed by two independent, positive checks instead: the exact,
+// canonical query *text* (not a name parsed out of it) against a fixed
+// allowlist, and requiring the request to have been made with
+// `credentials: "omit"` (src/lib/api.ts sets this explicitly) — asking
+// what the request itself declares, not trying to enumerate every
+// possible credential-carrying mechanism after the fact.
 
-// Only operations confirmed public and side-effect-free. Add to this list
-// deliberately, not by default, when a new public query is introduced.
-const PUBLIC_GRAPHQL_OPERATIONS = new Set(["ProductsPaged"]);
-
-function graphqlOperationName(url) {
-  const query = url.searchParams.get("query");
-  if (!query) return null;
-  // GraphQL-over-GET puts the full query text in this param -- named
-  // operations start "query <Name>(" or "query <Name>{"; anonymous
-  // queries (no name) are never treated as public, since there's nothing
-  // to allowlist against.
-  const match = /^\s*query\s+(\w+)/.exec(query);
-  return match ? match[1] : null;
-}
+// Exact, canonical query text for every operation confirmed public and
+// side-effect-free — not an operation name. Must stay byte-for-byte in
+// sync with src/lib/api.ts's PRODUCTS_PAGED_QUERY (after its own
+// whitespace minification); the e2e suite's "caches the real, allowlisted
+// product query" test exercises the real app's real request, so drift
+// here fails that test immediately rather than silently.
+const PUBLIC_GRAPHQL_QUERIES = new Set([
+  "query ProductsPaged($page: Int, $pageSize: Int) { productsPaged(page: $page, pageSize: $pageSize) { page pageSize totalCount totalPages items { id name brand category deviceClass certifications location description imageUrl seller { name } } } }",
+]);
 
 function isPublicGraphqlRead(request, url) {
   if (url.pathname !== "/graphql") return false;
-  // Independent of the operation-name check below -- a request carrying
-  // credentials is never cacheable, full stop, regardless of what
-  // operation it claims to be. This is the check that must not depend on
-  // the allowlist being kept correct.
+  // Two independent credential checks, not one instead of the other --
+  // `credentials` governs whether the browser attaches cookies; an
+  // `Authorization` header is a separate, explicit bearer token (this
+  // app's real auth guard is literally named JwtAuthGuard) that
+  // `credentials: "omit"` says nothing about either way. A request could
+  // set both `credentials: "omit"` and still carry a real bearer token --
+  // caught directly by this file's own e2e suite when an earlier version
+  // of this check dropped the Authorization check while adding the
+  // credentials one, instead of keeping both.
+  if (request.credentials !== "omit") return false;
   if (request.headers.has("Authorization")) return false;
-  const operation = graphqlOperationName(url);
-  return operation !== null && PUBLIC_GRAPHQL_OPERATIONS.has(operation);
+  // A GraphQL document can name multiple operations and pick which one
+  // runs via this separate parameter -- this app never sends it, so
+  // requiring its absence costs nothing today and closes the whole
+  // multi-operation ambiguity class of bypass.
+  if (url.searchParams.has("operationName")) return false;
+  const query = url.searchParams.get("query");
+  return query !== null && PUBLIC_GRAPHQL_QUERIES.has(query.trim());
 }
 
 self.addEventListener("fetch", (event) => {
