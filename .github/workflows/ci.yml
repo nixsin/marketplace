@@ -584,7 +584,21 @@ jobs:
             # of layer that could redirect /en somewhere under some future
             # misconfiguration, and `-f` alone wouldn't catch that as a
             # failure -- only an explicit `= 200` check does.
-            status=$(curl -s --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:3000/en)
+            #
+            # `|| true` (outside the substitution) is required, not
+            # cosmetic: GitHub Actions runs this step under `bash -e`, and
+            # curl legitimately exits nonzero here on every iteration
+            # before the container's listening socket is actually up (a
+            # real race right after `docker run -d`, not just a
+            # hypothetical connection-refused case) -- without it, `set
+            # -e` would abort this whole step on that very first failed
+            # connection, before the container-state check or a single
+            # retry ever ran, silently defeating the entire 30-iteration
+            # loop below. `-w` itself still prints "000" as $status on a
+            # connection failure regardless of curl's exit code (verified
+            # directly), so this doesn't need `|| echo 000` inside the
+            # substitution too -- that would double up into "000000".
+            status=$(curl -s --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:3000/en) || true
             if [ "$status" = "200" ]; then
               ready=true
               break
