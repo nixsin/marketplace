@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       force_jobs:
-        description: "Comma-separated job IDs to force-run despite the path filter (audit, test-api-unit, test-api-e2e, test-web, perf-budget, load-test, docker-scan, docker-smoke, test-e2e-web)"
+        description: "Comma-separated job IDs to force-run despite the path filter (audit, test-api-unit, test-api-e2e, test-web, perf-budget, load-test, docker-scan, docker-smoke, docker-web-prod-boot, test-e2e-web)"
         required: false
         type: string
         default: ""
@@ -39,11 +39,12 @@ jobs:
   #     doesn't make sense to path-filter something whose entire job is
   #     "respond to whatever just failed."
   # test-api-unit/test-api-e2e/test-web/audit/perf-budget/load-test/
-  # docker-smoke/docker-scan ARE filtered (`docker` — both Dockerfiles
-  # build off a SHARED `deps` stage: a workspace-root `pnpm install` that
-  # runs apps/api's `prisma generate` postinstall even for the web image,
-  # see apps/web/Dockerfile's own comment — so the filter covers both apps
-  # together, not each app's effect on the image separately).
+  # docker-smoke/docker-scan/docker-web-prod-boot ARE filtered (`docker` —
+  # both Dockerfiles build off a SHARED `deps` stage: a workspace-root
+  # `pnpm install` that runs apps/api's `prisma generate` postinstall even
+  # for the web image, see apps/web/Dockerfile's own comment — so the
+  # filter covers both apps together, not each app's effect on the image
+  # separately).
   # docker-scan (Trivy) has a real trade-off docker-smoke's purely-
   # deterministic behavioral test doesn't: it checks against an external,
   # time-varying CVE database, so filtering it means losing the
@@ -181,6 +182,7 @@ jobs:
           | Web e2e (Playwright) | $(status "$api_or_web_or_deps") | api, web, or deps changed |
           | Docker image vulnerability scan | $(status "$DOCKER_CHANGED") | apps/api, apps/web, either Dockerfile, docker-compose.yml, .dockerignore, scripts/dev.sh, or deps changed |
           | Docker dev stack smoke test | $(status "$DOCKER_CHANGED") | same as above |
+          | Docker web prod image boot test | $(status "$DOCKER_CHANGED") | same as above |
 
           Lint always runs regardless of what changed — see the \`changes\` job's own comment in \`ci.yml\` for why. Docker image vulnerability scan also runs weekly regardless of any push, in a separate scheduled workflow — see \`docker-scan-scheduled.yml\`.
           EOF
@@ -493,6 +495,138 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  # Added 2026-08-17 after a real production outage (fixed in #86): a live
+  # Render deploy crashed on every boot with `MODULE_NOT_FOUND: Cannot find
+  # module './src/lib/security-headers'` because next.config.ts gained real
+  # local imports under apps/web/src (#69, #84) that apps/web/Dockerfile's
+  # prod stage never copied in — only next.config.ts itself was COPYed, not
+  # the src/ tree it now depends on. Next transpiles+loads next.config.ts at
+  # container BOOT (not just build time — visible in the crash as
+  # next-config-ts/transpile-config.js), so the container exited immediately
+  # on every single boot, and Render's load balancer had no healthy origin
+  # at all.
+  #
+  # Neither existing Docker job could have caught this: docker-scan builds
+  # the prod target but only ever scans it for CVEs, never runs it;
+  # docker-smoke above boots a real stack but via docker-compose.yml's DEV
+  # target, which bind-mounts the full source and never exercises the prod
+  # Dockerfile stage's COPY-only-what's-needed layer at all. This job closes
+  # that exact gap: build the real prod image, boot the real container (no
+  # bind mount, no dev-target shortcut), and confirm it actually serves a
+  # request rather than just checking "docker run didn't error" (which
+  # wouldn't catch this — `docker run -d` succeeds immediately regardless of
+  # what the container does after that; only a real request proves it's
+  # actually serving).
+  #
+  # Verified this design directly before writing it as a CI step: built and
+  # booted the pre-#86 (broken) image locally, reproduced the identical
+  # MODULE_NOT_FOUND crash and exit code 1; then built and booted the #86-
+  # fixed image, confirmed a real `curl /en` returns 200 and the container
+  # stays running. Scoped to apps/web only, not apps/api too — this is the
+  # app the actual outage happened on, and the bug's root cause (a
+  # config-time import evaluated at process boot) is Next.js-specific, not
+  # a general pattern known to also affect apps/api's prod image today; add
+  # an equivalent job for apps/api if a comparable boot-time-import failure
+  # is ever found there.
+  #
+  # No live API needed here — same reasoning as perf-budget's own build
+  # step below: this is checking whether the container boots and serves a
+  # response at all, not whether product data renders. The default
+  # NEXT_PUBLIC_API_URL (http://localhost:4000/graphql, unreachable in this
+  # job) just means the page renders its fetch-error state, which still
+  # requires next.config.ts to have loaded successfully and still returns a
+  # real 200.
+  #
+  # Path-filtered the same as docker-scan/docker-smoke (`docker`) — same
+  # shared-deps-stage reasoning documented on the `changes` job above.
+  # Informational, not required, to start: same track record this repo
+  # already requires before promoting a new check (perf-budget, then
+  # test-e2e-web) — not yet in `migrate`'s `needs:` or branch protection's
+  # required checks. Given this job exists specifically because of a real
+  # production outage, it's a strong candidate to promote quickly once it's
+  # proven stable across a few real runs, not left informational
+  # indefinitely the way a lower-stakes new check might be.
+  docker-web-prod-boot:
+    name: Docker web prod image boot test
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: needs.changes.outputs.docker == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'docker-web-prod-boot'))
+    # Belt-and-suspenders on top of the readiness loop's own per-request
+    # curl timeouts below — a real build (~1-2 minutes) plus up to ~3
+    # minutes worst-case for the readiness poll (30 iterations x up to a
+    # 5s request + 1s sleep each) leaves generous margin without risking
+    # the default 6-hour job timeout as the only backstop.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build web prod image
+        run: docker build --target prod -f apps/web/Dockerfile -t marketplace-web:prod-boot-test .
+
+      - name: Boot the prod image and verify it actually serves a request
+        run: |
+          docker run -d --name web-prod-boot-test -p 3000:3000 marketplace-web:prod-boot-test
+
+          ready=false
+          for i in $(seq 1 30); do
+            # --connect-timeout/--max-time bound each individual request —
+            # without them, a container that accepts the connection but
+            # never finishes responding (e.g. a stalled render, as opposed
+            # to the boot-time crash this job is mainly looking for) could
+            # hang this curl indefinitely. The job-level default (6 hours)
+            # would otherwise be the only thing eventually killing this.
+            #
+            # Explicit status-code check, not `curl -f` -- `-f` only fails
+            # on >= 400, so it would treat a 3xx redirect or a 204 as
+            # "ready" too. That's not hypothetical for this app
+            # specifically: next-intl's locale routing is exactly the kind
+            # of layer that could redirect /en somewhere under some future
+            # misconfiguration, and `-f` alone wouldn't catch that as a
+            # failure -- only an explicit `= 200` check does.
+            #
+            # `|| true` (outside the substitution) is required, not
+            # cosmetic: GitHub Actions runs this step under `bash -e`, and
+            # curl legitimately exits nonzero here on every iteration
+            # before the container's listening socket is actually up (a
+            # real race right after `docker run -d`, not just a
+            # hypothetical connection-refused case) -- without it, `set
+            # -e` would abort this whole step on that very first failed
+            # connection, before the container-state check or a single
+            # retry ever ran, silently defeating the entire 30-iteration
+            # loop below. `-w` itself still prints "000" as $status on a
+            # connection failure regardless of curl's exit code (verified
+            # directly), so this doesn't need `|| echo 000` inside the
+            # substitution too -- that would double up into "000000".
+            status=$(curl -s --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' http://localhost:3000/en) || true
+            if [ "$status" = "200" ]; then
+              ready=true
+              break
+            fi
+            # A boot-time crash (this job's whole reason to exist — see the
+            # comment above) exits the container immediately rather than
+            # hanging, so there's no point spending the full retry budget
+            # (up to ~3 minutes worst case) polling a container that's
+            # already dead.
+            if [ "$(docker inspect -f '{{.State.Running}}' web-prod-boot-test)" != "true" ]; then
+              echo "Container exited before ever becoming ready."
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$ready" != "true" ]; then
+            echo "Prod image never served a successful response on /en. Container logs:"
+            docker logs web-prod-boot-test
+            exit 1
+          fi
+
+          echo "Prod image booted and served /en successfully. Container logs:"
+          docker logs web-prod-boot-test
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f web-prod-boot-test || true
 
   # Both jobs below wire up scripts that already existed (apps/web/scripts/
   # perf-budget.mjs, apps/api/scripts/load-test.mjs) but only ever ran
@@ -863,6 +997,7 @@ jobs:
         test-web,
         docker-scan,
         docker-smoke,
+        docker-web-prod-boot,
         perf-budget,
         load-test,
         test-e2e-web,
@@ -1213,6 +1348,7 @@ jobs:
         test-web,
         docker-scan,
         docker-smoke,
+        docker-web-prod-boot,
         perf-budget,
         load-test,
         test-e2e-web,
@@ -1249,6 +1385,7 @@ jobs:
             "test-web": "${{ needs.test-web.result }}",
             "docker-scan": "${{ needs.docker-scan.result }}",
             "docker-smoke": "${{ needs.docker-smoke.result }}",
+            "docker-web-prod-boot": "${{ needs.docker-web-prod-boot.result }}",
             "perf-budget": "${{ needs.perf-budget.result }}",
             "load-test": "${{ needs.load-test.result }}",
             "test-e2e-web": "${{ needs.test-e2e-web.result }}"
@@ -1556,7 +1693,7 @@ jobs:
           # that's what the jobs-list endpoint returns. codeql.yml isn't
           # in this list -- it's a separate workflow file, not visible
           # via this run's own jobs list.
-          JOB_NAMES_JSON='["Detect changed paths","Lint","Test CI/reconciliation scripts","Dependency audit","API unit tests","API e2e tests","Web build + tests","Docker image vulnerability scan","Docker dev stack smoke test","Web performance budget (Lighthouse)","API load test (autocannon)","Web e2e (Playwright)","Apply prod DB migrations"]'
+          JOB_NAMES_JSON='["Detect changed paths","Lint","Test CI/reconciliation scripts","Dependency audit","API unit tests","API e2e tests","Web build + tests","Docker image vulnerability scan","Docker dev stack smoke test","Docker web prod image boot test","Web performance budget (Lighthouse)","API load test (autocannon)","Web e2e (Playwright)","Apply prod DB migrations"]'
           MARKER="<!-- ci-result-comment -->"
           NOTE="This is the CI run for the actual merge commit on \`main\` — separate from this PR's own checks, which only ever covered the pre-merge branch. See CLAUDE.md's git workflow section for why these can differ."
           COMMENT_ID=""

@@ -22,6 +22,7 @@ const FORCEABLE_JOBS = [
   "load-test",
   "docker-scan",
   "docker-smoke",
+  "docker-web-prod-boot",
   "test-e2e-web",
 ];
 
