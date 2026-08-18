@@ -86,6 +86,14 @@ export async function fetchProductsPaged(
       // trivial cross-site GET like an <img> tag could trigger.
       "apollo-require-preflight": "true",
     },
+    // This read is meant to be public — explicitly never send cookies,
+    // regardless of same-origin/cross-origin. Also the positive signal
+    // public/sw.js's cache-safety check keys off of: only a request that
+    // itself declares "no credentials" is eligible for the service
+    // worker's public-GraphQL cache, rather than the SW trying to infer
+    // safety by checking for the absence of specific credential headers
+    // after the fact.
+    credentials: "omit",
   });
 
   if (!res.ok) {
