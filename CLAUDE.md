@@ -262,6 +262,21 @@ image locally, reproduced the identical `MODULE_NOT_FOUND` crash and
 `curl /en` returns `200` and the container stays running. Same discipline
 as this file's own "verify, don't assume" convention throughout.
 
+**Confirmed a second time live in real CI**, not just locally: this job's
+own introducing PR (#87) only touches `ci.yml`/`CLAUDE.md`/scripts, which
+the `docker` path filter deliberately excludes (workflow YAML itself isn't
+in it — same reasoning as `ai-ci-results-review`'s force-run mechanism
+existing at all), so `docker-web-prod-boot` correctly showed "skipping" on
+that PR's own checks — not a bug, the filter working as designed. Force-run
+by hand instead (`gh workflow run ci.yml --ref add-docker-prod-boot-smoke-test
+-f force_jobs=docker-web-prod-boot`) against `main` before #86 had merged:
+the job failed, and its real log shows the exact same crash reproduced
+locally — `Failed to load next.config.ts` /
+`Error: Cannot find module './src/lib/security-headers'` / `MODULE_NOT_FOUND`
+— confirming the design catches the real bug in the actual GitHub Actions
+environment, not only in a local Docker Desktop instance that could
+plausibly behave differently.
+
 **Path-filtered on `docker`, same as `docker-scan`/`docker-smoke`** — same
 shared-`deps`-stage reasoning already documented above. **Informational,
 not required, to start** — not yet in `migrate`'s `needs:` or branch
