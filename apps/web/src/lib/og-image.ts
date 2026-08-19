@@ -63,13 +63,36 @@ export function ogImageUrl(imageUrl: string | null | undefined): string | undefi
   // previews WORSE than no image, because the scraper renders an empty
   // frame instead of a clean text-only card. So an unmanaged SVG yields
   // undefined and the caller omits og:image entirely.
-  if (!path.startsWith(MANAGED_PREFIX)) return undefined;
+  //
+  // Checked against the NORMALISED path, not the raw string: a prefix test
+  // alone accepts `/products/../uploads/logo.svg`, which every consumer
+  // then resolves to the unmanaged `/uploads/logo.png` -- the exact
+  // nonexistent-PNG this branch exists to prevent, smuggled past the
+  // check that was supposed to catch it.
+  const clean = normalise(path);
+  if (!clean.startsWith(MANAGED_PREFIX)) return undefined;
 
-  return `${path.replace(/\.svg$/i, ".png")}${suffix}`;
+  // Emit the normalised path, not the raw one, so the URL handed to a
+  // scraper is the same path the check was made against.
+  return `${clean.replace(/\.svg$/i, ".png")}${suffix}`;
 }
 
 /** Product images we ship, and therefore generate PNG twins for. */
 const MANAGED_PREFIX = "/products/";
+
+/**
+ * Resolves `.` and `..` segments the way a browser or server would, so the
+ * managed-prefix check sees the path that will actually be requested
+ * rather than the one that was written.
+ */
+function normalise(path: string): string {
+  const out: string[] = [];
+  for (const segment of path.split("/")) {
+    if (segment === "..") out.pop();
+    else if (segment !== "." && segment !== "") out.push(segment);
+  }
+  return `/${out.join("/")}`;
+}
 
 /** Splits a URL into its path and its `?query#fragment` tail. */
 function splitSuffix(url: string): [string, string] {

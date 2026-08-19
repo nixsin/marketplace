@@ -21,8 +21,29 @@
  * same dead links while satisfying a guard that only checks for unset.
  */
 
-/** Hosts that no recipient of a shared link could ever open. */
-const LOCAL_HOSTNAMES = /^(localhost|127\.0\.0\.1|\[::1\]|::1|0\.0\.0\.0)$/i;
+/**
+ * Hosts no recipient of a shared link could open.
+ *
+ * "localhost" plus a trailing dot is the fully-qualified form of the same
+ * name and resolves identically, so it has to be covered too -- listing
+ * only the bare name would let `http://localhost./` through.
+ */
+const LOCAL_HOSTNAMES = /^(localhost\.?|\[::1\]|::1)$/i;
+
+/**
+ * Address ranges that are unreachable from outside the network that
+ * issued them: loopback (127/8), RFC1918 private (10/8, 172.16-31/16,
+ * 192.168/16), link-local (169.254/16) and the unspecified address.
+ *
+ * A build pointed at one of these is not merely wrong, it is wrong in a
+ * way that looks fine to whoever deployed it -- the links work on their
+ * machine and resolve to a stranger's router, or nothing, for everyone
+ * else. Exactly the failure mode this guard exists to prevent, so the
+ * check covers the whole class rather than the handful of literals that
+ * happen to come to mind.
+ */
+const UNREACHABLE_IPV4 =
+  /^(127\.|10\.|192\.168\.|169\.254\.|0\.0\.0\.0$|172\.(1[6-9]|2\d|3[01])\.)/;
 
 /**
  * Returns a human-readable reason the value is unusable, or null if it is
@@ -41,7 +62,7 @@ export function siteUrlProblem(raw: string | undefined | null): string | null {
   if (!/^https?:$/.test(url.protocol)) {
     return `it must be an http(s) URL, got: ${value}`;
   }
-  if (LOCAL_HOSTNAMES.test(url.hostname)) {
+  if (LOCAL_HOSTNAMES.test(url.hostname) || UNREACHABLE_IPV4.test(url.hostname)) {
     return `it points at a local address, which no recipient can open: ${value}`;
   }
   return null;

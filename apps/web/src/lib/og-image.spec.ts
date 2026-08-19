@@ -30,6 +30,19 @@ describe("ogImageUrl", () => {
     expect(ogImageUrl("/uploads/seller-logo.svg")).toBeUndefined();
   });
 
+  it("is not fooled by a traversal that only looks managed", () => {
+    // `/products/../uploads/x.svg` passes a plain startsWith check, and
+    // every consumer then resolves it to the unmanaged `/uploads/x.png` --
+    // the nonexistent PNG the managed-prefix check exists to prevent,
+    // smuggled straight past it.
+    expect(ogImageUrl("/products/../uploads/seller-logo.svg")).toBeUndefined();
+    expect(ogImageUrl("/products/sub/../../uploads/x.svg")).toBeUndefined();
+  });
+
+  it("still accepts a managed path written with a redundant segment", () => {
+    expect(ogImageUrl("/products/./lab-equipment.svg")).toBe("/products/lab-equipment.png");
+  });
+
   it("still recognises an SVG carrying a cache-busting query or fragment", () => {
     // Checking the raw string would miss the extension here and re-emit the
     // unsupported SVG -- the same bug, just harder to notice.

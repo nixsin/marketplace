@@ -40,6 +40,27 @@ describe("siteUrlProblem", () => {
     expect(siteUrlProblem(value)).toMatch(/local address/);
   });
 
+  it.each([
+    "http://10.0.0.1",
+    "http://192.168.1.1",
+    "http://172.16.0.1",
+    "http://172.31.255.254",
+    "http://169.254.1.1",
+    "http://localhost.",
+  ])("rejects the unreachable address %s", (value) => {
+    // Not merely wrong -- wrong in a way that looks fine to whoever
+    // deployed it: the links work on their machine and resolve to a
+    // stranger's router, or nothing, for everyone else.
+    expect(siteUrlProblem(value)).toMatch(/local address/);
+  });
+
+  it("does not reject public addresses that only look private", () => {
+    // 172.32 is outside RFC1918's 172.16-31 range, and 11.x is public.
+    // Over-broad matching here would block a legitimate deploy.
+    expect(siteUrlProblem("http://172.32.0.1")).toBeNull();
+    expect(siteUrlProblem("http://11.0.0.1")).toBeNull();
+  });
+
   it("does not mistake a hostname that merely contains 'localhost'", () => {
     // Anchored matching: a real deployment could legitimately be called
     // this, and refusing to build would be a false positive that blocks a
