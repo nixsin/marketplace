@@ -289,6 +289,9 @@ jobs:
       - run: node --test scripts/lib/render-deploy-status.test.mjs
       - run: node --test scripts/wait-for-render-deploy.test.mjs
       - run: node --test scripts/coverage-dashboard/chart-math.test.mjs
+      # Diff ordering/reduction feeds every AI reviewer's payload; a
+      # regression here silently changes what gets reviewed.
+      - run: node --test scripts/lib/diff-ordering.test.mjs
       # @medinstru/config is the single source of truth for both the web
       # app's runtime values and every AI automation's settings, so a
       # regression here reaches further than any other script in this list.

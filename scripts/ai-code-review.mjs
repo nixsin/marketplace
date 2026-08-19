@@ -18,6 +18,7 @@
 // running as a real, blocking CI job instead of a local, fail-open hook.
 import OpenAI from "openai";
 import { roleConfig, resolveApiKey } from "@medinstru/config";
+import { buildDiffPayload, renderNotes } from "./lib/diff-ordering.mjs";
 
 const REVIEW = roleConfig("codeReview");
 import { readFileSync, writeFileSync } from "node:fs";
@@ -34,10 +35,14 @@ if (!diffPath || !truncatedFlagPath || !overrideDecisionsPath) {
 // Same reasoning as analyze-ci-failure.mjs's MAX_LOG_CHARS — keeps review
 // focused and cheap; a genuinely huge diff has diminishing review value
 // past a point anyway (lockfile-only, generated code, vendored files).
-const MAX_DIFF_CHARS = REVIEW.maxInputChars;
-let diff = readFileSync(diffPath, "utf8");
-const truncated = diff.length > MAX_DIFF_CHARS;
-if (truncated) diff = diff.slice(0, MAX_DIFF_CHARS);
+// Ordered so the change's own subject leads, and reduced in tiers rather
+// than head-sliced -- see scripts/lib/diff-ordering.mjs. `truncated` now
+// means "reviewable content was lost", so dropping a lockfile no longer
+// blocks a PR the way losing real code does.
+const payload = buildDiffPayload(readFileSync(diffPath, "utf8"), REVIEW.maxInputChars);
+const diff = payload.text;
+const truncated = payload.truncated;
+const reductionNotes = renderNotes(payload.notes);
 
 // A live review caught the gap this closes: the model can list the right
 // file names and say APPROVE while never having seen a truncated file's
@@ -90,7 +95,7 @@ End your response with exactly this structure, and nothing after it:
 ## Verdict
 <exactly one word, nothing else: APPROVE or REQUEST_CHANGES>`;
 
-const userContent = `## PR diff${truncated ? " (truncated to first 60,000 characters)" : ""}
+const userContent = `${reductionNotes}## PR diff
 \`\`\`diff
 ${diff}
 \`\`\`
