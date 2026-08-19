@@ -1,5 +1,5 @@
 import type { Product } from "@/components/product-card";
-import { API_URL } from "@/lib/config";
+import { API_URL } from "@medinstru/config";
 
 // GraphQL doesn't care about whitespace/formatting, but this goes in a URL
 // (GraphQL-over-GET, see fetchProductsPaged) where every character costs a

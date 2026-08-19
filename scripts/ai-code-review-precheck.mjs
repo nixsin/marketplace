@@ -42,6 +42,7 @@
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import OpenAI from "openai";
+import { roleConfig, resolveApiKey } from "@medinstru/config";
 import { decideVerdict } from "./lib/review-verdict.mjs";
 import { selectPushedCommit, branchNameFromRef } from "./lib/pre-push-refs.mjs";
 import {
@@ -50,10 +51,11 @@ import {
   parseOverrideLog,
 } from "./lib/override-decisions.mjs";
 
+const PRECHECK = roleConfig("prePushPrecheck");
 const BASE_REF = process.env.PRECHECK_BASE_REF ?? "origin/main";
-const MAX_DIFF_CHARS = 60_000;
+const MAX_DIFF_CHARS = PRECHECK.maxInputChars;
 // Matches ci.yml's `ai-code-review` (pass 1) — see the parity note above.
-const EFFORT = process.env.PRECHECK_EFFORT ?? "medium";
+const EFFORT = process.env.PRECHECK_EFFORT ?? PRECHECK.effort;
 
 function warnSkip(message) {
   console.warn(`[ai-code-review-precheck] ${message} — skipping, push allowed.`);
@@ -122,19 +124,19 @@ function fetchOverrideDecisions(branchName) {
 // PRECHECK_OPTOUT exists so someone who genuinely doesn't want this can
 // silence it as an explicit, recorded choice rather than by learning to
 // ignore a warning — an ignored warning stops being a signal at all.
-if (!process.env.OPENAI_API_KEY) {
+if (!process.env[PRECHECK.apiKeyEnv]) {
   if (process.env.PRECHECK_OPTOUT) {
-    warnSkip("OPENAI_API_KEY not set, PRECHECK_OPTOUT set");
+    warnSkip(`${PRECHECK.apiKeyEnv} not set, PRECHECK_OPTOUT set`);
   }
   console.warn(
     [
       "",
-      "  ⚠  Local AI pre-push review is OFF (OPENAI_API_KEY not set).",
+      `  ⚠  Local AI pre-push review is OFF (${PRECHECK.apiKeyEnv} not set).`,
       "",
       "     Findings it would catch here instead surface as a CI review round:",
       "     roughly 4 minutes of jobs plus a review pass, per round.",
       "",
-      "     Enable it:  export OPENAI_API_KEY=...      (add to your shell profile to persist)",
+      `     Enable it:  export ${PRECHECK.apiKeyEnv}=...      (add to your shell profile to persist)`,
       "     Silence it: export PRECHECK_OPTOUT=1",
       "",
     ].join("\n"),
@@ -224,18 +226,21 @@ ${
 }
 `;
 
-const client = new OpenAI();
+// Resolved from the role's declared apiKeyEnv rather than the SDK's own
+// conventional default. The presence check above already guaranteed it is
+// set, so this can't throw here -- fail-open behaviour is unchanged.
+const client = new OpenAI({ apiKey: resolveApiKey("prePushPrecheck") });
 
 let response;
 try {
   response = await client.responses.create({
-    model: "gpt-5.6",
+    model: PRECHECK.model,
     input: [
       { role: "developer", content: instructions },
       { role: "user", content: userContent },
     ],
     reasoning: { effort: EFFORT },
-    max_output_tokens: 8192,
+    max_output_tokens: PRECHECK.maxOutputTokens,
   });
 } catch (err) {
   warnSkip(`OpenAI request failed (${err.message})`);

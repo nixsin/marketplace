@@ -76,6 +76,16 @@ services:
       - "3000:3000"
     volumes:
       - ./apps/web:/repo/apps/web
+      # apps/web depends on @medinstru/config (workspace:*), and
+      # next.config.ts imports it at startup. The dev stage is FROM deps,
+      # which copies only packages/config/package.json for the install --
+      # so without this mount the container has a workspace symlink
+      # pointing at a directory with no src/index.js in it, and `pnpm dev`
+      # dies on the config load with MODULE_NOT_FOUND. Mounted rather than
+      # COPYed to match how apps/web itself is provided here: the dev
+      # stage deliberately bakes in no source, so live edits to shared
+      # config hot-reload the same way app edits already do.
+      - ./packages:/repo/packages
       - web_node_modules:/repo/apps/web/node_modules
       - web_root_node_modules:/repo/node_modules
       # Keeps Next's dev build cache off the host filesystem — avoids a

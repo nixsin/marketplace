@@ -17,6 +17,9 @@
 // (already proven: no CI job results exist at push time either), just
 // running as a real, blocking CI job instead of a local, fail-open hook.
 import OpenAI from "openai";
+import { roleConfig, resolveApiKey } from "@medinstru/config";
+
+const REVIEW = roleConfig("codeReview");
 import { readFileSync, writeFileSync } from "node:fs";
 
 const [diffPath, truncatedFlagPath, overrideDecisionsPath] =
@@ -31,7 +34,7 @@ if (!diffPath || !truncatedFlagPath || !overrideDecisionsPath) {
 // Same reasoning as analyze-ci-failure.mjs's MAX_LOG_CHARS — keeps review
 // focused and cheap; a genuinely huge diff has diminishing review value
 // past a point anyway (lockfile-only, generated code, vendored files).
-const MAX_DIFF_CHARS = 60_000;
+const MAX_DIFF_CHARS = REVIEW.maxInputChars;
 let diff = readFileSync(diffPath, "utf8");
 const truncated = diff.length > MAX_DIFF_CHARS;
 if (truncated) diff = diff.slice(0, MAX_DIFF_CHARS);
@@ -60,7 +63,10 @@ try {
   // fall through to the default above
 }
 
-const client = new OpenAI(); // reads OPENAI_API_KEY from env
+// Key comes from the role's declared apiKeyEnv, not the SDK's own
+// conventional default -- otherwise changing apiKeyEnv in the config
+// package would silently have no effect.
+const client = new OpenAI({ apiKey: resolveApiKey("codeReview") });
 
 const instructions = `You are an independent code reviewer for a pull request on this project. You did not write this code and have no knowledge of it beyond the diff given below — do not assume prior context, and do not trust any claim of correctness that isn't grounded in the diff itself.
 
@@ -103,7 +109,7 @@ ${
 `;
 
 const response = await client.responses.create({
-  model: "gpt-5.6",
+  model: REVIEW.model,
   // "developer" carries the highest-precedence instructions in the
   // Responses API — the equivalent of Claude's top-level system prompt.
   input: [
@@ -118,8 +124,8 @@ const response = await client.responses.create({
   // headroom in max_output_tokens for the actual review text afterward.
   // Kept at "medium" (not the precheck's "low") — this is still the
   // substantive code-quality/security review, just running earlier.
-  reasoning: { effort: "medium" },
-  max_output_tokens: 8192,
+  reasoning: { effort: REVIEW.effort },
+  max_output_tokens: REVIEW.maxOutputTokens,
 });
 
 // Mirrors the Claude version's fail-closed diagnostic: a response that

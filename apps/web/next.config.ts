@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
-import { LOCALES } from "./src/lib/config";
+import { LOCALES } from "@medinstru/config";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
@@ -25,7 +25,7 @@ const cspHeader = buildCspHeader({
   apiUrl: process.env.NEXT_PUBLIC_API_URL,
 });
 
-// Derived from src/lib/config.ts's own LOCALES rather than hardcoded a
+// Derived from @medinstru/config's own LOCALES rather than hardcoded a
 // second time here -- a previously-separate "/(en|hi)" literal would
 // silently leave a new locale without this route's Cache-Control fix (no
 // test or type error would catch the mismatch, since Next.js header

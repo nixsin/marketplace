@@ -5,6 +5,9 @@
 // invoked — it's given the output of `gh run view --log-failed`, not full
 // job logs, so it only ever sees what actually failed.
 import Anthropic from "@anthropic-ai/sdk";
+import { roleConfig, resolveApiKey } from "@medinstru/config";
+
+const ANALYSIS = roleConfig("failureAnalysis");
 import { readFileSync } from "node:fs";
 
 const logPath = process.argv[2];
@@ -16,17 +19,19 @@ if (!logPath) {
 // Keeps the request focused and cheap — the actual error is almost always
 // near the end of a failed step's log, not the setup/install noise at the
 // start.
-const MAX_LOG_CHARS = 60_000;
+const MAX_LOG_CHARS = ANALYSIS.maxInputChars;
 let log = readFileSync(logPath, "utf8");
 if (log.length > MAX_LOG_CHARS) {
   log = log.slice(-MAX_LOG_CHARS);
 }
 
-const client = new Anthropic(); // reads ANTHROPIC_API_KEY from env
+// See ai-code-review.mjs -- resolved from the role's apiKeyEnv, not the
+// SDK default.
+const client = new Anthropic({ apiKey: resolveApiKey("failureAnalysis") });
 
 const response = await client.messages.create({
-  model: "claude-haiku-4-5",
-  max_tokens: 1024,
+  model: ANALYSIS.model,
+  max_tokens: ANALYSIS.maxOutputTokens,
   system:
     "You are analyzing GitHub Actions CI failure logs for a software engineering team. " +
     "Identify the root cause and suggest a concrete fix. Be concise and specific — cite " +
