@@ -1327,6 +1327,21 @@ a review (proven live on this job's own introducing PR, 5+ real rounds):
    fix included; the second cheapest is reading your own fix as if
    someone else wrote it. A round spent on a self-inflicted finding costs
    exactly as much as a round spent on a real one.
+5. **Batch a round's fixes into one push, and fix the whole class rather
+   than the cited instance.** The reviewer is stateless and re-reads the
+   entire diff every time, so pushing after each individual fix buys
+   nothing and costs a full round per fix. Two rules follow from that:
+   *(a)* when a round returns N findings, resolve all N — fixed or
+   disputed-with-evidence in the override log — before pushing once;
+   *(b)* when a finding names one instance of a pattern, sweep for the
+   others in the same push, because the reviewer will find them next
+   round otherwise. PR #94's round-2 database-guard finding cited only
+   `products.e2e-spec.ts`, but the same unguarded `TRUNCATE CASCADE`
+   existed in `auth.e2e-spec.ts` and `organizations.e2e-spec.ts` — wiring
+   all three at once is what kept that from becoming rounds 5 and 6. The
+   inverse also holds: a single-finding round is the *expected* shape
+   near convergence, and isn't worth artificially delaying a push to
+   batch against a finding that doesn't exist yet.
 
 **Override-decision log — the implementer's half of not repeating step 2.**
 Every time a finding gets fixed or disputed rather than accepted at face
