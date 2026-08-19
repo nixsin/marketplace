@@ -12,6 +12,9 @@
 // not Anthropic — the implementer and ai-failure-analysis both run on
 // Claude.
 import OpenAI from "openai";
+import { roleConfig } from "@medinstru/config";
+
+const REVIEW = roleConfig("ciResultsReview");
 import { readFileSync, writeFileSync } from "node:fs";
 
 const [
@@ -35,7 +38,7 @@ if (
 }
 
 // Same reasoning as pass 1 / analyze-ci-failure.mjs's MAX_LOG_CHARS.
-const MAX_DIFF_CHARS = 60_000;
+const MAX_DIFF_CHARS = REVIEW.maxInputChars;
 let diff = readFileSync(diffPath, "utf8");
 const truncated = diff.length > MAX_DIFF_CHARS;
 if (truncated) diff = diff.slice(0, MAX_DIFF_CHARS);
@@ -123,7 +126,7 @@ ${
 `;
 
 const response = await client.responses.create({
-  model: "gpt-5.6",
+  model: REVIEW.model,
   input: [
     { role: "developer", content: instructions },
     { role: "user", content: userContent },
@@ -132,8 +135,8 @@ const response = await client.responses.create({
   // (compare booleans to diff paths, compare results to expectations),
   // matching the same low-effort-for-a-smaller-task reasoning already
   // established for the local precheck.
-  reasoning: { effort: "low" },
-  max_output_tokens: 8192,
+  reasoning: { effort: REVIEW.effort },
+  max_output_tokens: REVIEW.maxOutputTokens,
 });
 
 const text = response.output_text;

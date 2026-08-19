@@ -108,6 +108,11 @@ jobs:
               - 'apps/api/**'
             web:
               - 'apps/web/**'
+              # apps/web depends on @medinstru/config (workspace:*), and
+              # next.config.ts imports it on the boot path -- a change
+              # there can break the web build or the running container
+              # without touching a single file under apps/web.
+              - 'packages/**'
             # Explicit files, not a broad `scripts/**` glob — verified by
             # reading both Dockerfiles (explicitly scoped COPY, no
             # `COPY . .`, so scripts/ and .github/ genuinely never enter
@@ -126,6 +131,11 @@ jobs:
             docker:
               - 'apps/api/**'
               - 'apps/web/**'
+              # apps/web/Dockerfile now COPYs packages/ into the build
+              # stage and copies the built package over pnpm's dangling
+              # workspace symlink in the prod stage -- so a change here
+              # genuinely affects the image, including whether it boots.
+              - 'packages/**'
               - 'apps/api/Dockerfile'
               - 'apps/web/Dockerfile'
               - 'docker-compose.yml'
@@ -276,6 +286,10 @@ jobs:
       - run: node --test scripts/lib/render-deploy-status.test.mjs
       - run: node --test scripts/wait-for-render-deploy.test.mjs
       - run: node --test scripts/coverage-dashboard/chart-math.test.mjs
+      # @medinstru/config is the single source of truth for both the web
+      # app's runtime values and every AI automation's settings, so a
+      # regression here reaches further than any other script in this list.
+      - run: node --test packages/config/src/index.test.js
       - run: bash scripts/publish-badge.test.sh
       - run: bash scripts/check-outdated.test.sh
 

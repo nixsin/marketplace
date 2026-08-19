@@ -6,33 +6,30 @@ import path from "node:path";
 import { writeFileSync } from "node:fs";
 import * as chromeLauncher from "chrome-launcher";
 import lighthouse from "lighthouse";
+import {
+  JS_BUDGET_BYTES,
+  LCP_BUDGET_MS,
+  LIGHTHOUSE_RUNS,
+  PERFORMANCE_SCORE_BUDGET,
+} from "@medinstru/config";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(__dirname, "..");
 const PORT = 3998;
 const BASE_URL = `http://localhost:${PORT}`;
 
-// Single Lighthouse runs on shared GitHub Actions runners swing wildly —
-// same commit scored 70, then 85, then 97 across consecutive CI/local runs,
-// all driven by `total-blocking-time`/LCP reacting to CPU contention on the
-// runner (confirmed locally: 96-97 consistently across 3 back-to-back runs
-// on unshared hardware, vs. 70-85 on CI for the identical build). This is
-// Lighthouse's own documented failure mode for `simulate` throttling on
-// noisy CI hosts, not a real regression each time — taking the median of
-// several runs (what Lighthouse CI itself does by default) filters out a
-// single contended run without hiding a genuine, consistent regression.
-const LIGHTHOUSE_RUNS = 5;
-
+// Every threshold here now comes from @medinstru/config, imported above.
+// jsBudgetBytes in particular used to be declared separately in this file
+// *and* in test/bundle-budget.spec.ts — two scripts measuring the same
+// thing with independently-editable numbers, held in sync only by a
+// CLAUDE.md note saying they "must move together." One shared constant
+// makes that structural rather than remembered. See the config module and
+// bundle-budget.spec.ts's own comment for the raise history and for why
+// Lighthouse reads a few KB higher than curl for an identical build.
 const BUDGETS = {
-  performanceScore: 0.9, // /1.0
-  lcpMs: 2500, // §12A: LCP < 2.5s on Slow 4G
-  // Was the original §12A target (150KB) — raised to match
-  // test/bundle-budget.spec.ts's own budget, which has moved twice since
-  // then for real, deliberate reasons (see that file's comment). Two
-  // scripts measuring the same thing with different numbers is a bug, not
-  // two valid opinions; that file's number is the one with the documented
-  // history, so this follows it rather than the other way around.
-  jsBudgetBytes: 191 * 1024,
+  performanceScore: PERFORMANCE_SCORE_BUDGET,
+  lcpMs: LCP_BUDGET_MS,
+  jsBudgetBytes: JS_BUDGET_BYTES,
 };
 
 // A manual Lighthouse audit against the deployed site found a real LCP

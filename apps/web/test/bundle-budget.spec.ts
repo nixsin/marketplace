@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { JS_BUDGET_BYTES } from "@medinstru/config";
 import { startProdServer, type StartedServer } from "./helpers/server";
 
 const execFileAsync = promisify(execFile);
@@ -60,7 +61,13 @@ const execFileAsync = promisify(execFile);
 //     time rather than needing a raise again immediately.
 // Budget is nearly exhausted again — next addition needs to earn its
 // bytes, or that island-component optimization needs to actually happen.
-const JS_BUDGET_BYTES = 191 * 1024;
+//
+// The number itself now lives in @medinstru/config, imported by both this
+// file and scripts/perf-budget.mjs. It used to be declared separately in
+// each, with only CLAUDE.md's "the two must move together" note holding
+// them in sync — an invariant a human has to remember, and eventually
+// won't. The raise *history* above stays here: this is where the reasoning
+// belongs, the config module just holds the current value.
 
 async function compressedSize(url: string): Promise<number> {
   // Node's fetch (undici) transparently decompresses gzip/br bodies, and

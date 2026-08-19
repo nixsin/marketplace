@@ -42,6 +42,7 @@
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import OpenAI from "openai";
+import { roleConfig } from "@medinstru/config";
 import { decideVerdict } from "./lib/review-verdict.mjs";
 import { selectPushedCommit, branchNameFromRef } from "./lib/pre-push-refs.mjs";
 import {
@@ -50,10 +51,11 @@ import {
   parseOverrideLog,
 } from "./lib/override-decisions.mjs";
 
+const PRECHECK = roleConfig("prePushPrecheck");
 const BASE_REF = process.env.PRECHECK_BASE_REF ?? "origin/main";
-const MAX_DIFF_CHARS = 60_000;
+const MAX_DIFF_CHARS = PRECHECK.maxInputChars;
 // Matches ci.yml's `ai-code-review` (pass 1) — see the parity note above.
-const EFFORT = process.env.PRECHECK_EFFORT ?? "medium";
+const EFFORT = process.env.PRECHECK_EFFORT ?? PRECHECK.effort;
 
 function warnSkip(message) {
   console.warn(`[ai-code-review-precheck] ${message} — skipping, push allowed.`);
@@ -227,13 +229,13 @@ const client = new OpenAI();
 let response;
 try {
   response = await client.responses.create({
-    model: "gpt-5.6",
+    model: PRECHECK.model,
     input: [
       { role: "developer", content: instructions },
       { role: "user", content: userContent },
     ],
     reasoning: { effort: EFFORT },
-    max_output_tokens: 8192,
+    max_output_tokens: PRECHECK.maxOutputTokens,
   });
 } catch (err) {
   warnSkip(`OpenAI request failed (${err.message})`);
