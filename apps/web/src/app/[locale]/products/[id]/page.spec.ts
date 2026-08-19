@@ -69,7 +69,7 @@ describe("product detail generateMetadata", () => {
       id: "p1",
       name: "Portable Ultrasound",
       description: "A handheld point-of-care ultrasound system.",
-      imageUrl: "/images/ultrasound.svg",
+      imageUrl: "/products/ultrasound.svg",
     });
 
     const metadata = await generateMetadata({
@@ -80,9 +80,33 @@ describe("product detail generateMetadata", () => {
     expect(metadata.description).toBe(
       "A handheld point-of-care ultrasound system.",
     );
+    // The PNG twin, NOT the stored .svg: Facebook's scraper (which WhatsApp
+    // shares) does not support SVG, so the shared card previewed with a
+    // blank image frame -- the link appeared to work while looking broken,
+    // and only on the recipient's phone. See src/lib/og-image.ts.
     expect(metadata.openGraph?.images).toEqual([
-      { url: "/images/ultrasound.svg" },
+      { url: "/products/ultrasound.png", width: 1200, height: 630 },
     ]);
+  });
+
+  it("gives X/Twitter the same raster image and a large card", async () => {
+    fetchProduct.mockResolvedValue({
+      id: "p1",
+      name: "Portable Ultrasound",
+      description: "A handheld point-of-care ultrasound system.",
+      imageUrl: "/products/ultrasound.svg",
+    });
+
+    const metadata = await generateMetadata({
+      params: Promise.resolve({ locale: "en", id: "p1" }),
+    });
+
+    // Metadata["twitter"] is a union of card shapes, so `card`/`images`
+    // are not readable off the un-narrowed type. The assertion is on the
+    // real emitted object either way.
+    const twitter = metadata.twitter as { card?: string; images?: unknown };
+    expect(twitter.card).toBe("summary_large_image");
+    expect(twitter.images).toEqual(["/products/ultrasound.png"]);
   });
 
   it("omits openGraph images entirely when the product has no image", async () => {

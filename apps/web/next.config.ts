@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
+import { siteUrlErrorMessage, siteUrlProblem } from "./src/lib/site-url";
 import { LOCALES } from "@medinstru/config";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
@@ -31,6 +32,32 @@ const cspHeader = buildCspHeader({
 // test or type error would catch the mismatch, since Next.js header
 // `source` patterns are just strings).
 const localeRoutePattern = `/(${LOCALES.join("|")})`;
+
+// A Render build (RENDER_GIT_COMMIT is only set there) must not resolve
+// SITE_URL to the local development default. This shipped once: the
+// deployed service never had NEXT_PUBLIC_SITE_URL set, so every WhatsApp
+// share link pointed at http://localhost:3000 and og:image pointed at
+// http://localhost:3000/products/*.svg -- a dead link and a broken preview
+// card, in the one feature whose entire job is being forwarded to someone
+// else. render.yaml declares the right value but is documentation-only,
+// not an active Blueprint sync, so nothing enforced it.
+//
+// Failing the build is deliberate. NEXT_PUBLIC_* is inlined at build time,
+// so a wrong value cannot be corrected at runtime -- by the time anyone
+// notices, the artifact is already wrong. Better to refuse to produce it.
+//
+// The rule itself lives in src/lib/site-url.ts, unit tested, for the same
+// reason security-headers.ts was extracted: next.config.ts is the file
+// Next.js loads to boot and cannot be imported by an ordinary test, and
+// logic that decides whether a deploy may proceed should not be the one
+// part of the codebase verified only by hand. It rejects more than just
+// an unset value -- a present-but-wrong one (leftover localhost, stray
+// paste, whitespace) produces identical dead links while satisfying a
+// guard that only checks for absence.
+if (process.env.RENDER_GIT_COMMIT) {
+  const problem = siteUrlProblem(process.env.NEXT_PUBLIC_SITE_URL);
+  if (problem) throw new Error(siteUrlErrorMessage(problem));
+}
 
 const nextConfig: NextConfig = {
   // Ships .map files alongside minified prod JS — DevTools loads them only

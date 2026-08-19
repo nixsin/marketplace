@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ProductDetailView, type ProductDetail } from "./product-detail";
 import { LocaleProvider } from "./locale-provider";
+import { SITE_URL } from "@medinstru/config";
 import en from "../../messages/en.json";
 import hi from "../../messages/hi.json";
 
@@ -202,5 +203,70 @@ describe("ProductDetailView", () => {
     );
     const link = screen.getByRole("link", { name: /WhatsApp/ });
     expect(decodeURIComponent(link.getAttribute("href") ?? "")).toContain("/hi/products/");
+  });
+});
+
+describe("share link origin (server render vs. hydrated browser)", () => {
+  // The central new behaviour in this component, and the one a review
+  // correctly noted was only covered at the utility level: the href must
+  // be a real absolute URL in BOTH states, because a tap before hydration
+  // follows the server-rendered one.
+  function shareHref() {
+    const link = screen.getByRole("link", { name: /share/i });
+    const text = decodeURIComponent(
+      link.getAttribute("href")!.replace("https://wa.me/?text=", ""),
+    );
+    return text.split("\n")[1];
+  }
+
+  it("emits the build-time SITE_URL when rendered on the SERVER", async () => {
+    // The finding this answers, twice raised: the other cases run in
+    // jsdom, where window exists, so useSyncExternalStore takes the CLIENT
+    // snapshot. This one uses the real server renderer, so the hook takes
+    // its getServerSnapshot path -- the href a tap follows before
+    // hydration.
+    const { renderToString } = await import("react-dom/server");
+    const html = renderToString(
+      <LocaleProvider initialLocale="en" initialMessages={en}>
+        <ProductDetailView product={fullProduct} />
+      </LocaleProvider>,
+    );
+
+    const encoded = /href="https:\/\/wa\.me\/\?text=([^"]+)"/.exec(html)?.[1];
+    expect(encoded).toBeDefined();
+    const url = decodeURIComponent(encoded!.replace(/&#x27;|&amp;/g, "&")).split("\n")[1];
+
+    // Absolute and well-formed, never relative -- a relative URL pasted
+    // into a chat is not a link at all.
+    expect(url).toMatch(new RegExp(`^https?://[^/]+/en/products/${fullProduct.id}$`));
+    // And it is the build-time origin, not a browser one.
+    expect(url).toBe(`${SITE_URL.replace(/\/$/, "")}/en/products/${fullProduct.id}`);
+  });
+
+  it("uses the browser's real origin once hydrated", () => {
+    // renderToString is not what runs here -- Testing Library renders in
+    // jsdom, where window exists, so useSyncExternalStore takes the CLIENT
+    // snapshot. This is the hydrated state.
+    renderDetail(fullProduct);
+    expect(shareHref()).toBe(`${window.location.origin}/en/products/${fullProduct.id}`);
+  });
+
+  it("never emits a relative or empty URL in either state", () => {
+    // A relative URL is the failure that matters: pasted into a chat it is
+    // not a link at all, and the recipient has no origin to resolve it
+    // against.
+    renderDetail(fullProduct);
+    expect(shareHref()).toMatch(
+      new RegExp(`^https?://[^/]+/en/products/${fullProduct.id}$`),
+    );
+  });
+
+  it("carries the product name alongside the link", () => {
+    renderDetail(fullProduct);
+    const link = screen.getByRole("link", { name: /share/i });
+    const message = decodeURIComponent(
+      link.getAttribute("href")!.replace("https://wa.me/?text=", ""),
+    );
+    expect(message.split("\n")[0]).toBe(fullProduct.name);
   });
 });

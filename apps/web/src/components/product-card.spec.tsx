@@ -160,6 +160,37 @@ describe("ProductCard", () => {
     ).toHaveAttribute("href", "/products/1");
   });
 
+  it("links the image to the product too, so the whole photo is tappable", () => {
+    const { container } = renderCard(fullProduct);
+    const imageLink = container.querySelector("img")!.closest("a");
+    expect(imageLink).toHaveAttribute("href", "/products/1");
+  });
+
+  it("hides the image link from assistive tech, since the heading already links there", () => {
+    // Two links a few pixels apart pointing at the same product would make
+    // a screen reader announce every card twice and add a redundant tab
+    // stop per card -- the same "ambiguous in aggregate" problem already
+    // fixed for this card's Send Inquiry button. The heading link stays
+    // the single exposed path; the image is a pointer convenience.
+    const { container } = renderCard(fullProduct);
+    const imageLink = container.querySelector("img")!.closest("a")!;
+    expect(imageLink).toHaveAttribute("aria-hidden", "true");
+    expect(imageLink).toHaveAttribute("tabindex", "-1");
+    // Exactly one link is still exposed by name, not two.
+    expect(
+      screen.getAllByRole("link", { name: "Digital Blood Pressure Monitor" }),
+    ).toHaveLength(1);
+  });
+
+  it("keeps the inquiry button outside the link, which would be invalid HTML", () => {
+    // The reason this is an image link and not a whole-card link: nesting
+    // a <button> inside an <a> is invalid and gives the button two
+    // conflicting activation behaviours.
+    renderCard(fullProduct);
+    const button = screen.getByRole("button", { name: /inquiry/i });
+    expect(button.closest("a")).toBeNull();
+  });
+
   it("lazy-loads the image by default", () => {
     const { container } = renderCard(fullProduct);
     expect(container.querySelector("img")).toHaveAttribute(

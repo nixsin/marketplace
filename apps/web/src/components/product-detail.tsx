@@ -2,7 +2,9 @@
 
 import Image from "next/image";
 import { useLocale, useTranslations } from "next-intl";
-import { Share2, ShieldCheck } from "lucide-react";
+import { ShieldCheck } from "lucide-react";
+import { useSyncExternalStore } from "react";
+import { WhatsAppIcon } from "@/components/icons/whatsapp-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -74,6 +76,25 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
 
   const detailEntries = product.details ? Object.entries(product.details) : [];
 
+  // The share URL is built against the browser's real origin once hydrated.
+  // The build-time SITE_URL is only a server-render fallback, and it was
+  // wrong in production -- NEXT_PUBLIC_SITE_URL was never set on the
+  // deployed service, so every shared link pointed at http://localhost:3000.
+  // A runtime origin cannot be misconfigured: it is the host the sharer is
+  // looking at.
+  // useSyncExternalStore, not useState+useEffect: setState inside an effect
+  // triggers a cascading render (ESLint's react-hooks/set-state-in-effect
+  // rejects it), and reading window.location directly during render would
+  // produce different server and client output -- a hydration mismatch.
+  // This hook exists precisely to read an external value with distinct
+  // server and client snapshots. Nothing to subscribe to: the origin cannot
+  // change for the lifetime of the page.
+  const origin = useSyncExternalStore(
+    () => () => {},
+    () => window.location.origin,
+    () => undefined,
+  );
+
   return (
     <div className="flex flex-col gap-6">
       {product.imageUrl && (
@@ -104,10 +125,6 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
         {t("brandLocation", { brand: product.brand, location: product.location })}
       </p>
 
-      <p className="text-base leading-relaxed text-muted-foreground">
-        {product.description}
-      </p>
-
       {/* Share, not inquire (issue #91). This opens WhatsApp's contact
           picker so the sharer chooses the recipient -- forwarding a listing
           to a colleague or procurement group is how B2B buying decisions
@@ -118,21 +135,51 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
           A real <a> rather than a click handler: it must survive the page
           being opened from a cold WhatsApp link on a slow connection,
           before hydration completes. */}
-      <div>
-        <Button asChild variant="outline" className="gap-2">
+      <div className="order-first sm:order-none">
+        {/* Green with a WHITE mark and white text -- WhatsApp's own lockup,
+            which is what makes the button recognisable at a glance before
+            anyone reads it.
+
+            The exact green is the one real compromise here, and it was
+            measured, not eyeballed. WhatsApp's signature #25D366 cannot
+            carry white text accessibly: white on it is 1.98:1 against WCAG
+            AA's 4.5:1 for normal text. That is not a rule this repo can
+            wave through -- it runs axe in CI and has already fixed 3.65:1
+            and 4.02:1 failures (see CLAUDE.md's contrast audit). Every
+            other official WhatsApp colour fails white too (#1DA851 3.10,
+            their teal #128C7E 4.14); the only one that passes is the dark
+            teal #075E54, which stops reading as green at all.
+
+            So: a deep WhatsApp-family green at 5.42:1. Keeps the white
+            lockup and the green identity, and passes. The earlier attempt
+            kept #25D366 exactly and darkened the TEXT instead, which
+            passed at 10.59:1 but looked nothing like a WhatsApp button --
+            brand recognition is the entire reason for using the colour. */}
+        <Button
+          asChild
+          size="lg"
+          className="w-full gap-2 text-base shadow-sm sm:w-auto bg-[#0F7A3D] text-white hover:bg-[#0C6531] focus-visible:ring-[#25D366]/50"
+        >
           <a
             href={whatsappShareHref(
-              productShareMessage(product.name, productShareUrl(product.id, locale)),
+              productShareMessage(product.name, productShareUrl(product.id, locale, origin)),
             )}
             target="_blank"
             rel="noopener noreferrer"
             aria-label={t("shareAbout", { productName: product.name })}
           >
-            <Share2 className="size-4" />
+            {/* size-6, not size-5: at the smaller size the mark's bubble
+                outline thins out enough to read as a generic circle. */}
+            <WhatsAppIcon className="size-6" />
             {t("shareOnWhatsApp")}
           </a>
         </Button>
       </div>
+
+      <p className="text-base leading-relaxed text-muted-foreground">
+        {product.description}
+      </p>
+
 
       {product.certifications.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
