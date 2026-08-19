@@ -110,8 +110,23 @@ export function needsList(jobBody) {
  * only -F/--field reads the file. Covers the long option and quoting.
  */
 export function findFileFlagMisuse(text) {
-  const re = /(?:-f|--raw-field)[= ]+['"]?[A-Za-z_][A-Za-z0-9_]*=@/g;
-  return [...text.matchAll(re)].map((m) => m[0]);
+  const re = /(?:-f|--raw-field)[= ]+['"]?[A-Za-z_][A-Za-z0-9_]*=@/;
+  return codeLines(text)
+    .map((line) => re.exec(line)?.[0])
+    .filter(Boolean);
+}
+
+/**
+ * Lines excluding comment-only ones (`//` for JS, `#` for YAML/shell).
+ * Necessary, not cosmetic: scripts/lib/override-decisions.mjs carries a
+ * comment *documenting* the --paginate --jq hazard, and a detector that
+ * flags prose describing the thing it detects is just noise.
+ */
+export function codeLines(text) {
+  return joinContinuations(text).filter((line) => {
+    const t = line.trim();
+    return t !== "" && !t.startsWith("//") && !t.startsWith("#") && !t.startsWith("*");
+  });
 }
 
 /**
@@ -128,12 +143,33 @@ export function findFileFlagMisuse(text) {
  */
 export function findConstructingPaginateJq(text) {
   const hits = [];
-  for (const line of text.split("\n")) {
+  // Join shell line-continuations first. A `run: |` block routinely splits
+  // one command across lines with a trailing backslash, which would put
+  // --paginate and --jq on different physical lines and hide the hazard.
+  for (const line of codeLines(text)) {
     if (!line.includes("--paginate")) continue;
-    const jq = /--jq[= ]+(['"]?)\s*([[{])/.exec(line);
-    if (jq) hits.push(line.trim());
+    // -q is gh's documented alias for --jq; omitting it left a live bypass.
+    if (/(?:--jq|-q)[= ]+(['"]?)\s*[[{]/.test(line)) hits.push(line.trim());
   }
   return hits;
+}
+
+/** Collapse trailing-backslash continuations into single logical lines. */
+export function joinContinuations(text) {
+  const out = [];
+  let buf = null;
+  for (const line of text.split("\n")) {
+    const continues = /\\\s*$/.test(line);
+    const body = line.replace(/\\\s*$/, "");
+    if (buf === null) buf = body;
+    else buf += " " + body.trim();
+    if (!continues) {
+      out.push(buf);
+      buf = null;
+    }
+  }
+  if (buf !== null) out.push(buf);
+  return out;
 }
 
 /** Escape a string for literal use inside a RegExp. */
@@ -146,6 +182,28 @@ export function escapeRegExp(value) {
  * paths-filter config. `!packages/**` is an EXCLUSION -- treating it as
  * satisfying the rule would invert the rule's meaning.
  */
+/**
+ * The text of the paths-filter `filters: |` block, or null. Scoping to it
+ * matters: `web:` appears twice in this repo's ci.yml, so a key lookup
+ * across the whole file can read an unrelated mapping and report the wrong
+ * answer.
+ */
+export function extractFiltersBlock(yamlText) {
+  const lines = yamlText.split("\n");
+  const start = lines.findIndex((l) => /^\s*filters:\s*\|\s*$/.test(l));
+  if (start === -1) return null;
+  const baseIndent = lines[start].length - lines[start].trimStart().length;
+  const body = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === "") { body.push(line); continue; }
+    const indent = line.length - line.trimStart().length;
+    if (indent <= baseIndent) break;
+    body.push(line);
+  }
+  return body.join("\n");
+}
+
 export function filterEntries(yamlText, key) {
   // Line-based rather than one large regex. The first version used a
   // multi-line pattern whose `\s*` alternative matched across newlines and

@@ -17,6 +17,7 @@ import path from "node:path";
 import {
   badgeJobsMissingWrite,
   escapeRegExp,
+  extractFiltersBlock,
   filterEntries,
   findConstructingPaginateJq,
   findFileFlagMisuse,
@@ -31,24 +32,28 @@ const CI_YML = read(".github/workflows/ci.yml");
 const JOBS = parseCiJobs(CI_YML);
 const APP_DOCKERFILES = ["apps/api/Dockerfile", "apps/web/Dockerfile"];
 
-// Every workflow plus every shell-bearing script, not a hand-listed pair --
-// a review round noted that naming two files leaves the same hazard
-// unchecked everywhere else, and new workflows get added over time.
+// Every workflow plus every shell-bearing script, found RECURSIVELY. A
+// review round caught that a non-recursive readdir skipped scripts/lib
+// entirely -- the directory holding most of this repo's script logic, and
+// the one these very files live in -- while the comment claimed otherwise.
+function walk(relDir, out = []) {
+  const abs = path.join(REPO, relDir);
+  if (!existsSync(abs)) return out;
+  for (const entry of readdirSync(abs, { withFileTypes: true })) {
+    const rel = `${relDir}/${entry.name}`;
+    if (entry.isDirectory()) walk(rel, out);
+    // Test files are excluded: their fixtures deliberately CONTAIN the
+    // hazardous forms as test data, so scanning them flags the very
+    // examples that prove the detectors work.
+    else if (/\.(ya?ml|sh|mjs)$/.test(entry.name) && !/\.test\.mjs$/.test(entry.name)) {
+      out.push(rel);
+    }
+  }
+  return out;
+}
+
 function shellBearingFiles() {
-  const files = [];
-  const workflows = path.join(REPO, ".github/workflows");
-  if (existsSync(workflows)) {
-    for (const f of readdirSync(workflows)) {
-      if (f.endsWith(".yml") || f.endsWith(".yaml")) files.push(`.github/workflows/${f}`);
-    }
-  }
-  const scripts = path.join(REPO, "scripts");
-  if (existsSync(scripts)) {
-    for (const f of readdirSync(scripts)) {
-      if (f.endsWith(".sh") || f.endsWith(".mjs")) files.push(`scripts/${f}`);
-    }
-  }
-  return files;
+  return [...walk(".github/workflows"), ...walk("scripts")];
 }
 
 const SHELL_FILES = shellBearingFiles();
@@ -139,9 +144,13 @@ describe("service worker / API query sync", () => {
 // a repo that has no workspace packages yet.
 describe("workspace packages", () => {
   const packagesDir = path.join(REPO, "packages");
+  // A directory is only a workspace package if it actually has a manifest;
+  // otherwise a stray folder under packages/ would impose Dockerfile
+  // requirements that do not apply to it.
   const packageNames = existsSync(packagesDir)
     ? readdirSync(packagesDir, { withFileTypes: true })
         .filter((d) => d.isDirectory())
+        .filter((d) => existsSync(path.join(packagesDir, d.name, "package.json")))
         .map((d) => d.name)
     : [];
 
@@ -154,7 +163,11 @@ describe("workspace packages", () => {
     for (const name of packageNames) {
       // escapeRegExp: a directory name containing `.` would otherwise let a
       // different package's path satisfy the assertion.
-      const expected = new RegExp(`COPY\\s+packages/${escapeRegExp(name)}/package\\.json`);
+      // Source AND destination: copying the manifest somewhere else would
+      // satisfy a source-only check while leaving the workspace install
+      // just as broken.
+      const rel = `packages/${escapeRegExp(name)}/package\\.json`;
+      const expected = new RegExp(`COPY\\s+${rel}\\s+(?:\\./)?${rel}`);
       for (const dockerfile of APP_DOCKERFILES) {
         assert.match(read(dockerfile), expected, `${dockerfile} must COPY packages/${name}/package.json`);
       }
@@ -167,8 +180,12 @@ describe("workspace packages", () => {
     // packages/ into the image. Without these entries a config-only change
     // silently skips the web build, the web tests, and every Docker job.
     if (packageNames.length === 0) return;
+    const filters = extractFiltersBlock(CI_YML);
+    assert.ok(filters, "could not locate the paths-filter `filters:` block");
     for (const key of ["web", "docker"]) {
-      const entries = filterEntries(CI_YML, key);
+      // Scoped to the filters block: `web:` appears twice in this file, so
+      // a whole-file lookup can read an unrelated mapping.
+      const entries = filterEntries(filters, key);
       assert.ok(entries, `could not locate the "${key}" path filter`);
       assert.ok(
         entries.includes("packages/**"),

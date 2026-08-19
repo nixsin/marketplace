@@ -220,3 +220,26 @@ describe("escapeRegExp", () => {
     assert.equal(new RegExp(escaped).test("myXpkg"), false);
   });
 });
+
+describe("comment awareness and continuations", () => {
+  test("a comment documenting the hazard is not flagged", () => {
+    // scripts/lib/override-decisions.mjs carries exactly such a comment.
+    assert.deepEqual(findConstructingPaginateJq("// gh api x --paginate --jq '[.[]]' is broken"), []);
+    assert.deepEqual(findFileFlagMisuse("# never use -f body=@file here"), []);
+  });
+
+  test("real code on the same shapes is still flagged", () => {
+    assert.equal(findConstructingPaginateJq("gh api x --paginate --jq '[.[]]'").length, 1);
+    assert.equal(findFileFlagMisuse("gh api x -f body=@file").length, 1);
+  });
+
+  test("a command split across lines with a backslash is still seen", () => {
+    const cmd = "gh api x --paginate \\\n  --jq '[.[] | .id]'";
+    assert.equal(findConstructingPaginateJq(cmd).length, 1);
+  });
+
+  test("gh's -q alias for --jq is covered", () => {
+    assert.equal(findConstructingPaginateJq("gh api x --paginate -q '{a: .b}'").length, 1);
+    assert.deepEqual(findConstructingPaginateJq("gh api x --paginate -q '.[] | .id'"), []);
+  });
+});
