@@ -17,6 +17,13 @@ WORKDIR /repo
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
+# Needed even though apps/api never imports @medinstru/config: the
+# workspace *root* package.json declares it as a devDependency (the
+# scripts/*.mjs AI automations import it), and the root manifest is copied
+# above -- so a root-level `pnpm install` has to be able to resolve that
+# workspace link or it fails outright. Manifest only; no source required,
+# since nothing in this image ever loads the package.
+COPY packages/config/package.json packages/config/package.json
 # apps/api's postinstall runs `prisma generate`, which needs its schema —
 # copied ahead of the full source (below, in later stages) for the same
 # layer-caching reason as the package.json files above.
