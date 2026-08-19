@@ -31,7 +31,7 @@ const client = new Anthropic({ apiKey: resolveApiKey("failureAnalysis") });
 
 const response = await client.messages.create({
   model: ANALYSIS.model,
-  max_tokens: 1024,
+  max_tokens: ANALYSIS.maxOutputTokens,
   system:
     "You are analyzing GitHub Actions CI failure logs for a software engineering team. " +
     "Identify the root cause and suggest a concrete fix. Be concise and specific — cite " +

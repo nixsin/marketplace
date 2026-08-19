@@ -118,6 +118,9 @@ export const ANTHROPIC_ANALYSIS_MODEL = "claude-haiku-4-5";
 // generated code, vendored files). Shared by all four roles because they
 // face the same tradeoff, not by coincidence.
 export const MAX_INPUT_CHARS = 60_000;
+
+// Default output ceiling. A role may override it (see failureAnalysis) --
+// roleConfig() prefers the role's own value when one is declared.
 export const MAX_OUTPUT_TOKENS = 8192;
 
 export const AI_ROLES = {
@@ -150,6 +153,13 @@ export const AI_ROLES = {
   failureAnalysis: {
     model: ANTHROPIC_ANALYSIS_MODEL,
     apiKeyEnv: "ANTHROPIC_API_KEY",
+    // Deliberately far below MAX_OUTPUT_TOKENS: this role produces a short
+    // root-cause + suggested-fix comment on a PR, not a full review, and an
+    // 8k ceiling would only invite a wall of text nobody reads. Declared
+    // here as a real role-specific setting rather than left hardcoded at
+    // the call site, so the config stays the single answer to "what limits
+    // does this automation run under?"
+    maxOutputTokens: 1024,
   },
 };
 
@@ -173,10 +183,12 @@ export function resolveApiKey(roleName, env = process.env) {
 
 /** A role's own settings merged with the shared limits. */
 export function roleConfig(roleName) {
+  const role = requireRole(roleName);
   return {
-    ...requireRole(roleName),
+    ...role,
     maxInputChars: MAX_INPUT_CHARS,
-    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    // A role's own declared ceiling wins over the shared default.
+    maxOutputTokens: role.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
   };
 }
 

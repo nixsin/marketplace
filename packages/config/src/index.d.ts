@@ -39,6 +39,8 @@ export interface AiRole {
   effort?: "low" | "medium" | "high";
   /** The NAME of the env var holding the key -- never a key value. */
   apiKeyEnv: string;
+  /** Overrides MAX_OUTPUT_TOKENS for this role when present. */
+  maxOutputTokens?: number;
 }
 
 export declare const AI_ROLES: Record<AiRoleName, AiRole>;

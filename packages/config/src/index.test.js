@@ -154,6 +154,19 @@ describe("roleConfig", () => {
     roleConfig("codeReview").effort = "mutated";
     assert.equal(AI_ROLES.codeReview.effort, "medium");
   });
+
+  test("a role's own maxOutputTokens overrides the shared default", () => {
+    // failureAnalysis wants a much smaller ceiling than the reviewers: it
+    // produces a short root-cause comment, not a full review.
+    assert.equal(roleConfig("failureAnalysis").maxOutputTokens, 1024);
+    assert.notEqual(MAX_OUTPUT_TOKENS, 1024);
+  });
+
+  test("roles without an override fall back to the shared default", () => {
+    for (const name of ["codeReview", "ciResultsReview", "prePushPrecheck"]) {
+      assert.equal(roleConfig(name).maxOutputTokens, MAX_OUTPUT_TOKENS);
+    }
+  });
 });
 
 describe("shared limits", () => {

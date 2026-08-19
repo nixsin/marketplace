@@ -60,6 +60,24 @@ describe("AI script wiring to @medinstru/config", () => {
     });
   }
 
+  test("no AI script hardcodes an SDK output-token limit", () => {
+    // The same bypass shape as the API-key one, and it shipped the same
+    // way: analyze-ci-failure.mjs passed a literal `max_tokens: 1024`
+    // while the config exposed maxOutputTokens, so changing the config
+    // would silently leave that script alone. 1024 was the *right* value
+    // there -- it's now declared as a role-specific override rather than
+    // hardcoded at the call site.
+    for (const { file } of CONSUMERS) {
+      const src = read(file);
+      const offenders = [...src.matchAll(/max_(output_)?tokens:\s*\d+/g)];
+      assert.deepEqual(
+        offenders.map((m) => m[0]),
+        [],
+        `${file} hardcodes an output-token limit; declare it on the role and read it from roleConfig()`,
+      );
+    }
+  });
+
   test("no AI script hardcodes an API key env var name inline", () => {
     // The names belong in the config package's AI_ROLES, so that "which
     // credential does this use?" has exactly one answer. Reading them via
