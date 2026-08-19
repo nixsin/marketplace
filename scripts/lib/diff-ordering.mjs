@@ -135,72 +135,78 @@ export function orderFiles(files) {
  * code does. Under the old all-or-nothing flag, every reduction blocked
  * the PR identically.
  */
-export function buildDiffPayload(diffText, limit) {
+export function buildDiffPayload(diffText, limit, { notesReserve = 0 } = {}) {
+  const budget = Math.max(500, limit - notesReserve);
   const files = splitDiff(diffText);
-  if (files.length === 0) return { text: diffText, truncated: false, notes: [] };
+
+  // Unparseable input (combined diffs, mixed-quoting renames, no-prefix
+  // diffs) must still respect the budget. The previous version returned the
+  // original text with truncated:false, which bypassed the circuit breaker
+  // entirely -- and its test asserted a 50,000-char result was "<= 50,000"
+  // against a 1,000 limit, so it proved nothing.
+  if (files.length === 0) {
+    const fits = diffText.length <= budget;
+    return {
+      text: fits ? diffText : clip(diffText, budget),
+      truncated: !fits,
+      notes: fits ? [] : ["diff could not be parsed per-file; truncated to fit"],
+    };
+  }
 
   const ordered = orderFiles(files);
   const notes = [];
   const total = (list) => list.reduce((n, f) => n + f.size + 1, 0);
 
-  // Tier 0 -- it fits. This is the expected path: the largest diff this
-  // repo has ever produced is ~79KB.
-  if (total(ordered) <= limit) {
+  // Tier 0 -- it fits whole. The expected path: this repo's largest diff is
+  // ~79KB against a 250KB limit.
+  if (total(ordered) <= budget) {
     return { text: ordered.map((f) => f.text).join("\n"), truncated: false, notes };
   }
 
-  // Tier 1 -- drop generated content. Not a review-quality loss, so this
-  // alone does not set `truncated`.
-  let kept = ordered.filter((f) => f.category !== "generated");
-  for (const f of ordered) {
-    if (f.category === "generated") notes.push(`omitted ${f.path} (generated, ${f.size} bytes)`);
+  // Tier 1 -- drop generated content, which is the one category whose
+  // omission is not a review loss for CODE review.
+  const generated = ordered.filter((f) => f.category === "generated");
+  const kept = ordered.filter((f) => f.category !== "generated");
+  for (const f of generated) notes.push(`omitted ${f.path} (generated, ${f.size} bytes)`);
+
+  // ...but dropping a lockfile is never *free*: lockfiles carry dependency
+  // resolutions and integrity hashes, which is supply-chain surface. So
+  // omitting one always sets `truncated`, whether or not real code remains
+  // alongside it. An earlier version protected only the generated-ONLY
+  // case and let a lockfile vanish silently whenever any source file
+  // accompanied it.
+  const droppedLockfile = generated.some((f) => /lock/.test(f.path));
+
+  if (kept.length > 0 && total(kept) <= budget) {
+    return { text: kept.map((f) => f.text).join("\n"), truncated: droppedLockfile, notes };
   }
 
-  // ...unless dropping it leaves NOTHING to review. A lockfile-only
-  // dependency bump (every Dependabot PR in this repo) would otherwise
-  // produce an empty payload reported as complete, letting the reviewer
-  // approve having seen nothing -- and lockfiles carry supply-chain
-  // resolution and integrity changes. Keep a bounded sample and block.
-  if (kept.length === 0) {
-    const sample = ordered.map((f) => f.text.slice(0, Math.floor(limit / ordered.length))).join("\n");
-    return {
-      text: enforceLimit(sample, limit),
-      truncated: true,
-      notes: [...notes, "every changed file is generated; only a bounded sample is shown"],
-    };
-  }
-
-  if (total(kept) <= limit) {
-    return { text: kept.map((f) => f.text).join("\n"), truncated: false, notes };
-  }
-
-  // Tier 2 -- proportional per-file budget. Every remaining file keeps its
-  // header and a share; none is silently dropped, which is the specific
-  // failure the head-slice produced.
+  // Tier 2 -- still too big, or nothing but generated files. Take the
+  // ordered head and clip.
   //
-  // The share accounts for each file's actual omission marker rather than a
-  // fixed guess: markers embed the path, so long paths made a fixed
-  // estimate wrong and could push the result back over the limit.
-  const markerCost = (f) => `\n[... ${f.size} bytes of ${f.path} omitted ...]`.length;
-  const overhead = kept.reduce((n, f) => n + markerCost(f) + 1, 0);
-  const share = Math.max(200, Math.floor((limit - overhead) / kept.length));
-  const reduced = kept.map((f) => {
-    if (f.size <= share) return f.text;
-    notes.push(`truncated ${f.path} to ~${share} of ${f.size} bytes`);
-    return `${f.text.slice(0, share)}\n[... ${f.size - share} bytes of ${f.path} omitted ...]`;
-  });
-
-  // Final backstop. The 200-char floor above means a diff with very many
-  // files can still exceed `limit`, which would defeat the circuit breaker
-  // this function exists to be. Enforce it unconditionally.
-  return { text: enforceLimit(reduced.join("\n"), limit), truncated: true, notes };
+  // Deliberately a simple clip rather than a per-file budget. That
+  // machinery produced three separate correctness findings (a backstop that
+  // silently dropped whole files, an overhead estimate wrong for long
+  // paths, a floor that could outrun the limit) while only ever running for
+  // diffs above 250KB, which have never occurred in this repo. Ordering is
+  // what makes a head-clip acceptable: the change's own subject is now at
+  // the front, so what survives is the part worth reviewing.
+  const source = (kept.length > 0 ? kept : ordered).map((f) => f.text).join("\n");
+  notes.push("diff exceeded the input budget; clipped after ordering by subject");
+  return { text: clip(source, budget), truncated: true, notes };
 }
 
-/** Hard guarantee that the payload never exceeds `limit`. */
-export function enforceLimit(text, limit) {
+/**
+ * Hard guarantee that text never exceeds `limit`. The marker is only added
+ * when it actually fits, so this cannot itself overshoot -- an earlier
+ * version appended it unconditionally and exceeded any limit shorter than
+ * the marker.
+ */
+export function clip(text, limit) {
   if (text.length <= limit) return text;
-  const marker = "\n[... payload truncated to fit the input limit ...]";
-  return text.slice(0, Math.max(0, limit - marker.length)) + marker;
+  const marker = "\n[... clipped to fit the review input budget ...]";
+  if (limit <= marker.length) return text.slice(0, Math.max(0, limit));
+  return text.slice(0, limit - marker.length) + marker;
 }
 
 /** A human/model-readable manifest of what was reduced, or "". */

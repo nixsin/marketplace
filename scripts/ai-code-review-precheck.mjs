@@ -189,7 +189,7 @@ if (!diff) {
 
 // See scripts/lib/diff-ordering.mjs -- subject-first ordering, tiered
 // reduction, and a `truncated` flag that means real content was lost.
-const payload = buildDiffPayload(diff, MAX_DIFF_CHARS);
+const payload = buildDiffPayload(diff, MAX_DIFF_CHARS, { notesReserve: 4_000 });
 diff = payload.text;
 const truncated = payload.truncated;
 const reductionNotes = renderNotes(payload.notes);

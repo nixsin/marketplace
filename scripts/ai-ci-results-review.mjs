@@ -43,7 +43,9 @@ if (
 // than head-sliced -- see scripts/lib/diff-ordering.mjs. `truncated` now
 // means "reviewable content was lost", so dropping a lockfile no longer
 // blocks a PR the way losing real code does.
-const payload = buildDiffPayload(readFileSync(diffPath, "utf8"), REVIEW.maxInputChars);
+const payload = buildDiffPayload(readFileSync(diffPath, "utf8"), REVIEW.maxInputChars, {
+  notesReserve: 4_000,
+});
 const diff = payload.text;
 const truncated = payload.truncated;
 const reductionNotes = renderNotes(payload.notes);
