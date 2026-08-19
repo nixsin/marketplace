@@ -1602,8 +1602,18 @@ them* — `next.config.ts` importing `LOCALES` from here is the pattern,
 not moving `next.config.ts` itself.
 
 **Adding a workspace package to `apps/web` requires three separate
-Dockerfile changes, and missing the third crashes prod at boot** — see the
-gotcha below. Any future package added here needs the same three.
+Dockerfile changes plus a `docker-compose.yml` mount — four places, and
+three of them fail in ways that don't look related.** See the gotcha
+below. Any future package added here needs all four:
+1. `deps` stage: `COPY packages/<name>/package.json` (install fails
+   loudly without it).
+2. `build` stage: `COPY packages packages` (`next build` fails on config
+   load).
+3. `prod` stage: copy the built package over pnpm's dangling workspace
+   symlink (**builds clean, crashes at boot**).
+4. `docker-compose.yml`: mount `./packages:/repo/packages` on the `web`
+   service (**the dev stack breaks**, since the `dev` stage is `FROM deps`
+   and deliberately bakes in no source).
 
 ## Known gotchas (already solved once — don't re-derive)
 
@@ -1642,6 +1652,23 @@ only by actually building and running the image:
    still emits a symlink rather than real files. Copying the real
    directory over the symlink's location is explicit and doesn't depend on
    whatever relative depth pnpm happens to generate.
+
+**The `dev` Docker stage needs the shared package bind-mounted, and this
+was caught by the local pre-push precheck rather than by CI** — worth
+recording as the first real demonstration that the precheck earns its
+latency. `apps/web/Dockerfile`'s `dev` stage is `FROM deps`, which copies
+only `packages/config/package.json`; `docker-compose.yml`'s `web` service
+bind-mounts `./apps/web` but originally not `./packages`. Net effect: the
+dev container held a workspace symlink pointing at a directory containing
+a manifest but no `src/index.js`, so `pnpm dev` would die on
+`next.config.ts`'s import — failing `docker-smoke`, a **required** check.
+The prod-image work (above) had been verified by actually booting the
+container, but the dev path hadn't, and the two stages fail for different
+reasons. Fixed by mounting `./packages:/repo/packages` rather than
+`COPY`ing it, matching how `apps/web` itself is provided (the dev stage
+deliberately bakes in no source, so shared-config edits hot-reload like
+app edits). Verified by rebuilding the real dev stack: real `200` on
+`/en`, and `@medinstru/config` resolving inside the running container.
 
 **The `changes` path filter needs `packages/**` in both `web` and
 `docker`** — added at the same time. `apps/web` depends on
