@@ -14,12 +14,50 @@ import {
   roleConfig,
 } from "./index.js";
 
+// API_URL/SITE_URL are resolved from process.env at *import* time, so
+// asserting them against the statically-imported module would make these
+// tests pass or fail based on whatever the developer happens to have
+// exported in their shell -- a legitimate NEXT_PUBLIC_API_URL (pointing a
+// local build at staging, say) would fail the suite despite the config
+// behaving correctly. Re-importing with a unique query string bypasses the
+// ESM module cache, so each case gets a genuinely fresh evaluation under an
+// environment this test controls.
+async function importWithEnv(overrides) {
+  const saved = {
+    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
+    NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
+  };
+  for (const key of Object.keys(saved)) delete process.env[key];
+  Object.assign(process.env, overrides);
+  try {
+    return await import(`./index.js?case=${Math.random()}`);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 describe("web config", () => {
-  test("falls back to local defaults when env vars are unset", () => {
-    // These are the exact fallbacks apps/web relied on before this package
-    // existed -- changing one silently changes local dev for everyone.
-    assert.equal(API_URL, "http://localhost:4000/graphql");
-    assert.equal(SITE_URL, "http://localhost:3000");
+  test("falls back to local defaults when env vars are unset", async () => {
+    // The exact fallbacks apps/web relied on before this package existed --
+    // changing one silently changes local dev for everyone.
+    const cfg = await importWithEnv({});
+    assert.equal(cfg.API_URL, "http://localhost:4000/graphql");
+    assert.equal(cfg.SITE_URL, "http://localhost:3000");
+  });
+
+  test("prefers the environment over the fallback when set", async () => {
+    // The path that actually runs in CI and production -- untested before,
+    // which is how the fallback assertion above looked correct while being
+    // environment-dependent.
+    const cfg = await importWithEnv({
+      NEXT_PUBLIC_API_URL: "https://api.example.test/graphql",
+      NEXT_PUBLIC_SITE_URL: "https://example.test",
+    });
+    assert.equal(cfg.API_URL, "https://api.example.test/graphql");
+    assert.equal(cfg.SITE_URL, "https://example.test");
   });
 
   test("locales are en + hi with en as the default", () => {
