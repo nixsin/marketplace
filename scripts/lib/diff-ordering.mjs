@@ -65,7 +65,13 @@ export function splitDiff(diffText) {
   const files = [];
   let current = null;
   for (const line of diffText.split("\n")) {
-    const m = /^diff --git a\/(\S+) b\/(\S+)/.exec(line);
+    // Git quotes paths containing spaces or unusual characters:
+    //   diff --git "a/my file.ts" "b/my file.ts"
+    // The unquoted-only pattern returned zero files for such a diff, and
+    // buildDiffPayload then passed the ORIGINAL text through with
+    // truncated:false -- bypassing ordering and the size limit entirely.
+    const m =
+      /^diff --git "a\/(.+)" "b\/(.+)"$/.exec(line) ?? /^diff --git a\/(\S+) b\/(\S+)/.exec(line);
     if (m) {
       if (current) files.push(current);
       const filePath = m[2];
@@ -149,6 +155,21 @@ export function buildDiffPayload(diffText, limit) {
   for (const f of ordered) {
     if (f.category === "generated") notes.push(`omitted ${f.path} (generated, ${f.size} bytes)`);
   }
+
+  // ...unless dropping it leaves NOTHING to review. A lockfile-only
+  // dependency bump (every Dependabot PR in this repo) would otherwise
+  // produce an empty payload reported as complete, letting the reviewer
+  // approve having seen nothing -- and lockfiles carry supply-chain
+  // resolution and integrity changes. Keep a bounded sample and block.
+  if (kept.length === 0) {
+    const sample = ordered.map((f) => f.text.slice(0, Math.floor(limit / ordered.length))).join("\n");
+    return {
+      text: enforceLimit(sample, limit),
+      truncated: true,
+      notes: [...notes, "every changed file is generated; only a bounded sample is shown"],
+    };
+  }
+
   if (total(kept) <= limit) {
     return { text: kept.map((f) => f.text).join("\n"), truncated: false, notes };
   }
@@ -156,14 +177,30 @@ export function buildDiffPayload(diffText, limit) {
   // Tier 2 -- proportional per-file budget. Every remaining file keeps its
   // header and a share; none is silently dropped, which is the specific
   // failure the head-slice produced.
-  const overhead = kept.length * 80;
+  //
+  // The share accounts for each file's actual omission marker rather than a
+  // fixed guess: markers embed the path, so long paths made a fixed
+  // estimate wrong and could push the result back over the limit.
+  const markerCost = (f) => `\n[... ${f.size} bytes of ${f.path} omitted ...]`.length;
+  const overhead = kept.reduce((n, f) => n + markerCost(f) + 1, 0);
   const share = Math.max(200, Math.floor((limit - overhead) / kept.length));
   const reduced = kept.map((f) => {
     if (f.size <= share) return f.text;
     notes.push(`truncated ${f.path} to ~${share} of ${f.size} bytes`);
     return `${f.text.slice(0, share)}\n[... ${f.size - share} bytes of ${f.path} omitted ...]`;
   });
-  return { text: reduced.join("\n"), truncated: true, notes };
+
+  // Final backstop. The 200-char floor above means a diff with very many
+  // files can still exceed `limit`, which would defeat the circuit breaker
+  // this function exists to be. Enforce it unconditionally.
+  return { text: enforceLimit(reduced.join("\n"), limit), truncated: true, notes };
+}
+
+/** Hard guarantee that the payload never exceeds `limit`. */
+export function enforceLimit(text, limit) {
+  if (text.length <= limit) return text;
+  const marker = "\n[... payload truncated to fit the input limit ...]";
+  return text.slice(0, Math.max(0, limit - marker.length)) + marker;
 }
 
 /** A human/model-readable manifest of what was reduced, or "". */

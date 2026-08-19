@@ -6,6 +6,7 @@ import {
   focusOf,
   orderFiles,
   rankCategories,
+  enforceLimit,
   renderNotes,
   splitDiff,
 } from "./diff-ordering.mjs";
@@ -217,5 +218,76 @@ describe("test classification covers this repo's real naming", () => {
   test("does not mistake ordinary source for a test", () => {
     assert.equal(classifyFile("apps/web/src/lib/api.ts"), "source");
     assert.equal(classifyFile("apps/api/src/products/products.service.ts"), "source");
+  });
+});
+
+describe("the limit is a real circuit breaker", () => {
+  test("the payload never exceeds the limit, even with many files", () => {
+    // The 200-char per-file floor means N files can outrun the budget; the
+    // original version asserted only that files stayed represented, never
+    // that the result actually fit.
+    const diff = Array.from({ length: 400 }, (_, i) => chunk(`src/f${i}.ts`, 900)).join("\n");
+    const limit = 20_000;
+    const out = buildDiffPayload(diff, limit);
+    assert.ok(out.text.length <= limit, `payload was ${out.text.length}, limit ${limit}`);
+    assert.equal(out.truncated, true);
+  });
+
+  test("long file paths cannot push the result over", () => {
+    const deep = "src/" + "very-long-directory-segment/".repeat(12);
+    const diff = Array.from({ length: 40 }, (_, i) => chunk(`${deep}file${i}.ts`, 3000)).join("\n");
+    const limit = 15_000;
+    assert.ok(buildDiffPayload(diff, limit).text.length <= limit);
+  });
+
+  test("enforceLimit marks that it cut, rather than cutting silently", () => {
+    const out = enforceLimit("x".repeat(500), 100);
+    assert.ok(out.length <= 100);
+    assert.match(out, /payload truncated to fit/);
+  });
+});
+
+describe("quoted paths in diff headers", () => {
+  test("parses git's quoted-path form", () => {
+    // git quotes paths with spaces; the unquoted-only pattern returned zero
+    // files, and the original text was then passed through with
+    // truncated:false -- bypassing ordering and the limit entirely.
+    const diff = [
+      'diff --git "a/src/my file.ts" "b/src/my file.ts"',
+      "--- a/src/my file.ts",
+      "+++ b/src/my file.ts",
+      "@@ -1 +1 @@",
+      "+x",
+    ].join("\n");
+    const files = splitDiff(diff);
+    assert.equal(files.length, 1);
+    assert.equal(files[0].path, "src/my file.ts");
+  });
+
+  test("an unparseable diff over the limit still gets bounded", () => {
+    const junk = "x".repeat(50_000);
+    const out = buildDiffPayload(junk, 1_000);
+    assert.ok(out.text.length <= 50_000);
+  });
+});
+
+describe("generated-only changes stay blocking", () => {
+  test("a lockfile-only PR does not yield an empty, clean payload", () => {
+    // Every Dependabot PR in this repo has this shape. Dropping the only
+    // file would leave the reviewer nothing to look at while reporting the
+    // review as complete -- and lockfiles carry supply-chain integrity
+    // changes worth seeing.
+    const diff = chunk("pnpm-lock.yaml", 80_000);
+    const out = buildDiffPayload(diff, 10_000);
+    assert.equal(out.truncated, true, "must block: nothing reviewable remained");
+    assert.ok(out.text.length > 0, "must still show a bounded sample");
+    assert.ok(out.notes.some((n) => /only a bounded sample/.test(n)));
+  });
+
+  test("a lockfile alongside real code still drops cleanly", () => {
+    const diff = [chunk("src/a.ts", 1000), chunk("pnpm-lock.yaml", 80_000)].join("\n");
+    const out = buildDiffPayload(diff, 10_000);
+    assert.equal(out.truncated, false);
+    assert.ok(out.text.includes("src/a.ts"));
   });
 });
