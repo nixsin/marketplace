@@ -54,3 +54,28 @@ describe("whatsappShareHref", () => {
     expect(decodeURIComponent(encoded)).toBe(message);
   });
 });
+
+describe("productShareUrl cannot be made to point at another origin", () => {
+  const origin = new URL(productShareUrl("p1", "en")).origin;
+
+  it.each([
+    ["/evil.example"],
+    ["//evil.example"],
+    ["https://evil.example"],
+    ["../../evil"],
+    [""],
+  ])("stays on our origin for locale %j", (locale) => {
+    // `//host` makes the path protocol-relative, so new URL() resolves it
+    // against a different host entirely. Verified as a real escape before
+    // the fix: "//evil.example" produced https://evil.example/products/p1.
+    expect(new URL(productShareUrl("p1", locale)).origin).toBe(origin);
+  });
+
+  it("falls back to the default locale rather than emitting a junk path", () => {
+    expect(productShareUrl("p1", "//evil.example")).toContain("/en/products/p1");
+  });
+
+  it("still honours a genuinely supported locale", () => {
+    expect(productShareUrl("p1", "hi")).toContain("/hi/products/p1");
+  });
+});

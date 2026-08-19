@@ -1,4 +1,4 @@
-import { SITE_URL } from "@medinstru/config";
+import { DEFAULT_LOCALE, LOCALES, SITE_URL } from "@medinstru/config";
 
 // WhatsApp share-link construction, kept as pure functions so the message
 // format and URL encoding are directly testable -- the whole point of this
@@ -19,9 +19,21 @@ import { SITE_URL } from "@medinstru/config";
  * useless -- the recipient has no origin to resolve it against.
  */
 export function productShareUrl(productId: string, locale: string): string {
+  // The locale is constrained to the configured set, not interpolated
+  // as-is. A review caught that a locale beginning with `/` or `//` makes
+  // the path protocol-relative, so `new URL` resolves it against a
+  // DIFFERENT host: `productShareUrl("p1", "//evil.example")` produced
+  // `https://evil.example/products/p1`. Reproduced directly before fixing.
+  //
+  // Not reachable through the UI today -- next-intl constrains the
+  // [locale] route segment -- but this function is exported, takes a plain
+  // string, and its output is a link handed to someone else. A share link
+  // that silently points at another origin is the worst possible place for
+  // this class of bug, and the guard costs nothing.
+  const safeLocale = (LOCALES as readonly string[]).includes(locale) ? locale : DEFAULT_LOCALE;
   // `new URL(path, base)` rather than string concatenation so a trailing
   // slash on SITE_URL can't produce a double slash.
-  return new URL(`/${locale}/products/${encodeURIComponent(productId)}`, SITE_URL).toString();
+  return new URL(`/${safeLocale}/products/${encodeURIComponent(productId)}`, SITE_URL).toString();
 }
 
 /**
