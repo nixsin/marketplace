@@ -43,6 +43,7 @@ import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import OpenAI from "openai";
 import { roleConfig, resolveApiKey } from "@medinstru/config";
+import { buildDiffPayload, renderNotes } from "./lib/diff-ordering.mjs";
 import { decideVerdict } from "./lib/review-verdict.mjs";
 import { selectPushedCommit, branchNameFromRef } from "./lib/pre-push-refs.mjs";
 import {
@@ -186,8 +187,12 @@ if (!diff) {
   process.exit(0);
 }
 
-const truncated = diff.length > MAX_DIFF_CHARS;
-if (truncated) diff = diff.slice(0, MAX_DIFF_CHARS);
+// See scripts/lib/diff-ordering.mjs -- subject-first ordering, tiered
+// reduction, and a `truncated` flag that means real content was lost.
+const payload = buildDiffPayload(diff, MAX_DIFF_CHARS, { notesReserve: 4_000 });
+diff = payload.text;
+const truncated = payload.truncated;
+const reductionNotes = renderNotes(payload.notes);
 
 const overrideDecisions = fetchOverrideDecisions(pushedBranch);
 
@@ -211,7 +216,7 @@ End your response with exactly this structure, and nothing after it:
 ## Verdict
 <exactly one word, nothing else: APPROVE or REQUEST_CHANGES>`;
 
-const userContent = `## Diff vs ${BASE_REF}${truncated ? " (truncated to first 60,000 characters)" : ""}
+const userContent = `${reductionNotes}## Diff vs ${BASE_REF}
 \`\`\`diff
 ${diff}
 \`\`\`

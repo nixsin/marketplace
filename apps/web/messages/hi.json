@@ -45,7 +45,9 @@
     "backToListing": "लिस्टिंग पर वापस जाएँ",
     "errorTitle": "कुछ गड़बड़ हो गई",
     "errorMessage": "हम इस उत्पाद को लोड नहीं कर सके। कृपया पुनः प्रयास करें।",
-    "retry": "पुनः प्रयास करें"
+    "retry": "पुनः प्रयास करें",
+    "shareOnWhatsApp": "WhatsApp पर साझा करें",
+    "shareAbout": "{productName} को WhatsApp पर साझा करें"
   },
   "languageSwitcher": {
     "label": "भाषा"

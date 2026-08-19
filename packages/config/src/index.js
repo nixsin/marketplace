@@ -148,11 +148,32 @@ export const LIGHTHOUSE_RUNS = 5;
 export const OPENAI_REVIEW_MODEL = "gpt-5.6";
 export const ANTHROPIC_ANALYSIS_MODEL = "claude-haiku-4-5";
 
-// Keeps every reviewer's input focused and cheap; a genuinely huge diff
-// has diminishing review value past a point anyway (lockfile-only,
-// generated code, vendored files). Shared by all four roles because they
-// face the same tradeoff, not by coincidence.
-export const MAX_INPUT_CHARS = 60_000;
+// A circuit breaker against pathological input, NOT a cost or attention
+// control -- which is what it was originally, at 60,000 chars, and that
+// setting turned out to be the single largest source of false blocks.
+//
+// Measured across this repo's last eleven PRs: eight sit between 1.8KB and
+// 27.6KB, and the three largest are 62.0KB (#97), 76.2KB (#90) and 79.4KB
+// (#94). So a 60,000 limit bound on roughly a quarter of PRs, exceeding it
+// by only 3%, 27% and 32% -- not runaway diffs, just a ceiling set low.
+// The consequence was severe out of proportion to the cause: because
+// truncation is an unconditional REQUEST_CHANGES override, #97 and #94
+// were both blocked while their reviewers reported zero findings, and both
+// needed a `git push --no-verify` to land.
+//
+// 250,000 chars is over 3x the largest diff this repo has ever produced,
+// and ~62k tokens -- unremarkable for gpt-5.6, whose context is far
+// larger. The limit still exists for genuinely pathological input (a
+// vendored dependency, a repo-wide reformat, a lockfile regeneration),
+// where a diff review has close to zero value anyway and the fail-closed
+// behaviour remains correct.
+//
+// Raising this is only safe because truncation now degrades gracefully:
+// scripts/lib/diff-ordering.mjs drops generated content first, then
+// budgets per file so nothing is silently invisible. The old flat
+// `diff.slice(0, LIMIT)` head-slice gave PR #94's reviewer 31 files
+// complete and 8 files at zero bytes, with no signal they existed.
+export const MAX_INPUT_CHARS = 250_000;
 
 // Default output ceiling. A role may override it (see failureAnalysis) --
 // roleConfig() prefers the role's own value when one is declared.
