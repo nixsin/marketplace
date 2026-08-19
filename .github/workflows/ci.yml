@@ -286,6 +286,7 @@ jobs:
       # permissions, gh CLI hazards, sw.js/api.ts query sync, workspace
       # package wiring. Each is a rule this repo has already been bitten by.
       - run: node --test scripts/lib/repo-invariants.test.mjs
+      - run: node --test scripts/lib/repo-invariants.detectors.test.mjs
       - run: bash scripts/publish-badge.test.sh
       - run: bash scripts/check-outdated.test.sh
 
