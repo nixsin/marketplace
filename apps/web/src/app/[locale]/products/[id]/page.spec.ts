@@ -80,9 +80,29 @@ describe("product detail generateMetadata", () => {
     expect(metadata.description).toBe(
       "A handheld point-of-care ultrasound system.",
     );
+    // The PNG twin, NOT the stored .svg: Facebook's scraper (which WhatsApp
+    // shares) does not support SVG, so the shared card previewed with a
+    // blank image frame -- the link appeared to work while looking broken,
+    // and only on the recipient's phone. See src/lib/og-image.ts.
     expect(metadata.openGraph?.images).toEqual([
-      { url: "/images/ultrasound.svg" },
+      { url: "/images/ultrasound.png", width: 1200, height: 630 },
     ]);
+  });
+
+  it("gives X/Twitter the same raster image and a large card", async () => {
+    fetchProduct.mockResolvedValue({
+      id: "p1",
+      name: "Portable Ultrasound",
+      description: "A handheld point-of-care ultrasound system.",
+      imageUrl: "/images/ultrasound.svg",
+    });
+
+    const metadata = await generateMetadata({
+      params: Promise.resolve({ locale: "en", id: "p1" }),
+    });
+
+    expect(metadata.twitter?.card).toBe("summary_large_image");
+    expect(metadata.twitter?.images).toEqual(["/images/ultrasound.png"]);
   });
 
   it("omits openGraph images entirely when the product has no image", async () => {

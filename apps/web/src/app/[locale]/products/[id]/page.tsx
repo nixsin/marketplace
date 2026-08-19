@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchProduct } from "@/lib/api";
 import { ProductDetailView } from "@/components/product-detail";
+import { OG_IMAGE_HEIGHT, OG_IMAGE_WIDTH, ogImageUrl } from "@/lib/og-image";
 
 interface ProductDetailPageProps {
   params: Promise<{ locale: string; id: string }>;
@@ -56,13 +57,32 @@ export async function generateMetadata({
     return { title: t("notFoundTitle") };
   }
 
+  // The PNG twin, not product.imageUrl itself: the stored image is an SVG,
+  // which Facebook's scraper (shared by WhatsApp) does not support, so the
+  // preview card rendered with a blank image frame. See src/lib/og-image.ts.
+  const ogImage = ogImageUrl(product.imageUrl);
+
   return {
     title: `${product.name} · MedInstru Market`,
     description: product.description,
     openGraph: {
       title: product.name,
       description: product.description,
-      images: product.imageUrl ? [{ url: product.imageUrl }] : undefined,
+      // Explicit dimensions so scrapers lay out the large 1.91:1 card
+      // immediately instead of guessing, or falling back to a small
+      // thumbnail while they fetch the image to measure it.
+      images: ogImage
+        ? [{ url: ogImage, width: OG_IMAGE_WIDTH, height: OG_IMAGE_HEIGHT }]
+        : undefined,
+      type: "website",
+    },
+    // Without this, X/Twitter falls back to a small square thumbnail.
+    // Costs two tags and is the same image either way.
+    twitter: {
+      card: "summary_large_image",
+      title: product.name,
+      description: product.description,
+      images: ogImage ? [ogImage] : undefined,
     },
   };
 }
