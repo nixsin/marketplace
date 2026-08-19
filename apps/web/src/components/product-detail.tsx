@@ -2,8 +2,14 @@
 
 import Image from "next/image";
 import { useLocale, useTranslations } from "next-intl";
-import { ShieldCheck } from "lucide-react";
+import { Share2, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  productShareMessage,
+  productShareUrl,
+  whatsappShareHref,
+} from "@/lib/whatsapp";
 
 export interface ProductDetail {
   id: string;
@@ -101,6 +107,32 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
       <p className="text-base leading-relaxed text-muted-foreground">
         {product.description}
       </p>
+
+      {/* Share, not inquire (issue #91). This opens WhatsApp's contact
+          picker so the sharer chooses the recipient -- forwarding a listing
+          to a colleague or procurement group is how B2B buying decisions
+          actually circulate in this market. The seller-directed inquiry
+          flow needs a seller contact number, which neither the schema nor
+          the "whose number" decision provides yet.
+
+          A real <a> rather than a click handler: it must survive the page
+          being opened from a cold WhatsApp link on a slow connection,
+          before hydration completes. */}
+      <div>
+        <Button asChild variant="outline" className="gap-2">
+          <a
+            href={whatsappShareHref(
+              productShareMessage(product.name, productShareUrl(product.id, locale)),
+            )}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={t("shareAbout", { productName: product.name })}
+          >
+            <Share2 className="size-4" />
+            {t("shareOnWhatsApp")}
+          </a>
+        </Button>
+      </div>
 
       {product.certifications.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
