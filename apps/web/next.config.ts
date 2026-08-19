@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
+import { siteUrlErrorMessage, siteUrlProblem } from "./src/lib/site-url";
 import { LOCALES } from "@medinstru/config";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
@@ -44,31 +45,18 @@ const localeRoutePattern = `/(${LOCALES.join("|")})`;
 // Failing the build is deliberate. NEXT_PUBLIC_* is inlined at build time,
 // so a wrong value cannot be corrected at runtime -- by the time anyone
 // notices, the artifact is already wrong. Better to refuse to produce it.
-// Checking only for absence is not enough: a value that is present but
-// wrong -- a leftover localhost, a stray copy-paste, whitespace -- produces
-// exactly the same dead links as leaving it unset, while passing the guard
-// meant to prevent them.
+//
+// The rule itself lives in src/lib/site-url.ts, unit tested, for the same
+// reason security-headers.ts was extracted: next.config.ts is the file
+// Next.js loads to boot and cannot be imported by an ordinary test, and
+// logic that decides whether a deploy may proceed should not be the one
+// part of the codebase verified only by hand. It rejects more than just
+// an unset value -- a present-but-wrong one (leftover localhost, stray
+// paste, whitespace) produces identical dead links while satisfying a
+// guard that only checks for absence.
 if (process.env.RENDER_GIT_COMMIT) {
-  const raw = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  const reason = !raw
-    ? "it is not set"
-    : !URL.canParse(raw)
-      ? `it is not a valid URL: ${raw}`
-      : !/^https?:$/.test(new URL(raw).protocol)
-        ? `it must be http(s), got: ${raw}`
-        : /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/i.test(new URL(raw).hostname)
-          ? `it points at a local address, which no recipient can open: ${raw}`
-          : null;
-
-  if (reason) {
-    throw new Error(
-      `NEXT_PUBLIC_SITE_URL is unusable for this Render build -- ${reason}. It is ` +
-        "inlined at build time and cannot be fixed at runtime, so every shared " +
-        "link and OpenGraph image would point somewhere the recipient cannot " +
-        "reach. Set it to this service's public origin in the Render dashboard, " +
-        "then redeploy.",
-    );
-  }
+  const problem = siteUrlProblem(process.env.NEXT_PUBLIC_SITE_URL);
+  if (problem) throw new Error(siteUrlErrorMessage(problem));
 }
 
 const nextConfig: NextConfig = {
