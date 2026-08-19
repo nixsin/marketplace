@@ -69,23 +69,35 @@ export function ogImageUrl(imageUrl: string | null | undefined): string | undefi
   // then resolves to the unmanaged `/uploads/logo.png` -- the exact
   // nonexistent-PNG this branch exists to prevent, smuggled past the
   // check that was supposed to catch it.
-  const clean = normalise(path);
+  const segments = normalise(path);
+  if (segments === null) return undefined;
+
+  const clean = `/${segments.join("/")}`;
   if (!clean.startsWith(MANAGED_PREFIX)) return undefined;
 
-  // Emit the normalised path, not the raw one, so the URL handed to a
-  // scraper is the same path the check was made against.
-  return `${clean.replace(/\.svg$/i, ".png")}${suffix}`;
+  // Decoding is used to VALIDATE the path; the URL emitted is re-encoded
+  // per segment. Emitting the decoded form directly was a real bug: a
+  // percent-encoded delimiter came back as a live one, so
+  // `/products/foo%3Fbar.svg` became `/products/foo?bar.png` and a crawler
+  // would request `/products/foo` with a query string instead of the
+  // intended file. Same for an encoded `#` or space.
+  const encoded = segments.map((s) => encodeURIComponent(s)).join("/");
+  return `/${encoded.replace(/\.svg$/i, ".png")}${suffix}`;
 }
 
 /** Product images we ship, and therefore generate PNG twins for. */
 const MANAGED_PREFIX = "/products/";
 
 /**
- * Resolves `.` and `..` segments the way a browser or server would, so the
- * managed-prefix check sees the path that will actually be requested
- * rather than the one that was written.
+ * Decodes and resolves `.` and `..` segments the way a browser or server
+ * would, so the managed-prefix check sees the path that will actually be
+ * requested rather than the one that was written.
+ *
+ * Returns the decoded SEGMENTS rather than a joined path, so the caller
+ * re-encodes each one when building the URL it emits. Returns null when
+ * the path cannot be decoded at all.
  */
-function normalise(path: string): string {
+function normalise(path: string): string[] | null {
   // Decode first, and treat backslash as a separator. A previous version
   // split on literal "/" and compared against literal ".." only, so
   // `/products/%2e%2e/uploads/logo.svg` walked straight past the managed
@@ -100,7 +112,9 @@ function normalise(path: string): string {
   try {
     decoded = decodeURIComponent(path);
   } catch {
-    return "/__undecodable__";
+    // An undecodable path is not one we manage, and metadata generation
+    // must not crash because of a bad image value.
+    return null;
   }
 
   const out: string[] = [];
@@ -108,7 +122,7 @@ function normalise(path: string): string {
     if (segment === "..") out.pop();
     else if (segment !== "." && segment !== "") out.push(segment);
   }
-  return `/${out.join("/")}`;
+  return out;
 }
 
 /** Splits a URL into its path and its `?query#fragment` tail. */

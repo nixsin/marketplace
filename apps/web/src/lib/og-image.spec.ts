@@ -51,6 +51,23 @@ describe("ogImageUrl", () => {
     expect(ogImageUrl(value)).toBeUndefined();
   });
 
+  it("keeps an encoded delimiter encoded rather than making it live", () => {
+    // Emitting the decoded path turned %3F into a real "?", so a crawler
+    // requested /products/foo with a query string instead of the file.
+    expect(ogImageUrl("/products/foo%3Fbar.svg")).toBe("/products/foo%3Fbar.png");
+    expect(ogImageUrl("/products/foo%23bar.svg")).toBe("/products/foo%23bar.png");
+    expect(ogImageUrl("/products/a%20b.svg")).toBe("/products/a%20b.png");
+  });
+
+  it("round-trips: the emitted path decodes back to the intended filename", () => {
+    const emitted = ogImageUrl("/products/foo%3Fbar.svg")!;
+    expect(decodeURIComponent(new URL(emitted, "https://x.test").pathname)).toBe(
+      "/products/foo?bar.png",
+    );
+    // and the query string is genuinely empty -- nothing leaked into it
+    expect(new URL(emitted, "https://x.test").search).toBe("");
+  });
+
   it("does not crash on a malformed percent escape", () => {
     // decodeURIComponent throws on a lone "%". Metadata generation must
     // not fail because of a bad image value; an undecodable path is simply

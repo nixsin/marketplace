@@ -77,8 +77,29 @@ function isUnreachableIpv6(hostname: string): boolean {
   if (!hostname.startsWith("[") || !hostname.endsWith("]")) return false;
   const addr = hostname.slice(1, -1).toLowerCase();
   if (addr === "::1" || addr === "::") return true;
+
+  // IPv4-mapped addresses (::ffff:127.0.0.1, and its canonical hex form
+  // ::ffff:7f00:1) resolve to the embedded IPv4 address, so they must go
+  // through the IPv4 range checks -- otherwise every private and loopback
+  // address has a trivial spelling that walks straight past this guard.
+  const mapped = mappedIpv4(addr);
+  if (mapped) return isUnreachableIpv4(mapped);
+
   // fc00::/7 covers fc and fd; fe80::/10 covers fe8 through feb.
   return /^f[cd][0-9a-f]{0,2}:/.test(addr) || /^fe[89ab][0-9a-f]?:/.test(addr);
+}
+
+/** The embedded IPv4 of a `::ffff:` address, in dotted form, else null. */
+function mappedIpv4(addr: string): string | null {
+  const tail = /^::ffff:(.+)$/.exec(addr)?.[1];
+  if (!tail) return null;
+  if (tail.includes(".")) return tail; // already dotted: ::ffff:127.0.0.1
+
+  // Hex form: ::ffff:7f00:1 -> two groups, four bytes.
+  const groups = tail.split(":");
+  if (groups.length !== 2 || !groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
+  const [hi, lo] = groups.map((g) => parseInt(g, 16));
+  return [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join(".");
 }
 
 /**

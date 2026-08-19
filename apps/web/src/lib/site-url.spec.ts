@@ -63,6 +63,23 @@ describe("siteUrlProblem", () => {
     expect(siteUrlProblem(value)).toMatch(/local address/);
   });
 
+  it.each([
+    "http://[::ffff:127.0.0.1]",
+    "http://[::ffff:7f00:1]",
+    "http://[::ffff:10.0.0.1]",
+    "http://[::ffff:192.168.1.1]",
+  ])("rejects the IPv4-mapped local address %s", (value) => {
+    // Every private and loopback address has this alternative spelling;
+    // without mapping it back, the guard has a trivial bypass.
+    expect(siteUrlProblem(value)).toMatch(/local address/);
+  });
+
+  it("accepts an IPv4-mapped PUBLIC address", () => {
+    // 8.8.8.8 -> 0808:0808. Mapping must not blanket-reject.
+    expect(siteUrlProblem("http://[::ffff:8.8.8.8]")).toBeNull();
+    expect(siteUrlProblem("http://[::ffff:808:808]")).toBeNull();
+  });
+
   it("accepts a public IPv6 address", () => {
     expect(siteUrlProblem("http://[2606:4700::1111]")).toBeNull();
   });
