@@ -171,7 +171,11 @@ describe("roleConfig", () => {
 
 describe("shared limits", () => {
   test("match the values the scripts previously hardcoded separately", () => {
-    assert.equal(MAX_INPUT_CHARS, 60_000);
+    // Raised 60_000 -> 250_000: the old ceiling bound on ~1 in 4 PRs and
+    // blocked two whose reviewers reported zero findings. 250k is >3x the
+    // largest diff this repo has produced (79,402 chars on #94).
+    assert.equal(MAX_INPUT_CHARS, 250_000);
+    assert.ok(MAX_INPUT_CHARS > 79_402, "must exceed the largest diff this repo has produced");
     assert.equal(MAX_OUTPUT_TOKENS, 8192);
   });
 });
