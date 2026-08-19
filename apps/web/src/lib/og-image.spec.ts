@@ -39,6 +39,26 @@ describe("ogImageUrl", () => {
     expect(ogImageUrl("/products/sub/../../uploads/x.svg")).toBeUndefined();
   });
 
+  it.each([
+    "/products/%2e%2e/uploads/logo.svg",
+    "/products/%2E%2E/uploads/logo.svg",
+    "/products/..%2fuploads/logo.svg",
+    "/products/..\\uploads/logo.svg",
+  ])("is not fooled by the encoded traversal %s", (value) => {
+    // These look managed as raw strings but a WHATWG URL consumer resolves
+    // them to an unmanaged path, which is precisely the bypass the
+    // normalisation exists to stop.
+    expect(ogImageUrl(value)).toBeUndefined();
+  });
+
+  it("does not crash on a malformed percent escape", () => {
+    // decodeURIComponent throws on a lone "%". Metadata generation must
+    // not fail because of a bad image value; an undecodable path is simply
+    // not one we manage.
+    expect(() => ogImageUrl("/products/100%.svg")).not.toThrow();
+    expect(ogImageUrl("/products/100%.svg")).toBeUndefined();
+  });
+
   it("still accepts a managed path written with a redundant segment", () => {
     expect(ogImageUrl("/products/./lab-equipment.svg")).toBe("/products/lab-equipment.png");
   });

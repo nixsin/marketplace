@@ -28,22 +28,48 @@
  * name and resolves identically, so it has to be covered too -- listing
  * only the bare name would let `http://localhost./` through.
  */
-const LOCAL_HOSTNAMES = /^(localhost\.?|\[::1\]|::1)$/i;
+const LOCAL_HOSTNAMES = /^localhost\.?$/i;
+
+/** A complete dotted-quad, so range checks apply only to real IP literals. */
+const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
 
 /**
- * Address ranges that are unreachable from outside the network that
- * issued them: loopback (127/8), RFC1918 private (10/8, 172.16-31/16,
- * 192.168/16), link-local (169.254/16) and the unspecified address.
+ * True for an IPv4 address unreachable from outside the network that
+ * issued it: loopback (127/8), RFC1918 private (10/8, 172.16-31, 192.168/16),
+ * link-local (169.254/16), and the unspecified address.
  *
- * A build pointed at one of these is not merely wrong, it is wrong in a
- * way that looks fine to whoever deployed it -- the links work on their
- * machine and resolve to a stranger's router, or nothing, for everyone
- * else. Exactly the failure mode this guard exists to prevent, so the
- * check covers the whole class rather than the handful of literals that
- * happen to come to mind.
+ * Deliberately NOT a prefix match on the hostname string. A first attempt
+ * tested /^(10\.|127\.|...)/ against the raw hostname, which also matches
+ * perfectly good public names like `10.example.com` or `172.16.example.com`
+ * -- blocking a valid deploy, which is the worse failure of the two this
+ * guard sits between. Parsing the quad first makes the range check apply
+ * only to something that is actually an address.
  */
-const UNREACHABLE_IPV4 =
-  /^(127\.|10\.|192\.168\.|169\.254\.|0\.0\.0\.0$|172\.(1[6-9]|2\d|3[01])\.)/;
+function isUnreachableIpv4(hostname: string): boolean {
+  const m = IPV4.exec(hostname);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if (a > 255 || b > 255 || Number(m[3]) > 255 || Number(m[4]) > 255) return false;
+  return (
+    a === 127 || a === 10 || a === 0 ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31)
+  );
+}
+
+/**
+ * True for an IPv6 literal that is loopback (::1), unspecified (::),
+ * unique-local (fc00::/7) or link-local (fe80::/10). URL.hostname keeps
+ * the surrounding brackets for IPv6, so they are stripped first.
+ */
+function isUnreachableIpv6(hostname: string): boolean {
+  if (!hostname.startsWith("[") || !hostname.endsWith("]")) return false;
+  const addr = hostname.slice(1, -1).toLowerCase();
+  if (addr === "::1" || addr === "::") return true;
+  // fc00::/7 covers fc and fd; fe80::/10 covers fe8 through feb.
+  return /^f[cd][0-9a-f]{0,2}:/.test(addr) || /^fe[89ab][0-9a-f]?:/.test(addr);
+}
 
 /**
  * Returns a human-readable reason the value is unusable, or null if it is
@@ -62,7 +88,8 @@ export function siteUrlProblem(raw: string | undefined | null): string | null {
   if (!/^https?:$/.test(url.protocol)) {
     return `it must be an http(s) URL, got: ${value}`;
   }
-  if (LOCAL_HOSTNAMES.test(url.hostname) || UNREACHABLE_IPV4.test(url.hostname)) {
+  const host = url.hostname;
+  if (LOCAL_HOSTNAMES.test(host) || isUnreachableIpv4(host) || isUnreachableIpv6(host)) {
     return `it points at a local address, which no recipient can open: ${value}`;
   }
   return null;

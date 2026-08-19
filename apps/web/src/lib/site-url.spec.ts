@@ -54,6 +54,31 @@ describe("siteUrlProblem", () => {
     expect(siteUrlProblem(value)).toMatch(/local address/);
   });
 
+  it.each([
+    "http://[::]",
+    "http://[fc00::1]",
+    "http://[fd12:3456::1]",
+    "http://[fe80::1]",
+  ])("rejects the unreachable IPv6 address %s", (value) => {
+    expect(siteUrlProblem(value)).toMatch(/local address/);
+  });
+
+  it("accepts a public IPv6 address", () => {
+    expect(siteUrlProblem("http://[2606:4700::1111]")).toBeNull();
+  });
+
+  it.each([
+    "https://10.example.com",
+    "https://127.example.com",
+    "https://172.16.example.com",
+    "https://192.168.example.com",
+  ])("does not block the public hostname %s", (value) => {
+    // A prefix match on the raw hostname flagged all of these. Blocking a
+    // valid deploy is the worse of the two failures this guard sits
+    // between, so the range check only applies to real IP literals.
+    expect(siteUrlProblem(value)).toBeNull();
+  });
+
   it("does not reject public addresses that only look private", () => {
     // 172.32 is outside RFC1918's 172.16-31 range, and 11.x is public.
     // Over-broad matching here would block a legitimate deploy.
