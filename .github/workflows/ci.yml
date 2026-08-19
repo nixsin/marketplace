@@ -290,6 +290,11 @@ jobs:
       # app's runtime values and every AI automation's settings, so a
       # regression here reaches further than any other script in this list.
       - run: node --test packages/config/src/index.test.js
+      # Separate from the package's own tests on purpose: those exercise
+      # resolveApiKey() in isolation and pass even when no consumer calls
+      # it, which is exactly how apiKeyEnv shipped as decorative config
+      # once already.
+      - run: node --test scripts/lib/ai-config-wiring.test.mjs
       - run: bash scripts/publish-badge.test.sh
       - run: bash scripts/check-outdated.test.sh
 

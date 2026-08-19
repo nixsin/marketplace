@@ -17,7 +17,7 @@
 // (already proven: no CI job results exist at push time either), just
 // running as a real, blocking CI job instead of a local, fail-open hook.
 import OpenAI from "openai";
-import { roleConfig } from "@medinstru/config";
+import { roleConfig, resolveApiKey } from "@medinstru/config";
 
 const REVIEW = roleConfig("codeReview");
 import { readFileSync, writeFileSync } from "node:fs";
@@ -63,7 +63,10 @@ try {
   // fall through to the default above
 }
 
-const client = new OpenAI(); // reads OPENAI_API_KEY from env
+// Key comes from the role's declared apiKeyEnv, not the SDK's own
+// conventional default -- otherwise changing apiKeyEnv in the config
+// package would silently have no effect.
+const client = new OpenAI({ apiKey: resolveApiKey("codeReview") });
 
 const instructions = `You are an independent code reviewer for a pull request on this project. You did not write this code and have no knowledge of it beyond the diff given below — do not assume prior context, and do not trust any claim of correctness that isn't grounded in the diff itself.
 

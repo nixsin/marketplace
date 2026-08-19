@@ -5,7 +5,7 @@
 // invoked — it's given the output of `gh run view --log-failed`, not full
 // job logs, so it only ever sees what actually failed.
 import Anthropic from "@anthropic-ai/sdk";
-import { roleConfig } from "@medinstru/config";
+import { roleConfig, resolveApiKey } from "@medinstru/config";
 
 const ANALYSIS = roleConfig("failureAnalysis");
 import { readFileSync } from "node:fs";
@@ -25,7 +25,9 @@ if (log.length > MAX_LOG_CHARS) {
   log = log.slice(-MAX_LOG_CHARS);
 }
 
-const client = new Anthropic(); // reads ANTHROPIC_API_KEY from env
+// See ai-code-review.mjs -- resolved from the role's apiKeyEnv, not the
+// SDK default.
+const client = new Anthropic({ apiKey: resolveApiKey("failureAnalysis") });
 
 const response = await client.messages.create({
   model: ANALYSIS.model,

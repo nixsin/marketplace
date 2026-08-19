@@ -12,7 +12,7 @@
 // not Anthropic — the implementer and ai-failure-analysis both run on
 // Claude.
 import OpenAI from "openai";
-import { roleConfig } from "@medinstru/config";
+import { roleConfig, resolveApiKey } from "@medinstru/config";
 
 const REVIEW = roleConfig("ciResultsReview");
 import { readFileSync, writeFileSync } from "node:fs";
@@ -55,7 +55,9 @@ try {
   // default as pass 1 and the original single-pass job.
 }
 
-const client = new OpenAI(); // reads OPENAI_API_KEY from env
+// See ai-code-review.mjs -- resolved from the role's apiKeyEnv, not the
+// SDK default.
+const client = new OpenAI({ apiKey: resolveApiKey("ciResultsReview") });
 
 const FORCEABLE_JOBS = [
   "audit",
