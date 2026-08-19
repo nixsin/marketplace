@@ -5,6 +5,7 @@ import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { SmsService } from '../src/auth/sms.service';
+import { assertConnectedToTestDatabase } from './helpers/assert-test-database';
 
 // This suite exists to close a real gap: JwtAuthGuard/RolesGuard were only
 // unit-tested against a hand-mocked ExecutionContext (see
@@ -74,6 +75,7 @@ describe('Organizations (e2e)', () => {
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
+    await assertConnectedToTestDatabase(prisma);
   });
 
   afterAll(async () => {

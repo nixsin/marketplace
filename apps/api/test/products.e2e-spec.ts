@@ -5,6 +5,7 @@ import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { configureApp } from '../src/app.setup';
+import { assertConnectedToTestDatabase } from './helpers/assert-test-database';
 
 function gql(app: INestApplication<App>) {
   return (query: string, variables?: Record<string, unknown>) =>
@@ -40,6 +41,7 @@ describe('Products pagination (e2e)', () => {
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
+    await assertConnectedToTestDatabase(prisma);
   });
 
   afterAll(async () => {
@@ -154,6 +156,7 @@ describe('Product by id (e2e)', () => {
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
+    await assertConnectedToTestDatabase(prisma);
   });
 
   afterAll(async () => {
@@ -232,6 +235,7 @@ describe('GraphQL-over-GET caching (e2e)', () => {
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
+    await assertConnectedToTestDatabase(prisma);
   });
 
   afterAll(async () => {

@@ -5,6 +5,7 @@ import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { SmsService } from '../src/auth/sms.service';
+import { assertConnectedToTestDatabase } from './helpers/assert-test-database';
 
 class FakeSmsService {
   sentCodes = new Map<string, string>();
@@ -44,6 +45,7 @@ describe('Auth + onboarding (e2e)', () => {
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
+    await assertConnectedToTestDatabase(prisma);
   });
 
   afterAll(async () => {

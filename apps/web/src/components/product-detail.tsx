@@ -50,6 +50,18 @@ const KYC_BADGE_VARIANT: Record<
   REJECTED: "destructive",
 };
 
+// `details` is unconstrained JSON (see the field's own comment above), so a
+// value can be a nested object/array, not just a primitive. String(value) on
+// those produces the literal text "[object Object]" -- JSON.stringify gives
+// a readable, if inelegant, fallback instead. Deliberately not a fuller
+// nested-rendering treatment (recursive lists, etc.) -- this is a stopgap
+// for a shape the UI doesn't have a real design for yet, not a shape any
+// current uploader actually produces.
+function formatDetailValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  return typeof value === "object" ? JSON.stringify(value) : String(value);
+}
+
 export function ProductDetailView({ product }: { product: ProductDetail }) {
   const t = useTranslations("productDetails");
   const locale = useLocale();
@@ -110,7 +122,7 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
             {detailEntries.map(([key, value]) => (
               <div key={key} className="flex justify-between gap-4 border-b py-1.5 text-sm">
                 <dt className="text-muted-foreground">{key}</dt>
-                <dd className="text-right font-medium">{String(value)}</dd>
+                <dd className="text-right font-medium">{formatDetailValue(value)}</dd>
               </div>
             ))}
           </dl>
@@ -138,8 +150,20 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
 
       <p className="text-xs text-muted-foreground">
         {t("lastUpdated", {
+          // timeZone is pinned to UTC deliberately: this is a "use client"
+          // component, so the date string computed during SSR (server's
+          // timezone) must exactly match what the browser recomputes during
+          // hydration (viewer's local timezone), or React throws a
+          // hydration mismatch. A timestamp near a day boundary (e.g.
+          // 23:37 UTC) genuinely renders a different calendar date in IST
+          // (UTC+5:30) than in UTC -- pinning both renders to the same
+          // fixed zone removes the mismatch entirely. Trades "shows the
+          // viewer's local date" for "shows a stable, correct date" --
+          // acceptable for a last-updated indicator, which doesn't need
+          // viewer-local precision.
           date: new Intl.DateTimeFormat(locale, {
             dateStyle: "medium",
+            timeZone: "UTC",
           }).format(new Date(product.updatedAt)),
         })}
       </p>

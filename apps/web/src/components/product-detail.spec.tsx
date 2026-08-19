@@ -136,4 +136,38 @@ describe("ProductDetailView", () => {
     // this is deterministic given a fixed locale + fixed input date.
     expect(screen.getByText(/Last updated Aug 18, 2026/)).toBeInTheDocument();
   });
+
+  it("renders the same last-updated date regardless of the machine's local timezone", () => {
+    // Regression test for a real hydration-mismatch bug (PR #94 review):
+    // the fixture's updatedAt (23:37:48 UTC) falls on a different calendar
+    // date in IST (Aug 19) than in UTC (Aug 18). Before pinning
+    // `timeZone: "UTC"` in product-detail.tsx, this component's output
+    // depended on the *runtime's* local timezone -- meaning a server
+    // rendering in UTC and a browser hydrating in IST would produce
+    // different text and React would throw a hydration mismatch. Setting
+    // process.env.TZ to a UTC+5:30 zone here reproduces exactly that
+    // divergent-runtime scenario locally; asserting it still reads "Aug 18"
+    // proves the fix, not just that the happy path still renders.
+    const originalTz = process.env.TZ;
+    process.env.TZ = "Asia/Kolkata";
+    try {
+      renderDetail(fullProduct);
+      expect(screen.getByText(/Last updated Aug 18, 2026/)).toBeInTheDocument();
+    } finally {
+      process.env.TZ = originalTz;
+    }
+  });
+
+  it("renders a nested object detail value as readable JSON, not '[object Object]'", () => {
+    // Regression test for a real bug (PR #94 review): `details` is
+    // unconstrained JSON, so a value can be a nested object/array, not
+    // just a primitive. String(value) on those silently produced the
+    // literal text "[object Object]".
+    renderDetail({
+      ...fullProduct,
+      details: { warranty: { years: 2, region: "IN" } },
+    });
+    expect(screen.getByText('{"years":2,"region":"IN"}')).toBeInTheDocument();
+    expect(screen.queryByText("[object Object]")).not.toBeInTheDocument();
+  });
 });
