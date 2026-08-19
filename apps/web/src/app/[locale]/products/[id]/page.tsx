@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { setRequestLocale } from "next-intl/server";
+import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchProduct } from "@/lib/api";
 import { ProductDetailView } from "@/components/product-detail";
 
@@ -39,7 +39,7 @@ export default async function ProductDetailPage({ params }: ProductDetailPagePro
 export async function generateMetadata({
   params,
 }: ProductDetailPageProps): Promise<Metadata> {
-  const { id } = await params;
+  const { locale, id } = await params;
   // Deduped with the fetchProduct() call in the page body above via
   // fetch()'s own request memoization (same URL/options within one
   // request lifecycle costs one network round trip, not two) -- verified
@@ -48,8 +48,12 @@ export async function generateMetadata({
   if (!product) {
     // page.tsx's own notFound() call drives the real 404 status/UI; this
     // is just a safe, non-throwing fallback for generateMetadata's own
-    // parallel resolution pass.
-    return { title: "Product not found" };
+    // parallel resolution pass. Localized rather than a hardcoded English
+    // string: generateMetadata runs outside the request-locale context the
+    // page body's setRequestLocale establishes, so the locale has to be
+    // passed explicitly here.
+    const t = await getTranslations({ locale, namespace: "productDetails" });
+    return { title: t("notFoundTitle") };
   }
 
   return {
