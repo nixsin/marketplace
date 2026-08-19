@@ -55,6 +55,7 @@ jobs:
   # codeql.yml already uses for its own schedule trigger.
   changes:
     name: Detect changed paths
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -248,6 +249,7 @@ jobs:
 
   lint:
     name: Lint
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -272,6 +274,7 @@ jobs:
   # those.
   test-ci-scripts:
     name: Test CI/reconciliation scripts
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -295,11 +298,15 @@ jobs:
       # it, which is exactly how apiKeyEnv shipped as decorative config
       # once already.
       - run: node --test scripts/lib/ai-config-wiring.test.mjs
+      # Merge-gating logic: if this resolves to "enforce nothing", the
+      # performance check still prints and still passes, silently.
+      - run: node --test apps/web/scripts/perf-enforce.test.mjs
       - run: bash scripts/publish-badge.test.sh
       - run: bash scripts/check-outdated.test.sh
 
   audit:
     name: Dependency audit
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     needs: [changes]
     # Only scans the lockfile for known vulnerabilities — irrelevant to
@@ -338,6 +345,7 @@ jobs:
 
   test-api-unit:
     name: API unit tests
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     needs: [changes]
     # deps too, not just api — a root dependency bump (e.g. a Dependabot
@@ -381,6 +389,7 @@ jobs:
 
   test-api-e2e:
     name: API e2e tests
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'test-api-e2e'))
@@ -422,6 +431,7 @@ jobs:
 
   test-web:
     name: Web build + tests
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'test-web'))
@@ -455,6 +465,7 @@ jobs:
 
   docker-scan:
     name: Docker image vulnerability scan
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     needs: [changes]
     # Now path-filtered the same as docker-smoke — the CVE-freshness
@@ -494,6 +505,7 @@ jobs:
 
   docker-smoke:
     name: Docker dev stack smoke test
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.docker == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'docker-smoke'))
@@ -665,6 +677,7 @@ jobs:
 
   perf-budget:
     name: Web performance budget (Lighthouse)
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'perf-budget'))
@@ -703,6 +716,14 @@ jobs:
         run: pnpm test:perf
         env:
           PERF_BUDGET_RESULT_FILE: /tmp/lighthouse-result.json
+          # Block on the deterministic budget only. JS transfer is stable to
+          # the byte across runs of the same commit; LCP and the overall
+          # score swing wildly on shared runners -- unmodified `main`
+          # measured 1.4s-3.3s within one batch of five on 2026-08-19 and
+          # failed its own required check. Both are still measured, printed,
+          # and published to the dashboard history below; they just no
+          # longer block a merge. See perf-budget.mjs's ENFORCED comment.
+          PERF_BUDGET_ENFORCE: js
 
       # if: always() (scoped to push-to-main only, not every rerun) so a
       # real regression still lands in the history/dashboard instead of
@@ -749,6 +770,7 @@ jobs:
   # could break the catalog flow without this filter ever noticing.
   test-e2e-web:
     name: Web e2e (Playwright)
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.web == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'test-e2e-web'))
@@ -941,6 +963,7 @@ jobs:
 
   load-test:
     name: API load test (autocannon)
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     needs: [changes]
     if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'load-test'))
@@ -993,6 +1016,7 @@ jobs:
 
   ai-failure-analysis:
     name: AI CI failure analysis
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     # PR-only: a push-to-main failure has no PR thread to comment on, and
     # this job's whole point is posting a comment there. Explicit
@@ -1145,6 +1169,7 @@ jobs:
   # skip-logic behave correctly, and do the results look sane.
   ai-code-review:
     name: AI code review
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
     permissions:
@@ -1346,6 +1371,7 @@ jobs:
   # that was actually skipped in the current run.
   ai-ci-results-review:
     name: AI CI-results review
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     # Deliberately `always()`, unconditional on needs.*.result -- NOT the
     # "skip if anything upstream failed" gate pass 1 used to have. That
@@ -1539,6 +1565,7 @@ jobs:
 
   migrate:
     name: Apply prod DB migrations
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     # Only the prod image's own container can reach the app at runtime, but
     # the prod image deliberately has no prisma CLI (see apps/api/Dockerfile

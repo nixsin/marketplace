@@ -12,20 +12,41 @@ import {
   LIGHTHOUSE_RUNS,
   PERFORMANCE_SCORE_BUDGET,
 } from "@medinstru/config";
+import { resolveEnforcedMetrics } from "./perf-enforce.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(__dirname, "..");
 const PORT = 3998;
 const BASE_URL = `http://localhost:${PORT}`;
 
-// Every threshold here now comes from @medinstru/config, imported above.
-// jsBudgetBytes in particular used to be declared separately in this file
-// *and* in test/bundle-budget.spec.ts — two scripts measuring the same
-// thing with independently-editable numbers, held in sync only by a
-// CLAUDE.md note saying they "must move together." One shared constant
-// makes that structural rather than remembered. See the config module and
-// bundle-budget.spec.ts's own comment for the raise history and for why
-// Lighthouse reads a few KB higher than curl for an identical build.
+// Every threshold here now comes from @medinstru/config, imported above --
+// including LIGHTHOUSE_RUNS, whose own "single runs swing wildly on shared
+// runners" reasoning lives alongside it there. jsBudgetBytes in particular
+// used to be declared separately in this file *and* in
+// test/bundle-budget.spec.ts, two scripts measuring the same thing with
+// independently-editable numbers, held in sync only by a CLAUDE.md note
+// saying they "must move together." One shared constant makes that
+// structural rather than remembered.
+
+// Which measured budgets are allowed to FAIL the run, as a comma-separated
+// list of `score` / `lcp` / `js`. Defaults to all three, so a local
+// `pnpm test:perf` behaves exactly as it always has.
+//
+// CI's per-PR job sets this to `js` deliberately, and the reason is
+// measured rather than assumed. JS transfer is deterministic: PR #94
+// reported an identical 192.3KB across a failing run and a passing run of
+// the same commit. LCP is not: on 2026-08-19 an unmodified `main` produced
+// 1.4s, 2.4s, 2.8s, 2.8s and 3.3s within a single batch of five, and its
+// median failed the 2.5s budget outright -- `main` could not pass its own
+// required check reliably. Across the last 40 CI runs this job executed 10
+// times and failed 7, only one of which involved a real JS regression.
+//
+// LCP is still measured, printed, and published to the dashboard history --
+// it moves from "blocks the merge" to "tracked as a trend". Throws on an
+// empty or misspelled value rather than silently enforcing nothing; see
+// perf-enforce.mjs.
+const ENFORCED = resolveEnforcedMetrics(process.env.PERF_BUDGET_ENFORCE);
+
 const BUDGETS = {
   performanceScore: PERFORMANCE_SCORE_BUDGET,
   lcpMs: LCP_BUDGET_MS,
@@ -111,11 +132,20 @@ Median of ${LIGHTHOUSE_RUNS} runs for ${label}:
   JS transferred: ${(jsBytes / 1024).toFixed(1)}KB  (budget: <=${BUDGETS.jsBudgetBytes / 1024}KB)
 `);
 
-  const failures = [];
-  if (score < BUDGETS.performanceScore) failures.push("performance score below budget");
-  if (lcpMs > BUDGETS.lcpMs) failures.push("LCP exceeds budget");
-  if (jsBytes > BUDGETS.jsBudgetBytes) failures.push("JS transfer exceeds budget");
-  for (const f of failures) console.error(`FAIL (${label}): ${f}`);
+  // Every budget is always *measured* and always reported. Which ones are
+  // allowed to fail the run is separate -- see ENFORCED above.
+  const breaches = [];
+  if (score < BUDGETS.performanceScore) breaches.push(["score", "performance score below budget"]);
+  if (lcpMs > BUDGETS.lcpMs) breaches.push(["lcp", "LCP exceeds budget"]);
+  if (jsBytes > BUDGETS.jsBudgetBytes) breaches.push(["js", "JS transfer exceeds budget"]);
+
+  const failures = breaches.filter(([metric]) => ENFORCED.has(metric));
+  for (const [, message] of failures) console.error(`FAIL (${label}): ${message}`);
+  for (const [metric, message] of breaches) {
+    if (!ENFORCED.has(metric)) {
+      console.warn(`WARN (${label}): ${message} — not enforced (PERF_BUDGET_ENFORCE=${[...ENFORCED].join(",")})`);
+    }
+  }
 
   return { label, score, lcpMs, jsBytes, failed: failures.length > 0 };
 }
