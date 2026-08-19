@@ -27,12 +27,22 @@ const BUDGETS = {
   performanceScore: 0.9, // /1.0
   lcpMs: 2500, // §12A: LCP < 2.5s on Slow 4G
   // Was the original §12A target (150KB) — raised to match
-  // test/bundle-budget.spec.ts's own budget, which has moved twice since
-  // then for real, deliberate reasons (see that file's comment). Two
+  // test/bundle-budget.spec.ts's own budget, which has moved several times
+  // since then for real, deliberate reasons (see that file's comment). Two
   // scripts measuring the same thing with different numbers is a bug, not
   // two valid opinions; that file's number is the one with the documented
-  // history, so this follows it rather than the other way around.
-  jsBudgetBytes: 191 * 1024,
+  // history, so this follows it rather than the other way around. Most
+  // recent raise (191KB -> 194KB, #94) is also what first made the gap
+  // between this script's own Lighthouse-based measurement and that
+  // file's curl-based one visible and worth naming: Lighthouse's
+  // resource-summary transferSize reads ~3-4KB higher than curl's
+  // size_download for the identical build (HTTP response header bytes
+  // Chrome's DevTools Protocol counts that curl's body-only measurement
+  // doesn't — see "Known gotchas" in CLAUDE.md) — so this script's own
+  // margin against this shared number is always a few KB thinner than
+  // bundle-budget.spec.ts's is, not a discrepancy to "fix" by giving this
+  // script a different number.
+  jsBudgetBytes: 194 * 1024,
 };
 
 // A manual Lighthouse audit against the deployed site found a real LCP
