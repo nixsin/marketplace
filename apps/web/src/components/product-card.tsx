@@ -47,7 +47,27 @@ export function ProductCard({
     <Card className="w-full overflow-hidden py-0">
       <div className="flex flex-col sm:flex-row">
         {product.imageUrl && (
-          <div className="relative h-48 w-full shrink-0 bg-muted sm:h-auto sm:w-48">
+          /* The image links to the product too -- tapping a product's photo
+             is the most natural way into it, especially on mobile where the
+             image is the largest target on the card.
+
+             Still NOT a whole-card link: that would nest the "Send Inquiry"
+             button inside an <a>, which is invalid HTML and gives the button
+             two conflicting activation behaviours.
+
+             aria-hidden + tabIndex={-1} because this duplicates the title
+             link that sits a few pixels away, pointing at the same product.
+             Exposed, it would make a screen reader announce every product
+             twice and add a redundant tab stop per card -- the same
+             "ambiguous in aggregate" problem already fixed for this card's
+             Send Inquiry button. The alt text stays on the <img> for users
+             who reach the image itself. */
+          <Link
+            href={`/products/${product.id}`}
+            aria-hidden="true"
+            tabIndex={-1}
+            className="relative h-48 w-full shrink-0 bg-muted transition-opacity hover:opacity-90 sm:h-auto sm:w-48"
+          >
             <Image
               src={product.imageUrl}
               alt={product.name}
@@ -56,7 +76,7 @@ export function ProductCard({
               className="object-cover"
               priority={priority}
             />
-          </div>
+          </Link>
         )}
 
         <div className="flex flex-1 flex-col gap-(--card-spacing)">

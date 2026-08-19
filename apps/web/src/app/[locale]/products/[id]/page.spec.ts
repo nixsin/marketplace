@@ -69,7 +69,7 @@ describe("product detail generateMetadata", () => {
       id: "p1",
       name: "Portable Ultrasound",
       description: "A handheld point-of-care ultrasound system.",
-      imageUrl: "/images/ultrasound.svg",
+      imageUrl: "/products/ultrasound.svg",
     });
 
     const metadata = await generateMetadata({
@@ -85,7 +85,7 @@ describe("product detail generateMetadata", () => {
     // blank image frame -- the link appeared to work while looking broken,
     // and only on the recipient's phone. See src/lib/og-image.ts.
     expect(metadata.openGraph?.images).toEqual([
-      { url: "/images/ultrasound.png", width: 1200, height: 630 },
+      { url: "/products/ultrasound.png", width: 1200, height: 630 },
     ]);
   });
 
@@ -94,15 +94,19 @@ describe("product detail generateMetadata", () => {
       id: "p1",
       name: "Portable Ultrasound",
       description: "A handheld point-of-care ultrasound system.",
-      imageUrl: "/images/ultrasound.svg",
+      imageUrl: "/products/ultrasound.svg",
     });
 
     const metadata = await generateMetadata({
       params: Promise.resolve({ locale: "en", id: "p1" }),
     });
 
-    expect(metadata.twitter?.card).toBe("summary_large_image");
-    expect(metadata.twitter?.images).toEqual(["/images/ultrasound.png"]);
+    // Metadata["twitter"] is a union of card shapes, so `card`/`images`
+    // are not readable off the un-narrowed type. The assertion is on the
+    // real emitted object either way.
+    const twitter = metadata.twitter as { card?: string; images?: unknown };
+    expect(twitter.card).toBe("summary_large_image");
+    expect(twitter.images).toEqual(["/products/ultrasound.png"]);
   });
 
   it("omits openGraph images entirely when the product has no image", async () => {

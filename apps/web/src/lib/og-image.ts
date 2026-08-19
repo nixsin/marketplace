@@ -46,8 +46,33 @@ export const OG_IMAGE_HEIGHT = 630;
  */
 export function ogImageUrl(imageUrl: string | null | undefined): string | undefined {
   if (!imageUrl) return undefined;
-  // Anchored to the very end so a path like `/svg-icons/thing.png` is not
-  // rewritten, and case-insensitive because the extension is data, not a
-  // constant we control.
-  return imageUrl.replace(/\.svg$/i, ".png");
+
+  // Split off any query/fragment before looking at the extension, so
+  // `/products/x.svg?v=2` is still recognised as an SVG. Without this the
+  // rewrite silently misses and re-emits the unsupported SVG -- the exact
+  // bug being fixed, just harder to spot.
+  const [path, suffix = ""] = splitSuffix(imageUrl);
+  if (!/\.svg$/i.test(path)) return imageUrl; // already a raster; pass through
+
+  // Only rewrite images we actually ship a twin for. Every SVG under
+  // MANAGED_PREFIX has a committed PNG (enforced by og-image.spec.ts);
+  // an SVG from anywhere else -- a seller upload, a CDN -- has no twin,
+  // and pointing at a .png that does not exist would advertise a 404.
+  //
+  // This module's own rule decides the fallback: a broken image URL
+  // previews WORSE than no image, because the scraper renders an empty
+  // frame instead of a clean text-only card. So an unmanaged SVG yields
+  // undefined and the caller omits og:image entirely.
+  if (!path.startsWith(MANAGED_PREFIX)) return undefined;
+
+  return `${path.replace(/\.svg$/i, ".png")}${suffix}`;
+}
+
+/** Product images we ship, and therefore generate PNG twins for. */
+const MANAGED_PREFIX = "/products/";
+
+/** Splits a URL into its path and its `?query#fragment` tail. */
+function splitSuffix(url: string): [string, string] {
+  const i = url.search(/[?#]/);
+  return i === -1 ? [url, ""] : [url.slice(0, i), url.slice(i)];
 }

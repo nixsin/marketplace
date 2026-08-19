@@ -136,25 +136,29 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
           being opened from a cold WhatsApp link on a slow connection,
           before hydration completes. */}
       <div className="order-first sm:order-none">
-        {/* WhatsApp's official green (#25D366), so the button reads
-            instantly as "this goes to WhatsApp" -- the same reason it
-            carries the real mark rather than a generic share glyph.
-            
-            Text is near-black, NOT white, and that is a deliberate
-            departure from WhatsApp's own buttons. Contrast was measured
-            rather than assumed: white on #25D366 is 1.98:1, far under
-            WCAG AA's 4.5:1 for normal text, and this repo runs an axe
-            check in CI and has a documented history of fixing exactly this
-            class of failure (see CLAUDE.md's contrast audit, which caught
-            3.65:1 and 4.02:1 badges). Near-black on the same green is
-            10.59:1. The alternative that keeps white text is WhatsApp's
-            dark teal #075E54 at 7.67:1 -- also compliant, but far less
-            recognisable as "WhatsApp" at a glance, which defeats the point
-            of using the brand colour at all. */}
+        {/* Green with a WHITE mark and white text -- WhatsApp's own lockup,
+            which is what makes the button recognisable at a glance before
+            anyone reads it.
+
+            The exact green is the one real compromise here, and it was
+            measured, not eyeballed. WhatsApp's signature #25D366 cannot
+            carry white text accessibly: white on it is 1.98:1 against WCAG
+            AA's 4.5:1 for normal text. That is not a rule this repo can
+            wave through -- it runs axe in CI and has already fixed 3.65:1
+            and 4.02:1 failures (see CLAUDE.md's contrast audit). Every
+            other official WhatsApp colour fails white too (#1DA851 3.10,
+            their teal #128C7E 4.14); the only one that passes is the dark
+            teal #075E54, which stops reading as green at all.
+
+            So: a deep WhatsApp-family green at 5.42:1. Keeps the white
+            lockup and the green identity, and passes. The earlier attempt
+            kept #25D366 exactly and darkened the TEXT instead, which
+            passed at 10.59:1 but looked nothing like a WhatsApp button --
+            brand recognition is the entire reason for using the colour. */}
         <Button
           asChild
           size="lg"
-          className="w-full gap-2 text-base shadow-sm sm:w-auto bg-[#25D366] text-[#0B2818] hover:bg-[#1DA851] focus-visible:ring-[#25D366]/50"
+          className="w-full gap-2 text-base shadow-sm sm:w-auto bg-[#0F7A3D] text-white hover:bg-[#0C6531] focus-visible:ring-[#25D366]/50"
         >
           <a
             href={whatsappShareHref(
@@ -164,7 +168,9 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
             rel="noopener noreferrer"
             aria-label={t("shareAbout", { productName: product.name })}
           >
-            <WhatsAppIcon className="size-5" />
+            {/* size-6, not size-5: at the smaller size the mark's bubble
+                outline thins out enough to read as a generic circle. */}
+            <WhatsAppIcon className="size-6" />
             {t("shareOnWhatsApp")}
           </a>
         </Button>
