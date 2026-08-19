@@ -1313,6 +1313,35 @@ a review (proven live on this job's own introducing PR, 5+ real rounds):
    is converged, not "still in progress." At that point it's a human
    decision — admin-bypass with the reasoning already on record, or
    escalate — never a third attempt at the same fix.
+4. **Re-review your own fix before pushing it — a fix is new code, and
+   new code gets new findings.** This has now produced a review round
+   twice, in the same shape both times: on `docker-web-prod-boot`'s PR,
+   the exact-`200` status check added to satisfy one finding introduced a
+   `set -e` abort that silently defeated the whole retry loop; on PR #94,
+   a database-safety guard added to satisfy a High finding used
+   `.includes("test")`, which the next round correctly caught as letting
+   `contest`/`latest` through to a suite that runs `TRUNCATE CASCADE`.
+   Neither was the reviewer being pedantic — both were real defects in
+   the remediation itself. The cheapest place to catch this is the local
+   precheck (below), which reviews the diff you are *about* to push,
+   fix included; the second cheapest is reading your own fix as if
+   someone else wrote it. A round spent on a self-inflicted finding costs
+   exactly as much as a round spent on a real one.
+5. **Batch a round's fixes into one push, and fix the whole class rather
+   than the cited instance.** The reviewer is stateless and re-reads the
+   entire diff every time, so pushing after each individual fix buys
+   nothing and costs a full round per fix. Two rules follow from that:
+   *(a)* when a round returns N findings, resolve all N — fixed or
+   disputed-with-evidence in the override log — before pushing once;
+   *(b)* when a finding names one instance of a pattern, sweep for the
+   others in the same push, because the reviewer will find them next
+   round otherwise. PR #94's round-2 database-guard finding cited only
+   `products.e2e-spec.ts`, but the same unguarded `TRUNCATE CASCADE`
+   existed in `auth.e2e-spec.ts` and `organizations.e2e-spec.ts` — wiring
+   all three at once is what kept that from becoming rounds 5 and 6. The
+   inverse also holds: a single-finding round is the *expected* shape
+   near convergence, and isn't worth artificially delaying a push to
+   batch against a finding that doesn't exist yet.
 
 **Override-decision log — the implementer's half of not repeating step 2.**
 Every time a finding gets fixed or disputed rather than accepted at face
@@ -1420,15 +1449,12 @@ here too.
 **Its closest CI counterpart is now pass 1 (`ai-code-review`), not "the
 CI job" generically** — since the two-pass split, pass 1 is *also*
 diff-only with no CI grounding, the same design this precheck already
-had. What's still deliberately different, two real differences instead
-of the original three (the precheck predates the split, back when there
-was only one CI job to compare against and "no CI grounding" was a real
-gap between them — it no longer is, for pass 1 specifically):
-- **Lower reasoning effort** (`low` vs pass 1's `medium`) — this runs on
-  every push, not once per PR, so latency matters more here than review
-  depth.
-- **Fails OPEN, not closed.** A missing local `OPENAI_API_KEY` (it's
-  optional — most contributors won't have one set locally), a network
+had. As of 2026-08-19 it also runs at the *same* reasoning effort as pass
+1, so exactly one real difference remains (the precheck predates the
+split, back when there was only one CI job to compare against and "no CI
+grounding" was a real gap between them — it no longer is, for pass 1
+specifically):
+- **Fails OPEN, not closed.** A missing local `OPENAI_API_KEY`, a network
   error, or any other failure to get a usable review prints a warning and
   lets the push through, unlike `ai-code-review.mjs`'s fail-closed design.
   The real CI gate still runs on the PR regardless and still fails closed
@@ -1437,6 +1463,35 @@ gap between them — it no longer is, for pass 1 specifically):
   block the push (non-zero exit, same as the existing `pre-commit`
   lint-staged hook) — override with `git push --no-verify` if you disagree
   with a specific finding, same escape hatch as any other husky hook.
+
+**Reasoning effort was raised `low` → `medium` (2026-08-19) to match pass
+1, reversing the original latency-over-depth trade.** The `low` setting
+was chosen on the theory that a fast heads-up beats a thorough one when
+something runs on every push. Measured against real review rounds, that
+trades the wrong way: a local pass *weaker* than the CI pass it previews
+can only ever miss findings CI then raises, and each miss costs a full CI
+round-trip (~4 minutes of jobs plus a review pass) to save roughly 20
+seconds of local latency. PR #94 is the worked example — four review
+rounds, of which the coverage gap, a `.includes("test")` substring bug in
+a database-safety guard, and a hardcoded English metadata title were all
+diff-only findings squarely in this precheck's scope. Override per-push
+with `PRECHECK_EFFORT` if a specific push genuinely needs speed over
+parity.
+
+**The missing-key path is deliberately loud, and deliberately not phrased
+as "optional."** It used to print `OPENAI_API_KEY not set locally (this is
+optional — export it to enable this precheck)`, which read as routine
+informational output — and was scrolled past unnoticed across an entire
+session's worth of pushes while CI review rounds kept surfacing findings
+this would have caught first. Every *other* skip path here covers a
+transient or unavoidable condition (no network, no diff, an unfetched base
+ref); this one covers a standing misconfiguration that silently disables
+the whole precheck indefinitely, which is a different thing and now reads
+like one: a boxed warning naming the actual cost, plus the exact command
+to fix it. `PRECHECK_OPTOUT=1` silences it for anyone who genuinely
+doesn't want the precheck — an explicit, recorded choice rather than
+learning to ignore a warning, since an ignored warning has stopped being a
+signal at all. Both paths still exit 0; fail-open is unchanged.
 
 **Has no equivalent to pass 2 at all** — there's no local "does the
 skip-logic/CI-results look right" precheck, since none of that exists
