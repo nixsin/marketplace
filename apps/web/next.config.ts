@@ -82,6 +82,29 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        // Build identity on every response, readable with `curl -I`. This
+        // exists because of a real deploy-skew incident (2026-08-19): four
+        // PRs merged in quick succession, Render deployed each service
+        // independently, and the web app went live calling a `product(id)`
+        // query the API had not deployed yet -- every detail page 500'd,
+        // and nothing either service exposed made the mismatch visible.
+        //
+        // A response header rather than a <meta> tag deliberately: the meta
+        // route depends on Next's metadata pipeline and, when tried, the
+        // values landed in the prerendered .html on disk but did not appear
+        // in the served response. A header is emitted by next.config.ts
+        // itself, is trivially greppable, and needs no HTML parsing.
+        //
+        // Read from the environment at RUNTIME, not inlined at build: the
+        // prod stage persists these as ENV, so what the header reports is
+        // what the running container actually is.
+        source: "/:path*",
+        headers: [
+          { key: "X-Build-Commit", value: process.env.BUILD_COMMIT || "unknown" },
+          { key: "X-Build-Time", value: process.env.BUILD_TIME || "unknown" },
+        ],
+      },
+      {
         // Not content-hashed (fixed URL), so unlike /_next/static/* this
         // can't be `immutable` — a real favicon update needs to be visible
         // within a day, not cached forever. Still a real improvement over

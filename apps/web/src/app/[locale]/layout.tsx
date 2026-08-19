@@ -8,7 +8,7 @@ import { LocaleProvider } from "@/components/locale-provider";
 import { Header } from "@/components/header";
 import { Footer } from "@/components/footer";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
-import { API_URL, SITE_URL } from "@medinstru/config";
+import { API_URL, BUILD_COMMIT, BUILD_TIME, SITE_URL } from "@medinstru/config";
 import "../globals.css";
 
 const geistSans = Geist({
@@ -86,7 +86,19 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { locale } = await params;
   const t = await getTranslations({ locale, namespace: "metadata" });
-  return { title: t("title"), description: t("description"), metadataBase: getSiteUrl() };
+  return {
+    title: t("title"),
+    description: t("description"),
+    metadataBase: getSiteUrl(),
+    // Baked into every page so the running build is readable with a plain
+    // curl -- see @medinstru/config's BUILD_COMMIT for the deploy-skew
+    // incident this exists to make visible. `other` is Next's escape hatch
+    // for arbitrary <meta> tags.
+    other: {
+      "build-commit": BUILD_COMMIT,
+      "build-time": BUILD_TIME,
+    },
+  };
 }
 
 export default async function LocaleLayout({

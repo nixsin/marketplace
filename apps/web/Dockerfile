@@ -83,7 +83,17 @@ ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 # "not configured" rather than a misleading placeholder value.
 ARG RENDER_GIT_COMMIT=""
 ENV RENDER_GIT_COMMIT=$RENDER_GIT_COMMIT
-RUN pnpm --filter web build
+# NEXT_PUBLIC_* so the values reach client and server alike, and so they
+# are inlined at build time -- a runtime env var would be too late, exactly
+# as documented for NEXT_PUBLIC_API_URL above.
+#
+# BUILD_TIME is generated here rather than passed in: Render provides no
+# build-timestamp variable, and it must be the moment this image was built.
+# Both flow into <meta> tags via @medinstru/config -- see BUILD_COMMIT there
+# for the deploy-skew incident that motivated it.
+RUN NEXT_PUBLIC_BUILD_COMMIT="${RENDER_GIT_COMMIT:-unknown}" \
+    NEXT_PUBLIC_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    pnpm --filter web build
 RUN pnpm --filter web deploy --prod --legacy /out
 
 # ---- prod: no pnpm, no workspace, no dev deps — but not minimal in the
@@ -138,5 +148,13 @@ COPY --from=build /repo/apps/web/package.json ./package.json
 # under src/ doesn't silently reintroduce this same class of outage.
 COPY --from=build /repo/apps/web/src ./src
 COPY --from=build /repo/apps/web/next.config.ts ./next.config.ts
+# Build identity, persisted as runtime ENV so next.config.ts's headers()
+# reports what this container actually is. Passed through from the build
+# stage rather than recomputed, so the header and the compiled bundle can
+# never disagree.
+ARG RENDER_GIT_COMMIT=""
+ENV BUILD_COMMIT=$RENDER_GIT_COMMIT
+ARG BUILD_TIME=""
+ENV BUILD_TIME=$BUILD_TIME
 EXPOSE 3000
 CMD ["node_modules/.bin/next", "start"]
