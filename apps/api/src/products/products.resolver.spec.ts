@@ -3,13 +3,33 @@ import { ProductsService } from './products.service';
 
 describe('ProductsResolver', () => {
   let resolver: ProductsResolver;
-  let mockProductsService: { findPage: jest.Mock; findPaged: jest.Mock };
+  let mockProductsService: {
+    findById: jest.Mock;
+    findPage: jest.Mock;
+    findPaged: jest.Mock;
+  };
 
   beforeEach(() => {
-    mockProductsService = { findPage: jest.fn(), findPaged: jest.fn() };
+    mockProductsService = {
+      findById: jest.fn(),
+      findPage: jest.fn(),
+      findPaged: jest.fn(),
+    };
     resolver = new ProductsResolver(
       mockProductsService as unknown as ProductsService,
     );
+  });
+
+  describe('product', () => {
+    it('passes id through to productsService.findById', async () => {
+      const expected = { id: 'p1', name: 'Product 1' };
+      mockProductsService.findById.mockResolvedValue(expected);
+
+      const result = await resolver.product('p1');
+
+      expect(mockProductsService.findById).toHaveBeenCalledWith('p1');
+      expect(result).toBe(expected);
+    });
   });
 
   describe('products', () => {

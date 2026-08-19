@@ -31,6 +31,22 @@
     "sendInquiry": "Send Inquiry",
     "sendInquiryAbout": "Send inquiry about {productName}"
   },
+  "productDetails": {
+    "deviceClass": "Class {class}",
+    "brandLocation": "{brand} · {location}",
+    "specifications": "Specifications",
+    "noSpecifications": "No additional specifications listed.",
+    "seller": "Seller",
+    "gstin": "GSTIN: {gstin}",
+    "sellerVerification": "Seller KYC status: {status}",
+    "lastUpdated": "Last updated {date}",
+    "notFoundTitle": "Product not found",
+    "notFoundMessage": "This product may have been removed or is no longer listed.",
+    "backToListing": "Back to listings",
+    "errorTitle": "Something went wrong",
+    "errorMessage": "We couldn't load this product. Please try again.",
+    "retry": "Try again"
+  },
   "languageSwitcher": {
     "label": "Language"
   }

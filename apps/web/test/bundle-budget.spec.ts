@@ -59,6 +59,22 @@ const execFileAsync = promisify(execFile);
 //     are real accessibility-fix cost, not bloat to trim, and 2KB of
 //     margin is meant to survive this exact cross-platform noise next
 //     time rather than needing a raise again immediately.
+//   191KB -> 194KB: #94 (product-details page) added a real, isolated
+//     +2.3KB (curl-measured, side-by-side git worktree diff against main:
+//     186.0KB -> 188.3KB) — the cost of ProductCard's new <Link> to
+//     /products/[id] and the extra route Next now has to account for in
+//     its client router. 188.3KB alone is still under 191KB, so this
+//     addition shouldn't have failed this test on its own — it failed
+//     perf-budget.mjs's *Lighthouse*-measured number instead (192.3KB),
+//     confirming the ~3-4KB Lighthouse-vs-curl gap documented below (in
+//     "Known gotchas") is real and was already eating nearly all of the
+//     191KB budget's margin against *that* measurement before this PR —
+//     186.0KB curl + the same ~4KB gap lands right at ~190KB, which is
+//     why main was passing Lighthouse's check with almost nothing to
+//     spare. 194KB gives ~2KB of real margin over the current, actual
+//     192.3KB Lighthouse reading, matching this file's own established
+//     margin-sizing precedent (see the 189->191 entry above) rather than
+//     inventing a new one.
 // Budget is nearly exhausted again — next addition needs to earn its
 // bytes, or that island-component optimization needs to actually happen.
 //

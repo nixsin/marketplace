@@ -8,7 +8,7 @@ import { LocaleProvider } from "@/components/locale-provider";
 import { Header } from "@/components/header";
 import { Footer } from "@/components/footer";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
-import { API_URL } from "@medinstru/config";
+import { API_URL, SITE_URL } from "@medinstru/config";
 import "../globals.css";
 
 const geistSans = Geist({
@@ -60,6 +60,21 @@ function getApiOrigin(): string | null {
 }
 const API_ORIGIN = getApiOrigin();
 
+// metadataBase is required, not optional, once any route uses a relative
+// OpenGraph image URL (the product-details page does -- seeded imageUrls
+// are relative paths like "/products/diagnostic-imaging.svg"). Next.js
+// errors at build time on a relative image URL with no metadataBase
+// configured. Guarded the same defensively as getApiOrigin() above: a
+// throw here would break metadata for every route, not just the one that
+// actually needs it.
+function getSiteUrl(): URL | undefined {
+  try {
+    return new URL(SITE_URL);
+  } catch {
+    return undefined;
+  }
+}
+
 export function generateStaticParams() {
   return routing.locales.map((locale) => ({ locale }));
 }
@@ -71,7 +86,7 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { locale } = await params;
   const t = await getTranslations({ locale, namespace: "metadata" });
-  return { title: t("title"), description: t("description") };
+  return { title: t("title"), description: t("description"), metadataBase: getSiteUrl() };
 }
 
 export default async function LocaleLayout({

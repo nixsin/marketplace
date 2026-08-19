@@ -1,4 +1,5 @@
 import type { Product } from "@/components/product-card";
+import type { ProductDetail } from "@/components/product-detail";
 import { API_URL } from "@medinstru/config";
 
 // GraphQL doesn't care about whitespace/formatting, but this goes in a URL
@@ -54,6 +55,100 @@ export interface ProductsPaged {
   pageSize: number;
   totalCount: number;
   totalPages: number;
+}
+
+const PRODUCT_QUERY = minifyGql(`
+  query Product($id: ID!) {
+    product(id: $id) {
+      id name brand category deviceClass certifications location
+      description imageUrl details updatedAt
+      seller { name gstin kycStatus }
+    }
+  }
+`);
+
+interface ProductResponse {
+  data: {
+    product: {
+      id: string;
+      name: string;
+      brand: string;
+      category: string;
+      deviceClass: "A" | "B" | "C" | "D" | null;
+      certifications: string[];
+      location: string;
+      description: string;
+      imageUrl: string | null;
+      details: Record<string, unknown> | null;
+      updatedAt: string;
+      seller: {
+        name: string;
+        gstin: string | null;
+        kycStatus: "PENDING" | "UNDER_REVIEW" | "APPROVED" | "REJECTED";
+      };
+    } | null;
+  };
+  errors?: { message: string }[];
+}
+
+// Distinct from fetchProductsPaged's Product return type -- the list stays
+// lean (see product-card.tsx's Product interface); this fetches the
+// heavier detail shape only when a single product view is actually
+// opened. Same GraphQL-over-GET pattern (GET, CSRF preflight header,
+// credentials: "omit") for the same reasons documented on
+// fetchProductsPaged below.
+//
+// Returns null specifically for a matched "not found" GraphQL error (the
+// backend's NotFoundException, see products.service.ts) -- the caller
+// (the product-details page) turns that into Next's notFound(). Any other
+// error (network failure, a different GraphQL error) throws instead, to
+// be caught by the route's error.tsx boundary -- these are two genuinely
+// different situations for the UI, not the same "something went wrong".
+export async function fetchProduct(id: string): Promise<ProductDetail | null> {
+  const url = new URL(API_URL);
+  url.searchParams.set("query", PRODUCT_QUERY);
+  url.searchParams.set("variables", JSON.stringify({ id }));
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      "apollo-require-preflight": "true",
+    },
+    credentials: "omit",
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch product (${res.status})`);
+  }
+
+  const json = (await res.json()) as ProductResponse;
+
+  if (json.errors) {
+    if (json.errors.some((e) => /not found/i.test(e.message))) return null;
+    throw new Error(json.errors[0]?.message ?? "GraphQL error");
+  }
+
+  const p = json.data.product;
+  if (!p) return null;
+
+  return {
+    id: p.id,
+    name: p.name,
+    brand: p.brand,
+    category: p.category,
+    deviceClass: p.deviceClass ?? undefined,
+    certifications: p.certifications,
+    location: p.location,
+    description: p.description,
+    imageUrl: p.imageUrl ?? undefined,
+    details: p.details ?? undefined,
+    updatedAt: p.updatedAt,
+    seller: {
+      name: p.seller.name,
+      gstin: p.seller.gstin ?? undefined,
+      kycStatus: p.seller.kycStatus,
+    },
+  };
 }
 
 export async function fetchProductsPaged(
