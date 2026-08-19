@@ -1464,6 +1464,24 @@ specifically):
   lint-staged hook) — override with `git push --no-verify` if you disagree
   with a specific finding, same escape hatch as any other husky hook.
 
+**Both diff reviewers are now told to report every finding at once
+(2026-08-19), and that instruction is load-bearing.** The prompt used to
+say *what* to review for but never that the review had to be exhaustive —
+so it returned one finding per round. PR #97 is the worked example: five
+rounds, exactly one finding each, and **all four findings already existed
+at round one** (verified by re-reading the round-1 diff; none were
+introduced by the fixes for earlier rounds). Four sequential round-trips
+delivered what a single exhaustive pass could have. The added wording
+asks for every finding ordered by severity, prefixed `[High]`/`[Medium]`/
+`[Low]`, and explicitly says not to hold anything back for a later round
+because the author fixes in batches. Applied to `ai-code-review.mjs`
+(pass 1) and the precheck — deliberately *not* to
+`ai-ci-results-review.mjs`, whose job is a narrow mechanical check
+(skip-logic sanity, do the results look right) rather than an open-ended
+hunt. Worth measuring rather than assuming: compare rounds-per-PR after a
+few real PRs against the historical counts (#90: 18 blocking reviews,
+#94: 14, #97: 4).
+
 **Reasoning effort was raised `low` → `medium` (2026-08-19) to match pass
 1, reversing the original latency-over-depth trade.** The `low` setting
 was chosen on the theory that a fast heads-up beats a thorough one when
@@ -1879,6 +1897,32 @@ it there too the moment the prefix comes off.
   bytes (fresh headless Chrome per run) instead of trusting a single sample —
   this is what Lighthouse CI itself does by default. If this check flakes
   again, that's a real anomaly worth a closer look, not just "run it again."
+
+  **Median-of-5 turned out not to be enough, and as of 2026-08-19 the CI
+  job only *enforces* the JS budget.** The advice directly above — treat a
+  flake as a real anomaly — was measured and found wrong: across the last
+  40 CI runs, `perf-budget` executed 10 times and **failed 7**. Six of
+  those seven were LCP-only; exactly one involved a genuine JS regression
+  (PR #94's real +2.3KB). A 70% failure rate on a *required* check inverts
+  its meaning — every red becomes noise to dismiss rather than a signal to
+  act on, which is precisely the state that gets a check bypassed by
+  habit. The decisive evidence: a `workflow_dispatch` run of
+  `perf-budget` against **unmodified `main`** failed at 2.8s median, and
+  within that same batch of five LCP measured 1.4s, 2.4s, 2.8s, 2.8s and
+  3.3s. `main` could not reliably pass its own required check.
+
+  The split follows what each metric actually is. JS transfer is
+  **deterministic** — PR #94 reported an identical 192.3KB across a
+  failing run and a passing run of the same commit, so a change in it is
+  always real. LCP and the overall score are **timing-sensitive** and
+  reflect runner contention more than code. So `PERF_BUDGET_ENFORCE`
+  (default `score,lcp,js`, so a local `pnpm test:perf` is unchanged) is
+  set to `js` in `ci.yml`: everything is still measured, printed, and
+  published to the dashboard history, but only the deterministic budget
+  blocks a merge. LCP moved from "blocks the merge" to "tracked as a
+  trend". Revisit enforcing it if runs ever move to dedicated hardware, or
+  if the budget gains enough margin to survive the observed spread — not
+  by reflexively re-enabling it.
 - **Turbopack's `//# sourceMappingURL` doesn't match the chunk's own
   filename hash** in this Next.js version — `<hash>.js` chunks reference a
   `.js.map` under a *different* hash, unrelated to any `.js` file actually in
