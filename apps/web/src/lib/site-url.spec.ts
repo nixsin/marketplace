@@ -21,6 +21,30 @@ describe("siteUrlProblem", () => {
     expect(siteUrlProblem("medinstru-web.onrender.com")).toMatch(/not a valid URL/);
   });
 
+  it.each([
+    ["a password in a local URL", "https://user:hunter2@localhost", "hunter2"],
+    ["a password in a public URL", "https://user:hunter2@example.com", "hunter2"],
+    ["a token in a query string", "https://example.com/?token=s3cr3t", "s3cr3t"],
+    ["a token in a fragment", "https://example.com/#access=s3cr3t", "s3cr3t"],
+    ["a secret in an unparseable value", "not a url s3cr3t", "s3cr3t"],
+  ])("never echoes %s into the build log", (_label, value, secret) => {
+    // This message is thrown from next.config.ts and lands in a build log
+    // far more widely readable than the variable it describes. The
+    // credentials case is the sharp one: the local-address branch used to
+    // run FIRST and echoed the whole value, so the password was already in
+    // the message before the credentials branch was ever reached.
+    const problem = siteUrlProblem(value);
+    expect(problem).not.toBeNull();
+    expect(problem).not.toContain(secret);
+    expect(siteUrlErrorMessage(problem!)).not.toContain(secret);
+  });
+
+  it("still says enough to be actionable without the secret", () => {
+    expect(siteUrlProblem("https://user:pw@example.com")).toMatch(/credentials/);
+    expect(siteUrlProblem("https://example.com/?token=x")).toMatch(/query string/);
+    expect(siteUrlProblem("https://example.com/deep/path")).toMatch(/a path/);
+  });
+
   it("rejects a non-http scheme", () => {
     // Parses fine, but nothing that renders a share link or fetches an
     // og:image would follow it.
@@ -78,6 +102,17 @@ describe("siteUrlProblem", () => {
     // 8.8.8.8 -> 0808:0808. Mapping must not blanket-reject.
     expect(siteUrlProblem("http://[::ffff:8.8.8.8]")).toBeNull();
     expect(siteUrlProblem("http://[::ffff:808:808]")).toBeNull();
+  });
+
+  it.each([
+    "http://[ff00::1]",
+    "http://[ff02::1]",
+    "http://[2001:db8::1]",
+  ])("rejects the non-public IPv6 address %s", (value) => {
+    // Multicast is not something a browser fetches a page from, and
+    // 2001:db8::/32 is the documentation range -- a very plausible paste
+    // out of a tutorial.
+    expect(siteUrlProblem(value)).toMatch(/local address/);
   });
 
   it("accepts a public IPv6 address", () => {

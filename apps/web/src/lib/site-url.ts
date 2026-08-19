@@ -85,8 +85,17 @@ function isUnreachableIpv6(hostname: string): boolean {
   const mapped = mappedIpv4(addr);
   if (mapped) return isUnreachableIpv4(mapped);
 
-  // fc00::/7 covers fc and fd; fe80::/10 covers fe8 through feb.
-  return /^f[cd][0-9a-f]{0,2}:/.test(addr) || /^fe[89ab][0-9a-f]?:/.test(addr);
+  return (
+    // fc00::/7 (unique-local) covers fc and fd.
+    /^f[cd][0-9a-f]{0,2}:/.test(addr) ||
+    // fe80::/10 (link-local) covers fe8 through feb.
+    /^fe[89ab][0-9a-f]?:/.test(addr) ||
+    // ff00::/8 multicast -- an address a browser cannot fetch a page from.
+    /^ff[0-9a-f]{0,2}:/.test(addr) ||
+    // 2001:db8::/32, reserved for documentation and examples. Not routable,
+    // and a very plausible copy-paste out of a tutorial.
+    /^2001:0?db8:/.test(addr)
+  );
 }
 
 /** The embedded IPv4 of a `::ffff:` address, in dotted form, else null. */
@@ -113,32 +122,63 @@ function mappedIpv4(addr: string): string | null {
 export function siteUrlProblem(raw: string | undefined | null): string | null {
   const value = raw?.trim();
   if (!value) return "it is not set";
-  if (!URL.canParse(value)) return `it is not a valid URL: ${value}`;
+
+  // NOTE ON WHAT THESE MESSAGES MAY CONTAIN.
+  //
+  // This string is thrown from next.config.ts, so it lands in a build log
+  // that is far more widely readable than the environment variable it
+  // describes. Echoing the raw value back would therefore publish anything
+  // embedded in it -- `https://user:secret@localhost` or
+  // `https://example.com/?token=...` are exactly the shapes that get pasted
+  // into a config field by mistake, and the credentials branch below only
+  // ran AFTER the local-address branch, so the password was already in the
+  // message by then.
+  //
+  // So: no branch echoes the whole value. Each names only the component
+  // that is actually wrong, and the credential and query CONTENTS are never
+  // included -- only the fact that they are present.
+  if (!URL.canParse(value)) {
+    // Deliberately no value: an unparseable string cannot be decomposed
+    // into safe and unsafe parts, and the variable's name is already in
+    // the message, which is enough to go and look at it.
+    return "it is not a valid URL";
+  }
 
   const url = new URL(value);
   if (!/^https?:$/.test(url.protocol)) {
-    return `it must be an http(s) URL, got: ${value}`;
-  }
-  const host = url.hostname;
-  if (LOCAL_HOSTNAMES.test(host) || isUnreachableIpv4(host) || isUnreachableIpv6(host)) {
-    return `it points at a local address, which no recipient can open: ${value}`;
+    return `it must be an http(s) URL, but its scheme is "${url.protocol.replace(":", "")}"`;
   }
 
-  // Credentials would be carried into every share link and og:image URL,
-  // publishing them to whoever the page is forwarded to. That is a leak,
-  // not a formatting mistake, so it is rejected outright rather than
-  // stripped -- silently repairing it would hide that a secret was pasted
-  // into a build variable in the first place.
+  // Before the host check, so a credential in a local-address URL is never
+  // echoed by the branch below.
+  //
+  // Credentials would also be carried into every share link and og:image
+  // URL, publishing them to whoever the page is forwarded to. Rejected
+  // outright rather than stripped: silently repairing it would hide that a
+  // secret was pasted into a build variable in the first place.
   if (url.username || url.password) {
     return "it contains credentials, which would be published in every shared link";
+  }
+
+  const host = url.hostname;
+  if (LOCAL_HOSTNAMES.test(host) || isUnreachableIpv4(host) || isUnreachableIpv6(host)) {
+    return `it points at a local address, which no recipient can open: ${host}`;
   }
 
   // This is an ORIGIN, and productShareUrl uses it as a base to resolve
   // "/<locale>/products/<id>" against -- so a path, query or fragment here
   // is silently discarded, and whoever set it would have no idea. Rejecting
   // says so plainly. A bare trailing slash is the same origin, so allowed.
-  if (url.pathname !== "/" || url.search || url.hash) {
-    return `it must be a bare origin with no path, query or fragment: ${value}`;
+  //
+  // Names which component offends, never its contents -- a query string is
+  // one of the likeliest places for a token to be hiding.
+  const extras = [
+    url.pathname !== "/" ? "a path" : null,
+    url.search ? "a query string" : null,
+    url.hash ? "a fragment" : null,
+  ].filter(Boolean);
+  if (extras.length) {
+    return `it must be a bare origin, but it has ${extras.join(" and ")} (origin: ${url.origin})`;
   }
 
   return null;

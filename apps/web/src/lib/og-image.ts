@@ -54,6 +54,14 @@ export function ogImageUrl(imageUrl: string | null | undefined): string | undefi
   const [path, suffix = ""] = splitSuffix(imageUrl);
   if (!/\.svg$/i.test(path)) return imageUrl; // already a raster; pass through
 
+  // Root-relative only. A relative path like `products/x.svg` resolves
+  // against whatever page is rendering it, so rewriting it to the absolute
+  // `/products/x.png` would silently point metadata at a different
+  // resource. Nothing we manage is relative -- and an absolute URL
+  // (`https://cdn.example/item.svg`) lands here too, correctly treated as
+  // unmanaged.
+  if (!path.startsWith("/")) return undefined;
+
   // Only rewrite images we actually ship a twin for. Every SVG under
   // MANAGED_PREFIX has a committed PNG (enforced by og-image.spec.ts);
   // an SVG from anywhere else -- a seller upload, a CDN -- has no twin,
@@ -98,27 +106,40 @@ const MANAGED_PREFIX = "/products/";
  * the path cannot be decoded at all.
  */
 function normalise(path: string): string[] | null {
-  // Decode first, and treat backslash as a separator. A previous version
-  // split on literal "/" and compared against literal ".." only, so
-  // `/products/%2e%2e/uploads/logo.svg` walked straight past the managed
-  // check -- it looks managed as a string, and a WHATWG URL consumer then
-  // resolves it to the unmanaged /uploads/logo.png. Backslashes are
-  // likewise normalised to "/" by URL parsing for http(s).
+  // Split on separators BEFORE decoding, then decode each segment on its
+  // own. Order matters: decoding the whole string first turned an ENCODED
+  // slash into a real one, so `/products/foo%2Fbar.svg` was split into two
+  // segments and emitted as `/products/foo/bar.png`, a different resource
+  // entirely. Splitting first keeps `%2F` inside its own segment, where
+  // the check below can then refuse it outright.
+  //
+  // Backslashes are separators for http(s) URLs per the WHATWG parser, so
+  // they are folded in before the split -- otherwise `..\uploads` slips
+  // past the traversal check.
+  //
+  // Decoding per segment still catches `%2e%2e`, since that segment decodes
+  // to ".." and is compared after decoding.
   //
   // decodeURIComponent throws on a malformed escape (a lone "%"), which
   // must not crash metadata generation: an undecodable path is not one we
-  // manage, so failing to a value that cannot match the prefix is right.
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(path);
-  } catch {
-    // An undecodable path is not one we manage, and metadata generation
-    // must not crash because of a bad image value.
-    return null;
-  }
-
+  // manage, so returning null (nothing is emitted) is the right failure.
   const out: string[] = [];
-  for (const segment of decoded.replace(/\\/g, "/").split("/")) {
+  for (const raw of path.replace(/\\/g, "/").split("/")) {
+    let segment: string;
+    try {
+      segment = decodeURIComponent(raw);
+    } catch {
+      return null;
+    }
+    // A segment whose DECODED form still contains a separator is refused
+    // outright. Whether %2F acts as a path separator depends on the server
+    // -- WHATWG URL keeps it inside the segment, but plenty of servers
+    // decode it first -- and that ambiguity is exactly where a traversal
+    // like `..%2fuploads` hides. Every image we manage is a flat filename
+    // under /products/, so nothing legitimate is lost by declining rather
+    // than guessing which interpretation the origin will apply.
+    if (segment.includes("/") || segment.includes("\\")) return null;
+
     if (segment === "..") out.pop();
     else if (segment !== "." && segment !== "") out.push(segment);
   }

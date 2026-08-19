@@ -68,6 +68,25 @@ describe("ogImageUrl", () => {
     expect(new URL(emitted, "https://x.test").search).toBe("");
   });
 
+  it("leaves a RELATIVE path alone rather than promoting it to absolute", () => {
+    // `products/x.svg` resolves against whatever page renders it. Emitting
+    // `/products/x.png` would silently point metadata at a different
+    // resource.
+    expect(ogImageUrl("products/x.svg")).toBeUndefined();
+    expect(ogImageUrl("./products/x.svg")).toBeUndefined();
+  });
+
+  it("refuses an encoded slash rather than guessing how a server reads it", () => {
+    // Decoding the whole path first split this into two segments and
+    // emitted a different resource. But preserving it is not obviously
+    // right either: WHATWG URL keeps %2F inside the segment while many
+    // servers decode it first, and that ambiguity is where `..%2fuploads`
+    // hides. Every managed image is a flat filename, so declining costs
+    // nothing and closes the question.
+    expect(ogImageUrl("/products/foo%2Fbar.svg")).toBeUndefined();
+    expect(ogImageUrl("/products/..%2fuploads/logo.svg")).toBeUndefined();
+  });
+
   it("does not crash on a malformed percent escape", () => {
     // decodeURIComponent throws on a lone "%". Metadata generation must
     // not fail because of a bad image value; an undecodable path is simply
