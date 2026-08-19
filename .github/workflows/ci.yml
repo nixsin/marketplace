@@ -279,6 +279,9 @@ jobs:
       - run: node --test scripts/lib/render-deploy-status.test.mjs
       - run: node --test scripts/wait-for-render-deploy.test.mjs
       - run: node --test scripts/coverage-dashboard/chart-math.test.mjs
+      # Merge-gating logic: if this resolves to "enforce nothing", the
+      # performance check still prints and still passes, silently.
+      - run: node --test apps/web/scripts/perf-enforce.test.mjs
       - run: bash scripts/publish-badge.test.sh
       - run: bash scripts/check-outdated.test.sh
 

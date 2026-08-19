@@ -6,6 +6,7 @@ import path from "node:path";
 import { writeFileSync } from "node:fs";
 import * as chromeLauncher from "chrome-launcher";
 import lighthouse from "lighthouse";
+import { resolveEnforcedMetrics } from "./perf-enforce.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ROOT = path.resolve(__dirname, "..");
@@ -43,12 +44,9 @@ const LIGHTHOUSE_RUNS = 5;
 // "tracked as a trend", which is the appropriate treatment for a noisy
 // metric. Revisit enforcing it once runs happen on dedicated hardware, or
 // once the budget carries enough margin to survive the observed spread.
-const ENFORCED = new Set(
-  (process.env.PERF_BUDGET_ENFORCE ?? "score,lcp,js")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean),
-);
+// Throws on an empty or misspelled value rather than silently enforcing
+// nothing -- see perf-enforce.mjs.
+const ENFORCED = resolveEnforcedMetrics(process.env.PERF_BUDGET_ENFORCE);
 
 const BUDGETS = {
   performanceScore: 0.9, // /1.0
