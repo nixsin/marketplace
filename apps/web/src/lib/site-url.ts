@@ -54,7 +54,17 @@ function isUnreachableIpv4(hostname: string): boolean {
     a === 127 || a === 10 || a === 0 ||
     (a === 192 && b === 168) ||
     (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31)
+    (a === 172 && b >= 16 && b <= 31) ||
+    // Deterministically non-public even though they are not "local":
+    // CGNAT (100.64/10), TEST-NET documentation ranges (192.0.2, 198.51.100,
+    // 203.0.113), benchmarking (198.18/15), multicast (224-239) and
+    // reserved/broadcast (240+, which includes 255.255.255.255).
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 192 && b === 0 && Number(m[3]) === 2) ||
+    (a === 198 && b === 51 && Number(m[3]) === 100) ||
+    (a === 203 && b === 0 && Number(m[3]) === 113) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    a >= 224
   );
 }
 
@@ -92,6 +102,24 @@ export function siteUrlProblem(raw: string | undefined | null): string | null {
   if (LOCAL_HOSTNAMES.test(host) || isUnreachableIpv4(host) || isUnreachableIpv6(host)) {
     return `it points at a local address, which no recipient can open: ${value}`;
   }
+
+  // Credentials would be carried into every share link and og:image URL,
+  // publishing them to whoever the page is forwarded to. That is a leak,
+  // not a formatting mistake, so it is rejected outright rather than
+  // stripped -- silently repairing it would hide that a secret was pasted
+  // into a build variable in the first place.
+  if (url.username || url.password) {
+    return "it contains credentials, which would be published in every shared link";
+  }
+
+  // This is an ORIGIN, and productShareUrl uses it as a base to resolve
+  // "/<locale>/products/<id>" against -- so a path, query or fragment here
+  // is silently discarded, and whoever set it would have no idea. Rejecting
+  // says so plainly. A bare trailing slash is the same origin, so allowed.
+  if (url.pathname !== "/" || url.search || url.hash) {
+    return `it must be a bare origin with no path, query or fragment: ${value}`;
+  }
+
   return null;
 }
 

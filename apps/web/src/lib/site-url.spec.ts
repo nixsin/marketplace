@@ -79,6 +79,47 @@ describe("siteUrlProblem", () => {
     expect(siteUrlProblem(value)).toBeNull();
   });
 
+  it.each([
+    ["credentials", "https://user:pass@example.com"],
+    ["a username alone", "https://token@example.com"],
+  ])("rejects a URL carrying %s", (_label, value) => {
+    // These would be carried into every share link and og:image URL,
+    // published to whoever the page is forwarded to.
+    expect(siteUrlProblem(value)).toMatch(/credentials/);
+  });
+
+  it.each([
+    "https://example.com/wrong",
+    "https://example.com/?x=1",
+    "https://example.com/#top",
+  ])("rejects %s, which is not a bare origin", (value) => {
+    // productShareUrl resolves a path against this, so anything beyond the
+    // origin is silently discarded -- whoever set it would never know.
+    expect(siteUrlProblem(value)).toMatch(/bare origin/);
+  });
+
+  it("allows a bare trailing slash, which is the same origin", () => {
+    expect(siteUrlProblem("https://laxair.shop/")).toBeNull();
+  });
+
+  it.each([
+    "http://100.64.0.1",
+    "http://224.0.0.1",
+    "http://255.255.255.255",
+    "http://192.0.2.1",
+    "http://198.51.100.1",
+    "http://203.0.113.1",
+  ])("rejects the non-public address %s", (value) => {
+    expect(siteUrlProblem(value)).toMatch(/local address/);
+  });
+
+  it("still accepts ordinary public IPv4", () => {
+    // 100.63 is below CGNAT, 223 below multicast, 8.8.8.8 obviously public.
+    expect(siteUrlProblem("http://8.8.8.8")).toBeNull();
+    expect(siteUrlProblem("http://100.63.0.1")).toBeNull();
+    expect(siteUrlProblem("http://223.0.0.1")).toBeNull();
+  });
+
   it("does not reject public addresses that only look private", () => {
     // 172.32 is outside RFC1918's 172.16-31 range, and 11.x is public.
     // Over-broad matching here would block a legitimate deploy.

@@ -122,5 +122,34 @@ describe("every product SVG has the PNG twin this mapping promises", () => {
     expect(png.subarray(12, 16).toString("ascii")).toBe("IHDR");
     expect(png.readUInt32BE(16)).toBe(OG_IMAGE_WIDTH);
     expect(png.readUInt32BE(20)).toBe(OG_IMAGE_HEIGHT);
+
+    // Header inspection alone would pass a file truncated right after
+    // byte 24. Walk the actual chunk structure: every chunk's declared
+    // length must land exactly on the next one, the stream must contain
+    // image data, and it must terminate with IEND at the true end of file.
+    const chunks: string[] = [];
+    let offset = 8;
+    while (offset < png.length) {
+      const length = png.readUInt32BE(offset);
+      const type = png.subarray(offset + 4, offset + 8).toString("ascii");
+      chunks.push(type);
+      offset += 12 + length; // length + type + data + CRC
+    }
+    expect(offset).toBe(png.length); // no truncation, no trailing garbage
+    expect(chunks).toContain("IDAT");
+    expect(chunks.at(-1)).toBe("IEND");
+  });
+});
+
+describe("committed source is text, not binary", () => {
+  // A stray NUL byte in a .ts file makes git record it as binary, so it
+  // stops producing a readable diff and silently becomes unreviewable.
+  // That happened to og-image.ts in this very change -- caught by review,
+  // not by any tool, which is why it is now a test.
+  const dir = join(process.cwd(), "src", "lib");
+  const sources = readdirSync(dir).filter((f) => f.endsWith(".ts"));
+
+  it.each(sources)("%s contains no NUL byte", (name) => {
+    expect(readFileSync(join(dir, name)).includes(0)).toBe(false);
   });
 });
