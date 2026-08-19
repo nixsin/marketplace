@@ -45,7 +45,9 @@
     "backToListing": "Back to listings",
     "errorTitle": "Something went wrong",
     "errorMessage": "We couldn't load this product. Please try again.",
-    "retry": "Try again"
+    "retry": "Try again",
+    "shareOnWhatsApp": "Share on WhatsApp",
+    "shareAbout": "Share {productName} on WhatsApp"
   },
   "languageSwitcher": {
     "label": "Language"

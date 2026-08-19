@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import { ProductDetailView, type ProductDetail } from "./product-detail";
 import { LocaleProvider } from "./locale-provider";
 import en from "../../messages/en.json";
+import hi from "../../messages/hi.json";
 
 const fullProduct: ProductDetail = {
   id: "1",
@@ -169,5 +170,37 @@ describe("ProductDetailView", () => {
     });
     expect(screen.getByText('{"years":2,"region":"IN"}')).toBeInTheDocument();
     expect(screen.queryByText("[object Object]")).not.toBeInTheDocument();
+  });
+
+  it("offers a WhatsApp share link carrying the product's canonical URL", () => {
+    renderDetail(fullProduct);
+    const link = screen.getByRole("link", {
+      name: /Share Portable Ultrasound Scanner .* on WhatsApp/,
+    });
+    const href = link.getAttribute("href") ?? "";
+    expect(href.startsWith("https://wa.me/?text=")).toBe(true);
+
+    const message = decodeURIComponent(href.replace("https://wa.me/?text=", ""));
+    expect(message).toContain(fullProduct.name);
+    expect(message).toContain(`/en/products/${fullProduct.id}`);
+  });
+
+  it("opens the share link safely in a new tab", () => {
+    // target=_blank without rel=noopener lets the opened page reach back
+    // through window.opener.
+    renderDetail(fullProduct);
+    const link = screen.getByRole("link", { name: /on WhatsApp/ });
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noopener");
+  });
+
+  it("uses the viewer's locale in the shared URL", () => {
+    render(
+      <LocaleProvider initialLocale="hi" initialMessages={hi}>
+        <ProductDetailView product={fullProduct} />
+      </LocaleProvider>,
+    );
+    const link = screen.getByRole("link", { name: /WhatsApp/ });
+    expect(decodeURIComponent(link.getAttribute("href") ?? "")).toContain("/hi/products/");
   });
 });
