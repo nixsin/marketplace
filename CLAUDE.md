@@ -1572,6 +1572,67 @@ the PR's Checks tab ("Approve workflows to run") when ready — this causes
 CI to actually execute using repo secrets, so treat it with the same
 care as any other secrets-using action, not as a rubber-stamp click.
 
+## Shared configuration (`packages/config`, `@medinstru/config`)
+
+The single source of truth for configuration **values** in this repo: the
+web app's runtime values (`API_URL`, `SITE_URL`, `LOCALES`,
+`DEFAULT_LOCALE`), the performance budgets, and every AI automation's
+settings (model, reasoning effort, input/output limits, and which env var
+holds each key). A pnpm workspace package — `packages/*` was already in
+`pnpm-workspace.yaml`, so this needed no workspace change.
+
+**What it replaced.** `apps/web/src/lib/config.ts` (now deleted, its four
+importers repointed) plus the same literal `gpt-5.6` and `60_000` limit
+hardcoded independently in four different scripts. The highest-value catch
+was the JS budget: `apps/web/test/bundle-budget.spec.ts` (curl-measured)
+and `apps/web/scripts/perf-budget.mjs` (Lighthouse-measured) each declared
+their own copy, held in sync only by this file's own "the two must move
+together" note — an invariant a human has to remember and eventually
+won't. One shared constant makes it structural. The *raise history* stays
+in `bundle-budget.spec.ts`'s comment; only the current value moved.
+
+**Plain JS + a hand-written `index.d.ts`, not TypeScript, deliberately.**
+Two consumers with incompatible needs: `apps/web` compiles it through
+TypeScript and needs real literal types (`LOCALES` feeds a
+`(typeof LOCALES)[number]` union that next-intl's routing depends on — a
+plain `string[]` would silently widen it and break locale type-safety
+app-wide), while `scripts/*.mjs` import it as plain Node ESM with no build
+step at all. Runtime JS plus declarations satisfies both without asking
+either to compile the other's format.
+
+**API key values must never go in this package**, only the *names* of the
+env vars holding them (`apiKeyEnv`). It's committed, so a value written
+there enters git history permanently and is readable by every CI job.
+Values stay in GitHub repo secrets (CI) and your own shell (local).
+`resolveApiKey()` reads by name at call time and its error text names only
+the variable, never any part of the value — so a misconfiguration can't
+leak a partially-set key into a public CI log. There's a committed test
+asserting no role carries a literal key.
+
+**Only 12 config files exist in this repo and 11 of them cannot move
+here** — `tsconfig.json`, `eslint.config.mjs`, `next.config.ts`,
+`vitest.config.ts`, `playwright.config.ts`, `postcss.config.mjs`,
+`prisma.config.ts`, `components.json`, `jest-e2e.json` are tool-owned
+entry points, each discovered by its tool at a specific filename in a
+specific directory. Relocating one doesn't centralize anything; it makes
+the tool fail to find its config. What centralizes is the *values inside
+them* — `next.config.ts` importing `LOCALES` from here is the pattern,
+not moving `next.config.ts` itself.
+
+**Adding a workspace package to `apps/web` requires three separate
+Dockerfile changes plus a `docker-compose.yml` mount — four places, and
+three of them fail in ways that don't look related.** See the gotcha
+below. Any future package added here needs all four:
+1. `deps` stage: `COPY packages/<name>/package.json` (install fails
+   loudly without it).
+2. `build` stage: `COPY packages packages` (`next build` fails on config
+   load).
+3. `prod` stage: copy the built package over pnpm's dangling workspace
+   symlink (**builds clean, crashes at boot**).
+4. `docker-compose.yml`: mount `./packages:/repo/packages` on the `web`
+   service (**the dev stack breaks**, since the `dev` stage is `FROM deps`
+   and deliberately bakes in no source).
+
 ## Known gotchas (already solved once — don't re-derive)
 
 **Never run `apps/api`'s e2e suite via `docker compose exec api ...`
@@ -1609,6 +1670,67 @@ truly necessary, override `DATABASE_URL` explicitly at exec time
 takes precedence over the container's baked-in environment for that one
 command — untested here, but follows directly from how env-var
 precedence actually works.
+**`pnpm deploy --legacy` leaves workspace dependencies as a DANGLING
+SYMLINK in the deployed output — a prod image can build cleanly and still
+crash on every boot.** Hit this directly while introducing
+`@medinstru/config` (2026-08-19), and it reproduced the 2026-08-18
+production outage's exact shape before merge rather than after. Three
+distinct fixes were required in `apps/web/Dockerfile`, and each was found
+only by actually building and running the image:
+
+1. **`deps` stage** — `COPY packages/config/package.json` is needed or
+   `pnpm install --frozen-lockfile` can't resolve the `workspace:*` link
+   at all (fails outright, loudly — the easy one).
+2. **`build` stage** — `COPY packages packages`, because Next transpiles
+   and loads `next.config.ts` as the very first thing `next build` does,
+   and it imports `@medinstru/config`. Without this: `Cannot find module
+   '@medinstru/config'` inside `next-config-ts/transpile-config.js`.
+3. **`prod` stage** — `COPY --from=build /repo/packages/config
+   ./node_modules/@medinstru/config`. This is the non-obvious one.
+   `pnpm deploy --prod --legacy /out` does *not* materialize workspace
+   dependencies; it writes `node_modules/@medinstru/config` as a symlink
+   to `../../../repo/packages/config`, a path that exists only in the
+   build stage. Copying `/out/node_modules` alone therefore lands a
+   **dangling symlink**, and the container crashes at boot with
+   `MODULE_NOT_FOUND` — after logging `✓ Ready in 79ms`, exactly the
+   "Ready then dead" pattern the `docker-web-prod-boot` job exists to
+   catch. Verified by reproducing the crash, applying the fix, and
+   re-running: real `200` on `/en` and `/hi`, all four security headers
+   present (proof `next.config.ts` fully loaded rather than silently
+   falling back).
+
+   Two pnpm-side alternatives were tested directly and neither removes the
+   need for step 3: `pnpm deploy` **without** `--legacy` fails outright,
+   and adding `injectWorkspacePackages: true` to `pnpm-workspace.yaml`
+   still emits a symlink rather than real files. Copying the real
+   directory over the symlink's location is explicit and doesn't depend on
+   whatever relative depth pnpm happens to generate.
+
+**The `dev` Docker stage needs the shared package bind-mounted, and this
+was caught by the local pre-push precheck rather than by CI** — worth
+recording as the first real demonstration that the precheck earns its
+latency. `apps/web/Dockerfile`'s `dev` stage is `FROM deps`, which copies
+only `packages/config/package.json`; `docker-compose.yml`'s `web` service
+bind-mounts `./apps/web` but originally not `./packages`. Net effect: the
+dev container held a workspace symlink pointing at a directory containing
+a manifest but no `src/index.js`, so `pnpm dev` would die on
+`next.config.ts`'s import — failing `docker-smoke`, a **required** check.
+The prod-image work (above) had been verified by actually booting the
+container, but the dev path hadn't, and the two stages fail for different
+reasons. Fixed by mounting `./packages:/repo/packages` rather than
+`COPY`ing it, matching how `apps/web` itself is provided (the dev stage
+deliberately bakes in no source, so shared-config edits hot-reload like
+app edits). Verified by rebuilding the real dev stack: real `200` on
+`/en`, and `@medinstru/config` resolving inside the running container.
+
+**The `changes` path filter needs `packages/**` in both `web` and
+`docker`** — added at the same time. `apps/web` depends on
+`@medinstru/config` and its Dockerfile copies `packages/`, so a
+config-only change can break the web build or the running container
+without touching a single file under `apps/web/`. Without those filter
+entries such a change would silently skip the web build, the web tests,
+and all three Docker jobs — the same class of silent-skip bug this file
+already documents for the `dorny/paths-filter` `if:`/`base:` regression.
 
 **A local import added to `next.config.ts` can crash prod at boot, not
 build — and a real production outage happened this exact way

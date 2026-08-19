@@ -8,7 +8,7 @@ import { LocaleProvider } from "@/components/locale-provider";
 import { Header } from "@/components/header";
 import { Footer } from "@/components/footer";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
-import { API_URL, SITE_URL } from "@/lib/config";
+import { API_URL, SITE_URL } from "@medinstru/config";
 import "../globals.css";
 
 const geistSans = Geist({
@@ -27,7 +27,7 @@ const geistMono = Geist_Mono({
 // that connection in parallel with CSS/JS loading instead of after,
 // which matters most on the high-latency connections this app is
 // prioritizing (see CLAUDE.md's caching/CDN plan). Imports API_URL from
-// the shared src/lib/config.ts (rather than re-reading
+// the shared @medinstru/config (rather than re-reading
 // NEXT_PUBLIC_API_URL and re-declaring its fallback here) so this can
 // never point at a different origin than the fetch that actually follows
 // it -- two independent copies of the same fallback literal previously

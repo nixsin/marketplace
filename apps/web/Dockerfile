@@ -16,6 +16,11 @@ WORKDIR /repo
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/package.json
 COPY apps/api/package.json apps/api/package.json
+# apps/web declares a `workspace:*` dependency on @medinstru/config, so its
+# manifest has to be present for `pnpm install --frozen-lockfile` to resolve
+# that link at all -- without it the install fails outright rather than
+# degrading quietly.
+COPY packages/config/package.json packages/config/package.json
 COPY apps/api/prisma.config.ts apps/api/prisma.config.ts
 COPY apps/api/prisma/schema.prisma apps/api/prisma/schema.prisma
 RUN pnpm install --frozen-lockfile
@@ -46,6 +51,15 @@ CMD ["pnpm", "dev"]
 FROM deps AS build
 WORKDIR /repo
 COPY apps/web apps/web
+# next.config.ts imports @medinstru/config, and Next transpiles+loads
+# next.config.ts as the very first thing `next build` does -- so the
+# package's real source has to be here, not just its manifest from the deps
+# stage. Verified the hard way: without this line the build fails with
+# `Cannot find module '@medinstru/config'` inside
+# next-config-ts/transpile-config.js -- the exact MODULE_NOT_FOUND-on-config-
+# load shape that caused the 2026-08-18 production outage, except caught at
+# build time here instead of at boot.
+COPY packages packages
 # NEXT_PUBLIC_* vars are inlined into the client bundle at `next build` time,
 # not read at container startup — so setting NEXT_PUBLIC_API_URL as a runtime
 # env var on the host (e.g. Render) has no effect on its own. Render (and
@@ -82,6 +96,21 @@ ENV NODE_ENV=production
 # shows up as real CVEs in a vulnerability scan of the final image.
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=build /out/node_modules ./node_modules
+# `pnpm deploy --legacy` does NOT materialize workspace dependencies -- it
+# leaves node_modules/@medinstru/config as a *symlink* pointing back at
+# ../../../repo/packages/config, a path that exists only in the build
+# stage. Copying /out/node_modules alone therefore lands a dangling
+# symlink here, and `require("@medinstru/config")` from next.config.ts
+# fails at boot with MODULE_NOT_FOUND -- the exact shape of the
+# 2026-08-18 production outage. Verified directly, not reasoned about:
+# built this image without this line, ran it, and reproduced the identical
+# crash (container logged "✓ Ready in 79ms" and then exited immediately).
+# Also confirmed `pnpm deploy` without --legacy fails outright, and that
+# adding `injectWorkspacePackages: true` still emits a symlink rather than
+# real files -- so neither pnpm-side option removes the need for this.
+# Copying the real directory over the symlink's location is explicit and
+# doesn't depend on whatever relative depth pnpm happens to generate.
+COPY --from=build /repo/packages/config ./node_modules/@medinstru/config
 COPY --from=build /repo/apps/web/.next ./.next
 COPY --from=build /repo/apps/web/public ./public
 COPY --from=build /repo/apps/web/package.json ./package.json
