@@ -1,5 +1,5 @@
 import { NotFoundException } from '@nestjs/common';
-import { ProductsService } from './products.service';
+import { ProductsService, normalizeDetails } from './products.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 function makeProduct(id: string) {
@@ -37,6 +37,19 @@ describe('ProductsService', () => {
       await expect(service.findById('missing')).rejects.toBeInstanceOf(
         NotFoundException,
       );
+    });
+
+    it('nulls out a details value that would crash GraphQLJSONObject serialization', async () => {
+      // A top-level array is valid JSON (Prisma's `Json?` column accepts
+      // it) but graphql-type-json's GraphQLJSONObject.serialize throws a
+      // TypeError on anything that isn't a plain object -- verified
+      // directly against the installed package before writing this guard.
+      const product = { ...makeProduct('p1'), details: ['a', 'b'] };
+      prisma.product.findUnique.mockResolvedValue(product);
+
+      const result = await service.findById('p1');
+
+      expect(result.details).toBeNull();
     });
   });
 
@@ -133,5 +146,35 @@ describe('ProductsService', () => {
 
     expect(result.items).toEqual([]);
     expect(result.nextCursor).toBeUndefined();
+  });
+});
+
+describe('normalizeDetails', () => {
+  it('passes through a plain object unchanged (same reference)', () => {
+    const product = { details: { probeType: 'convex' } };
+    expect(normalizeDetails(product)).toBe(product);
+  });
+
+  it('passes through null and undefined unchanged', () => {
+    expect(normalizeDetails({ details: null }).details).toBeNull();
+    expect(normalizeDetails({ details: undefined }).details).toBeUndefined();
+  });
+
+  it('nulls out a top-level array', () => {
+    expect(normalizeDetails({ details: ['a', 'b'] }).details).toBeNull();
+  });
+
+  it('nulls out a top-level primitive', () => {
+    expect(normalizeDetails({ details: 'not an object' }).details).toBeNull();
+    expect(normalizeDetails({ details: 42 }).details).toBeNull();
+  });
+
+  it('preserves every other field when normalizing an unrepresentable value', () => {
+    const product = { id: 'p1', name: 'Widget', details: ['bad'] };
+    expect(normalizeDetails(product)).toEqual({
+      id: 'p1',
+      name: 'Widget',
+      details: null,
+    });
   });
 });

@@ -1,6 +1,29 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
+// Prisma's `details Json?` column accepts any valid JSON value (object,
+// array, string, number, null) -- but the GraphQL field is typed
+// `GraphQLJSONObject`, whose `serialize` (graphql-type-json's `ensureObject`,
+// verified directly against the installed package) throws a TypeError for
+// anything that isn't a plain object. Nothing currently writes `details`
+// through the API (no create/update mutation exists yet -- only seed
+// scripts and tests write it directly), so this isn't reachable today, but
+// a future write path (e.g. bulk upload, #93) could easily produce a
+// top-level array from a malformed spreadsheet column. Normalizing here,
+// at the one place every read path already funnels through, means a bad
+// shape degrades to "no details shown" instead of throwing and breaking
+// the whole GraphQL response for that product.
+export function normalizeDetails<T extends { details: unknown }>(
+  product: T,
+): T {
+  const { details } = product;
+  const isRepresentable =
+    details === null ||
+    details === undefined ||
+    (typeof details === 'object' && !Array.isArray(details));
+  return isRepresentable ? product : { ...product, details: null };
+}
+
 @Injectable()
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -16,7 +39,7 @@ export class ProductsService {
       include: { seller: true },
     });
     if (!product) throw new NotFoundException(`Product ${id} not found`);
-    return product;
+    return normalizeDetails(product);
   }
 
   async findPage(cursor?: string, limit = 6) {
@@ -41,7 +64,7 @@ export class ProductsService {
     const page = hasMore ? items.slice(0, limit) : items;
     const nextCursor = hasMore ? page[page.length - 1].id : undefined;
 
-    return { items: page, nextCursor };
+    return { items: page.map(normalizeDetails), nextCursor };
   }
 
   // Offset-based numbered pagination — see ProductsPaged model for why this
@@ -59,7 +82,7 @@ export class ProductsService {
     ]);
 
     return {
-      items,
+      items: items.map(normalizeDetails),
       page: safePage,
       pageSize,
       totalCount,
