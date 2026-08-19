@@ -63,6 +63,34 @@ export const LOCALES = /** @type {const} */ (["en", "hi"]);
 export const DEFAULT_LOCALE = "en";
 
 // ---------------------------------------------------------------------
+// Build identity
+// ---------------------------------------------------------------------
+
+// Baked in at build time and surfaced as <meta> tags on every page, so the
+// exact build a running service is serving can be read with a plain curl.
+//
+// This exists because of a real incident (2026-08-19): four PRs merged in
+// quick succession, Render deployed each service independently, and the web
+// app went live with a product-details route calling a `product(id)` query
+// the API had not deployed yet. Every detail page returned 500. Nothing
+// exposed by either service made that skew visible -- the failure had to be
+// noticed by a human hitting the page.
+//
+// Deliberately BOTH a commit and a timestamp. The SHA identifies a build
+// exactly but cannot answer "is this older or newer?" without consulting
+// git history, which is not available to someone running curl against a
+// deployed URL. The timestamp makes the answer self-contained.
+//
+// The fallback is the literal string "unknown", never a plausible-looking
+// placeholder. next.config.ts's `deploymentId` takes the same value and
+// currently compiles to undefined in production -- the feature is declared
+// but silently inert, and nothing surfaces that. A visible "unknown" turns
+// the same class of misconfiguration into something a curl reveals
+// immediately instead of something that hides.
+export const BUILD_COMMIT = process.env.NEXT_PUBLIC_BUILD_COMMIT || "unknown";
+export const BUILD_TIME = process.env.NEXT_PUBLIC_BUILD_TIME || "unknown";
+
+// ---------------------------------------------------------------------
 // Performance budgets
 // ---------------------------------------------------------------------
 

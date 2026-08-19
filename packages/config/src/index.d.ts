@@ -16,6 +16,9 @@ export declare const SITE_URL: string;
 export declare const LOCALES: readonly ["en", "hi"];
 export declare const DEFAULT_LOCALE: (typeof LOCALES)[number];
 
+export declare const BUILD_COMMIT: string;
+export declare const BUILD_TIME: string;
+
 export declare const JS_BUDGET_BYTES: number;
 export declare const LCP_BUDGET_MS: number;
 export declare const PERFORMANCE_SCORE_BUDGET: number;
