@@ -32,6 +32,27 @@ const cspHeader = buildCspHeader({
 // `source` patterns are just strings).
 const localeRoutePattern = `/(${LOCALES.join("|")})`;
 
+// A Render build (RENDER_GIT_COMMIT is only set there) must not resolve
+// SITE_URL to the local development default. This shipped once: the
+// deployed service never had NEXT_PUBLIC_SITE_URL set, so every WhatsApp
+// share link pointed at http://localhost:3000 and og:image pointed at
+// http://localhost:3000/products/*.svg -- a dead link and a broken preview
+// card, in the one feature whose entire job is being forwarded to someone
+// else. render.yaml declares the right value but is documentation-only,
+// not an active Blueprint sync, so nothing enforced it.
+//
+// Failing the build is deliberate. NEXT_PUBLIC_* is inlined at build time,
+// so a wrong value cannot be corrected at runtime -- by the time anyone
+// notices, the artifact is already wrong. Better to refuse to produce it.
+if (process.env.RENDER_GIT_COMMIT && !process.env.NEXT_PUBLIC_SITE_URL) {
+  throw new Error(
+    "NEXT_PUBLIC_SITE_URL is not set for this Render build. It is inlined at " +
+      "build time and cannot be fixed at runtime; leaving it unset makes every " +
+      "shared link and OpenGraph image point at http://localhost:3000. Set it " +
+      "in the Render dashboard for this service, then redeploy.",
+  );
+}
+
 const nextConfig: NextConfig = {
   // Ships .map files alongside minified prod JS — DevTools loads them only
   // when actually opened, so this costs nothing for normal page loads.

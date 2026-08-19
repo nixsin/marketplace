@@ -18,7 +18,26 @@ import { DEFAULT_LOCALE, LOCALES, SITE_URL } from "@medinstru/config";
  * WhatsApp message is read on someone else's device, so a relative path is
  * useless -- the recipient has no origin to resolve it against.
  */
-export function productShareUrl(productId: string, locale: string): string {
+export function productShareUrl(
+  productId: string,
+  locale: string,
+  /**
+   * The origin to build against. Defaults to the build-time SITE_URL, but
+   * callers running in a browser should pass window.location.origin.
+   *
+   * This parameter exists because of a real production bug: SITE_URL comes
+   * from NEXT_PUBLIC_SITE_URL, which is inlined at build time, and the
+   * deployed service never had it set -- so every shared link pointed at
+   * `http://localhost:3000`, which is useless to the recipient and is the
+   * one thing this whole feature exists to get right. render.yaml declares
+   * the correct value but is documentation-only, not an active Blueprint
+   * sync, so nothing enforced it.
+   *
+   * A runtime origin cannot be wrong: it is the host the sharer is actually
+   * looking at. The build-time value remains the server-render fallback.
+   */
+  origin?: string,
+): string {
   // The locale is constrained to the configured set, not interpolated
   // as-is. A review caught that a locale beginning with `/` or `//` makes
   // the path protocol-relative, so `new URL` resolves it against a
@@ -33,7 +52,10 @@ export function productShareUrl(productId: string, locale: string): string {
   const safeLocale = (LOCALES as readonly string[]).includes(locale) ? locale : DEFAULT_LOCALE;
   // `new URL(path, base)` rather than string concatenation so a trailing
   // slash on SITE_URL can't produce a double slash.
-  return new URL(`/${safeLocale}/products/${encodeURIComponent(productId)}`, SITE_URL).toString();
+  return new URL(
+    `/${safeLocale}/products/${encodeURIComponent(productId)}`,
+    origin || SITE_URL,
+  ).toString();
 }
 
 /**

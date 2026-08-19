@@ -79,3 +79,28 @@ describe("productShareUrl cannot be made to point at another origin", () => {
     expect(productShareUrl("p1", "hi")).toContain("/hi/products/p1");
   });
 });
+
+describe("productShareUrl prefers a runtime origin", () => {
+  it("uses the supplied origin over the build-time SITE_URL", () => {
+    // The production bug this exists for: NEXT_PUBLIC_SITE_URL was never set
+    // on the deployed service, so every shared link pointed at
+    // http://localhost:3000 -- useless to the recipient, and the one thing
+    // the whole feature has to get right.
+    const url = productShareUrl("p1", "en", "https://real.example");
+    expect(url).toBe("https://real.example/en/products/p1");
+    expect(url).not.toContain("localhost");
+  });
+
+  it("falls back to SITE_URL when no origin is given (server render)", () => {
+    expect(productShareUrl("p1", "en")).toContain("/en/products/p1");
+  });
+
+  it("ignores an empty origin rather than producing a relative URL", () => {
+    expect(productShareUrl("p1", "en", "")).toMatch(/^https?:\/\//);
+  });
+
+  it("still constrains the locale when a runtime origin is used", () => {
+    const url = productShareUrl("p1", "//evil.example", "https://real.example");
+    expect(new URL(url).origin).toBe("https://real.example");
+  });
+});
