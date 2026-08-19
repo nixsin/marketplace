@@ -14,9 +14,18 @@
 //   evidence specifically to avoid the model inventing pass/fail claims —
 //   that evidence doesn't exist here, so the prompt below tells the model
 //   not to claim anything about CI status at all.
-// - Lower reasoning effort ("low" vs CI's "medium") — this runs on every
-//   push, so latency matters more here than on the one-shot PR review;
-//   it's a fast heads-up, not the final word.
+// - Same reasoning effort as CI's pass 1 ("medium"), deliberately.
+//   This started at "low" to keep per-push latency down, on the theory
+//   that a fast heads-up beats a thorough one here. Measured against real
+//   review rounds, that traded the wrong way: a local pass weaker than the
+//   CI pass it previews can only *miss* findings CI then raises, and every
+//   miss costs a full CI round-trip (~4 min of jobs plus a review pass)
+//   instead of the ~20 extra seconds matching effort costs. PR #94 is the
+//   worked example — four review rounds, of which the coverage gap, the
+//   `.includes("test")` substring bug, and the hardcoded English metadata
+//   title were all diff-only findings this precheck is designed to catch.
+//   Override with PRECHECK_EFFORT if a specific push genuinely needs speed
+//   over parity.
 // - Fails OPEN, not closed: a missing OPENAI_API_KEY, a network error, or
 //   any other failure to get a usable review prints a warning and lets the
 //   push through. The real ai-code-review job still runs on the PR
@@ -43,6 +52,8 @@ import {
 
 const BASE_REF = process.env.PRECHECK_BASE_REF ?? "origin/main";
 const MAX_DIFF_CHARS = 60_000;
+// Matches ci.yml's `ai-code-review` (pass 1) — see the parity note above.
+const EFFORT = process.env.PRECHECK_EFFORT ?? "medium";
 
 function warnSkip(message) {
   console.warn(`[ai-code-review-precheck] ${message} — skipping, push allowed.`);
@@ -97,10 +108,38 @@ function fetchOverrideDecisions(branchName) {
   }
 }
 
+// Deliberately louder than the other skip paths, and deliberately not
+// phrased as "this is optional" the way it originally was. Every other
+// warnSkip() above covers a transient or genuinely unavoidable condition
+// (no network, no diff, an unfetched base ref); this one covers a standing
+// misconfiguration that silently disables the whole precheck for every
+// push, indefinitely. The original wording ("this is optional — export it
+// to enable") read as routine informational output and was scrolled past
+// unnoticed across an entire session's worth of pushes, while CI review
+// rounds kept finding things this would have caught first. Naming the
+// actual cost, and giving the exact command, is the fix.
+//
+// PRECHECK_OPTOUT exists so someone who genuinely doesn't want this can
+// silence it as an explicit, recorded choice rather than by learning to
+// ignore a warning — an ignored warning stops being a signal at all.
 if (!process.env.OPENAI_API_KEY) {
-  warnSkip(
-    "OPENAI_API_KEY not set locally (this is optional — export it to enable this precheck)",
+  if (process.env.PRECHECK_OPTOUT) {
+    warnSkip("OPENAI_API_KEY not set, PRECHECK_OPTOUT set");
+  }
+  console.warn(
+    [
+      "",
+      "  ⚠  Local AI pre-push review is OFF (OPENAI_API_KEY not set).",
+      "",
+      "     Findings it would catch here instead surface as a CI review round:",
+      "     roughly 4 minutes of jobs plus a review pass, per round.",
+      "",
+      "     Enable it:  export OPENAI_API_KEY=...      (add to your shell profile to persist)",
+      "     Silence it: export PRECHECK_OPTOUT=1",
+      "",
+    ].join("\n"),
   );
+  warnSkip("no API key");
 }
 
 try {
@@ -193,7 +232,7 @@ try {
       { role: "developer", content: instructions },
       { role: "user", content: userContent },
     ],
-    reasoning: { effort: "low" },
+    reasoning: { effort: EFFORT },
     max_output_tokens: 8192,
   });
 } catch (err) {
