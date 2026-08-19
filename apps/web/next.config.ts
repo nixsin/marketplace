@@ -98,7 +98,12 @@ const nextConfig: NextConfig = {
         // Read from the environment at RUNTIME, not inlined at build: the
         // prod stage persists these as ENV, so what the header reports is
         // what the running container actually is.
-        source: "/:path*",
+        // `/(.*)` rather than `/:path*`: the latter is in the manifest but
+        // is not applied to real responses, while this style is proven by
+        // the security-headers block below. Verified by inspecting the
+        // shipped image's routes-manifest.json (entry present, correct
+        // values) against a real curl (header absent).
+        source: "/(.*)",
         headers: [
           { key: "X-Build-Commit", value: process.env.BUILD_COMMIT || "unknown" },
           { key: "X-Build-Time", value: process.env.BUILD_TIME || "unknown" },

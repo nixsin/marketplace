@@ -91,8 +91,18 @@ ENV RENDER_GIT_COMMIT=$RENDER_GIT_COMMIT
 # build-timestamp variable, and it must be the moment this image was built.
 # Both flow into <meta> tags via @medinstru/config -- see BUILD_COMMIT there
 # for the deploy-skew incident that motivated it.
-RUN NEXT_PUBLIC_BUILD_COMMIT="${RENDER_GIT_COMMIT:-unknown}" \
-    NEXT_PUBLIC_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+# BUILD_COMMIT/BUILD_TIME must be set HERE, not as runtime ENV in the prod
+# stage: next.config.ts's headers() is evaluated during `next build` and its
+# output is baked into .next/routes-manifest.json, so a runtime value is
+# read far too late. Confirmed by inspecting that manifest directly -- an
+# earlier version set them only in the prod stage and the headers came out
+# empty. The NEXT_PUBLIC_* pair is inlined into the bundle for the <meta>
+# tags; both come from the same source so header and markup cannot disagree.
+RUN BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)" && \
+    BUILD_COMMIT="${RENDER_GIT_COMMIT:-unknown}" \
+    BUILD_TIME="$BUILD_TIME" \
+    NEXT_PUBLIC_BUILD_COMMIT="${RENDER_GIT_COMMIT:-unknown}" \
+    NEXT_PUBLIC_BUILD_TIME="$BUILD_TIME" \
     pnpm --filter web build
 RUN pnpm --filter web deploy --prod --legacy /out
 
@@ -148,13 +158,8 @@ COPY --from=build /repo/apps/web/package.json ./package.json
 # under src/ doesn't silently reintroduce this same class of outage.
 COPY --from=build /repo/apps/web/src ./src
 COPY --from=build /repo/apps/web/next.config.ts ./next.config.ts
-# Build identity, persisted as runtime ENV so next.config.ts's headers()
-# reports what this container actually is. Passed through from the build
-# stage rather than recomputed, so the header and the compiled bundle can
-# never disagree.
-ARG RENDER_GIT_COMMIT=""
-ENV BUILD_COMMIT=$RENDER_GIT_COMMIT
-ARG BUILD_TIME=""
-ENV BUILD_TIME=$BUILD_TIME
+# No runtime ENV for build identity: headers() already baked the values
+# into routes-manifest.json at build time, so a runtime variable would be
+# both redundant and a second source of truth that could disagree.
 EXPOSE 3000
 CMD ["node_modules/.bin/next", "start"]
