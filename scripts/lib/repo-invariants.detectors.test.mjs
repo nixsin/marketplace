@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import {
   badgeJobsMissingWrite,
   escapeRegExp,
+  extractFiltersBlock,
   filterEntries,
   findConstructingPaginateJq,
   findFileFlagMisuse,
@@ -241,5 +242,35 @@ describe("comment awareness and continuations", () => {
   test("gh's -q alias for --jq is covered", () => {
     assert.equal(findConstructingPaginateJq("gh api x --paginate -q '{a: .b}'").length, 1);
     assert.deepEqual(findConstructingPaginateJq("gh api x --paginate -q '.[] | .id'"), []);
+  });
+});
+
+describe("extractFiltersBlock", () => {
+  test("returns only the paths-filter block, not a same-named key elsewhere", () => {
+    // `web:` genuinely appears twice in this repo's ci.yml. Without
+    // scoping, a key lookup can read an unrelated mapping and report the
+    // wrong answer -- and this detector had no fixture of its own.
+    const yaml = `
+jobs:
+  something:
+    web:
+      - 'decoy/**'
+  changes:
+    steps:
+      - uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            web:
+              - 'apps/web/**'
+    runs-on: ubuntu-latest
+`;
+    const block = extractFiltersBlock(yaml);
+    assert.ok(block, "should find the filters block");
+    assert.deepEqual(filterEntries(block, "web"), ["apps/web/**"]);
+    assert.ok(!block.includes("decoy"), "must not reach the unrelated mapping");
+  });
+
+  test("returns null when there is no filters block", () => {
+    assert.equal(extractFiltersBlock("jobs:\n  a:\n    runs-on: x\n"), null);
   });
 });

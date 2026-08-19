@@ -45,7 +45,7 @@ function walk(relDir, out = []) {
     // Test files are excluded: their fixtures deliberately CONTAIN the
     // hazardous forms as test data, so scanning them flags the very
     // examples that prove the detectors work.
-    else if (/\.(ya?ml|sh|mjs)$/.test(entry.name) && !/\.test\.mjs$/.test(entry.name)) {
+    else if (/\.(ya?ml|sh|mjs)$/.test(entry.name) && !/\.test\.(mjs|sh)$/.test(entry.name)) {
       out.push(rel);
     }
   }
