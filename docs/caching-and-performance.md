@@ -1,5 +1,9 @@
 # Caching & performance
 
+> Infrastructure-level caching (CDN, edge, object storage) is documented
+> separately in [infrastructure.md](./infrastructure.md).
+
+
 How the shell, product data, and build output stay fast and cacheable. For the broader caching/CDN roadmap (not yet built), see [issue #78](https://github.com/nixsin/marketplace/issues/78).
 
 ## Shell vs. item data — split on purpose, not by accident

@@ -9,6 +9,15 @@ file covers the parts neither of those does: how to work in this repo day
 to day, and the non-obvious operational knowledge accumulated so far
 (including full CI job descriptions).
 
+For infrastructure — who provides DNS, hosting, storage and the CDN,
+what each costs, what is cached where, and what changes if we migrate —
+read [docs/infrastructure.md](./docs/infrastructure.md) and the
+per-provider docs it indexes ([render.md](./docs/render.md),
+[cloudflare.md](./docs/cloudflare.md), [godaddy.md](./docs/godaddy.md)).
+Two dated items live there and are easy to miss until they bite: the
+free-tier Postgres is **deleted** on 2026-09-14, and the domain
+registration renews annually.
+
 `apps/web/AGENTS.md` has a Next.js-version-specific note (this repo runs a
 recent Next.js whose APIs may differ from training data) — read it before
 touching anything under `apps/web`.

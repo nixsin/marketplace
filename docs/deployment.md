@@ -1,5 +1,11 @@
 # Deployment
 
+> Provider-specific configuration, costs and migration notes:
+> [render.md](./render.md), [cloudflare.md](./cloudflare.md),
+> [godaddy.md](./godaddy.md) — indexed in
+> [infrastructure.md](./infrastructure.md).
+
+
 App code has no host-specific logic anywhere — it only reads plain environment variables. Whatever platform runs these containers just needs to set the ones below; nothing in `apps/api` or `apps/web` source ever branches on which platform it's running on.
 
 | App | Var | Required | Notes |
