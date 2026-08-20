@@ -17,19 +17,51 @@ export interface SecurityHeadersInput {
   // undefined) rather than pre-resolving the fallback themselves, so both
   // places only ever have one definition of what "no env var set" means.
   apiUrl: string | undefined;
+  /**
+   * Public base URL for blob-stored images, when one is configured.
+   *
+   * Passed in rather than read here, matching apiUrl above: one definition
+   * of "not configured" lives at the call site, not two. Undefined or
+   * empty means images are still served from this origin, so no extra
+   * img-src entry is emitted and the policy stays as tight as it is today.
+   */
+  blobBaseUrl?: string | undefined;
+}
+
+/**
+ * The extra img-src entry for a blob host, or "" when unset.
+ *
+ * Only the ORIGIN is allowed, never the full base URL -- a CSP source with
+ * a path is matched by prefix, which is both broader than intended and a
+ * common way to write a policy that silently permits more than it reads
+ * like it does. Falls back to "" on an unparseable value so a bad env var
+ * degrades to a stricter policy, never a broken page.
+ */
+export function blobImgSrcEntry(blobBaseUrl: string | undefined): string {
+  if (!blobBaseUrl) return "";
+  try {
+    return ` ${new URL(blobBaseUrl).origin}`;
+  } catch {
+    return "";
+  }
 }
 
 export function computeApiOrigin(apiUrl: string | undefined): string {
   return new URL(apiUrl ?? "http://localhost:4000/graphql").origin;
 }
 
-export function buildCspHeader({ isDev, apiUrl }: SecurityHeadersInput): string {
+export function buildCspHeader({
+  isDev,
+  apiUrl,
+  blobBaseUrl,
+}: SecurityHeadersInput): string {
   const apiOrigin = computeApiOrigin(apiUrl);
+  const blobImgSrc = blobImgSrcEntry(blobBaseUrl);
   return `
     default-src 'self';
     script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""};
     style-src 'self' 'unsafe-inline';
-    img-src 'self' blob: data:;
+    img-src 'self' blob: data:${blobImgSrc};
     font-src 'self';
     connect-src 'self' ${apiOrigin};
     object-src 'none';
