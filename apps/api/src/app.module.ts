@@ -10,9 +10,11 @@ import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { ProductsModule } from './products/products.module';
+import { StorageModule } from './storage/storage.module';
 
 @Module({
   imports: [
+    StorageModule,
     ConfigModule.forRoot({ isGlobal: true }),
     GraphQLModule.forRoot<ApolloDriverConfig>({
       driver: ApolloDriver,

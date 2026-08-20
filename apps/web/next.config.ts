@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
 import { siteUrlErrorMessage, siteUrlProblem } from "./src/lib/site-url";
-import { LOCALES } from "@medinstru/config";
+import { BLOB_PUBLIC_BASE_URL, LOCALES } from "@medinstru/config";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
@@ -24,6 +24,7 @@ const isDev = process.env.NODE_ENV === "development";
 const cspHeader = buildCspHeader({
   isDev,
   apiUrl: process.env.NEXT_PUBLIC_API_URL,
+  blobBaseUrl: BLOB_PUBLIC_BASE_URL,
 });
 
 // Derived from @medinstru/config's own LOCALES rather than hardcoded a
@@ -32,6 +33,31 @@ const cspHeader = buildCspHeader({
 // test or type error would catch the mismatch, since Next.js header
 // `source` patterns are just strings).
 const localeRoutePattern = `/(${LOCALES.join("|")})`;
+
+/**
+ * next/image remote host allowlist for the blob store.
+ *
+ * Empty when no blob base URL is configured, which is the current state --
+ * images are served from this origin and need no entry at all. An
+ * unparseable value also yields an empty list, so a bad env var means
+ * "no remote images allowed" rather than a crash while loading the config
+ * (which, per CLAUDE.md's outage notes, takes the whole container down at
+ * boot rather than degrading).
+ */
+function blobRemotePatterns(baseUrl: string) {
+  if (!baseUrl) return [];
+  try {
+    const { protocol, hostname } = new URL(baseUrl);
+    return [
+      {
+        protocol: protocol.replace(":", "") as "http" | "https",
+        hostname,
+      },
+    ];
+  } catch {
+    return [];
+  }
+}
 
 // A Render build (RENDER_GIT_COMMIT is only set there) must not resolve
 // SITE_URL to the local development default. This shipped once: the
@@ -105,6 +131,16 @@ const nextConfig: NextConfig = {
     dangerouslyAllowSVG: true,
     contentDispositionType: "attachment",
     contentSecurityPolicy: "default-src 'self'; script-src 'none'; sandbox;",
+    // next/image refuses any remote host not listed here, so a blob-backed
+    // image would 400 without this. Derived from the same configured value
+    // the CSP uses, so the two cannot drift into a state where one allows
+    // the host and the other blocks it -- a failure that presents as
+    // "images work locally, break in production".
+    //
+    // Scoped to the exact hostname and protocol rather than a wildcard:
+    // this list is what stops the image optimiser being used as an open
+    // proxy for arbitrary remote URLs.
+    remotePatterns: blobRemotePatterns(BLOB_PUBLIC_BASE_URL),
   },
   async headers() {
     return [

@@ -17,12 +17,12 @@ WORKDIR /repo
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
-# Needed even though apps/api never imports @medinstru/config: the
-# workspace *root* package.json declares it as a devDependency (the
-# scripts/*.mjs AI automations import it), and the root manifest is copied
-# above -- so a root-level `pnpm install` has to be able to resolve that
-# workspace link or it fails outright. Manifest only; no source required,
-# since nothing in this image ever loads the package.
+# Manifest only, at this stage: pnpm install just needs to resolve the
+# workspace link. apps/api DOES now import @medinstru/config at runtime
+# (src/storage), so the real source is copied in the build stage and
+# materialised into the prod stage -- see both below. The previous comment
+# here said this image never loads the package, which stopped being true
+# when storage landed.
 COPY packages/config/package.json packages/config/package.json
 # apps/api's postinstall runs `prisma generate`, which needs its schema —
 # copied ahead of the full source (below, in later stages) for the same
@@ -46,6 +46,10 @@ CMD ["sh", "-c", "pnpm exec prisma generate && pnpm start:dev"]
 FROM deps AS build
 WORKDIR /repo
 COPY apps/api apps/api
+# The whole packages tree, not just the manifest the deps stage copied:
+# apps/api imports @medinstru/config at runtime (src/storage), so the real
+# source has to be present for the build and for the deploy step below.
+COPY packages packages
 RUN pnpm --filter api exec prisma generate
 RUN pnpm --filter api build
 # `pnpm deploy` (not a plain `cp`/`COPY node_modules`) because pnpm's
@@ -73,6 +77,17 @@ ENV NODE_ENV=production
 # not even reachable at runtime.
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=build /out/node_modules ./node_modules
+# `pnpm deploy --legacy` does NOT materialise workspace dependencies -- it
+# writes node_modules/@medinstru/config as a SYMLINK to a build-stage path
+# that does not exist in this stage. Copying /out/node_modules alone
+# therefore lands a dangling symlink: the image builds clean and the
+# container crashes at boot with MODULE_NOT_FOUND, after logging "Ready".
+#
+# That is not hypothetical -- it is the shape of the 2026-08-18 production
+# outage, and the same fix apps/web/Dockerfile already carries. Copying the
+# real directory over the symlink's location is explicit and does not
+# depend on whatever relative depth pnpm happens to generate.
+COPY --from=build /repo/packages/config ./node_modules/@medinstru/config
 COPY --from=build /repo/apps/api/dist ./dist
 COPY --from=build /repo/apps/api/package.json ./package.json
 EXPOSE 4000

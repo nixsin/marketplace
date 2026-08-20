@@ -257,3 +257,144 @@ function requireRole(roleName) {
   }
   return role;
 }
+
+// ---------------------------------------------------------------------------
+// Blob storage
+// ---------------------------------------------------------------------------
+//
+// Product images live in object storage rather than the repo. Today they are
+// five committed placeholders under apps/web/public, which means every
+// listing in a category looks identical, sellers cannot upload anything, and
+// changing an image requires a Docker rebuild and redeploy.
+//
+// PORTABILITY IS THE POINT HERE, so it is worth saying how it is achieved:
+// almost every object store worth using speaks the S3 API -- Cloudflare R2,
+// AWS S3, Backblaze B2, DigitalOcean Spaces, MinIO, Wasabi. Talking S3 with a
+// CONFIGURABLE ENDPOINT therefore makes switching provider a config change,
+// not a code change. That is why there is no `if (provider === "r2")`
+// anywhere: the provider table below differs only in endpoint shape and
+// region convention.
+//
+// A provider that does NOT speak S3 (Azure Blob, GCS native) is still
+// supported without touching callers, because everything goes through the
+// BlobStore interface in apps/api/src/storage -- adding one means writing one
+// adapter, not editing the app.
+
+/**
+ * What each provider needs that the others do not.
+ *
+ * `endpoint` is a template rather than a literal because it is the only
+ * genuinely provider-specific value: R2 keys the host on an account id, B2
+ * and Spaces on a region, S3 infers it. `region` captures each provider's
+ * convention -- R2 has no real regions and requires the literal "auto",
+ * which is exactly the kind of detail that turns into a confusing
+ * SignatureDoesNotMatch if guessed.
+ */
+export const BLOB_PROVIDERS = {
+  /** Cloudflare R2. No egress fees, which is why it is the default choice. */
+  r2: {
+    s3Compatible: true,
+    endpoint: "https://{account}.r2.cloudflarestorage.com",
+    region: "auto",
+    needs: ["account"],
+  },
+  s3: { s3Compatible: true, endpoint: "", region: "", needs: ["region"] },
+  b2: {
+    s3Compatible: true,
+    endpoint: "https://s3.{region}.backblazeb2.com",
+    region: "",
+    needs: ["region"],
+  },
+  spaces: {
+    s3Compatible: true,
+    endpoint: "https://{region}.digitaloceanspaces.com",
+    region: "",
+    needs: ["region"],
+  },
+  minio: { s3Compatible: true, endpoint: "", region: "us-east-1", needs: ["endpoint"] },
+  /**
+   * The filesystem. Not a fallback that quietly degrades production -- it is
+   * the DEFAULT precisely so local development and CI need no cloud account,
+   * no credentials and no network, and so this whole feature can land without
+   * changing any behaviour until a provider is actually configured.
+   */
+  local: { s3Compatible: false, endpoint: "", region: "", needs: [] },
+};
+
+/** @type {keyof typeof BLOB_PROVIDERS} */
+export const BLOB_PROVIDER = process.env.BLOB_PROVIDER || "local";
+export const BLOB_BUCKET = process.env.BLOB_BUCKET || "medinstru-media";
+export const BLOB_ACCOUNT = process.env.BLOB_ACCOUNT || "";
+export const BLOB_REGION = process.env.BLOB_REGION || "";
+/** Explicit override; otherwise derived from the provider template. */
+export const BLOB_ENDPOINT = process.env.BLOB_ENDPOINT || "";
+
+/**
+ * The origin browsers actually fetch images from -- a CDN or custom domain
+ * (images.laxair.shop), NOT the S3 endpoint, which usually requires signing.
+ *
+ * NEXT_PUBLIC_ because apps/web builds <img> URLs in the browser. It carries
+ * no secret: it is the public address of public files.
+ */
+export const BLOB_PUBLIC_BASE_URL =
+  process.env.NEXT_PUBLIC_BLOB_BASE_URL || process.env.BLOB_PUBLIC_BASE_URL || "";
+
+/**
+ * Credential env var NAMES, never values -- same rule as AI_ROLES.apiKeyEnv
+ * above. This file is committed, so a value written here would enter git
+ * history permanently and be readable by every CI job.
+ */
+export const BLOB_CREDENTIAL_ENV = {
+  accessKeyId: "BLOB_ACCESS_KEY_ID",
+  secretAccessKey: "BLOB_SECRET_ACCESS_KEY",
+};
+
+/** The S3 endpoint for the configured provider, or "" when not applicable. */
+export function blobEndpoint(env = process.env) {
+  if (env.BLOB_ENDPOINT) return env.BLOB_ENDPOINT;
+  const provider = BLOB_PROVIDERS[env.BLOB_PROVIDER || "local"];
+  if (!provider) return "";
+  return provider.endpoint
+    .replace("{account}", env.BLOB_ACCOUNT || "")
+    .replace("{region}", env.BLOB_REGION || "");
+}
+
+/**
+ * The public URL for a stored object.
+ *
+ * Falls back to the key as a root-relative path when no blob base URL is
+ * configured, which is what keeps the existing committed images working
+ * unchanged: `products/x.svg` resolves to `/products/x.svg`, exactly the
+ * path apps/web/public already serves. So this ships with zero behaviour
+ * change until a provider is configured, and callers never need to know
+ * which mode they are in.
+ */
+export function blobUrl(key, baseUrl = BLOB_PUBLIC_BASE_URL) {
+  const clean = String(key).replace(/^\/+/, "");
+  if (!baseUrl) return `/${clean}`;
+  return `${baseUrl.replace(/\/+$/, "")}/${clean}`;
+}
+
+/**
+ * Reads blob credentials at call time, by name.
+ *
+ * Throws naming only the variable, never any part of the value, so a
+ * misconfiguration cannot leak a partially-set key into a public CI log --
+ * the same discipline resolveApiKey follows, and the same reason.
+ */
+export function resolveBlobCredentials(env = process.env) {
+  const accessKeyId = env[BLOB_CREDENTIAL_ENV.accessKeyId];
+  const secretAccessKey = env[BLOB_CREDENTIAL_ENV.secretAccessKey];
+  if (!accessKeyId || !secretAccessKey) {
+    const missing = [
+      !accessKeyId ? BLOB_CREDENTIAL_ENV.accessKeyId : null,
+      !secretAccessKey ? BLOB_CREDENTIAL_ENV.secretAccessKey : null,
+    ].filter(Boolean);
+    throw new Error(
+      `${missing.join(" and ")} not set, required by BLOB_PROVIDER="${
+        env.BLOB_PROVIDER || "local"
+      }". In CI they come from GitHub repo secrets; locally, export them in your shell.`,
+    );
+  }
+  return { accessKeyId, secretAccessKey };
+}

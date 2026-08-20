@@ -56,3 +56,41 @@ export declare function resolveApiKey(
 export declare function roleConfig(
   roleName: AiRoleName,
 ): AiRole & { maxInputChars: number; maxOutputTokens: number };
+
+// --- Blob storage -----------------------------------------------------------
+
+export interface BlobProvider {
+  /** Whether the provider speaks the S3 API, and so needs no new adapter. */
+  s3Compatible: boolean;
+  /** Endpoint template; `{account}` and `{region}` are substituted. */
+  endpoint: string;
+  region: string;
+  needs: string[];
+}
+
+export declare const BLOB_PROVIDERS: Record<string, BlobProvider>;
+export declare const BLOB_PROVIDER: string;
+export declare const BLOB_BUCKET: string;
+export declare const BLOB_ACCOUNT: string;
+export declare const BLOB_REGION: string;
+export declare const BLOB_ENDPOINT: string;
+export declare const BLOB_PUBLIC_BASE_URL: string;
+
+/** Env var NAMES holding credentials -- never the values themselves. */
+export declare const BLOB_CREDENTIAL_ENV: {
+  accessKeyId: string;
+  secretAccessKey: string;
+};
+
+export declare function blobEndpoint(env?: NodeJS.ProcessEnv): string;
+
+/**
+ * Public URL for a stored object. Falls back to a root-relative path when
+ * no provider is configured, so existing committed images keep working.
+ */
+export declare function blobUrl(key: string, baseUrl?: string): string;
+
+export declare function resolveBlobCredentials(env?: NodeJS.ProcessEnv): {
+  accessKeyId: string;
+  secretAccessKey: string;
+};
