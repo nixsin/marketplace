@@ -1,6 +1,10 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
+  cspAllowsImageHost,
+  extractOgContent,
+  decodeHtmlEntities,
+  imageSourcesFrom,
   classifyDeadline,
   daysUntil,
   formatReport,
@@ -118,5 +122,99 @@ describe("formatReport", () => {
   test("an all-green run reads as passing", () => {
     const md = formatReport([{ area: "A", name: "x", status: "pass" }]);
     assert.match(md, /^## ✅ Production audit — PASS/);
+  });
+});
+
+describe("cspAllowsImageHost", () => {
+  const HOST = "https://images.laxair.shop";
+
+  test("blocked when img-src omits the host", () => {
+    // The failure that matters: every product image fails in the browser
+    // while curl sees a perfectly good page.
+    assert.equal(
+      cspAllowsImageHost("default-src 'self'; img-src 'self'", HOST),
+      false,
+    );
+  });
+
+  test("a substring match elsewhere in the policy does not count", () => {
+    // The original check passed here, because the origin appears in
+    // connect-src -- while img-src still blocks the image.
+    assert.equal(
+      cspAllowsImageHost(`img-src 'self'; connect-src ${HOST}`, HOST),
+      false,
+    );
+  });
+
+  test("a scheme source permits the host without naming it", () => {
+    // The original check FAILED here, warning about a policy that
+    // genuinely allows the image.
+    assert.equal(cspAllowsImageHost("img-src https:", HOST), true);
+  });
+
+  test("falls back to default-src, per the CSP spec", () => {
+    assert.equal(cspAllowsImageHost(`default-src ${HOST}`, HOST), true);
+  });
+
+  test("honours a wildcard host", () => {
+    assert.equal(cspAllowsImageHost("img-src https://*.laxair.shop", HOST), true);
+  });
+
+  test("a bare * allows everything", () => {
+    assert.equal(cspAllowsImageHost("img-src *", HOST), true);
+  });
+
+  test("null when nothing restricts images", () => {
+    // Distinct from "blocked" -- the caller reports these differently.
+    assert.equal(cspAllowsImageHost("script-src 'self'", HOST), null);
+    assert.equal(imageSourcesFrom("script-src 'self'"), null);
+  });
+});
+
+describe("extractOgContent", () => {
+  test("finds the tag in the usual serialization", () => {
+    assert.equal(
+      extractOgContent('<meta property="og:image" content="a.png"/>', "image"),
+      "a.png",
+    );
+  });
+
+  test("tolerates content before property", () => {
+    // Valid HTML the original regex reported as missing.
+    assert.equal(
+      extractOgContent('<meta content="a.png" property="og:image">', "image"),
+      "a.png",
+    );
+  });
+
+  test("tolerates single quotes", () => {
+    assert.equal(
+      extractOgContent("<meta property='og:image' content='a.png'>", "image"),
+      "a.png",
+    );
+  });
+
+  test("decodes entities so the URL is fetchable", () => {
+    // Fetching the raw attribute text meant requesting a literal &amp;
+    // and getting a 404 for an image that was fine.
+    assert.equal(
+      extractOgContent('<meta property="og:image" content="a.png?x=1&amp;y=2">', "image"),
+      "a.png?x=1&y=2",
+    );
+  });
+
+  test("does not confuse one og property for another", () => {
+    const html = '<meta property="og:image:width" content="1200"><meta property="og:image" content="a.png">';
+    assert.equal(extractOgContent(html, "image"), "a.png");
+  });
+
+  test("undefined when genuinely absent", () => {
+    assert.equal(extractOgContent("<meta name=\"x\" content=\"y\">", "image"), undefined);
+  });
+});
+
+describe("decodeHtmlEntities", () => {
+  test("covers the entities that appear in URLs and titles", () => {
+    assert.equal(decodeHtmlEntities("a&amp;b&#x27;c&quot;d"), "a&b'c\"d");
   });
 });

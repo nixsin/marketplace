@@ -124,3 +124,82 @@ export function formatReport(results, { commit, when } = {}) {
  * issue per run buries the signal it exists to raise.
  */
 export const ISSUE_TITLE = "Nightly production audit";
+
+/**
+ * The effective source list for images, honouring the CSP fallback chain.
+ *
+ * `csp.includes(host)` is not good enough and was wrong in both
+ * directions: it passes when the origin appears in ANY directive --
+ * connect-src, report-uri -- while img-src still blocks it, and it fails
+ * on a policy like `img-src https:` that genuinely permits the host
+ * without naming it.
+ */
+export function imageSourcesFrom(csp) {
+  const directives = Object.fromEntries(
+    csp
+      .split(";")
+      .map((d) => d.trim())
+      .filter(Boolean)
+      .map((d) => {
+        const [name, ...sources] = d.split(/\s+/);
+        return [name.toLowerCase(), sources];
+      }),
+  );
+  // img-src falls back to default-src when absent -- that is the CSP
+  // spec's own rule, and ignoring it misreads a perfectly valid policy.
+  return directives["img-src"] ?? directives["default-src"] ?? null;
+}
+
+/**
+ * Whether a CSP actually permits loading images from `origin`.
+ *
+ * Returns null when no relevant directive exists, which means "not
+ * restricted" rather than "blocked" -- a distinction the caller needs,
+ * since those warrant different reporting.
+ */
+export function cspAllowsImageHost(csp, origin) {
+  const sources = imageSourcesFrom(csp);
+  if (!sources) return null;
+
+  const { protocol, host } = new URL(origin);
+  return sources.some((source) => {
+    if (source === "*") return true;
+    if (source === `${protocol}`) return true; // e.g. `https:`
+    if (source === origin) return true;
+    // A wildcard host: https://*.laxair.shop
+    const wildcard = source.match(/^(https?:\/\/)?\*\.(.+)$/);
+    if (wildcard) return host.endsWith(`.${wildcard[2]}`) || host === wildcard[2];
+    return source.replace(/^https?:\/\//, "") === host;
+  });
+}
+
+/**
+ * Extracts an OpenGraph value, tolerating real-world HTML.
+ *
+ * The first version matched one exact serialization -- double quotes,
+ * `property` before `content` -- and would report a perfectly valid page
+ * as missing its tags. It also returned raw attribute text, so a URL
+ * containing `&amp;` was fetched literally and 404'd.
+ */
+export function extractOgContent(html, property) {
+  const tags = html.match(/<meta\s[^>]*>/gi) ?? [];
+  for (const tag of tags) {
+    const prop = tag.match(/\bproperty\s*=\s*["']([^"']+)["']/i)?.[1];
+    if (prop?.toLowerCase() !== `og:${property}`.toLowerCase()) continue;
+    const content = tag.match(/\bcontent\s*=\s*["']([^"']*)["']/i)?.[1];
+    if (content === undefined) continue;
+    return decodeHtmlEntities(content);
+  }
+  return undefined;
+}
+
+/** The handful of entities that actually appear in URLs and titles. */
+export function decodeHtmlEntities(value) {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&#x27;/gi, "'");
+}

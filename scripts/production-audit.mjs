@@ -14,7 +14,10 @@
  *   SITE=https://staging… node scripts/production-audit.mjs
  */
 import { setTimeout as sleep } from "node:timers/promises";
-import { formatReport, daysUntil, classifyDeadline, overallStatus } from "./lib/production-audit.mjs";
+import {
+  formatReport, daysUntil, classifyDeadline, overallStatus,
+  cspAllowsImageHost, extractOgContent,
+} from "./lib/production-audit.mjs";
 
 const SITE = process.env.AUDIT_SITE ?? "https://laxair.shop";
 const API = process.env.AUDIT_API ?? "https://medinstru-api.onrender.com/graphql";
@@ -43,19 +46,62 @@ const add = (area, name, status, detail) => results.push({ area, name, status, d
  * audit would report an outage every single night and be ignored within
  * a week.
  */
-async function get(url, options = {}, attempts = 3) {
+const REQUEST_TIMEOUT_MS = 15_000;
+const BUDGET_MS = 8 * 60_000;
+const startedAt = Date.now();
+
+/** Whether there is still time to make another request. */
+function budgetExhausted() {
+  return Date.now() - startedAt > BUDGET_MS;
+}
+
+/**
+ * Fetch, with a HARD overall budget.
+ *
+ * The first version retried 3x60s with backoff, which is ~195s per
+ * request. Across the dozen-plus sequential requests here that is ~39
+ * minutes against a 15-minute job timeout -- so during a real outage,
+ * the exact case this audit exists to report, the job would be killed
+ * before formatReport() ever ran and NO report would be produced.
+ *
+ * Three bounds now, because one is not enough:
+ *   - 15s per attempt, not 60
+ *   - retries only while the site has not already been declared down
+ *   - a global 8-minute budget after which every remaining request fails
+ *     fast, leaving time to render and publish the report
+ *
+ * Reporting an outage matters more than confirming it three times.
+ */
+async function get(url, options = {}, attempts = 2) {
+  if (budgetExhausted()) throw new Error("audit time budget exhausted");
+
   let lastError;
   for (let i = 0; i < attempts; i++) {
     try {
-      const res = await fetch(url, { redirect: "follow", ...options, signal: AbortSignal.timeout(60_000) });
-      return res;
+      return await fetch(url, {
+        redirect: "follow",
+        ...options,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
     } catch (error) {
       lastError = error;
-      if (i < attempts - 1) await sleep(5000 * (i + 1));
+      // Do not keep retrying a host already known to be down, and never
+      // sleep past the budget.
+      if (i < attempts - 1 && !siteIsDown && !budgetExhausted()) {
+        await sleep(3000);
+      } else {
+        break;
+      }
     }
   }
   throw lastError;
 }
+
+/**
+ * Set once availability fails, so the remaining checks stop paying retry
+ * cost against a host that is already known to be unreachable.
+ */
+let siteIsDown = false;
 
 // ── Availability ────────────────────────────────────────────────────────
 async function checkAvailability() {
@@ -64,6 +110,7 @@ async function checkAvailability() {
       const res = await get(url, { headers: { "apollo-require-preflight": "true" } });
       add("Availability", `${name} responds`, res.ok ? "pass" : "fail", `HTTP ${res.status}`);
     } catch (error) {
+      if (name === "Web") siteIsDown = true;
       add("Availability", `${name} responds`, "fail", error.message);
     }
   }
@@ -118,7 +165,10 @@ async function checkPreviews() {
       // judged by what that crawler receives.
       const res = await get(url, { headers: { "User-Agent": "WhatsApp/2.23.20.0 A" } });
       const html = await res.text();
-      const og = (p) => html.match(new RegExp(`<meta property="og:${p}" content="([^"]*)"`))?.[1];
+      // Tolerates attribute order, single quotes and HTML entities -- a
+      // regex for one exact serialization reported valid pages as broken
+      // and fetched `&amp;` literally.
+      const og = (p) => extractOgContent(html, p);
 
       const image = og("image");
       const title = og("title");
@@ -172,10 +222,24 @@ async function checkSecurityHeaders() {
       }
       // If blob storage is configured, CSP MUST allow it or every product
       // image is blocked in the browser while looking fine to curl.
+      // Parses the effective img-src (falling back to default-src, per the
+      // CSP spec) instead of substring-matching the whole policy. The
+      // substring check was wrong in BOTH directions: it passed when the
+      // origin appeared only in connect-src while img-src blocked it, and
+      // failed on `img-src https:` which genuinely permits the host.
       const host = new URL(BLOB).origin;
-      const allowed = csp.includes(host);
-      add("Security", "CSP allows the blob host", allowed ? "pass" : "warn",
-        allowed ? host : `${host} absent — images would be blocked`);
+      const allowed = cspAllowsImageHost(csp, host);
+      if (allowed === null) {
+        add("Security", "CSP allows the blob host", "warn",
+          `no img-src or default-src directive — ${host} is unrestricted`);
+      } else {
+        // A genuinely blocked image host is a production regression: every
+        // product image fails in the browser while looking fine to curl.
+        // Reporting that as a warning would let it exit 0 and CLOSE the
+        // tracking issue.
+        add("Security", "CSP allows the blob host", allowed ? "pass" : "fail",
+          allowed ? host : `${host} BLOCKED by img-src — images fail in the browser`);
+      }
     }
   } catch (error) {
     add("Security", "Security headers", "fail", error.message);
