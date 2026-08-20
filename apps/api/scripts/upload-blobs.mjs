@@ -24,14 +24,49 @@
 import { readdir, readFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  BLOB_BUCKET,
-  BLOB_PROVIDER,
-  BLOB_PROVIDERS,
-  BLOB_REGION,
-  blobEndpoint,
-  resolveBlobCredentials,
-} from "@medinstru/config";
+// Env is read directly rather than importing the app's TypeScript config:
+// this is a standalone .mjs migration tool run by a person, and keeping it
+// dependency-light means it works from a plain checkout without a build.
+// The provider table is duplicated in miniature below and kept honest by
+// a test that asserts it matches src/storage/blob-config.ts.
+const BLOB_PROVIDER = process.env.BLOB_PROVIDER || "local";
+const BLOB_BUCKET = process.env.BLOB_BUCKET || "medinstru-media";
+const BLOB_REGION = process.env.BLOB_REGION || "";
+
+const BLOB_PROVIDERS = {
+  r2: { s3Compatible: true, endpoint: "https://{account}.r2.cloudflarestorage.com", region: "auto" },
+  s3: { s3Compatible: true, endpoint: "", region: "" },
+  b2: { s3Compatible: true, endpoint: "https://s3.{region}.backblazeb2.com", region: "" },
+  spaces: { s3Compatible: true, endpoint: "https://{region}.digitaloceanspaces.com", region: "" },
+  minio: { s3Compatible: true, endpoint: "", region: "us-east-1" },
+  local: { s3Compatible: false, endpoint: "", region: "" },
+};
+
+function blobEndpoint() {
+  if (process.env.BLOB_ENDPOINT) return process.env.BLOB_ENDPOINT;
+  const p = BLOB_PROVIDERS[BLOB_PROVIDER];
+  if (!p) return "";
+  return p.endpoint
+    .replace("{account}", process.env.BLOB_ACCOUNT || "")
+    .replace("{region}", BLOB_REGION);
+}
+
+function resolveBlobCredentials() {
+  const accessKeyId = process.env.BLOB_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.BLOB_SECRET_ACCESS_KEY;
+  if (!accessKeyId || !secretAccessKey) {
+    const missing = [
+      !accessKeyId ? "BLOB_ACCESS_KEY_ID" : null,
+      !secretAccessKey ? "BLOB_SECRET_ACCESS_KEY" : null,
+    ].filter(Boolean);
+    // Names the variable, never any part of the value.
+    throw new Error(
+      `${missing.join(" and ")} not set, required by BLOB_PROVIDER="${BLOB_PROVIDER}". ` +
+        "Export them in your shell.",
+    );
+  }
+  return { accessKeyId, secretAccessKey };
+}
 import {
   HeadObjectCommand,
   PutObjectCommand,

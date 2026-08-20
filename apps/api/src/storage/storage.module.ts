@@ -1,15 +1,12 @@
 import { Global, Module } from '@nestjs/common';
 import { join } from 'node:path';
 import {
-  BLOB_ACCOUNT,
-  BLOB_BUCKET,
-  BLOB_PROVIDER,
   BLOB_PROVIDERS,
-  BLOB_REGION,
   blobEndpoint,
+  blobProviderName,
   blobUrl,
   resolveBlobCredentials,
-} from '@medinstru/config';
+} from './blob-config';
 import { BLOB_STORE, type BlobStore } from './blob-store';
 import { LocalBlobStore } from './local-blob-store';
 import { S3BlobStore } from './s3-blob-store';
@@ -19,16 +16,17 @@ import { S3BlobStore } from './s3-blob-store';
  *
  * Note what is NOT here: any per-provider branching. R2, S3, B2, Spaces,
  * MinIO and Wasabi all take the same path, differing only in the endpoint
- * and region that @medinstru/config computes for them. Adding one of those
+ * and region that blob-config.ts computes for them. Adding one of those
  * providers requires no change to this file at all -- only a provider
  * that does not speak S3 would, and then it is one new adapter and one
  * new branch, not edits scattered through the app.
  */
 export function createBlobStore(): BlobStore {
-  const provider = BLOB_PROVIDERS[BLOB_PROVIDER];
+  const providerName = blobProviderName();
+  const provider = BLOB_PROVIDERS[providerName];
   if (!provider) {
     throw new Error(
-      `Unknown BLOB_PROVIDER "${BLOB_PROVIDER}" -- expected one of: ${Object.keys(
+      `Unknown BLOB_PROVIDER "${providerName}" -- expected one of: ${Object.keys(
         BLOB_PROVIDERS,
       ).join(', ')}`,
     );
@@ -50,9 +48,9 @@ export function createBlobStore(): BlobStore {
   const { accessKeyId, secretAccessKey } = resolveBlobCredentials();
 
   return new S3BlobStore({
-    bucket: BLOB_BUCKET,
+    bucket: process.env.BLOB_BUCKET || 'medinstru-media',
     endpoint: blobEndpoint(),
-    region: BLOB_REGION || provider.region,
+    region: process.env.BLOB_REGION || provider.region,
     accessKeyId,
     secretAccessKey,
     toPublicUrl: blobUrl,
@@ -73,7 +71,5 @@ export function createBlobStore(): BlobStore {
 })
 export class StorageModule {}
 
-// Referenced by the factory error message above; re-exported so callers
-// have one import site for the token and the port together.
+// Re-exported so callers have one import site for the token and the port.
 export { BLOB_STORE, type BlobStore } from './blob-store';
-export { BLOB_ACCOUNT };

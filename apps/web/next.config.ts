@@ -2,11 +2,18 @@ import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
 import { siteUrlErrorMessage, siteUrlProblem } from "./src/lib/site-url";
-import { BLOB_PUBLIC_BASE_URL, LOCALES } from "@medinstru/config";
+import { LOCALES } from "@medinstru/config";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
 const isDev = process.env.NODE_ENV === "development";
+
+// The single value apps/web needs from the blob-storage domain: the origin
+// browsers fetch images from. Read directly rather than via
+// @medinstru/config, because apps/api owns the rest of that configuration
+// (provider table, endpoints, credentials) and there is no derived logic
+// here for the two to drift apart on -- just one env var, read once.
+const BLOB_BASE_URL = process.env.NEXT_PUBLIC_BLOB_BASE_URL ?? "";
 
 // The actual header-value computation lives in src/lib/security-headers.ts,
 // as plain, unit-tested functions (src/lib/security-headers.spec.ts) --
@@ -24,7 +31,7 @@ const isDev = process.env.NODE_ENV === "development";
 const cspHeader = buildCspHeader({
   isDev,
   apiUrl: process.env.NEXT_PUBLIC_API_URL,
-  blobBaseUrl: BLOB_PUBLIC_BASE_URL,
+  blobBaseUrl: BLOB_BASE_URL,
 });
 
 // Derived from @medinstru/config's own LOCALES rather than hardcoded a
@@ -140,7 +147,7 @@ const nextConfig: NextConfig = {
     // Scoped to the exact hostname and protocol rather than a wildcard:
     // this list is what stops the image optimiser being used as an open
     // proxy for arbitrary remote URLs.
-    remotePatterns: blobRemotePatterns(BLOB_PUBLIC_BASE_URL),
+      remotePatterns: blobRemotePatterns(BLOB_BASE_URL),
   },
   async headers() {
     return [

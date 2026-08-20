@@ -18,8 +18,8 @@ export class LocalBlobStore implements BlobStore {
    * `toPublicUrl` is injected rather than imported, so this adapter has no
    * dependency on global configuration. That keeps it a pure unit -- every
    * test below runs the real class with no environment to arrange -- and
-   * it keeps the ESM-only @medinstru/config out of a CommonJS module,
-   * which Jest's runtime cannot load even though Node itself can.
+   * it keeps this adapter usable with any URL scheme -- a CDN, a custom
+   * domain, or the root-relative paths used before a provider is set.
    */
   constructor(
     private readonly root: string,
