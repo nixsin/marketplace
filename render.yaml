@@ -38,6 +38,19 @@ services:
           property: connectionString
       - key: JWT_SECRET
         sync: false # generated once via `openssl rand -base64 32`, set manually in the dashboard
+      # The API half of blob storage, and it is genuinely required: this
+      # service rewrites each product's imageUrl per request, so without it
+      # the API keeps returning local paths no matter what the web service
+      # is configured with. Setting it on only one of the two leaves a
+      # half-configured state where the web build permits the blob host and
+      # nothing ever points at it -- which is exactly how this shipped the
+      # first time, silently.
+      #
+      # RUNTIME here, not a build arg: apps/api reads process.env when it
+      # resolves a URL, unlike the web app where NEXT_PUBLIC_* is inlined
+      # at build time. Optional -- unset means images stay on local paths.
+      - key: NEXT_PUBLIC_BLOB_BASE_URL
+        value: https://images.laxair.shop
 
   - name: medinstru-web
     type: web
@@ -59,4 +72,19 @@ services:
       # above), this also needs to be set by hand in Render's dashboard
       # for medinstru-web before it takes effect in production.
       - key: NEXT_PUBLIC_SITE_URL
-        value: https://medinstru-web.onrender.com
+        value: https://laxair.shop
+      # Public origin for blob-stored product images. Build-time again --
+      # next.config.ts reads it to derive the CSP img-src entry and the
+      # next/image remotePatterns allowlist, both of which are baked into
+      # the build. Optional: leave it unset and images are served from this
+      # origin exactly as before.
+      #
+      # NOTE: apps/api needs this too, on the medinstru-api service, where
+      # it is a RUNTIME variable rather than a build arg -- the API reads
+      # it per request to rewrite each product's imageUrl. Setting it on
+      # only one of the two services is a half-configured state: the web
+      # app would permit the blob host while the API kept returning local
+      # paths, which is exactly the silent no-op this whole thing shipped
+      # as the first time.
+      - key: NEXT_PUBLIC_BLOB_BASE_URL
+        value: https://images.laxair.shop
