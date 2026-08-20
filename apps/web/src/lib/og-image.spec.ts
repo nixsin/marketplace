@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OG_IMAGE_HEIGHT, OG_IMAGE_WIDTH, ogImageUrl } from "./og-image";
 
 describe("ogImageUrl", () => {
@@ -66,6 +66,82 @@ describe("ogImageUrl", () => {
     );
     // and the query string is genuinely empty -- nothing leaked into it
     expect(new URL(emitted, "https://x.test").search).toBe("");
+  });
+
+  describe("absolute URLs on our own blob host", () => {
+    // The live regression this covers: once blob storage is configured the
+    // API returns absolute R2 URLs, every product image started looking
+    // like a third-party CDN, and og:image was dropped entirely. Product
+    // pages lost their preview card while the home page -- which uses a
+    // static local path -- kept working and hid it.
+    const BLOB = "https://images.laxair.shop";
+    const original = process.env.NEXT_PUBLIC_BLOB_BASE_URL;
+
+    beforeEach(() => {
+      process.env.NEXT_PUBLIC_BLOB_BASE_URL = BLOB;
+      vi.resetModules();
+    });
+    afterEach(() => {
+      if (original === undefined) delete process.env.NEXT_PUBLIC_BLOB_BASE_URL;
+      else process.env.NEXT_PUBLIC_BLOB_BASE_URL = original;
+      vi.resetModules();
+    });
+
+    async function freshOgImageUrl() {
+      // The module reads the env var at load, so it must be re-evaluated
+      // after the value changes. vi.resetModules() in beforeEach clears the
+      // registry; a plain dynamic import then re-runs the module.
+      //
+      // Deliberately NOT `import("./og-image?query")` to bust the cache:
+      // that works under Vitest but TypeScript cannot resolve the
+      // specifier, and `next build` type-checks the whole project -- it
+      // failed the real Docker build.
+      const mod = await import("./og-image");
+      return mod.ogImageUrl;
+    }
+
+    it("swaps .svg for .png on our blob host", async () => {
+      const fn = await freshOgImageUrl();
+      expect(fn(`${BLOB}/products/lab-equipment.svg`)).toBe(
+        `${BLOB}/products/lab-equipment.png`,
+      );
+    });
+
+    it("still refuses a genuinely third-party host", async () => {
+      // We ship no PNG twin for someone else's CDN.
+      const fn = await freshOgImageUrl();
+      expect(fn("https://cdn.example/item.svg")).toBeUndefined();
+    });
+
+    it("is not fooled by a host that merely starts with ours", async () => {
+      // A prefix test would accept this; origin comparison does not.
+      const fn = await freshOgImageUrl();
+      expect(fn("https://images.laxair.shop.evil.example/products/x.svg")).toBeUndefined();
+    });
+
+    it.each([
+      "/products/%2E%2E%2Fuploads/x.svg",
+      "/products/%2e%2e/uploads/x.svg",
+      "/products/../uploads/x.svg",
+      "/products/foo%2Fbar.svg",
+    ])("refuses the encoded traversal %s on our own host", async (path) => {
+      // The new absolute-URL branch initially checked the RAW pathname,
+      // which bypassed the normalisation the root-relative branch already
+      // had -- the same bug, reintroduced by adding a second entry point
+      // and not routing it through the same check.
+      const fn = await freshOgImageUrl();
+      expect(fn(`${BLOB}${path}`)).toBeUndefined();
+    });
+
+    it("refuses a path outside /products/ even on our host", async () => {
+      const fn = await freshOgImageUrl();
+      expect(fn(`${BLOB}/uploads/seller-logo.svg`)).toBeUndefined();
+    });
+
+    it("passes a raster on our host straight through", async () => {
+      const fn = await freshOgImageUrl();
+      expect(fn(`${BLOB}/products/photo.jpg`)).toBe(`${BLOB}/products/photo.jpg`);
+    });
   });
 
   it("leaves a RELATIVE path alone rather than promoting it to absolute", () => {
