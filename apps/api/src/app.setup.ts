@@ -2,6 +2,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import { CORRELATION_HEADERS } from './observability/correlation';
 import { correlationMiddleware } from './observability/correlation.middleware';
+import { CorrelationExceptionFilter } from './observability/correlation-exception.filter';
 
 // Shared between main.ts (real bootstrap) and e2e tests (which build their
 // own app instance directly via Test.createTestingModule, bypassing
@@ -13,6 +14,11 @@ export function configureApp(app: INestApplication): void {
   // Before anything else, so every later handler and log line can attribute
   // itself to a request.
   app.use(correlationMiddleware);
+
+  // Logs every unhandled error with the ids of the request that caused it.
+  // Without this the ids are collected and never used, which leaves the
+  // browser-error-to-server-log workflow undelivered.
+  app.useGlobalFilters(new CorrelationExceptionFilter());
 
   app.enableCors({
     // allowedHeaders must be explicit once we ask the browser to send

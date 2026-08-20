@@ -8,6 +8,7 @@ import { LocaleProvider } from "@/components/locale-provider";
 import { Header } from "@/components/header";
 import { Footer } from "@/components/footer";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
+import { PageViewTracker } from "@/components/page-view-tracker";
 import { API_URL, BUILD_COMMIT, BUILD_TIME, SITE_URL } from "@medinstru/config";
 import "../globals.css";
 import { OG_IMAGE_HEIGHT, OG_IMAGE_WIDTH } from "@/lib/og-image";
@@ -158,6 +159,7 @@ export default async function LocaleLayout({
       <body className="min-h-full flex flex-col">
         <LocaleProvider initialLocale={locale as Locale} initialMessages={messages}>
           <ServiceWorkerRegistration />
+          <PageViewTracker />
           <Header />
           <main className="flex flex-1 flex-col">{children}</main>
           <Footer />

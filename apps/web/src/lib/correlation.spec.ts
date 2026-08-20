@@ -99,3 +99,34 @@ describe("correlationHeaders", () => {
     expect(a[CORRELATION_HEADERS.sessionId]).toBe(b[CORRELATION_HEADERS.sessionId]);
   });
 });
+
+describe("a malformed session cookie", () => {
+  beforeEach(clearCookies);
+  afterEach(clearCookies);
+
+  it("does not throw, and is replaced with a fresh id", () => {
+    // decodeURIComponent("%") throws URIError. Unhandled, that propagated
+    // out of getSessionId() through correlationHeaders() and broke the
+    // product fetch BEFORE the request was issued -- one stale cookie set
+    // by anything on the domain would have emptied the listing.
+    document.cookie = "mi_sid=%; path=/";
+    expect(() => getSessionId()).not.toThrow();
+    expect(getSessionId()).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+  });
+
+  it("replaces a value the API would silently discard", () => {
+    // The API drops any id outside [A-Za-z0-9_-] to prevent log injection.
+    // Reusing such a value would send a session id that never lands --
+    // present in the browser, absent from the data.
+    document.cookie = "mi_sid=has spaces and %%%; path=/";
+    expect(getSessionId()).not.toContain(" ");
+    expect(getSessionId()).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
+  });
+
+  it("still keeps a valid existing cookie", () => {
+    // The repair must not be so eager that it resets real sessions.
+    document.cookie = "mi_sid=valid-session-123; path=/";
+    expect(getSessionId()).toBe("valid-session-123");
+  });
+});
+

@@ -2,6 +2,7 @@ import type { Product } from "@/components/product-card";
 import type { ProductDetail } from "@/components/product-detail";
 import { API_URL } from "@medinstru/config";
 import { correlationHeaders, newClientRequestId } from "./correlation";
+import { reportApiFailure } from "./report-api-failure";
 
 // GraphQL doesn't care about whitespace/formatting, but this goes in a URL
 // (GraphQL-over-GET, see fetchProductsPaged) where every character costs a
@@ -115,20 +116,32 @@ export async function fetchProduct(id: string): Promise<ProductDetail | null> {
   // request that vanished is exactly the one worth being able to trace.
   const clientRequestId = newClientRequestId();
 
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      "apollo-require-preflight": "true",
-      // Correlation. No extra round trip: apollo-require-preflight above
-      // already makes this a preflighted cross-origin request, so these
-      // ride along on a preflight that was happening regardless.
-      ...correlationHeaders(clientRequestId),
-    },
-    credentials: "omit",
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "GET",
+      headers: {
+        "apollo-require-preflight": "true",
+        // Correlation. No extra round trip: apollo-require-preflight above
+        // already makes this a preflighted cross-origin request, so these
+        // ride along on a preflight that was happening regardless.
+        ...correlationHeaders(clientRequestId),
+      },
+      credentials: "omit",
+    });
+  } catch (error) {
+    // No response at all -- timeout, DNS, connection refused, CORS block.
+    // The client id is the only identifier that exists here, and whether
+    // a server log carries it answers the first question worth asking:
+    // did the request arrive?
+    reportApiFailure("fetchProduct", clientRequestId, error);
+    throw error;
+  }
 
   if (!res.ok) {
-    throw new Error(`Failed to fetch product (${res.status})`);
+    const error = new Error(`Failed to fetch product (${res.status})`);
+    reportApiFailure("fetchProduct", clientRequestId, error, res);
+    throw error;
   }
 
   const json = (await res.json()) as ProductResponse;
@@ -204,7 +217,9 @@ export async function fetchProductsPaged(
   });
 
   if (!res.ok) {
-    throw new Error(`Failed to fetch products (${res.status})`);
+    const error = new Error(`Failed to fetch products (${res.status})`);
+    reportApiFailure("fetchProductsPaged", clientRequestId, error, res);
+    throw error;
   }
 
   const json = (await res.json()) as ProductsPagedResponse;

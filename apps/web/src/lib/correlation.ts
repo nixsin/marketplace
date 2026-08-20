@@ -52,7 +52,21 @@ function readCookie(name: string): string | undefined {
   const match = document.cookie.match(
     new RegExp(`(?:^|; )${name}=([^;]*)`),
   );
-  return match ? decodeURIComponent(match[1]) : undefined;
+  if (!match) return undefined;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    // decodeURIComponent throws URIError on a malformed escape -- a bare
+    // "%" is enough. Cookies outlive this code and can be set by anything
+    // on the domain, so this is reachable without any bug of ours.
+    //
+    // Unhandled, it threw inside getSessionId(), propagated through
+    // correlationHeaders(), and broke fetchProductsPaged BEFORE the
+    // request was issued: one stale cookie would have emptied the product
+    // listing. Telemetry must never be able to do that -- an unreadable
+    // id is simply a missing id, and a fresh one replaces it.
+    return undefined;
+  }
 }
 
 function writeSessionCookie(value: string): void {
@@ -88,7 +102,13 @@ function writeSessionCookie(value: string): void {
  */
 export function getSessionId(): string {
   const existing = readCookie(SESSION_COOKIE);
-  const id = existing ?? newId();
+  // Also rejects a value that survived decoding but is not id-shaped: the
+  // API drops anything outside [A-Za-z0-9_-] to prevent log injection, so
+  // reusing such a value would mean sending a session id that is silently
+  // discarded on arrival -- the session would look absent in the data
+  // while appearing present in the browser.
+  const usable = existing && /^[A-Za-z0-9_-]{1,64}$/.test(existing) ? existing : undefined;
+  const id = usable ?? newId();
   writeSessionCookie(id);
   return id;
 }
