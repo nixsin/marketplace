@@ -288,6 +288,11 @@ jobs:
       # regression to its logic would ship to main unnoticed and surface
       # the next night -- the same reason pr-reconciliation is tested here.
       - run: node --test scripts/lib/production-audit.test.mjs
+      # Secret scanning and doc-link integrity. Both were done by eye while
+      # writing docs/*.md -- the kind of check a person gets right nine
+      # times and misses on the tenth, where one of the two failure modes
+      # (a committed credential) is permanent.
+      - run: node --test scripts/lib/repo-hygiene.test.mjs
       - run: node --test scripts/lib/cdn-header-check.test.mjs
       - run: node --test scripts/verify-cdn-headers.test.mjs
       - run: node --test scripts/lib/render-deploy-status.test.mjs
@@ -735,6 +740,14 @@ jobs:
           # failed its own required check. Both are still measured, printed,
           # and published to the dashboard history below; they just no
           # longer block a merge. See perf-budget.mjs's ENFORCED comment.
+          # Only the DETERMINISTIC budget gates a merge. JS transfer size
+          # is byte-identical across runs of the same commit, so a change
+          # in it is always real -- it caught a genuine +2.3KB regression.
+          # Score and LCP are timing-sensitive on shared runners (measured:
+          # 7 of 10 runs failed, 6 of those LCP-only, and unmodified main
+          # could not reliably pass its own required check). They are still
+          # MEASURED and published to the dashboard here, and tracked as a
+          # trend by the nightly audit -- just not used to block a merge.
           PERF_BUDGET_ENFORCE: js
 
       # if: always() (scoped to push-to-main only, not every rerun) so a
@@ -978,7 +991,18 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     needs: [changes]
-    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'load-test'))
+    # Force-run or push-to-main only -- NOT on every PR.
+    #
+    # Throughput is a TREND, not a per-commit event, and these runners are
+    # shared: the numbers move with runner contention more than with code,
+    # the same problem that got Lighthouse's LCP gate disabled. The job was
+    # informational anyway, so running it per-PR spent ~69s of every PR's
+    # wall clock to produce a number nobody could act on. The nightly
+    # production audit is where trend data belongs.
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+        (needs.changes.outputs.api == 'true' || needs.changes.outputs.deps == 'true'))
+      || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'load-test'))
     services:
       postgres:
         image: postgres:16-alpine
