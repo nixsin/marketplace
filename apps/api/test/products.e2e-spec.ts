@@ -6,6 +6,7 @@ import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { configureApp } from '../src/app.setup';
 import { assertConnectedToTestDatabase } from './helpers/assert-test-database';
+import { graphqlCacheControl } from '../src/graphql-cache';
 
 function gql(app: INestApplication<App>) {
   return (query: string, variables?: Record<string, unknown>) =>
@@ -278,9 +279,21 @@ describe('GraphQL-over-GET caching (e2e)', () => {
       .query({ query: QUERY })
       .expect(200);
 
-    expect(res.headers['cache-control']).toBe(
-      'public, max-age=0, must-revalidate',
-    );
+    // Asserted against the shared constant rather than a literal, so the
+    // header and its test cannot drift apart -- this assertion held a
+    // stale literal and failed the moment s-maxage was added, which is
+    // the right failure but the wrong reason to have to edit a test.
+    expect(res.headers['cache-control']).toBe(graphqlCacheControl());
+
+    // The semantics, spelled out, because the string alone does not say
+    // which cache each directive is for:
+    //   max-age=0    the browser -- always revalidates
+    //   s-maxage     shared caches only -- lets a CDN serve without a hop
+    //   SWR          serve stale instantly, refresh behind it
+    expect(res.headers['cache-control']).toContain('max-age=0');
+    expect(res.headers['cache-control']).toContain('s-maxage=');
+    expect(res.headers['cache-control']).toContain('stale-while-revalidate=');
+
     expect(res.headers.etag).toBeTruthy();
     expect(res.body.data.productsPaged.items).toHaveLength(1);
   });

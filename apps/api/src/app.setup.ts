@@ -1,6 +1,7 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import { CORRELATION_HEADERS } from './observability/correlation';
+import { graphqlCacheControl } from './graphql-cache';
 import { correlationMiddleware } from './observability/correlation.middleware';
 import { CorrelationExceptionFilter } from './observability/correlation-exception.filter';
 
@@ -89,10 +90,11 @@ export function configureApp(app: INestApplication): void {
           // to verify or monitor (e.g. via RUM) from frontend code, not
           // just from a manual curl check.
           originalSetHeader('Timing-Allow-Origin', '*');
-          return originalSetHeader(
-            'Cache-Control',
-            'public, max-age=0, must-revalidate',
-          );
+          // s-maxage + stale-while-revalidate, not a bare max-age=0 --
+          // see graphql-cache.ts for which directive serves which cache,
+          // and for what this buys today versus once the API is behind a
+          // CDN we control.
+          return originalSetHeader('Cache-Control', graphqlCacheControl());
         }
         return originalSetHeader(name, value);
       }) as typeof res.setHeader;
