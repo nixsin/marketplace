@@ -1,5 +1,10 @@
 import { NotFoundException } from '@nestjs/common';
-import { ProductsService, normalizeDetails } from './products.service';
+import {
+  ProductsService,
+  normalizeDetails,
+  resolveImageUrl,
+  normalizeProduct,
+} from './products.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 function makeProduct(id: string) {
@@ -176,5 +181,102 @@ describe('normalizeDetails', () => {
       name: 'Widget',
       details: null,
     });
+  });
+});
+
+/**
+ * Saves and restores the blob env vars around each test.
+ *
+ * Two separate problems this fixes, both real: a test asserting the
+ * "not configured" behaviour is silently invalid if the surrounding
+ * environment happens to have one of these set, and deleting them
+ * unconditionally afterwards mutates global state for whatever runs next
+ * -- a test that quietly changes its neighbours' environment is worse
+ * than one that merely fails.
+ */
+function useIsolatedBlobEnv() {
+  const KEYS = ['NEXT_PUBLIC_BLOB_BASE_URL', 'BLOB_PUBLIC_BASE_URL'] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+    // Establish the precondition rather than assume it.
+    for (const key of KEYS) delete process.env[key];
+  });
+
+  afterEach(() => {
+    for (const key of KEYS) {
+      const value = saved[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
+describe('resolveImageUrl', () => {
+  const withImage = (imageUrl: string | null) => ({ imageUrl, details: null });
+
+  useIsolatedBlobEnv();
+
+  it('leaves the path untouched when no blob storage is configured', () => {
+    // The property that makes this safe to deploy before switching storage
+    // on: output is byte-identical to before, and unsetting one variable
+    // reverts it instantly.
+    expect(
+      resolveImageUrl(withImage('/products/lab-equipment.svg')).imageUrl,
+    ).toBe('/products/lab-equipment.svg');
+  });
+
+  it('points a managed image at blob storage once configured', () => {
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    expect(
+      resolveImageUrl(withImage('/products/lab-equipment.svg')).imageUrl,
+    ).toBe('https://images.laxair.shop/products/lab-equipment.svg');
+  });
+
+  it('leaves an absolute URL alone', () => {
+    // A seller's own CDN, or an already-resolved URL. Rewriting it would
+    // point at an object we never stored.
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    expect(
+      resolveImageUrl(withImage('https://cdn.example/x.jpg')).imageUrl,
+    ).toBe('https://cdn.example/x.jpg');
+  });
+
+  it('leaves an unmanaged path alone', () => {
+    // Only /products/ is mirrored into storage. A future upload path has
+    // no object there yet, and rewriting it would 404.
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    expect(
+      resolveImageUrl(withImage('/uploads/seller-1/photo.jpg')).imageUrl,
+    ).toBe('/uploads/seller-1/photo.jpg');
+  });
+
+  it('handles a product with no image', () => {
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    expect(resolveImageUrl(withImage(null)).imageUrl).toBeNull();
+  });
+
+  it('does not mutate the product it was given', () => {
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    const original = withImage('/products/x.svg');
+    resolveImageUrl(original);
+    expect(original.imageUrl).toBe('/products/x.svg');
+  });
+});
+
+describe('normalizeProduct', () => {
+  useIsolatedBlobEnv();
+
+  it('applies both rules, so every read path gets both', () => {
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    const result = normalizeProduct({
+      imageUrl: '/products/x.svg',
+      // An array is not representable as GraphQLJSONObject and must
+      // degrade to null rather than throw.
+      details: ['not', 'an', 'object'],
+    });
+    expect(result.imageUrl).toBe('https://images.laxair.shop/products/x.svg');
+    expect(result.details).toBeNull();
   });
 });
