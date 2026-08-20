@@ -38,6 +38,19 @@ services:
           property: connectionString
       - key: JWT_SECRET
         sync: false # generated once via `openssl rand -base64 32`, set manually in the dashboard
+      # The API half of blob storage, and it is genuinely required: this
+      # service rewrites each product's imageUrl per request, so without it
+      # the API keeps returning local paths no matter what the web service
+      # is configured with. Setting it on only one of the two leaves a
+      # half-configured state where the web build permits the blob host and
+      # nothing ever points at it -- which is exactly how this shipped the
+      # first time, silently.
+      #
+      # RUNTIME here, not a build arg: apps/api reads process.env when it
+      # resolves a URL, unlike the web app where NEXT_PUBLIC_* is inlined
+      # at build time. Optional -- unset means images stay on local paths.
+      - key: NEXT_PUBLIC_BLOB_BASE_URL
+        value: https://images.laxair.shop
 
   - name: medinstru-web
     type: web

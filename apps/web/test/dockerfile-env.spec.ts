@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -34,18 +34,32 @@ describe("every NEXT_PUBLIC_* the app reads is passed into the Docker build", ()
     "utf8",
   );
 
-  /** Sources whose NEXT_PUBLIC_* references must all reach the build. */
-  const sources = [
-    join(process.cwd(), "next.config.ts"),
-    join(repoRoot, "packages", "config", "src", "index.js"),
-  ];
-
-  const referenced = new Set<string>();
-  for (const file of sources) {
-    const text = readFileSync(file, "utf8");
-    for (const match of text.matchAll(/NEXT_PUBLIC_[A-Z0-9_]+/g)) {
-      referenced.add(match[0]);
+  /**
+   * Every NEXT_PUBLIC_* reference in the app's own sources, discovered
+   * rather than listed. A hardcoded file list would quietly stop covering
+   * a variable introduced anywhere else, which is the same class of silent
+   * gap this whole test exists to close.
+   */
+  function collectReferences(dir: string, found: Set<string>): Set<string> {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === ".next") continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        collectReferences(full, found);
+      } else if (/\.(ts|tsx|js|mjs)$/.test(entry.name)) {
+        for (const m of readFileSync(full, "utf8").matchAll(/NEXT_PUBLIC_[A-Z0-9_]+/g)) {
+          found.add(m[0]);
+        }
+      }
     }
+    return found;
+  }
+
+  const referenced = collectReferences(join(process.cwd(), "src"), new Set<string>());
+  collectReferences(join(repoRoot, "packages", "config", "src"), referenced);
+  for (const m of readFileSync(join(process.cwd(), "next.config.ts"), "utf8")
+    .matchAll(/NEXT_PUBLIC_[A-Z0-9_]+/g)) {
+    referenced.add(m[0]);
   }
 
   it("finds variables to check at all (guards against a silently empty scan)", () => {
@@ -54,9 +68,30 @@ describe("every NEXT_PUBLIC_* the app reads is passed into the Docker build", ()
     expect(referenced.size).toBeGreaterThan(0);
   });
 
-  it.each([...referenced])("%s is declared in the Dockerfile", (name) => {
-    // Either form counts: `ARG NAME=...`, or `NAME=...` inline on the
-    // build RUN line (which is how the build-identity values arrive).
-    expect(dockerfile).toContain(name);
+  it.each([...referenced])("%s is passed INTO the build, not merely mentioned", (name) => {
+    // A plain substring check is not enough, and this is not theoretical:
+    // removing only the `ARG` line while leaving `ENV NAME=$NAME` behind
+    // left the build input unavailable while the test still passed. The
+    // ENV line references the name, so `toContain` was satisfied by the
+    // very state the test exists to reject -- and a comment mentioning
+    // the variable would satisfy it too.
+    //
+    // Only two forms actually supply a value to `next build`:
+    //   ARG NAME             (with or without a default)
+    //   NAME=value  on the RUN line that invokes the build
+    const declaredAsArg = new RegExp(`^\\s*ARG\\s+${name}(=|\\s|$)`, "m").test(
+      dockerfile,
+    );
+    const setOnBuildRun = new RegExp(`${name}=\\S`).test(
+      // Only the RUN block that actually runs the build counts.
+      dockerfile.split(/^RUN /m).find((block) => block.includes("pnpm --filter web build")) ?? "",
+    );
+
+    expect(
+      declaredAsArg || setOnBuildRun,
+      `${name} is read by the app but never supplied to the Docker build. ` +
+        "Add `ARG " + name + "` (an ENV line alone does not pass a value in), " +
+        "or set it inline on the build RUN line.",
+    ).toBe(true);
   });
 });
