@@ -284,6 +284,10 @@ jobs:
       - run: node --test scripts/lib/pr-reconciliation.test.mjs
       - run: node --test scripts/lib/pre-push-refs.test.mjs
       - run: node --test scripts/lib/ci-progress-comment.test.mjs
+      # The nightly audit only runs on a schedule, so without this a
+      # regression to its logic would ship to main unnoticed and surface
+      # the next night -- the same reason pr-reconciliation is tested here.
+      - run: node --test scripts/lib/production-audit.test.mjs
       - run: node --test scripts/lib/cdn-header-check.test.mjs
       - run: node --test scripts/verify-cdn-headers.test.mjs
       - run: node --test scripts/lib/render-deploy-status.test.mjs

