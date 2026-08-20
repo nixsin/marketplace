@@ -1,6 +1,8 @@
 import type { Product } from "@/components/product-card";
 import type { ProductDetail } from "@/components/product-detail";
 import { API_URL } from "@medinstru/config";
+import { correlationHeaders, newClientRequestId } from "./correlation";
+import { reportApiFailure } from "./report-api-failure";
 
 // GraphQL doesn't care about whitespace/formatting, but this goes in a URL
 // (GraphQL-over-GET, see fetchProductsPaged) where every character costs a
@@ -109,16 +111,37 @@ export async function fetchProduct(id: string): Promise<ProductDetail | null> {
   url.searchParams.set("query", PRODUCT_QUERY);
   url.searchParams.set("variables", JSON.stringify({ id }));
 
-  const res = await fetch(url, {
-    method: "GET",
-    headers: {
-      "apollo-require-preflight": "true",
-    },
-    credentials: "omit",
-  });
+  // Generated BEFORE the call, not read from the response: if this request
+  // never completes there is no response to read a server id from, and a
+  // request that vanished is exactly the one worth being able to trace.
+  const clientRequestId = newClientRequestId();
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "GET",
+      headers: {
+        "apollo-require-preflight": "true",
+        // Correlation. No extra round trip: apollo-require-preflight above
+        // already makes this a preflighted cross-origin request, so these
+        // ride along on a preflight that was happening regardless.
+        ...correlationHeaders(clientRequestId),
+      },
+      credentials: "omit",
+    });
+  } catch (error) {
+    // No response at all -- timeout, DNS, connection refused, CORS block.
+    // The client id is the only identifier that exists here, and whether
+    // a server log carries it answers the first question worth asking:
+    // did the request arrive?
+    reportApiFailure("fetchProduct", clientRequestId, error);
+    throw error;
+  }
 
   if (!res.ok) {
-    throw new Error(`Failed to fetch product (${res.status})`);
+    const error = new Error(`Failed to fetch product (${res.status})`);
+    reportApiFailure("fetchProduct", clientRequestId, error, res);
+    throw error;
   }
 
   const json = (await res.json()) as ProductResponse;
@@ -165,6 +188,11 @@ export async function fetchProductsPaged(
   url.searchParams.set("query", PRODUCTS_PAGED_QUERY);
   url.searchParams.set("variables", JSON.stringify({ page, pageSize }));
 
+  // See fetchProduct: generated up front so a request that never returns
+  // can still be correlated with the server log, or shown to have never
+  // arrived at all.
+  const clientRequestId = newClientRequestId();
+
   const res = await fetch(url, {
     method: "GET",
     headers: {
@@ -173,6 +201,10 @@ export async function fetchProductsPaged(
       // enforces a CORS preflight for non-simple requests) rather than a
       // trivial cross-site GET like an <img> tag could trigger.
       "apollo-require-preflight": "true",
+      // Correlation. No extra round trip: apollo-require-preflight above
+      // already makes this a preflighted cross-origin request, so these
+      // ride along on a preflight that was happening regardless.
+      ...correlationHeaders(clientRequestId),
     },
     // This read is meant to be public — explicitly never send cookies,
     // regardless of same-origin/cross-origin. Also the positive signal
@@ -185,7 +217,9 @@ export async function fetchProductsPaged(
   });
 
   if (!res.ok) {
-    throw new Error(`Failed to fetch products (${res.status})`);
+    const error = new Error(`Failed to fetch products (${res.status})`);
+    reportApiFailure("fetchProductsPaged", clientRequestId, error, res);
+    throw error;
   }
 
   const json = (await res.json()) as ProductsPagedResponse;
