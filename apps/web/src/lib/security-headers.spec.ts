@@ -105,3 +105,45 @@ describe("hstsHeaderEntries", () => {
     ]);
   });
 });
+
+describe("blob image host in CSP", () => {
+  it("adds no img-src entry when no blob host is configured", () => {
+    // Today's state. The policy must stay exactly as tight as it is now
+    // until a provider is actually switched on.
+    const csp = buildCspHeader({ isDev: false, apiUrl: undefined });
+    expect(csp).toContain("img-src 'self' blob: data:;");
+  });
+
+  it("allows the blob host once configured", () => {
+    const csp = buildCspHeader({
+      isDev: false,
+      apiUrl: undefined,
+      blobBaseUrl: "https://images.laxair.shop",
+    });
+    expect(csp).toContain("img-src 'self' blob: data: https://images.laxair.shop;");
+  });
+
+  it("allows only the origin, never a path", () => {
+    // A CSP source carrying a path is matched by PREFIX, which permits
+    // more than it reads like it does -- a classic way to write a policy
+    // that looks tight and is not.
+    const csp = buildCspHeader({
+      isDev: false,
+      apiUrl: undefined,
+      blobBaseUrl: "https://images.laxair.shop/bucket/media",
+    });
+    expect(csp).toContain("data: https://images.laxair.shop;");
+    expect(csp).not.toContain("/bucket/media");
+  });
+
+  it("falls back to a stricter policy on an unparseable value", () => {
+    // A bad env var must degrade to stricter, never to broken.
+    const csp = buildCspHeader({
+      isDev: false,
+      apiUrl: undefined,
+      blobBaseUrl: "not a url",
+    });
+    expect(csp).toContain("img-src 'self' blob: data:;");
+  });
+});
+
