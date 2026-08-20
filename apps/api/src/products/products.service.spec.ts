@@ -1,5 +1,10 @@
 import { NotFoundException } from '@nestjs/common';
-import { ProductsService, normalizeDetails } from './products.service';
+import {
+  ProductsService,
+  normalizeDetails,
+  resolveImageUrl,
+  normalizeProduct,
+} from './products.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 function makeProduct(id: string) {
@@ -176,5 +181,78 @@ describe('normalizeDetails', () => {
       name: 'Widget',
       details: null,
     });
+  });
+});
+
+describe('resolveImageUrl', () => {
+  const withImage = (imageUrl: string | null) => ({ imageUrl, details: null });
+
+  afterEach(() => {
+    delete process.env.NEXT_PUBLIC_BLOB_BASE_URL;
+    delete process.env.BLOB_PUBLIC_BASE_URL;
+  });
+
+  it('leaves the path untouched when no blob storage is configured', () => {
+    // The property that makes this safe to deploy before switching storage
+    // on: output is byte-identical to before, and unsetting one variable
+    // reverts it instantly.
+    expect(
+      resolveImageUrl(withImage('/products/lab-equipment.svg')).imageUrl,
+    ).toBe('/products/lab-equipment.svg');
+  });
+
+  it('points a managed image at blob storage once configured', () => {
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    expect(
+      resolveImageUrl(withImage('/products/lab-equipment.svg')).imageUrl,
+    ).toBe('https://images.laxair.shop/products/lab-equipment.svg');
+  });
+
+  it('leaves an absolute URL alone', () => {
+    // A seller's own CDN, or an already-resolved URL. Rewriting it would
+    // point at an object we never stored.
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    expect(
+      resolveImageUrl(withImage('https://cdn.example/x.jpg')).imageUrl,
+    ).toBe('https://cdn.example/x.jpg');
+  });
+
+  it('leaves an unmanaged path alone', () => {
+    // Only /products/ is mirrored into storage. A future upload path has
+    // no object there yet, and rewriting it would 404.
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    expect(
+      resolveImageUrl(withImage('/uploads/seller-1/photo.jpg')).imageUrl,
+    ).toBe('/uploads/seller-1/photo.jpg');
+  });
+
+  it('handles a product with no image', () => {
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    expect(resolveImageUrl(withImage(null)).imageUrl).toBeNull();
+  });
+
+  it('does not mutate the product it was given', () => {
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    const original = withImage('/products/x.svg');
+    resolveImageUrl(original);
+    expect(original.imageUrl).toBe('/products/x.svg');
+  });
+});
+
+describe('normalizeProduct', () => {
+  afterEach(() => {
+    delete process.env.NEXT_PUBLIC_BLOB_BASE_URL;
+  });
+
+  it('applies both rules, so every read path gets both', () => {
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
+    const result = normalizeProduct({
+      imageUrl: '/products/x.svg',
+      // An array is not representable as GraphQLJSONObject and must
+      // degrade to null rather than throw.
+      details: ['not', 'an', 'object'],
+    });
+    expect(result.imageUrl).toBe('https://images.laxair.shop/products/x.svg');
+    expect(result.details).toBeNull();
   });
 });

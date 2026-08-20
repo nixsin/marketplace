@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { blobUrl } from '../storage/blob-config';
 
 // Prisma's `details Json?` column accepts any valid JSON value (object,
 // array, string, number, null) -- but the GraphQL field is typed
@@ -24,6 +25,54 @@ export function normalizeDetails<T extends { details: unknown }>(
   return isRepresentable ? product : { ...product, details: null };
 }
 
+/**
+ * Product images live under this prefix and are the ones we mirror into
+ * blob storage. Anything else -- an absolute URL to a seller's own CDN, a
+ * future upload path -- is returned untouched.
+ */
+const MANAGED_IMAGE_PREFIX = '/products/';
+
+/**
+ * Resolves a stored image path to the URL a browser should fetch.
+ *
+ * Stored values are paths like `/products/lab-equipment.svg`, which is
+ * what apps/web/public serves directly. When a blob base URL is
+ * configured, the same file is served from object storage instead, so the
+ * path is rewritten to point there.
+ *
+ * WHY THIS EXISTS AT ALL: #109 shipped the storage transport -- the port,
+ * the adapters, the migration -- but nothing connected product DATA to it.
+ * Uploading the files and setting NEXT_PUBLIC_BLOB_BASE_URL was therefore
+ * not enough on its own: the CSP and next/image allowlists permitted the
+ * blob host, but every product still pointed at the local path, so nothing
+ * was ever fetched from it.
+ *
+ * Applied server-side rather than in the web app so every consumer gets
+ * the resolved URL -- the listing, the detail page, and OpenGraph metadata
+ * -- without each re-deriving the rule.
+ *
+ * With no blob URL configured, blobUrl() returns the same root-relative
+ * path that was passed in, so output is byte-identical to before. That is
+ * what makes this safe to deploy ahead of actually switching storage on,
+ * and instantly revertible by unsetting one variable.
+ */
+export function resolveImageUrl<T extends { imageUrl: string | null }>(
+  product: T,
+): T {
+  const { imageUrl } = product;
+  if (!imageUrl?.startsWith(MANAGED_IMAGE_PREFIX)) return product;
+  // Strip the leading slash: blobUrl takes a KEY, and the stored value is
+  // a path. `/products/x.svg` and `products/x.svg` name the same object.
+  return { ...product, imageUrl: blobUrl(imageUrl.slice(1)) };
+}
+
+/** Every read path funnels through this, so both rules apply everywhere. */
+export function normalizeProduct<
+  T extends { details: unknown; imageUrl: string | null },
+>(product: T): T {
+  return resolveImageUrl(normalizeDetails(product));
+}
+
 @Injectable()
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -39,7 +88,7 @@ export class ProductsService {
       include: { seller: true },
     });
     if (!product) throw new NotFoundException(`Product ${id} not found`);
-    return normalizeDetails(product);
+    return normalizeProduct(product);
   }
 
   async findPage(cursor?: string, limit = 6) {
@@ -64,7 +113,7 @@ export class ProductsService {
     const page = hasMore ? items.slice(0, limit) : items;
     const nextCursor = hasMore ? page[page.length - 1].id : undefined;
 
-    return { items: page.map(normalizeDetails), nextCursor };
+    return { items: page.map(normalizeProduct), nextCursor };
   }
 
   // Offset-based numbered pagination — see ProductsPaged model for why this
@@ -82,7 +131,7 @@ export class ProductsService {
     ]);
 
     return {
-      items: items.map(normalizeDetails),
+      items: items.map(normalizeProduct),
       page: safePage,
       pageSize,
       totalCount,
