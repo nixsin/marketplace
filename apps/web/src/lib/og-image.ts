@@ -83,8 +83,21 @@ export function ogImageUrl(imageUrl: string | null | undefined): string | undefi
 
   if (onBlobHost) {
     const url = new URL(path);
-    if (!url.pathname.startsWith(MANAGED_PREFIX)) return undefined;
-    return `${url.origin}${url.pathname.replace(/\.svg$/i, ".png")}${suffix}`;
+    // Runs the SAME normalisation as the root-relative branch below, not a
+    // raw startsWith on the pathname. Checking the raw form here bypassed
+    // it: `/products/%2E%2E%2Fuploads/x.svg` starts with the managed
+    // prefix as a string while decoding to `/products/../uploads/x.svg`,
+    // outside it. That is precisely the bypass the root-relative branch
+    // was already hardened against -- reintroduced by adding a second
+    // entry point and not routing it through the same check.
+    const segments = normalise(url.pathname);
+    if (segments === null) return undefined;
+
+    const clean = `/${segments.join("/")}`;
+    if (!clean.startsWith(MANAGED_PREFIX)) return undefined;
+
+    const encoded = segments.map((seg) => encodeURIComponent(seg)).join("/");
+    return `${url.origin}/${encoded.replace(/\.svg$/i, ".png")}${suffix}`;
   }
 
   // Root-relative from here. A relative path like `products/x.svg`

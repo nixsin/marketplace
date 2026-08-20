@@ -119,6 +119,20 @@ describe("ogImageUrl", () => {
       expect(fn("https://images.laxair.shop.evil.example/products/x.svg")).toBeUndefined();
     });
 
+    it.each([
+      "/products/%2E%2E%2Fuploads/x.svg",
+      "/products/%2e%2e/uploads/x.svg",
+      "/products/../uploads/x.svg",
+      "/products/foo%2Fbar.svg",
+    ])("refuses the encoded traversal %s on our own host", async (path) => {
+      // The new absolute-URL branch initially checked the RAW pathname,
+      // which bypassed the normalisation the root-relative branch already
+      // had -- the same bug, reintroduced by adding a second entry point
+      // and not routing it through the same check.
+      const fn = await freshOgImageUrl();
+      expect(fn(`${BLOB}${path}`)).toBeUndefined();
+    });
+
     it("refuses a path outside /products/ even on our host", async () => {
       const fn = await freshOgImageUrl();
       expect(fn(`${BLOB}/uploads/seller-logo.svg`)).toBeUndefined();
