@@ -1,6 +1,7 @@
 import type { Product } from "@/components/product-card";
 import type { ProductDetail } from "@/components/product-detail";
 import { API_URL } from "@medinstru/config";
+import { correlationHeaders, newClientRequestId } from "./correlation";
 
 // GraphQL doesn't care about whitespace/formatting, but this goes in a URL
 // (GraphQL-over-GET, see fetchProductsPaged) where every character costs a
@@ -109,10 +110,19 @@ export async function fetchProduct(id: string): Promise<ProductDetail | null> {
   url.searchParams.set("query", PRODUCT_QUERY);
   url.searchParams.set("variables", JSON.stringify({ id }));
 
+  // Generated BEFORE the call, not read from the response: if this request
+  // never completes there is no response to read a server id from, and a
+  // request that vanished is exactly the one worth being able to trace.
+  const clientRequestId = newClientRequestId();
+
   const res = await fetch(url, {
     method: "GET",
     headers: {
       "apollo-require-preflight": "true",
+      // Correlation. No extra round trip: apollo-require-preflight above
+      // already makes this a preflighted cross-origin request, so these
+      // ride along on a preflight that was happening regardless.
+      ...correlationHeaders(clientRequestId),
     },
     credentials: "omit",
   });
@@ -165,6 +175,11 @@ export async function fetchProductsPaged(
   url.searchParams.set("query", PRODUCTS_PAGED_QUERY);
   url.searchParams.set("variables", JSON.stringify({ page, pageSize }));
 
+  // See fetchProduct: generated up front so a request that never returns
+  // can still be correlated with the server log, or shown to have never
+  // arrived at all.
+  const clientRequestId = newClientRequestId();
+
   const res = await fetch(url, {
     method: "GET",
     headers: {
@@ -173,6 +188,10 @@ export async function fetchProductsPaged(
       // enforces a CORS preflight for non-simple requests) rather than a
       // trivial cross-site GET like an <img> tag could trigger.
       "apollo-require-preflight": "true",
+      // Correlation. No extra round trip: apollo-require-preflight above
+      // already makes this a preflighted cross-origin request, so these
+      // ride along on a preflight that was happening regardless.
+      ...correlationHeaders(clientRequestId),
     },
     // This read is meant to be public — explicitly never send cookies,
     // regardless of same-origin/cross-origin. Also the positive signal

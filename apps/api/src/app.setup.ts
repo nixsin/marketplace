@@ -1,5 +1,7 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
+import { CORRELATION_HEADERS } from './observability/correlation';
+import { correlationMiddleware } from './observability/correlation.middleware';
 
 // Shared between main.ts (real bootstrap) and e2e tests (which build their
 // own app instance directly via Test.createTestingModule, bypassing
@@ -7,7 +9,39 @@ import type { NextFunction, Request, Response } from 'express';
 // runs in production, instead of two copies drifting apart.
 export function configureApp(app: INestApplication): void {
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
-  app.enableCors();
+
+  // Before anything else, so every later handler and log line can attribute
+  // itself to a request.
+  app.use(correlationMiddleware);
+
+  app.enableCors({
+    // allowedHeaders must be explicit once we ask the browser to send
+    // correlation headers: naming any header at all replaces the default
+    // reflect-whatever-was-requested behaviour, so apollo-require-preflight
+    // (Apollo's CSRF check, sent on every GET from apps/web) has to be
+    // listed here too or every request starts failing preflight.
+    allowedHeaders: [
+      'content-type',
+      'apollo-require-preflight',
+      CORRELATION_HEADERS.sessionId,
+      CORRELATION_HEADERS.pageViewId,
+      CORRELATION_HEADERS.clientRequestId,
+    ],
+    // Without this the response header is sent but invisible to JavaScript:
+    // browsers hide all but a handful of headers on cross-origin responses
+    // unless they are named here. The failure is silent -- headers.get()
+    // simply returns null -- so it is worth stating why this line exists.
+    exposedHeaders: [CORRELATION_HEADERS.requestId],
+    // The real fix for an existing latency bug, not just setup for the
+    // above. apps/web already sends a custom header (apollo-require-
+    // preflight), which makes every API call a preflighted cross-origin
+    // request -- and with no max-age the browser re-runs that preflight
+    // before EVERY request, paying a full extra round trip each time. On
+    // the high-latency connections this app targets that is the single
+    // cheapest latency win available. 86400s is the practical ceiling
+    // (Chrome caps at 2h, Firefox at 24h; both clamp rather than reject).
+    maxAge: 86_400,
+  });
 
   // Apollo Server sets `Cache-Control: no-store` by default on every
   // response — a safe default, since it can't know an arbitrary query's
