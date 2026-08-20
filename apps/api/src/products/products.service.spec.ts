@@ -184,13 +184,39 @@ describe('normalizeDetails', () => {
   });
 });
 
+/**
+ * Saves and restores the blob env vars around each test.
+ *
+ * Two separate problems this fixes, both real: a test asserting the
+ * "not configured" behaviour is silently invalid if the surrounding
+ * environment happens to have one of these set, and deleting them
+ * unconditionally afterwards mutates global state for whatever runs next
+ * -- a test that quietly changes its neighbours' environment is worse
+ * than one that merely fails.
+ */
+function useIsolatedBlobEnv() {
+  const KEYS = ['NEXT_PUBLIC_BLOB_BASE_URL', 'BLOB_PUBLIC_BASE_URL'] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+    // Establish the precondition rather than assume it.
+    for (const key of KEYS) delete process.env[key];
+  });
+
+  afterEach(() => {
+    for (const key of KEYS) {
+      const value = saved[key];
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+}
+
 describe('resolveImageUrl', () => {
   const withImage = (imageUrl: string | null) => ({ imageUrl, details: null });
 
-  afterEach(() => {
-    delete process.env.NEXT_PUBLIC_BLOB_BASE_URL;
-    delete process.env.BLOB_PUBLIC_BASE_URL;
-  });
+  useIsolatedBlobEnv();
 
   it('leaves the path untouched when no blob storage is configured', () => {
     // The property that makes this safe to deploy before switching storage
@@ -240,9 +266,7 @@ describe('resolveImageUrl', () => {
 });
 
 describe('normalizeProduct', () => {
-  afterEach(() => {
-    delete process.env.NEXT_PUBLIC_BLOB_BASE_URL;
-  });
+  useIsolatedBlobEnv();
 
   it('applies both rules, so every read path gets both', () => {
     process.env.NEXT_PUBLIC_BLOB_BASE_URL = 'https://images.laxair.shop';
