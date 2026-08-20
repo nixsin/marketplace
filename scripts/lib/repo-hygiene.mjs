@@ -48,10 +48,24 @@ const ALLOWED = [
   /xxx+|placeholder|example|changeme|your[-_]?key/i,
 ];
 
+/**
+ * An explicit, visible opt-out for a line that must contain something
+ * secret-shaped -- a test fixture, or documentation of the pattern
+ * itself.
+ *
+ * A marker rather than a file-level exclusion: excluding this scanner's
+ * own test file would work today, but it hides the exemption, and the
+ * next file that needs one would get excluded wholesale too. Requiring
+ * the marker keeps every exemption on the line it applies to, where a
+ * reviewer sees it.
+ */
+const IGNORE_MARKER = "scan-ignore";
+
 /** Findings for one file's contents. */
 export function scanForSecrets(path, contents) {
   const findings = [];
   contents.split("\n").forEach((line, i) => {
+    if (line.includes(IGNORE_MARKER)) return;
     // A line that is clearly naming a variable rather than assigning a
     // value -- the pattern this repo uses everywhere on purpose.
     if (ALLOWED.some((a) => a.test(line))) return;

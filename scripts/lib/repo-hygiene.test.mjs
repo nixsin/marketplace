@@ -25,18 +25,28 @@ describe("scanForSecrets", () => {
     // and the AWS pattern required a word boundary after exactly 16
     // characters, which a quoted value never provides.
     assert.equal(
-      scanForSecrets("f", 'secret_access_key = "K7pQm2XvR9tLzN4bW8sYc3JhF6dGa1eU"').length,
+      scanForSecrets("f", 'secret_access_key = "K7pQm2XvR9tLzN4bW8sYc3JhF6dGa1eU"').length,  // scan-ignore: deliberate fixture
       1,
     );
-    assert.equal(scanForSecrets("f", "AKIAQYLPMN5HXYZ12ABC").length, 1);
+    assert.equal(scanForSecrets("f", "AKIAQYLPMN5HXYZ12ABC").length, 1);  // scan-ignore: deliberate fixture
   });
 
   test("flags a private key block and a JWT", () => {
-    assert.equal(scanForSecrets("f", "-----BEGIN RSA PRIVATE KEY-----").length, 1);
+    assert.equal(scanForSecrets("f", "-----BEGIN RSA PRIVATE KEY-----").length, 1);  // scan-ignore: deliberate fixture
     assert.equal(
-      scanForSecrets("f", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmNHl0w5N").length,
+      scanForSecrets("f", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmNHl0w5N").length,  // scan-ignore: deliberate fixture
       1,
     );
+  });
+
+  test("an explicit scan-ignore marker exempts a single line", () => {
+    // The scanner flagged its OWN fixtures on the first run. A per-line
+    // marker rather than excluding this file wholesale: an exclusion
+    // hides the exemption and would silently cover future additions too,
+    // whereas the marker sits on the line a reviewer is already reading.
+    const secret = 'api_key = "K7pQm2XvR9tLzN4bW8sYc3JhF6dGa1eU"';  // scan-ignore: deliberate fixture
+    assert.equal(scanForSecrets("f", secret).length, 1);
+    assert.equal(scanForSecrets("f", `${secret} // scan-ignore`).length, 0);
   });
 
   test("does NOT flag the name-only pattern this repo uses on purpose", () => {
@@ -54,7 +64,7 @@ describe("scanForSecrets", () => {
   });
 
   test("reports the line number, so a hit is actionable", () => {
-    const [hit] = scanForSecrets("f", 'a\nb\napi_key = "K7pQm2XvR9tLzN4bW8sYc3JhF6dGa1eU"');
+    const [hit] = scanForSecrets("f", 'a\nb\napi_key = "K7pQm2XvR9tLzN4bW8sYc3JhF6dGa1eU"');  // scan-ignore: deliberate fixture
     assert.equal(hit.line, 3);
   });
 });
