@@ -10,6 +10,7 @@ import { Footer } from "@/components/footer";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
 import { API_URL, BUILD_COMMIT, BUILD_TIME, SITE_URL } from "@medinstru/config";
 import "../globals.css";
+import { OG_IMAGE_HEIGHT, OG_IMAGE_WIDTH } from "@/lib/og-image";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -90,6 +91,34 @@ export async function generateMetadata({
     title: t("title"),
     description: t("description"),
     metadataBase: getSiteUrl(),
+    // Without these, sharing the site's own URL produces a bare link with
+    // no preview card at all. Only the product page had OpenGraph tags, so
+    // the one link most likely to be shared -- the home page -- was the one
+    // that previewed as nothing. Set on the LAYOUT so every route inherits
+    // a sensible card; the product page overrides with its own.
+    openGraph: {
+      type: "website",
+      siteName: "MedInstru Market",
+      title: t("title"),
+      description: t("description"),
+      locale,
+      // A dedicated 1200x630 PNG, not an SVG: Facebook's scraper (which
+      // WhatsApp shares) cannot render SVG and shows an empty frame.
+      images: [
+        {
+          url: "/home-og.png",
+          width: OG_IMAGE_WIDTH,
+          height: OG_IMAGE_HEIGHT,
+          alt: t("title"),
+        },
+      ],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: t("title"),
+      description: t("description"),
+      images: ["/home-og.png"],
+    },
     // Baked into every page so the running build is readable with a plain
     // curl -- see @medinstru/config's BUILD_COMMIT for the deploy-skew
     // incident this exists to make visible. `other` is Next's escape hatch
