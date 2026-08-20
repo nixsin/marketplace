@@ -22,6 +22,14 @@ export function configureApp(app: INestApplication): void {
     // listed here too or every request starts failing preflight.
     allowedHeaders: [
       'content-type',
+      // Non-negotiable, and the one this list originally missed. Naming
+      // any header here replaces the default reflect-whatever-was-asked
+      // behaviour, so every header the browser may send has to be listed
+      // -- and omitting authorization silently breaks every authenticated
+      // request. Caught by the sw-cache-isolation e2e suite, whose
+      // synthetic Authorization-bearing request started failing preflight;
+      // nothing else in the app sends one yet, so no unit test could have.
+      'authorization',
       'apollo-require-preflight',
       CORRELATION_HEADERS.sessionId,
       CORRELATION_HEADERS.pageViewId,
