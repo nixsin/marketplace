@@ -178,9 +178,9 @@ counter-intuitive today.
 | Layer | Cache-Control | Edge status | Cached at Cloudflare? |
 |---|---|---|---|
 | **R2 images** (`images.laxair.shop`) | `public, max-age=31536000, immutable` | `cf-cache-status: HIT` | **Yes** |
-| **App HTML** (`laxair.shop`) | `public, max-age=0, must-revalidate` | `DYNAMIC` | No — correct, content changes per deploy |
+| **App HTML** (`laxair.shop`) | `public, max-age=0, s-maxage=60, stale-while-revalidate=300` | `DYNAMIC` | Not yet — `s-maxage` activates when the apex is proxied (§5.3) |
 | **App JS/CSS** (`/_next/static/*`) | `public, max-age=31536000, immutable` | `DYNAMIC` | **No — and this is the gap** |
-| **GraphQL API** | `public, max-age=0, must-revalidate` | `DYNAMIC` | No — correct, live data |
+| **GraphQL API** | `public, max-age=0, s-maxage=60, stale-while-revalidate=300` | `DYNAMIC` | Not yet — the API answers on `onrender.com`, fronted by RENDER's Cloudflare, which does not cache our responses. Activates behind `api.laxair.shop` |
 
 ### 5.2 The gap
 
@@ -212,6 +212,27 @@ ambiguous between the two.
 **grey-cloud** so Render could verify domain ownership and issue its
 certificate. Proxying before that fails verification. Only turn the
 proxy on after Render shows *Certificate Issued*.
+
+### 5.3a Why the origin already sends `s-maxage`
+
+Both the HTML shell and cacheable GraphQL GETs now send
+`s-maxage` and `stale-while-revalidate`, even though no CDN of ours
+serves them yet. Three directives, three audiences:
+
+| Directive | Applies to | Effect here |
+|---|---|---|
+| `max-age=0` | The browser's private cache | Always revalidates, so a deploy or a catalogue edit is picked up |
+| `s-maxage=60` | Shared caches only | **Dormant** until the origin is proxied |
+| `stale-while-revalidate=300` | Browsers *and* CDNs | **Working today** — a repeat navigation renders from cache instead of blocking on the network |
+
+Shipping the header ahead of the CDN is deliberate: it is correct either
+way, and it means enabling the proxy is a DNS change on its own rather
+than a DNS change coordinated with a code deploy.
+
+`s-maxage` is 60s because there is **no cache-invalidation path** — nothing
+purges when a seller edits a listing, so that value doubles as the
+worst-case staleness they would see. Raise it once an invalidation hook
+exists, not before.
 
 ### 5.4 Purging
 

@@ -28,6 +28,12 @@
 //     sips -p 630 1200 --padColor F0EEF6 "/tmp/$n.png" --out "$n.png"
 //   done
 
+/**
+ * The configured blob origin, or "" when storage is not configured.
+ * Read at module load -- NEXT_PUBLIC_* is inlined at build time.
+ */
+const BLOB_BASE_URL = process.env.NEXT_PUBLIC_BLOB_BASE_URL ?? "";
+
 /** The card size every OG consumer sizes its large preview against. */
 export const OG_IMAGE_WIDTH = 1200;
 export const OG_IMAGE_HEIGHT = 630;
@@ -54,12 +60,49 @@ export function ogImageUrl(imageUrl: string | null | undefined): string | undefi
   const [path, suffix = ""] = splitSuffix(imageUrl);
   if (!/\.svg$/i.test(path)) return imageUrl; // already a raster; pass through
 
-  // Root-relative only. A relative path like `products/x.svg` resolves
-  // against whatever page is rendering it, so rewriting it to the absolute
-  // `/products/x.png` would silently point metadata at a different
-  // resource. Nothing we manage is relative -- and an absolute URL
-  // (`https://cdn.example/item.svg`) lands here too, correctly treated as
-  // unmanaged.
+  // An absolute URL on OUR OWN blob host is managed, and is now the normal
+  // case: once blob storage is configured the API returns
+  // `https://images.laxair.shop/products/x.svg` rather than a local path.
+  //
+  // This was a real, live regression. The "root-relative only" rule below
+  // was written when every imageUrl was a local path, and it correctly
+  // refused third-party URLs. When the API started returning absolute R2
+  // URLs, every product image began looking like someone else's CDN, so
+  // og:image was omitted entirely and product pages lost their preview
+  // card -- while the home page, which uses a static local path, kept
+  // working and hid the problem.
+  //
+  // Compared by ORIGIN, never by substring: a prefix test would accept
+  // `https://images.laxair.shop.evil.example/...`.
+  const onBlobHost = isOurBlobHost(path);
+  if (!onBlobHost && !path.startsWith("/")) {
+    // A genuinely third-party URL. We ship no PNG twin for it, and
+    // pointing at one that does not exist advertises a 404.
+    return undefined;
+  }
+
+  if (onBlobHost) {
+    const url = new URL(path);
+    // Runs the SAME normalisation as the root-relative branch below, not a
+    // raw startsWith on the pathname. Checking the raw form here bypassed
+    // it: `/products/%2E%2E%2Fuploads/x.svg` starts with the managed
+    // prefix as a string while decoding to `/products/../uploads/x.svg`,
+    // outside it. That is precisely the bypass the root-relative branch
+    // was already hardened against -- reintroduced by adding a second
+    // entry point and not routing it through the same check.
+    const segments = normalise(url.pathname);
+    if (segments === null) return undefined;
+
+    const clean = `/${segments.join("/")}`;
+    if (!clean.startsWith(MANAGED_PREFIX)) return undefined;
+
+    const encoded = segments.map((seg) => encodeURIComponent(seg)).join("/");
+    return `${url.origin}/${encoded.replace(/\.svg$/i, ".png")}${suffix}`;
+  }
+
+  // Root-relative from here. A relative path like `products/x.svg`
+  // resolves against whatever page renders it, so promoting it to
+  // `/products/x.png` would silently name a different resource.
   if (!path.startsWith("/")) return undefined;
 
   // Only rewrite images we actually ship a twin for. Every SVG under
@@ -95,6 +138,25 @@ export function ogImageUrl(imageUrl: string | null | undefined): string | undefi
 
 /** Product images we ship, and therefore generate PNG twins for. */
 const MANAGED_PREFIX = "/products/";
+
+/**
+ * Whether an absolute URL points at the blob host we control.
+ *
+ * Origin comparison rather than a prefix test: `startsWith(BLOB_BASE_URL)`
+ * would happily accept `https://images.laxair.shop.evil.example/x.svg`,
+ * and this decides whether we rewrite a URL that ends up in metadata.
+ *
+ * Returns false when no blob host is configured, which keeps the
+ * not-configured path behaving exactly as before.
+ */
+function isOurBlobHost(value: string): boolean {
+  if (!BLOB_BASE_URL || !URL.canParse(value)) return false;
+  try {
+    return new URL(value).origin === new URL(BLOB_BASE_URL).origin;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Decodes and resolves `.` and `..` segments the way a browser or server
