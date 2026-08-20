@@ -204,7 +204,20 @@ const nextConfig: NextConfig = {
         headers: [
           {
             key: "Cache-Control",
-            value: "public, max-age=0, must-revalidate",
+            // s-maxage + stale-while-revalidate, matching the API's own
+            // policy (apps/api/src/graphql-cache.ts explains the split).
+            //
+            // This shell is deliberately kept statically prerenderable --
+            // product data is fetched client-side precisely so the HTML
+            // stays cacheable -- and then it was served with max-age=0 for
+            // BOTH browser and edge, which gave away the benefit the whole
+            // architecture was arranged to obtain.
+            //
+            // max-age=0 still keeps the browser revalidating, so a deploy
+            // is picked up on the next navigation. s-maxage only affects
+            // shared caches, and takes effect once the apex is proxied
+            // through Cloudflare (see docs/cloudflare.md §5.3).
+            value: "public, max-age=0, s-maxage=60, stale-while-revalidate=300, must-revalidate",
           },
         ],
       },
