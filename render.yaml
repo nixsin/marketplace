@@ -59,4 +59,19 @@ services:
       # above), this also needs to be set by hand in Render's dashboard
       # for medinstru-web before it takes effect in production.
       - key: NEXT_PUBLIC_SITE_URL
-        value: https://medinstru-web.onrender.com
+        value: https://laxair.shop
+      # Public origin for blob-stored product images. Build-time again --
+      # next.config.ts reads it to derive the CSP img-src entry and the
+      # next/image remotePatterns allowlist, both of which are baked into
+      # the build. Optional: leave it unset and images are served from this
+      # origin exactly as before.
+      #
+      # NOTE: apps/api needs this too, on the medinstru-api service, where
+      # it is a RUNTIME variable rather than a build arg -- the API reads
+      # it per request to rewrite each product's imageUrl. Setting it on
+      # only one of the two services is a half-configured state: the web
+      # app would permit the blob host while the API kept returning local
+      # paths, which is exactly the silent no-op this whole thing shipped
+      # as the first time.
+      - key: NEXT_PUBLIC_BLOB_BASE_URL
+        value: https://images.laxair.shop

@@ -73,6 +73,17 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 # build time, not read at runtime.
 ARG NEXT_PUBLIC_SITE_URL=http://localhost:3000
 ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+# Same mechanism again, and it was missed once already. next.config.ts
+# reads this at build time to derive BOTH the CSP img-src entry and the
+# next/image remotePatterns allowlist -- so without the ARG, Render's
+# environment variable never reaches the build and the image behaves
+# exactly as if no blob storage were configured. That failed silently:
+# the variable was set correctly in the dashboard, R2 was serving happily,
+# and every product still pointed at its local path with no error anywhere
+# to explain why. Empty default, since blob storage is optional and an
+# empty value is the "not configured" state everything already handles.
+ARG NEXT_PUBLIC_BLOB_BASE_URL=""
+ENV NEXT_PUBLIC_BLOB_BASE_URL=$NEXT_PUBLIC_BLOB_BASE_URL
 # Same mechanism, same reason: next.config.ts's `deploymentId` gets baked
 # into the build the same way NEXT_PUBLIC_API_URL does, so it needs to be
 # a build arg too, not just a runtime env var -- a runtime-only value
