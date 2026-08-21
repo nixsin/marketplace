@@ -29,6 +29,11 @@ services:
     dockerContext: .
     healthCheckPath: /
     autoDeployTrigger: checksPass
+    # Fronted by Cloudflare so GraphQL GETs can be edge-cached; the
+    # .onrender.com hostname sits behind RENDER's Cloudflare, which
+    # returns cf-cache-status: DYNAMIC and caches nothing of ours.
+    domains:
+      - api.laxair.shop
     envVars:
       - key: PORT
         value: 4000
@@ -60,12 +65,19 @@ services:
     dockerfilePath: ./apps/web/Dockerfile
     dockerContext: .
     autoDeployTrigger: checksPass
+    domains:
+      - laxair.shop
+      - www.laxair.shop
     envVars:
       # Public by nature (shipped to the browser) — see apps/web/Dockerfile
       # for why this must also be passed as a Docker build ARG, not just a
       # runtime env var, for a Docker-based Next.js deploy.
       - key: NEXT_PUBLIC_API_URL
-        value: https://medinstru-api.onrender.com/graphql
+        # The CDN-fronted subdomain, not the .onrender.com origin. Both
+        # answer identically; only this one is proxied by OUR Cloudflare,
+        # so only this one can actually honour the s-maxage the API
+        # sends. See docs/cloudflare.md 5.3b.
+        value: https://api.laxair.shop/graphql
       # Same mechanism, same reason -- required for generateMetadata's
       # metadataBase (product-details page OpenGraph images). Since this
       # file isn't an active Blueprint sync (see the header comment
