@@ -12,6 +12,23 @@
 
 export interface SecurityHeadersInput {
   isDev: boolean;
+  /**
+   * The origin this build will actually be served from.
+   *
+   * Decides whether `upgrade-insecure-requests` is emitted. Gating that on
+   * `isDev` alone was wrong: a PRODUCTION build served over plain HTTP --
+   * which is exactly what CI does for the e2e suite -- still carried the
+   * directive, so every sub-resource was rewritten to https:// against a
+   * server with no TLS.
+   *
+   * Chromium hides this, because it exempts localhost from the upgrade.
+   * WebKit does not, and fails every request with "A TLS error caused the
+   * secure connection to fail." Verified directly in both engines against
+   * the same local server; the whole page renders in one and is blank in
+   * the other. CLAUDE.md had flagged the localhost exemption as unverified
+   * -- it is now verified, and engine-dependent.
+   */
+  siteUrl?: string;
   // Matches src/lib/api.ts's own NEXT_PUBLIC_API_URL fallback exactly --
   // callers should pass process.env.NEXT_PUBLIC_API_URL as-is (including
   // undefined) rather than pre-resolving the fallback themselves, so both
@@ -52,10 +69,15 @@ export function computeApiOrigin(apiUrl: string | undefined): string {
 
 export function buildCspHeader({
   isDev,
+  siteUrl,
   apiUrl,
   blobBaseUrl,
 }: SecurityHeadersInput): string {
   const apiOrigin = computeApiOrigin(apiUrl);
+  // Emitted only when the site is genuinely served over HTTPS. Upgrading
+  // sub-resources on an http:// origin cannot succeed -- there is nothing
+  // listening on TLS -- so the directive would only ever break the page.
+  const upgradeInsecure = !isDev && (siteUrl ?? "").startsWith("https://");
   const blobImgSrc = blobImgSrcEntry(blobBaseUrl);
   return `
     default-src 'self';
@@ -67,7 +89,7 @@ export function buildCspHeader({
     object-src 'none';
     base-uri 'self';
     form-action 'self';
-    frame-ancestors 'none';${isDev ? "" : " upgrade-insecure-requests;"}
+    frame-ancestors 'none';${upgradeInsecure ? " upgrade-insecure-requests;" : ""}
   `
     .replace(/\s{2,}/g, " ")
     .trim();

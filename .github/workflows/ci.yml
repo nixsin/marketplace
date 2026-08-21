@@ -885,9 +885,15 @@ jobs:
           cat /tmp/web.log
           exit 1
 
-      - name: Install Playwright's Chromium browser
+      - name: Install Playwright browsers
         working-directory: apps/web
-        run: pnpm exec playwright install --with-deps chromium
+        # All three tier-1 engines. Chromium runs the full suite; WebKit
+        # and Firefox run only cross-browser.spec.ts (see
+        # playwright.config.ts for why). The two extra downloads cost
+        # ~200MB and a few seconds against a job that already builds the
+        # web app, boots Postgres and starts an API -- and WebKit is the
+        # only way to test what every iOS browser actually runs.
+        run: pnpm exec playwright install --with-deps chromium webkit firefox
 
       - name: Run Playwright e2e suite
         working-directory: apps/web
@@ -911,7 +917,12 @@ jobs:
           if [ "${{ needs.changes.outputs.web }}" = "true" ] || [ "${{ needs.changes.outputs.deps }}" = "true" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             pnpm exec playwright test
           else
-            pnpm exec playwright test e2e/critical-flow.spec.ts
+            # API-only change. critical-flow exercises real apps/api logic;
+            # cross-browser runs too because a server-rendered response
+            # differing by engine is an API-shaped failure the Chromium-only
+            # path would miss. Both are Chromium-cheap; only cross-browser
+            # fans out, and it carries no screenshots.
+            pnpm exec playwright test e2e/critical-flow.spec.ts e2e/cross-browser.spec.ts
           fi
         env:
           PLAYWRIGHT_BASE_URL: http://localhost:3000

@@ -39,6 +39,9 @@ describe("buildCspHeader", () => {
   it("omits 'unsafe-eval' and includes upgrade-insecure-requests in production", () => {
     const csp = buildCspHeader({
       isDev: false,
+      // An https site URL is now required for the upgrade directive, not
+      // just a production build -- see the protocol-gate describe below.
+      siteUrl: "https://laxair.shop",
       apiUrl: "https://medinstru-api.onrender.com/graphql",
     });
     expect(csp).not.toContain("'unsafe-eval'");
@@ -147,3 +150,40 @@ describe("blob image host in CSP", () => {
   });
 });
 
+
+describe("upgrade-insecure-requests is gated on the real protocol", () => {
+  const base = { isDev: false, apiUrl: "https://api.example.com/graphql", blobBaseUrl: "" };
+
+  it("is emitted for a real HTTPS deployment", () => {
+    expect(
+      buildCspHeader({ ...base, siteUrl: "https://laxair.shop" }),
+    ).toContain("upgrade-insecure-requests");
+  });
+
+  it("is NOT emitted for a production build served over plain HTTP", () => {
+    // The bug this replaced. Gating on isDev alone meant CI's e2e suite --
+    // a production build served at http://localhost:3000 -- carried the
+    // directive, so every sub-resource was rewritten to https:// against a
+    // server with no TLS. Chromium hid it by exempting localhost; WebKit
+    // failed every request with "A TLS error caused the secure connection
+    // to fail", and the page rendered blank.
+    expect(
+      buildCspHeader({ ...base, siteUrl: "http://localhost:3000" }),
+    ).not.toContain("upgrade-insecure-requests");
+  });
+
+  it("is NOT emitted when the site URL is unset", () => {
+    // CI's e2e build sets NEXT_PUBLIC_API_URL but not SITE_URL. Absent a
+    // stated origin there is no basis to claim the site is HTTPS, and
+    // claiming it wrongly breaks the page rather than degrading it.
+    expect(buildCspHeader({ ...base, siteUrl: undefined })).not.toContain(
+      "upgrade-insecure-requests",
+    );
+  });
+
+  it("is never emitted in dev, even with an https site URL", () => {
+    expect(
+      buildCspHeader({ ...base, isDev: true, siteUrl: "https://laxair.shop" }),
+    ).not.toContain("upgrade-insecure-requests");
+  });
+});
