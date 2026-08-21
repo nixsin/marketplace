@@ -544,7 +544,13 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"query":"{ productsPaged(page: 1, pageSize: 10) { totalCount } }"}')
           echo "$response"
-          echo "$response" | grep -q '"totalCount":10'
+          # Exact count, not just >0: this proves the seed ran to completion
+          # through the real Docker stack, not merely that the API answered.
+          # It is the third place that knows the fixture's size, so it moves
+          # with apps/api/prisma/seed.ts -- a mismatch here means the seed
+          # changed and this assertion was not updated, which is exactly the
+          # signal wanted rather than a nuisance.
+          echo "$response" | grep -q '"totalCount":16'
 
       - name: Tear down
         if: always()
