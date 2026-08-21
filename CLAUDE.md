@@ -2231,6 +2231,11 @@ imported Cloudflare zone cache-settings phase has the provider-assigned,
 immutable name `default`; changing that name forces replacement and is blocked
 by `prevent_destroy`.
 
+The Render provider requires the non-secret owner ID
+`tea-da02feht0dsc738nmfv0`. Production Postgres belongs to project environment
+`evm-da02hptg1s2s73c6e7tg`; both IDs are declared in Terraform so a plan cannot
+detach the imported database from that environment.
+
 Render (`render.yaml` documents the live setup; not connected as an active
 Blueprint sync — see that file's own comment for why). Migrations run in
 CI's `migrate` job against the External DB URL (the prod Docker image has no

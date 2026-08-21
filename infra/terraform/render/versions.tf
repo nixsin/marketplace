@@ -17,4 +17,6 @@ terraform {
   }
 }
 
-provider "render" {}
+provider "render" {
+  owner_id = var.owner_id
+}
