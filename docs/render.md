@@ -76,6 +76,13 @@ Use **Manual Deploy → Deploy latest commit**.
 This is directly observable without guessing, because the CSP header is
 generated at build time from the same variable:
 
+`curl -sI` (HEAD) is correct for these two header checks, and stays correct
+once the Cloudflare HTML cache rule is live: those rules are method-gated, so
+a HEAD always bypasses the edge and reads the origin's current build -- which
+is exactly what you want when asking "what is deployed". Do **not** copy this
+pattern into a cache check, where a HEAD reports `DYNAMIC` unconditionally and
+tells you nothing (see infra/terraform/README.md).
+
 ```bash
 curl -sI https://laxair.shop/en | tr ';' '\n' | grep connect-src
 #   connect-src 'self' https://api.laxair.shop

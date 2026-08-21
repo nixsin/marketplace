@@ -13,8 +13,27 @@ variables {
     action_parameters = {
       cache = true
     }
+    }, {
+    # Models the real adoption hazard: an inventoried dashboard rule broad
+    # enough to cover the apex, concatenated BEFORE the managed rules. Since
+    # the last match wins, excluding / from the managed rules is not enough --
+    # something after this must actively say cache = false for /.
+    ref         = "existing-overbroad-web-rule"
+    description = "A pre-existing rule that would otherwise leave the apex root cacheable"
+    expression  = "(http.host eq \"laxair.shop\")"
+    action      = "set_cache_settings"
+    enabled     = true
+    action_parameters = {
+      cache = true
+    }
   }]
 }
+
+# Rules are looked up by ref, never by index. The first version of this file
+# asserted on rules[1] and rules[2], so inserting any rule ahead of them
+# silently repointed every later assertion at a different rule -- the tests
+# would still pass, just no longer testing what they name. one() returns null
+# for a ref that does not exist, so a renamed rule fails loudly instead.
 
 run "public_cache_is_narrow_and_origins_are_proxied" {
   command = plan
@@ -25,42 +44,159 @@ run "public_cache_is_narrow_and_origins_are_proxied" {
   }
 
   assert {
-    condition     = length(cloudflare_ruleset.cache_settings[0].rules) == 3 && cloudflare_ruleset.cache_settings[0].rules[0].ref == "existing-overbroad-api-rule"
-    error_message = "Additional inventoried cache rules must remain in the planned authoritative ruleset."
+    condition     = length(cloudflare_ruleset.cache_settings[0].rules) == 7 && cloudflare_ruleset.cache_settings[0].rules[0].ref == "existing-overbroad-api-rule"
+    error_message = "Additional inventoried cache rules must remain, first, in the planned authoritative ruleset."
   }
 
   assert {
-    condition = cloudflare_ruleset.cache_settings[0].rules[1].expression == (
+    condition = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-graphql-gets"]).expression == (
       "(http.host eq \"api.laxair.shop\" and http.request.uri.path eq \"/graphql\" and http.request.method eq \"GET\" and not any(http.request.headers[\"authorization\"][*] ne \"\") and not any(http.request.headers[\"cookie\"][*] ne \"\"))"
     )
     error_message = "The cache rule must exactly target anonymous, cookieless GET /graphql requests on the API hostname."
   }
 
   assert {
-    condition = cloudflare_ruleset.cache_settings[0].rules[2].expression == (
+    condition = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-all-other-api-requests"]).expression == (
       "(http.host eq \"api.laxair.shop\" and not (http.request.uri.path eq \"/graphql\" and http.request.method eq \"GET\" and not any(http.request.headers[\"authorization\"][*] ne \"\") and not any(http.request.headers[\"cookie\"][*] ne \"\")))"
     )
     error_message = "Every API request except canonical anonymous GraphQL GET must match the final explicit bypass rule."
   }
 
   assert {
-    condition     = cloudflare_ruleset.cache_settings[0].rules[2].enabled && !cloudflare_ruleset.cache_settings[0].rules[2].action_parameters.cache
+    condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-all-other-api-requests"]).enabled && !one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-all-other-api-requests"]).action_parameters.cache
     error_message = "The final unsafe GraphQL rule must be enabled and explicitly disable caching."
   }
 
   assert {
-    condition     = cloudflare_ruleset.cache_settings[0].rules[1].action_parameters.edge_ttl.mode == "respect_origin"
+    condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-graphql-gets"]).action_parameters.edge_ttl.mode == "respect_origin"
     error_message = "Cloudflare must use the API's Cache-Control and bypass responses that are not cacheable."
   }
 
   assert {
-    condition     = cloudflare_ruleset.cache_settings[0].rules[1].enabled && cloudflare_ruleset.cache_settings[0].rules[1].action_parameters.cache
+    condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-graphql-gets"]).enabled && one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-graphql-gets"]).action_parameters.cache
     error_message = "The managed anonymous GraphQL cache rule must be enabled and cache-eligible."
   }
 
   assert {
-    condition     = cloudflare_ruleset.cache_settings[0].rules[1].action_parameters.browser_ttl.mode == "respect_origin"
+    condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-graphql-gets"]).action_parameters.browser_ttl.mode == "respect_origin"
     error_message = "Cloudflare must not override the browser TTL supplied by the origin."
+  }
+
+  assert {
+    # Ref lookups removed the implicit ordering check the old positional
+    # assertions carried for free. Cloudflare runs every matching rule and the
+    # last wins, so this pair has the same silent-override risk as the web one.
+    condition     = index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "cache-public-graphql-gets") < index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "bypass-all-other-api-requests")
+    error_message = "The API bypass must come after the GraphQL cache rule or it is overridden."
+  }
+}
+
+run "page_html_is_cacheable_only_while_anonymous" {
+  command = plan
+
+  assert {
+    condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).enabled && one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).action_parameters.cache
+    error_message = "Page HTML must be cache-eligible; leaving it DYNAMIC was the last remaining CDN gap."
+  }
+
+  assert {
+    condition = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression == (
+      "(http.host eq \"laxair.shop\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and http.request.uri.path ne \"/\" and not any(http.request.headers[\"authorization\"][*] ne \"\") and not any(http.request.cookies[\"mi_sid\"][*] ne \"\"))"
+    )
+    error_message = "The HTML rule must match anonymous GETs on the web host only, excluding /_next/ and /sw.js."
+  }
+
+  assert {
+    # Deliberately NOT the API rules' "no cookie at all" test. next-intl sets
+    # NEXT_LOCALE on every page response, so a cookieless test would mean HTML
+    # never caches for any returning visitor. NEXT_LOCALE is safe because it is
+    # derived from the URL, which is already in the cache key.
+    condition     = !strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression, "any(http.request.headers[\"cookie\"][*] ne \"\")")
+    error_message = "HTML must not use the API's cookieless test -- NEXT_LOCALE would stop it ever caching."
+  }
+
+  assert {
+    # Both HTML expressions must read the PARSED cookie map, never the raw
+    # Cookie header. headers["cookie"][0] inspects only the first Cookie line
+    # and HTTP/2 permits splitting Cookie across several -- a session in a
+    # later line reads as anonymous, so eligibility matches and the bypass
+    # misses, putting authenticated HTML in a shared cache.
+    condition     = strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression, "http.request.cookies[\"mi_sid\"]") && strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression, "http.request.cookies[\"mi_sid\"]") && !strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression, "headers[\"cookie\"]") && !strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression, "headers[\"cookie\"]")
+    error_message = "HTML rules must key on the parsed cookie map, not the raw Cookie header."
+  }
+
+  assert {
+    condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).enabled && !one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).action_parameters.cache
+    error_message = "A session-bearing request must never be served page HTML from a shared cache."
+  }
+
+  assert {
+    # Both rules must share one path scope. A logged-in browser sends mi_sid
+    # on EVERY same-origin request, so a bypass without these exclusions
+    # strips edge caching from content-hashed immutable /_next/ assets that
+    # are byte-identical for every user. /_next/ and /sw.js must match
+    # NEITHER rule and fall through to Cloudflare's defaults.
+    condition     = strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression, "/_next/") && strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression, "/sw.js")
+    error_message = "The web bypass must share the HTML rule's path scope or it de-caches static assets for logged-in users."
+  }
+
+  assert {
+    # The bare root must match NEITHER rule. GET / is a 307 whose Location is
+    # negotiated from NEXT_LOCALE and Accept-Language -- measured directly:
+    # en-US yields /en, hi-IN yields /hi. Neither input is in the cache key and
+    # the response carries no Vary. It also sets NEXT_LOCALE, so a cached root
+    # would pin the wrong locale into other visitors' browsers, not merely
+    # redirect them wrongly.
+    condition     = strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression, "http.request.uri.path ne \"/\"") && strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression, "http.request.uri.path ne \"/\"")
+    error_message = "The bare root is locale-negotiated and must be excluded from both HTML rules."
+  }
+
+  assert {
+    # Authorization is rejected on the same footing as mi_sid, matching the API
+    # eligibility rule. Browsers do not send it on a normal page load, so this
+    # is defence in depth -- until the site sits behind HTTP Basic auth, when
+    # every request carries it and protected HTML would otherwise be shared.
+    condition     = strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression, "not any(http.request.headers[\"authorization\"][*] ne \"\")") && strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression, "any(http.request.headers[\"authorization\"][*] ne \"\")")
+    error_message = "Both HTML rules must treat an Authorization header as non-anonymous, as the API rule does."
+  }
+
+  assert {
+    # "Matches no managed rule" is NOT "is not cached". Inventoried rules are
+    # concatenated first and the last match wins, so the root needs something
+    # after them actively setting cache = false -- unconditionally, with no
+    # method or cookie test, since a plain anonymous GET / is exactly the
+    # request an overbroad inventoried rule would leave cache-eligible.
+    condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-root"]).enabled && !one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-root"]).action_parameters.cache && one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-root"]).expression == "(http.host eq \"laxair.shop\" and http.request.uri.path eq \"/\")"
+    error_message = "The bare root must be bypassed unconditionally, not merely left unmatched."
+  }
+
+  assert {
+    # It must come after EVERY inventoried rule, which is the whole point.
+    condition     = index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "bypass-locale-negotiated-root") > index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "existing-overbroad-web-rule")
+    error_message = "The root bypass must follow inventoried rules or they override it."
+  }
+
+  assert {
+    # Order is load-bearing: Cloudflare runs every matching rule in sequence
+    # and the last one wins, so a bypass placed BEFORE its eligibility rule is
+    # silently overridden by it. This is the assertion that would catch that.
+    condition     = index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "cache-public-html") < index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "bypass-authenticated-web")
+    error_message = "The authenticated bypass must come after the HTML cache rule or it is overridden."
+  }
+
+  assert {
+    condition = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression == (
+      "(http.host eq \"laxair.shop\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and http.request.uri.path ne \"/\" and (http.request.method ne \"GET\" or any(http.request.headers[\"authorization\"][*] ne \"\") or any(http.request.cookies[\"mi_sid\"][*] ne \"\")))"
+    )
+    error_message = "The web bypass must be the exact complement: any non-GET, or any session-bearing request."
+  }
+
+  assert {
+    # The zone-level Browser Cache TTL default of 4 hours once overrode the
+    # origin's max-age=0 and left browsers holding stale API responses. The
+    # same mistake on HTML would pin a whole page for four hours.
+    condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).action_parameters.edge_ttl.mode == "respect_origin" && one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).action_parameters.browser_ttl.mode == "respect_origin"
+    error_message = "HTML TTLs must come from the origin's Cache-Control, never a fixed Cloudflare value."
   }
 }
 

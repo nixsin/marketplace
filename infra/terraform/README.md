@@ -140,6 +140,158 @@ still required before enabling management; the first reviewed apply then
 creates it. With the adoption flag left at its safe default (`false`), normal
 plans cannot modify or delete dashboard cache rules.
 
+### Verify immediately after enabling -- the HTML rule may be a no-op
+
+**This is a known open risk, deliberately deferred to adoption time rather
+than guessed at.** Cloudflare may decline to cache a response carrying
+`Set-Cookie` even when a Cache Rule marks it eligible. Every page response
+carries `set-cookie: NEXT_LOCALE`, set by next-intl's middleware. If that
+behaviour applies, the HTML rule silently does nothing and pages keep serving
+`DYNAMIC` -- no error, no failed plan, just no improvement. It cannot be
+settled without the rule live, so measure it first:
+
+**Use a real GET, never `curl -I`.** `-I` sends `HEAD`, and both managed HTML
+rules are method-gated: the eligibility rule requires `method eq "GET"`, and
+the bypass explicitly catches `method ne "GET"`. A `HEAD` probe therefore takes
+the bypass every time and reports `DYNAMIC` **whether or not the rule works** --
+a guaranteed false negative that sends you chasing the `Set-Cookie` theory for
+a rule that is fine. `-D - -o /dev/null` prints the headers from an actual GET.
+
+```bash
+for path in /en /hi '/en?page=2'; do
+  printf '%s  ' "$path"
+  curl -sS -D - -o /dev/null "https://laxair.shop$path" \
+    | grep -iE 'cf-cache-status|set-cookie|cache-control' | tr '\n' ' '
+  echo
+done
+```
+
+Run it twice -- the first request populates the edge, so judge the second.
+
+| `cf-cache-status` | Meaning |
+|---|---|
+| `HIT` (2nd run) | Working. The gap is closed. |
+| `DYNAMIC` | The rule is not matching, or `Set-Cookie` is suppressing caching. |
+| `BYPASS` | A later rule is overriding it -- check rule order first. |
+
+Then confirm the rule is *narrow* enough, which matters more than the hit rate:
+
+```bash
+# A session-bearing request must never be served from cache. GET again:
+# a HEAD here would report BYPASS because of the METHOD, telling you nothing
+# about whether the cookie test works -- false confidence, the worse failure.
+curl -sS -D - -o /dev/null -H 'Cookie: mi_sid=fake-session-for-testing' \
+  https://laxair.shop/en | grep -i cf-cache-status   # never HIT
+
+# Each locale must keep its own cached copy (the URL is in the cache key).
+curl -sS https://laxair.shop/hi | grep -o '<html[^>]*lang="[a-z]*"'   # expect hi
+curl -sS https://laxair.shop/en | grep -o '<html[^>]*lang="[a-z]*"'   # expect en
+```
+
+**If `Set-Cookie` turns out to be what blocks it**, the fix is to stop setting
+the cookie, since the locale is already derivable from the URL. next-intl
+4.13.6 supports `localeCookie: false` in `defineRouting` (verified in
+`routing/config.d.ts`, typed `boolean | CookieAttributes`).
+
+That is **not free**, so make it a decision rather than a reflex. `NEXT_LOCALE`
+is what makes a bare `laxair.shop` visit remember a returning visitor's chosen
+language; without it that redirect falls back to `Accept-Language` detection.
+Only the bare-root entry point is affected -- every real page already carries
+its locale in the path -- but a visitor who deliberately switched to Hindi
+would land on English next time they type the bare domain.
+
+### What the managed ruleset contains, and why order matters
+
+**Five managed additions, appended after whatever you inventoried.** The
+authoritative ruleset is `additional_cache_rules` (every unrelated dashboard
+rule you copied in during adoption) followed by the four below, so the live
+ruleset is larger than four whenever the inventory is non-empty -- the test
+fixture, for instance, supplies one inventoried rule and therefore expects
+five. Count the inventory in when reviewing a plan.
+
+Order within the managed four is fixed. Cloudflare evaluates **every** matching
+rule in sequence and the last match wins, so the two bypasses must stay last --
+a bypass placed before its own eligibility rule is silently overridden by it,
+with no error anywhere. Tests assert the relative order of both pairs.
+
+| # | ref | Effect |
+|---|-----|--------|
+| 1 | `cache-public-graphql-gets` | Anonymous, cookieless `GET /graphql` becomes cache-eligible |
+| 2 | `cache-public-html` | Anonymous page HTML on the apex host becomes cache-eligible |
+| 3 | `bypass-authenticated-web` | Any web request carrying a session is never cached |
+| 4 | `bypass-locale-negotiated-root` | The bare `/` is never cached, unconditionally |
+| 5 | `bypass-all-other-api-requests` | Every other API request is never cached |
+
+**"Matches no managed rule" is not "is not cached."** Inventoried rules are
+concatenated *before* the managed ones and the last match wins, so excluding
+`/` from the two eligibility-scoped rules is not enough on its own -- an
+imported dashboard rule broad enough to cover the apex would leave `/`
+cache-eligible with nothing after it to say otherwise. Rule 4 exists for that
+reason and is deliberately unconditional: no method, cookie or header test,
+because a plain anonymous `GET /` is precisely the request such a rule would
+leave eligible. The test fixture models this with a broad apex rule.
+
+Both eligibility rules use `respect_origin` for edge **and** browser TTL, so
+every TTL lives in the application rather than split between code and
+dashboard. Browser TTL is explicit rather than omitted because omitting it
+falls through to the zone-level Browser Cache TTL default of 4 hours, which
+once overrode the origin's `max-age=0` and left browsers holding stale API
+responses. On HTML the same mistake would pin a whole page.
+
+**The two cookie tests are deliberately different, and copying one onto the
+other breaks it.** The API rules bypass on *any* cookie, which is right there:
+every GraphQL read is anonymous and sent with `credentials: "omit"`, so a
+cookie arriving at all means something unexpected. HTML cannot use that test
+-- next-intl's middleware sets `NEXT_LOCALE` on every page response, so every
+returning visitor carries a cookie and nothing would ever cache. HTML
+therefore keys on `mi_sid`, the session cookie, alone -- read through
+`http.request.cookies`, the parsed cookie map, never
+`http.request.headers["cookie"]`. The raw header is wrong twice over: `[0]`
+inspects only the first Cookie line while HTTP/2 permits splitting Cookie
+across several (a session in a later line reads as anonymous, so eligibility
+matches *and* the bypass misses -- authenticated HTML in a shared cache), and
+a `contains` test would match a cookie merely named `xmi_sid`. `NEXT_LOCALE` is safe
+to cache because it is derived purely from the URL (`/en` sets `en`, `/hi`
+sets `hi`) and the URL is already part of the cache key, so a cached response
+always carries the locale its own path implies.
+
+**The bare root `/` is excluded from both rules**, and this one is not
+belt-and-braces. `GET /` is a 307 whose `Location` is negotiated from the
+`NEXT_LOCALE` cookie and `Accept-Language` -- measured directly: `en-US` yields
+`/en`, `hi-IN` yields `/hi`, and the cookie overrides both. Neither input is in
+the cache key, and the response carries no `Vary` to say so. It also carries
+`set-cookie: NEXT_LOCALE`, so a cached root would not merely redirect the wrong
+way -- it would **pin the wrong locale into other visitors' browsers**
+persistently. Today the response has no `Cache-Control` at all, so
+`respect_origin` bypasses it regardless; that is not a reason to leave it
+matched, because resting correctness on the *absence* of a header is the same
+trap this repo hit with GraphQL errors. Excluding it costs nothing -- `/` is a
+redirect, not a rendered page -- while `/en` and `/hi` still cache.
+
+An `Authorization` header disqualifies a request on the same footing as
+`mi_sid`, matching what the API eligibility rule already does. Browsers do not
+send it on a normal page load, so this is defence in depth -- until the site
+sits behind HTTP Basic auth for staging protection, when every request carries
+it and protected HTML would otherwise land in a shared cache.
+
+`/_next/` is excluded because Cloudflare's default extension-based caching
+already serves those as `HIT`; a rule here would only compete with it. **The
+exclusion is repeated on the bypass**, and leaving it off was a real bug: a
+logged-in browser sends `mi_sid` on every same-origin request, so a host-wide
+bypass strips edge caching from content-hashed immutable assets that are
+byte-identical for every user. With both exclusions present the pair is an
+exact complement over the HTML path scope, and `/_next/` and `/sw.js` match
+*neither* rule -- falling through to Cloudflare's defaults, as intended.
+`/sw.js` is excluded belt-and-braces -- it already ships `no-store`, and a
+stale service-worker script caused a live outage on 2026-08-21 by pinning a
+CSP that named a retired API host.
+
+### This codifies the HTML rule; it does not apply it
+
+`adopt_cache_ruleset` still defaults to `false`, so merging this changes
+nothing in production. Until the phase is inventoried and both flags are set,
+the ruleset resource is not created and page HTML keeps serving `DYNAMIC`.
+
 The `cloudflare_r2_custom_domain` resource does not support import in provider
 v5.23. Because `images.laxair.shop` already exists, Terraform deliberately
 does not declare it; it remains dashboard-managed rather than attempting a
