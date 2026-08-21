@@ -28,7 +28,7 @@ import { describe, expect, it } from "vitest";
  * is structural: if the app reads it, the Dockerfile must pass it.
  */
 describe("every NEXT_PUBLIC_* the app reads is passed into the Docker build", () => {
-  const repoRoot = join(process.cwd(), "..", "..");
+  const repoRoot = join(process.cwd(), "..", "..");  // cwd is apps/web either way
   const dockerfile = readFileSync(
     join(process.cwd(), "Dockerfile"),
     "utf8",
