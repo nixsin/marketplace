@@ -1094,6 +1094,15 @@ first Cookie line, and HTTP/2 permits splitting Cookie across several, so a
 session in a later line reads as anonymous and lands in a shared cache. `NEXT_LOCALE` is safe because it is derived
 purely from the URL, which is already in the cache key.
 
+**Open risk, deliberately deferred to adoption time:** Cloudflare may decline
+to cache a response carrying `Set-Cookie`, and every page response carries
+`set-cookie: NEXT_LOCALE`. If so the HTML rule is a silent no-op -- pages keep
+serving `DYNAMIC`, with no error anywhere. It cannot be settled without the
+rule live. The README carries the exact commands to measure it the moment
+`adopt_cache_ruleset` is turned on, plus the fallback (`localeCookie: false`,
+which costs bare-root language memory) -- run them before assuming the rule
+works.
+
 Both eligibility rules set edge **and** browser TTL to `respect_origin`.
 Browser TTL is explicit rather than omitted because omitting it falls through
 to the zone default of 4 hours -- which once overrode `max-age=0` and left

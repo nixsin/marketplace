@@ -140,6 +140,57 @@ still required before enabling management; the first reviewed apply then
 creates it. With the adoption flag left at its safe default (`false`), normal
 plans cannot modify or delete dashboard cache rules.
 
+### Verify immediately after enabling -- the HTML rule may be a no-op
+
+**This is a known open risk, deliberately deferred to adoption time rather
+than guessed at.** Cloudflare may decline to cache a response carrying
+`Set-Cookie` even when a Cache Rule marks it eligible. Every page response
+carries `set-cookie: NEXT_LOCALE`, set by next-intl's middleware. If that
+behaviour applies, the HTML rule silently does nothing and pages keep serving
+`DYNAMIC` -- no error, no failed plan, just no improvement. It cannot be
+settled without the rule live, so measure it first:
+
+```bash
+for path in /en /hi /en?page=2; do
+  printf '%s  ' "$path"
+  curl -sSI "https://laxair.shop$path" \
+    | grep -iE 'cf-cache-status|set-cookie|cache-control' | tr '\n' ' '
+  echo
+done
+```
+
+Run it twice -- the first request populates the edge, so judge the second.
+
+| `cf-cache-status` | Meaning |
+|---|---|
+| `HIT` (2nd run) | Working. The gap is closed. |
+| `DYNAMIC` | The rule is not matching, or `Set-Cookie` is suppressing caching. |
+| `BYPASS` | A later rule is overriding it -- check rule order first. |
+
+Then confirm the rule is *narrow* enough, which matters more than the hit rate:
+
+```bash
+# A session-bearing request must never be served from cache.
+curl -sSI -H 'Cookie: mi_sid=fake-session-for-testing' https://laxair.shop/en \
+  | grep -i cf-cache-status        # expect BYPASS or DYNAMIC, never HIT
+
+# Each locale must keep its own cached copy (the URL is in the cache key).
+curl -sS https://laxair.shop/hi | grep -o '<html[^>]*lang="[a-z]*"'   # expect hi
+curl -sS https://laxair.shop/en | grep -o '<html[^>]*lang="[a-z]*"'   # expect en
+```
+
+**If `Set-Cookie` turns out to be what blocks it**, the fix is to stop setting
+the cookie, since the locale is already derivable from the URL. next-intl
+4.13.6 supports `localeCookie: false` in `defineRouting` (verified in
+`routing/config.d.ts`, typed `boolean | CookieAttributes`).
+
+That is **not free**, so make it a decision rather than a reflex. `NEXT_LOCALE`
+is what makes a bare `laxair.shop` visit remember a returning visitor's chosen
+language; without it that redirect falls back to `Accept-Language` detection.
+Only the bare-root entry point is affected -- every real page already carries
+its locale in the path -- but a visitor who deliberately switched to Hindi
+would land on English next time they type the bare domain.
+
 ### What the managed ruleset contains, and why order matters
 
 **Four managed additions, appended after whatever you inventoried.** The
