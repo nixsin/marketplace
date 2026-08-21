@@ -29,13 +29,13 @@ variable "postgres_plan" {
 }
 
 variable "web_public_url" {
-  description = "Browser-facing web URL, normally the web CloudFront alias."
+  description = "Browser-facing web URL, normally the Cloudflare-proxied domain."
   type        = string
   default     = "https://laxair.shop"
 }
 
 variable "api_public_url" {
-  description = "Browser-facing GraphQL URL, normally the API CloudFront alias."
+  description = "Browser-facing GraphQL URL, normally the Cloudflare-proxied API domain."
   type        = string
   default     = "https://api.laxair.shop/graphql"
 }
@@ -47,7 +47,7 @@ variable "blob_public_url" {
 }
 
 variable "manage_custom_domains" {
-  description = "Attach the public domains to Render. Keep false when those names point at CloudFront instead."
+  description = "Attach the public domains to Render so Cloudflare can proxy to certificate-valid origins."
   type        = bool
   default     = true
 }

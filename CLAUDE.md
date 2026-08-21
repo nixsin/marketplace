@@ -2188,18 +2188,41 @@ query ships, not after.
 
 ## Deployment
 
-**Terraform for Render and AWS CloudFront lives under `infra/terraform/`**
+**Terraform for Render and Cloudflare lives under `infra/terraform/`**
 (added 2026-08-20). The stacks intentionally keep separate state so the
-CloudFront rollout does not require immediately adopting the already-live
+Cloudflare adoption does not require immediately adopting the already-live
 Render resources. The Render resources must be imported before apply; an
 unimported apply would create duplicates. The official Render provider does
 not accept the legacy free web-service plan, so the configuration uses a
 schema-valid `starter` placeholder while lifecycle ignores the imported
 services' `plan`; plan changes remain manual and cannot accidentally become a
-paid upgrade through Terraform. Both CloudFront distributions are existing
-resources too and must be imported before their first plan. Custom aliases
-require ACM certificates in `us-east-1`. See the stack README for the exact
+paid upgrade through Terraform. Existing Cloudflare DNS, R2, and cache-rule
+resources must likewise be imported before their first plan. The existing R2
+custom domain stays dashboard-managed because Cloudflare provider v5.23 does
+not support importing that resource. See the stack README for the exact
 adoption order and cache-safety decisions.
+
+Cloudflare cache-ruleset adoption is off by default. A zone-level ruleset owns
+its entire phase, so importing a live ruleset into a one-rule configuration
+would delete every unrepresented dashboard rule on apply even with
+`prevent_destroy`. Enable `adopt_cache_ruleset` only after inventorying the
+complete phase, representing every additional rule, and setting the separate
+`cache_ruleset_inventory_confirmed` acknowledgement.
+The managed rules are appended after that inventory and include both an
+anonymous-GET eligibility rule and a final explicit bypass for authenticated,
+cookie-bearing, or non-GET GraphQL requests; the bypass is what neutralizes an
+earlier imported rule that was broader than intended. It is the exact
+complement of the eligibility condition across the whole API hostname, so
+every other API path is bypassed too; only the exact canonical `/graphql` path
+with an anonymous, cookieless GET is cache-eligible.
+
+The first version incorrectly added AWS CloudFront Terraform after reading
+“Cloudfront” literally. Its claim that distributions already existed was also
+erroneous, written without evidence; the repository owner explicitly confirmed
+they have no AWS account. No AWS credentials, apply, import, or Terraform state
+ever existed, so there is no CloudFront infrastructure or state to migrate.
+The Cloudflare replacement is a fix-forward correction, not a provider
+migration.
 
 Render (`render.yaml` documents the live setup; not connected as an active
 Blueprint sync — see that file's own comment for why). Migrations run in
