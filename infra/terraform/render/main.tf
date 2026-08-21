@@ -58,6 +58,39 @@ resource "render_postgres" "main" {
 
   lifecycle {
     prevent_destroy = true
+
+    # THE SAME BUG AS ip_allow_list ABOVE, for every remaining field of its
+    # kind. Provider v1.9.1 sends null for an optional+computed attribute
+    # the configuration omits, which is how the first apply silently wiped
+    # the imported allow-list and broke production migrations with P1017.
+    #
+    # `terraform providers schema -json` lists exactly six such attributes
+    # on render_postgres. ip_allow_list is declared above because we want
+    # Terraform to assert it. These five are NOT declared, so without this
+    # they are the next ones to be cleared:
+    #
+    #   database_name / database_user  the API's DATABASE_URL embeds both;
+    #                                  losing them breaks every query
+    #   disk_size_gb                   free tier has fixed storage
+    #   high_availability_enabled      unavailable on free
+    #   log_stream_override            dashboard-managed
+    #
+    # ignore_changes rather than explicit values on purpose: the live
+    # database name and user are only readable from the connection secret,
+    # and declaring a WRONG value is worse than declaring none -- it plans
+    # a replacement of the production database. Ignoring makes Terraform
+    # plan from prior state instead of null, preserving whatever Render
+    # actually has.
+    #
+    # If any of these ever needs to be managed, read the live value first,
+    # declare it explicitly, and remove it from this list -- one at a time.
+    ignore_changes = [
+      database_name,
+      database_user,
+      disk_size_gb,
+      high_availability_enabled,
+      log_stream_override,
+    ]
   }
 }
 
@@ -79,7 +112,6 @@ resource "render_web_service" "api" {
       value = render_postgres.main.connection_info.internal_connection_string
     }
     JWT_SECRET                = { value = var.jwt_secret }
-    NEXT_PUBLIC_API_URL       = { value = var.api_public_url }
     NEXT_PUBLIC_BLOB_BASE_URL = { value = var.blob_public_url }
   }
 

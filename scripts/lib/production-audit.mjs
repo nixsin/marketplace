@@ -196,10 +196,10 @@ export function extractOgContent(html, property) {
 /** The handful of entities that actually appear in URLs and titles. */
 export function decodeHtmlEntities(value) {
   return value
-    .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#0?39;/g, "'")
-    .replace(/&#x27;/gi, "'");
+    .replace(/&#x27;/gi, "'")
+    .replace(/&amp;/g, "&");
 }

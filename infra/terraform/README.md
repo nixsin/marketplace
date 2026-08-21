@@ -60,8 +60,21 @@ restore or recreate the service in Render, update its stable ID if necessary,
 and update the declarative import ID if it changed before planning again.
 Permanent `import` blocks also make a fresh or recovered empty HCP state adopt
 the stable production objects instead of planning duplicates.
-Postgres remains fully Terraform-managed on `free` and retains the documented
-expiry risk.
+Postgres remains Terraform-managed on `free` and retains the documented
+expiry risk -- with the explicit exception of the five ignored attributes
+described below, which stay dashboard/API-managed.
+
+`render_postgres` has six optional-computed attributes, and provider v1.9.1
+clears any one the configuration omits -- that is what wiped the allow-list on
+the first apply. `ip_allow_list` is now declared and asserted; the remaining
+five (`database_name`, `database_user`, `disk_size_gb`,
+`high_availability_enabled`, `log_stream_override`) are listed in
+`ignore_changes` so Terraform plans them from prior state rather than null.
+They are ignored rather than declared because the live database name and user
+are readable only from the connection secret, and declaring a wrong value
+would plan a replacement of the production database. To manage one later,
+read its live value first, declare it explicitly, and remove it from the
+ignore list -- one at a time.
 
 Postgres explicitly retains the live `0.0.0.0/0` IP allow-list because GitHub
 Actions reaches its external endpoint to apply production migrations. Provider
