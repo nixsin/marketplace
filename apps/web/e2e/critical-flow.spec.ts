@@ -95,3 +95,36 @@ test.describe("home page", () => {
     await expect(page).toHaveScreenshot("home-hi.png");
   });
 });
+
+test.describe("image delivery", () => {
+  test("product images are fetched from the CDN, not proxied through the origin", async ({
+    page,
+  }) => {
+    // Verified HERE rather than in a component test, deliberately. Under
+    // jsdom next/image renders the raw src regardless of `unoptimized`,
+    // so a unit assertion on the rendered URL passes either way -- proven
+    // by mutation testing, which showed exactly that vacuous pass. Only a
+    // real build runs the optimizer, so only a real browser can tell the
+    // difference.
+    //
+    // The bug this pins was measured on production: every product image
+    // was requested as /_next/image?url=https%3A%2F%2Fimages.laxair.shop
+    // -- our ORIGIN -- at ~1.86s each with cf-cache-status: DYNAMIC,
+    // while the R2 edge cache sat unused.
+    const imageRequests: string[] = [];
+    page.on("request", (r) => {
+      if (r.resourceType() === "image") imageRequests.push(r.url());
+    });
+
+    await page.goto("/en");
+    await expect(page.locator('[data-slot="card"]').first()).toBeVisible();
+    await page.waitForLoadState("networkidle");
+
+    const proxied = imageRequests.filter((u) => u.includes("/_next/image"));
+    expect(
+      proxied,
+      "SVG product images must be served directly, not through the optimizer",
+    ).toEqual([]);
+  });
+});
+

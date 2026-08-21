@@ -14,6 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Link } from "@/i18n/navigation";
+import { shouldBypassOptimizer } from "@/lib/image-loading";
 
 export interface Product {
   id: string;
@@ -75,6 +76,9 @@ export function ProductCard({
               sizes="(min-width: 640px) 192px, 100vw"
               className="object-cover"
               priority={priority}
+              // Served straight from the CDN rather than proxied through the
+              // optimizer on our origin -- see src/lib/image-loading.ts.
+              unoptimized={shouldBypassOptimizer(product.imageUrl)}
             />
           </Link>
         )}
