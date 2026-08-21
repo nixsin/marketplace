@@ -2097,6 +2097,95 @@ it there too the moment the prefix comes off.
   `pull_request` combination now also applies to `ai-ci-results-review`
   — if this recurs, check both jobs, not just one.
 
+## Edge-caching GraphQL GETs — and why errors must be excluded
+
+`apps/api` marks read-only GraphQL GET responses cacheable
+(`graphql-cache.ts`, `public, max-age=0, s-maxage=60,
+stale-while-revalidate=300, must-revalidate`) so a CDN can serve a
+product listing without a trans-Pacific hop to Render.
+
+**The trap, and it is not a hypothetical one: GraphQL reports resolver
+failures as HTTP 200 with an `errors` array.** "Did this succeed" is a
+property of the BODY, not the status line. The original middleware
+replaced `Cache-Control` unconditionally, so an error carried the full
+cacheable header — verified live against the deployed API before fixing:
+
+```
+{product(id:"does-not-exist-abc"){id}}
+→ HTTP/2 200
+→ cache-control: public, max-age=0, s-maxage=60, stale-while-revalidate=300
+```
+
+Harmless while nothing cached these responses. Behind a CDN it is an
+outage amplifier: a one-second database blip is stored at that edge for
+`s-maxage`, then served stale for the whole `stale-while-revalidate`
+window on top, to every visitor routed through that location — and
+there is no purge hook yet to cut it short. A blip becomes a
+multi-minute regional outage.
+
+**Why the decision moved to `res.send`, not `res.setHeader` (where it
+was) and not `res.end` (the obvious next guess).** Read straight off
+Apollo's express integration
+(`@as-integrations/express5/dist/cjs/index.js`), which does exactly
+this, in this order:
+
+```js
+res.setHeader(key, value);          // headers FIRST
+res.statusCode = response.status;   // status AFTER them
+res.send(response.body.string);
+```
+
+So at `setHeader` time the status is still the default 200 and no body
+exists — the old wrapper had to decide blind, and decided "cacheable"
+every time. `res.send` is the first point where status and complete
+body are both final. It is also **before Express's conditional-GET
+transform**, which is what makes it the right hook rather than
+`res.end`: Express builds a 304 by blanking the body and stripping the
+`Content-*` headers while leaving `Cache-Control` alone, so a decision
+made at `end` would see an empty body, refuse it, and let Apollo's
+`no-store` ride out on the 304 — telling a shared cache to drop an
+entry it had just confirmed was still fresh, turning cheap revalidation
+into a permanent miss. Deciding at `send` also keeps the outcome
+independent of Apollo's internal plugin ordering.
+
+`isCacheableGraphqlResponse` **fails closed in every branch** —
+unparseable body, non-object JSON, missing `data`, any `errors` key at
+all (including an empty array), absent chunk, any status but 200. Not
+caching something cacheable costs one round trip; caching an error
+costs an outage.
+
+`Timing-Allow-Origin` is deliberately NOT tied to cacheability — it is
+set on every GET. Browsers zero out cross-origin timing data without
+it, and a failing request is exactly the one worth measuring from RUM.
+
+**Verified in both directions, not just forwards** (the discipline this
+file already requires elsewhere): the two regression tests in
+`products.e2e-spec.ts` were run against the *old* middleware and both
+failed, then against the new one and both passed — real HTTP through
+the real Apollo+Express stack, not a mocked response. The 304 assertion
+is the guard on the `send`-vs-`end` placement specifically; it passes
+under both, so it protects the fix rather than proving the bug.
+
+**This pairs with a specific Cloudflare Cache Rule** — see
+[docs/cloudflare.md](./docs/cloudflare.md). Two settings there are
+load-bearing and neither is the default:
+- The match must use `http.request.uri.path`, **not** `http.request.uri`
+  — the latter includes the query string, so it never equals `/graphql`
+  and the rule silently matches nothing.
+- Edge TTL must be *"Use cache-control header if present, bypass cache
+  if not"* (`respect_origin`). The neighbouring option caches responses
+  that arrive *without* a cache-control header using Cloudflare's own
+  defaults — precisely the path an unexpected error takes. With
+  `respect_origin`, errors now carrying Apollo's `no-store` are bypassed
+  automatically, so no error-specific edge rule is needed.
+
+**Before login exists, revisit this.** These queries are anonymous and
+sent with `credentials: "omit"`, which is the only reason a shared
+cache is safe here at all. An authenticated response must never be
+edge-cached — that needs `private, no-store` keyed off the request
+carrying credentials, and it must land before the first authenticated
+query ships, not after.
+
 ## Deployment
 
 Render (`render.yaml` documents the live setup; not connected as an active

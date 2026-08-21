@@ -305,12 +305,22 @@ describe('GraphQL-over-GET caching (e2e)', () => {
       .query({ query: QUERY })
       .expect(200);
 
-    await request(app.getHttpServer())
+    const revalidated = await request(app.getHttpServer())
       .get('/graphql')
       .set('apollo-require-preflight', 'true')
       .set('If-None-Match', first.headers.etag)
       .query({ query: QUERY })
       .expect(304);
+
+    // The 304 must carry the same caching policy as the 200 it
+    // revalidates. Express builds a 304 by blanking the body and
+    // stripping the Content-* headers, so a Cache-Control decided from
+    // the FINAL response would see an empty body and refuse it -- which
+    // is why the decision is made in res.send, before that transform.
+    // Without this, a shared cache revalidating every s-maxage seconds
+    // would be told `no-store` and drop the entry it just confirmed was
+    // still fresh, turning cheap revalidation into a permanent miss.
+    expect(revalidated.headers['cache-control']).toBe(graphqlCacheControl());
   });
 
   it('does not override Cache-Control on POST — mutations/POST queries stay uncacheable', async () => {
@@ -320,5 +330,55 @@ describe('GraphQL-over-GET caching (e2e)', () => {
       .expect(200);
 
     expect(res.headers['cache-control']).toBe('no-store');
+  });
+
+  it('does not mark a resolver error cacheable, though it is an HTTP 200', async () => {
+    // The core regression test. GraphQL reports a failed resolver as
+    // HTTP 200 with an `errors` array, so a cache that trusts the status
+    // line alone cannot tell this from a real product. Behind a CDN that
+    // would pin a transient failure at the edge for s-maxage and then
+    // keep serving it for the whole stale-while-revalidate window on
+    // top, to everyone routed through that location -- with no purge
+    // hook to cut it short.
+    const res = await request(app.getHttpServer())
+      .get('/graphql')
+      .set('apollo-require-preflight', 'true')
+      .query({ query: 'query { product(id: "does-not-exist") { id } }' })
+      .expect(200);
+
+    // Proves the precondition rather than assuming it: this really is a
+    // 200 carrying errors, which is what makes the header wrong.
+    expect(res.body.errors).toBeDefined();
+    expect(res.body.data).toBeNull();
+
+    // Apollo's own default survives untouched, so nothing stores it.
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.headers['cache-control']).not.toContain('s-maxage');
+  });
+
+  it('does not mark a malformed query cacheable', async () => {
+    // A validation failure answers 4xx, but the old wrapper replaced the
+    // header regardless of status -- confirmed live, a 400 came back
+    // carrying the full s-maxage value.
+    const res = await request(app.getHttpServer())
+      .get('/graphql')
+      .set('apollo-require-preflight', 'true')
+      .query({ query: 'query { productsPaged(page: 1) { nope } }' })
+      .expect(400);
+
+    expect(res.headers['cache-control']).not.toContain('s-maxage');
+  });
+
+  it('still exposes timing data on a failed request', async () => {
+    // Timing-Allow-Origin is deliberately NOT tied to cacheability:
+    // browsers zero out cross-origin timing data without it, and a
+    // failing request is exactly the one worth measuring from RUM.
+    const res = await request(app.getHttpServer())
+      .get('/graphql')
+      .set('apollo-require-preflight', 'true')
+      .query({ query: 'query { product(id: "does-not-exist") { id } }' })
+      .expect(200);
+
+    expect(res.headers['timing-allow-origin']).toBe('*');
   });
 });

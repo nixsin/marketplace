@@ -1,7 +1,10 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import { CORRELATION_HEADERS } from './observability/correlation';
-import { graphqlCacheControl } from './graphql-cache';
+import {
+  graphqlCacheControl,
+  isCacheableGraphqlResponse,
+} from './graphql-cache';
 import { correlationMiddleware } from './observability/correlation.middleware';
 import { CorrelationExceptionFilter } from './observability/correlation-exception.filter';
 
@@ -59,46 +62,70 @@ export function configureApp(app: INestApplication): void {
   });
 
   // Apollo Server sets `Cache-Control: no-store` by default on every
-  // response — a safe default, since it can't know an arbitrary query's
+  // response -- a safe default, since it can't know an arbitrary query's
   // result is cacheable without explicit per-field hints. GET requests to
-  // /graphql are only ever used here for read-only, cacheable queries
-  // (see products.resolver.ts / fetchProductsPaged) — POST stays
-  // uncacheable for everything else (mutations, and any query sent that
-  // way). Overriding per-request via a setHeader wrapper, since Apollo
-  // sets its header after this middleware would otherwise run.
-  // Express's Response.setHeader is an overloaded signature that
-  // TypeScript can't carry through `.bind()` cleanly (a known inference
-  // limitation, not a real type hole) — named and typed explicitly here
-  // so the wrapper below doesn't end up implicitly `any`.
-  type SetHeader = (
-    name: string,
-    value: number | string | readonly string[],
-  ) => Response;
-
+  // /graphql are only ever used here for read-only queries (see
+  // products.resolver.ts / fetchProductsPaged); POST stays uncacheable
+  // for everything else (mutations, and any query sent that way).
+  //
+  // WHY res.send AND NOT res.setHeader, which this used to hook. Read
+  // straight off Apollo's express integration (dist/cjs/index.js), which
+  // does exactly this, in this order:
+  //
+  //     res.setHeader(key, value);          // <- headers first
+  //     res.statusCode = response.status;   // <- status AFTER them
+  //     res.send(response.body.string);
+  //
+  // So at setHeader time the status is still the default 200 and no body
+  // exists yet. The old wrapper therefore had to decide blind, and
+  // decided "cacheable" every time -- including for GraphQL's resolver
+  // errors, which are reported as HTTP 200 with an `errors` array.
+  // Harmless while nothing cached these responses; an outage amplifier
+  // the moment a CDN does. See isCacheableGraphqlResponse.
+  //
+  // res.send is the first point where the status and the complete body
+  // are both final, and it runs BEFORE Express's own conditional-GET
+  // transform -- which matters: Express turns a fresh request into a 304
+  // by blanking the body and stripping the Content-* headers, but it
+  // leaves Cache-Control alone. Setting it here means a revalidation
+  // still carries the caching policy of the response it revalidates,
+  // rather than the empty 304 losing it. Deciding here also keeps the
+  // outcome independent of Apollo's internal plugin ordering.
   app.use('/graphql', (req: Request, res: Response, next: NextFunction) => {
-    if (req.method === 'GET') {
-      const originalSetHeader = res.setHeader.bind(res) as SetHeader;
-      res.setHeader = ((
-        name: string,
-        value: number | string | readonly string[],
-      ) => {
-        if (name.toLowerCase() === 'cache-control') {
-          // Opts this cross-origin response into exposing real timing/
-          // transfer-size data to the Resource Timing API — otherwise
-          // browsers zero those values out for privacy on cross-origin
-          // requests, which would make actual cache/304 hits impossible
-          // to verify or monitor (e.g. via RUM) from frontend code, not
-          // just from a manual curl check.
-          originalSetHeader('Timing-Allow-Origin', '*');
-          // s-maxage + stale-while-revalidate, not a bare max-age=0 --
-          // see graphql-cache.ts for which directive serves which cache,
-          // and for what this buys today versus once the API is behind a
-          // CDN we control.
-          return originalSetHeader('Cache-Control', graphqlCacheControl());
-        }
-        return originalSetHeader(name, value);
-      }) as typeof res.setHeader;
+    if (req.method !== 'GET') {
+      next();
+      return;
     }
+
+    // Unconditional, unlike the caching header: this opts a cross-origin
+    // response into exposing real timing/transfer-size data to the
+    // Resource Timing API, which browsers otherwise zero out for privacy.
+    // Without it, actual cache hits are impossible to verify or monitor
+    // from frontend code (e.g. via RUM) rather than by a manual curl --
+    // just as worth measuring on a failing request as a succeeding one,
+    // hence every GET rather than only the cacheable ones.
+    res.setHeader('Timing-Allow-Origin', '*');
+
+    // Express's send() is an overloaded signature TypeScript cannot carry
+    // through a wrapper cleanly -- the same inference limitation the
+    // previous setHeader wrapper documented, handled the same way.
+    const originalSend = res.send.bind(res) as (body?: unknown) => Response;
+    res.send = function patchedSend(body?: unknown): Response {
+      // headersSent covers Apollo's chunked branch (res.write/res.end for
+      // incremental delivery, unused by any query here): once anything is
+      // flushed, setHeader throws and a partial body could not be judged
+      // correctly anyway. Fail closed.
+      if (
+        !res.headersSent &&
+        isCacheableGraphqlResponse(res.statusCode, body)
+      ) {
+        // s-maxage + stale-while-revalidate, not a bare max-age=0 -- see
+        // graphql-cache.ts for which directive serves which cache.
+        res.setHeader('Cache-Control', graphqlCacheControl());
+      }
+      return originalSend(body);
+    } as typeof res.send;
+
     next();
   });
 }
