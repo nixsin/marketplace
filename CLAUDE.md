@@ -32,55 +32,29 @@ itself belongs here for the same reason: it shouldn't need to be repeated.
 
 ## Git workflow — always the same shape
 
-1. Branch off `main` (`git checkout main && git pull --ff-only`, then a new
-   branch — never commit directly to `main`).
-2. Make the change, verify it locally (build/test/lint as relevant — see
-   docs/development.md's Testing section), commit.
-3. Push, open a PR (`gh pr create`).
-4. Wait for CI. Fix forward on the same branch if something fails — don't
-   force-push over history unless specifically asked.
-5. Squash-merge (`gh pr merge --squash`).
-6. **After merging, check CI on `main` itself — a PR's own green run does
-   not guarantee the post-merge push-to-main run is green too.** Squash-
-   merging creates a brand-new commit, and `push` triggers an entirely
-   separate CI run for it — a genuinely different data point, not a re-
-   display of the PR's result, and it's what actually gates Render's
-   `autoDeployTrigger: checksPass`. Confirmed live (PR #54, 2026-08-17):
-   the PR's own Lighthouse run passed clean (LCP 2.3s), but the very next
-   push-to-main run on the identical squash-merged commit failed —
-   `perf-budget` was missing an explicit `permissions: contents: write`
-   block, which `test-api-unit`/`test-web` already had for the same
-   badge-publish reason (see "Known gotchas" below). A required check
-   failing post-merge is exactly the situation the hard rule above exists
-   for — investigate and fix forward on a new branch, the same as any
-   other failing required check; don't treat "but the PR was green" as a
-   reason to leave it.
+Never commit to `main`. Branch off it (`git pull --ff-only`, then `-b`),
+verify locally (build/test/lint — see docs/development.md), `gh pr create`,
+fix forward on the same branch if CI fails (never force-push over history
+unless asked), `gh pr merge --squash`.
 
-   **Now partially automated** — the `comment-ci-result-on-pr` job (added
-   2026-08-17, see its own section below) posts the push-to-main result
-   directly on the merged PR once that run finishes, with a per-job
-   breakdown and a direct link, specifically so this doesn't require
-   already knowing to check the Actions tab separately. Still worth
-   confirming by hand the first several times this fires for real —
-   like the force-run mechanism elsewhere in this file, a job that only
-   triggers on `push` to `main` is structurally untestable before its
-   own introducing PR actually merges, so treat its first few live
-   firings as still-being-verified, not a settled fact. Manual fallback
-   unchanged: `gh run list --branch main --workflow ci.yml --limit 1` —
-   never the (now-closed) PR's own Checks tab, which only ever shows the
-   `pull_request`-triggered runs from while it was open.
+**Then check CI on `main` itself.** Squash-merge creates a brand-new commit
+and `push` fires an entirely separate run — a different data point, not a
+re-display of the PR's, and it is what gates Render's `autoDeployTrigger:
+checksPass`. Confirmed live: a PR's Lighthouse run passed while the very next
+push-to-main run on the identical squash-merged commit failed, because
+`perf-budget` lacked `permissions: contents: write`. A required check failing
+post-merge is fix-forward on a new branch, exactly like any other; "but the
+PR was green" is not a reason to leave it.
 
-Branch protection on `main` currently requires **11 checks** plus 1 approving
-review: Lint, Dependency audit, API unit tests, API e2e tests, Web build +
-tests, Web e2e (Playwright), Web performance budget (Lighthouse), Docker
-image vulnerability scan, Docker dev stack smoke test, Docker web prod image
-boot test, and CodeQL (Analyze). Treat that list as a snapshot and query the
-API below rather than trusting it — protection changes without touching the
-repo, and this line has been stale before.
-`enforce_admins` is `false`, so `gh pr merge --admin` bypasses the **review**
-requirement. This repo has one active contributor, so admin-bypassing the
-review gate on an otherwise-green PR is the established, expected pattern —
-not a red flag. Check current protection with:
+`comment-ci-result-on-pr` posts that result onto the merged PR automatically.
+Manual fallback: `gh run list --branch main --workflow ci.yml --limit 1` —
+never the closed PR's Checks tab, which only shows `pull_request` runs from
+while it was open.
+
+Branch protection requires **11 checks** plus 1 approving review: Lint,
+Dependency audit, API unit/e2e tests, Web build + tests, Web e2e
+(Playwright), Lighthouse, Docker scan/smoke/prod-boot, and CodeQL. Treat that
+as a snapshot — it has been stale before — and query the live list:
 
 ```bash
 gh api repos/nixsin/marketplace/branches/main/protection --jq '{required_checks: .required_status_checks.contexts, required_reviews: .required_pull_request_reviews.required_approving_review_count}'
@@ -88,14 +62,13 @@ gh api repos/nixsin/marketplace/branches/main/protection --jq '{required_checks:
 
 ### The one hard rule: never merge past a failing required check
 
-Admin-bypass gets you past the *review* requirement only. **Never use it to
-merge past a check that's actually failing** — most importantly Lighthouse
-(`perf-budget`), which became a required check on 2026-08-16 specifically
-because it had been getting bypassed. If a required check is red:
-investigate and fix it, or get explicit sign-off before doing anything else
-(e.g., temporarily pulling it out of required checks). Don't route around it
-silently. A check that's *skipped* (via the path filter, see below) is fine
-to merge past — only an actual failure blocks.
+`enforce_admins` is `false`, so `--admin` bypasses the **review** gate. With
+one active contributor that is the established, expected pattern, not a red
+flag. It must never bypass a check that is actually **failing** — most of all
+Lighthouse, which became required precisely because it was being bypassed. A
+*skipped* check is fine to merge past; a *failed* one means investigate and
+fix, or get explicit sign-off first. Never route around it silently.
+
 
 ## CI pipeline (`.github/workflows/ci.yml`)
 
@@ -261,95 +234,54 @@ already-generated files.
 
 ## PR reconciliation (`pr-reconciliation.yml`)
 
-Keeps every open PR targeting `main` in sync on three axes, event-driven
-(`pull_request: types: [closed]`, merged-into-main guard) **and**
-scheduled (daily `cron`, since PR drift accumulates faster than the
-event-driven trigger alone catches — a failed update call, a PR opened in
-the gap between runs, drift from something other than a merge). Also
-triggerable by hand (`workflow_dispatch`). Started as just "auto-update
-open PRs after a merge" (the file's original name) and was broadened —
-renamed accordingly.
+Keeps every open PR targeting `main` in sync, event-driven (`pull_request:
+closed`, merged-into-main guard), on a daily cron, and by hand. The cron
+matters because drift accumulates faster than merges alone: a failed update
+call, a PR opened between runs, drift from something other than a merge.
 
-For every open PR targeting `main`:
-1. **Freshness** — attempts `update-branch` (same operation as `gh pr
-   update-branch` / GitHub's "Update branch" button). A non-zero result is
-   expected/harmless when already current; not worth guessing at GitHub's
-   exact error wording to classify it.
-2. **Real conflicts** — `mergeStateStatus: DIRTY` means an actual merge
-   conflict step 1 can't fix on its own. Flagged with an edit-in-place PR
-   comment (`<!-- pr-reconciliation-conflict -->` marker) so it doesn't
-   sit invisible in an Actions log; updated to say "resolved" once it no
-   longer applies, rather than left as a stale warning.
-3. **Stuck workflow approval** — flags (`<!-- pr-reconciliation-stuck-approval -->`
-   marker) a PR whose latest run has sat at `action_required` (see the
-   Dependabot section below) for over 24 hours.
+Three axes, all of which only **surface or retry** — nothing auto-resolves a
+conflict or auto-approves a stuck run:
 
-All three only **surface or retry** — nothing here auto-resolves a real
-conflict or auto-approves a stuck workflow run; those stay human
-decisions. `set +e` (plus `pipefail`) throughout, same reasoning as the
-`ai-code-review` fix: one PR's failure must not stop the rest from being
-reconciled.
+1. **Freshness** — attempts `update-branch`. Non-zero is expected when
+   already current; not worth classifying GitHub's exact wording.
+2. **Real conflicts** — `mergeStateStatus: DIRTY`. Flagged with an
+   edit-in-place comment (`<!-- pr-reconciliation-conflict -->`) so it is
+   not invisible in an Actions log, and updated to "resolved" rather than
+   left stale.
+3. **Stuck approval** — a run sitting at `action_required` over 24 hours
+   (`<!-- pr-reconciliation-stuck-approval -->`).
 
-**The actual flag/resolve/skip decisions live in a tested module, not
-inline bash.** `scripts/lib/pr-reconciliation.mjs`
-(`pr-reconciliation.test.mjs`) — this job's bash only gathers each
-decision function's inputs and acts on its output. That split exists
-because this job's introducing PR went through **four live review
-rounds and found six real bugs**, every one in the identical shape: a
-failed or non-conclusive lookup silently treated as a conclusive one.
+`set +e` plus `pipefail` throughout: one PR's failure must not stop the rest.
 
-These tests also run in `ci.yml`'s own `test-ci-scripts` job — a plain,
-unconditional job (no path filter) on every regular PR, separate from
-`pr-reconciliation.yml`'s own steps. Needed because
-`pr-reconciliation.yml` never triggers on `pull_request` — without this,
-a regression to this file would ship straight to `main` unnoticed by the
-introducing PR's own CI, only surfacing later when
-`pr-reconciliation.yml` next actually ran (close, schedule, or manual
-dispatch). A live review caught this gap directly; `test-ci-scripts`
-closes it and is wired into `ai-code-review`,
-`ai-failure-analysis`, and `migrate`'s `needs:` lists the same way `lint`
-is.
-1. Every `gh pr view`/`gh pr comment` call needs `--repo` explicitly —
-   this job never runs `actions/checkout` for its main step, so without a
-   local git repo `gh` has no way to resolve a bare PR number.
-2. The marker-lookup pipelines must pipe `gh api --paginate` (no `--jq`)
-   into a separate `jq --arg m ...` — `gh api --jq` takes exactly one
-   string argument; passing jq's own `--arg` after it is a hard parse
-   error.
-3. A failed status lookup (`gh pr view`/`gh run list`) must not be read
-   as "confirmed clean/not stuck" — under `set +e` a failure and a
-   genuine clean result look identical unless the lookup's own exit
-   status is captured explicitly (`if var=$(cmd); then`, never a bare
-   assignment followed by a value check).
-4. `mergeStateStatus: UNKNOWN` is a real, documented value of the
-   `MergeStateStatus` GraphQL enum (GitHub still computing mergeability),
-   not an error — it needs its own branch, or it falls through to
-   "resolved" exactly like bug 3.
-5. The marker-lookup pipelines (`gh api | jq | head -1`) need `pipefail`
-   — without it, `head -1` exits 0 on empty input regardless of whether
-   that's a genuine zero-match result or an upstream `gh api`/`jq`
-   failure, so a real failure could produce a *duplicate* comment instead
-   of editing the existing one.
-6. `pr_numbers=$(gh pr list ...)` failing is indistinguishable from a
-   genuinely empty PR list unless its own exit status is captured too —
-   otherwise a real API/auth failure silently reports "no open PRs" and
-   exits 0, making the scheduled safety net look successful while doing
-   nothing.
+**Decisions live in `scripts/lib/pr-reconciliation.mjs`, not inline bash** —
+the workflow only gathers inputs and acts on outputs. Its tests run in
+`test-ci-scripts` because this workflow never triggers on `pull_request`, so
+a regression would otherwise reach `main` unnoticed and only surface at the
+next close/schedule/dispatch.
 
-Every one of these was independently reproduced (a real bash repro, or a
-direct GraphQL schema/`gh` CLI check) before being fixed — see this
-workflow's own git history for each round. The lesson that stuck: after
-finding the same bug shape five times in untested inline bash, the sixth
-review round asked for actual test coverage directly, which is what
-produced the extraction — the same "pull the pure logic into a tested
-module" move already proven on `review-verdict.mjs` and
-`override-decisions.mjs` above.
+That extraction exists because four review rounds found **six bugs, every
+one the same shape: a failed or non-conclusive lookup treated as
+conclusive.** Each was reproduced before being fixed:
 
-Comment bodies are built with `printf '%s\n%s'` (marker, message), not
-raw multi-line bash string literals inside the `run: |` block — a literal
-newline mid-string puts the continuation line at column 1, which breaks
-YAML's block-scalar indentation rule and is a real parse error. Caught by
-validating this file's YAML locally before it was ever pushed.
+1. `gh pr view`/`gh pr comment` need `--repo` — this job never runs
+   `actions/checkout`, so `gh` cannot resolve a bare PR number.
+2. `gh api --jq` takes exactly one string argument; jq's own `--arg` after
+   it is a hard parse error. Pipe into a separate `jq --arg` instead.
+3. Capture the lookup's exit status explicitly (`if var=$(cmd); then`) — a
+   bare assignment makes failure and a clean result indistinguishable.
+4. `mergeStateStatus: UNKNOWN` is a real enum value (mergeability still
+   computing), not an error. Without its own branch it falls through to
+   "resolved".
+5. Marker-lookup pipelines need `pipefail` — `head -1` exits 0 on empty
+   input whether that is a genuine zero-match or an upstream failure,
+   producing a *duplicate* comment instead of an edit.
+6. `pr_numbers=$(gh pr list ...)` failing looks identical to an empty list,
+   making the scheduled safety net report success while doing nothing.
+
+Comment bodies use `printf '%s\n%s'` (marker, message), never multi-line
+bash literals inside `run: |` — a literal newline puts the continuation at
+column 1 and breaks YAML block-scalar indentation.
+
 
 ## Post-merge CI result (`comment-ci-result-on-pr` job, in `ci.yml`)
 
@@ -438,103 +370,44 @@ batching it for later.
 
 ## Local pre-push AI review precheck (`.husky/pre-push`)
 
-`scripts/ai-code-review-precheck.mjs` runs a reviewer locally, on every
-`git push` — a fast preview before spending a full CI round-trip on a
-finding you could've caught yourself. Two goals: catch real issues
-before they cost a CI cycle, and converge the eventual CI review faster
-(see the "How to avoid a perpetual review/fix cycle" section above) by
-feeding the same PR's existing override-decision log back in, so
-something already disputed with a real reviewer doesn't get re-raised
-here too.
+`scripts/ai-code-review-precheck.mjs` runs a reviewer on every `git push` —
+a preview before spending a CI round-trip on a finding you could catch
+yourself. It feeds the PR's existing override-decision log back in, so
+something already disputed is not re-raised.
 
-**Its closest CI counterpart is now pass 1 (`ai-code-review`), not "the
-CI job" generically** — since the two-pass split, pass 1 is *also*
-diff-only with no CI grounding, the same design this precheck already
-had. As of 2026-08-19 it also runs at the *same* reasoning effort as pass
-1, so exactly one real difference remains (the precheck predates the
-split, back when there was only one CI job to compare against and "no CI
-grounding" was a real gap between them — it no longer is, for pass 1
-specifically):
-- **Fails OPEN, not closed.** A missing local `OPENAI_API_KEY`, a network
-  error, or any other failure to get a usable review prints a warning and
-  lets the push through, unlike `ai-code-review.mjs`'s fail-closed design.
-  The real CI gate still runs on the PR regardless and still fails closed
-  exactly as documented above — this is a convenience layer in front of
-  that gate, not a replacement for it. A REQUEST_CHANGES verdict *does*
-  block the push (non-zero exit, same as the existing `pre-commit`
-  lint-staged hook) — override with `git push --no-verify` if you disagree
-  with a specific finding, same escape hatch as any other husky hook.
+Same design as CI pass 1 (diff-only, same reasoning effort) with **one**
+difference: it **fails open**. A missing `OPENAI_API_KEY`, a network error,
+any failure to get a usable review — warn and allow the push. A real
+`REQUEST_CHANGES` does block it; override with `git push --no-verify`. The
+CI gate still fails closed regardless; this is convenience in front of it,
+not a replacement. There is no local equivalent of pass 2 — no CI results
+exist at push time.
 
-**Both diff reviewers are now told to report every finding at once
-(2026-08-19), and that instruction is load-bearing.** The prompt used to
-say *what* to review for but never that the review had to be exhaustive —
-so it returned one finding per round. PR #97 is the worked example: five
-rounds, exactly one finding each, and **all four findings already existed
-at round one** (verified by re-reading the round-1 diff; none were
-introduced by the fixes for earlier rounds). Four sequential round-trips
-delivered what a single exhaustive pass could have. The added wording
-asks for every finding ordered by severity, prefixed `[High]`/`[Medium]`/
-`[Low]`, and explicitly says not to hold anything back for a later round
-because the author fixes in batches. Applied to `ai-code-review.mjs`
-(pass 1) and the precheck — deliberately *not* to
-`ai-ci-results-review.mjs`, whose job is a narrow mechanical check
-(skip-logic sanity, do the results look right) rather than an open-ended
-hunt. Worth measuring rather than assuming: compare rounds-per-PR after a
-few real PRs against the historical counts (#90: 18 blocking reviews,
-#94: 14, #97: 4).
+**Both diff reviewers must report every finding at once**, ordered by
+severity and prefixed `[High]`/`[Medium]`/`[Low]`, explicitly not holding
+anything back for a later round. Without that instruction they return one
+finding per round: PR #97 took five rounds of exactly one finding each, and
+**all four already existed at round one**. Not applied to pass 2, whose job
+is a narrow mechanical check rather than an open-ended hunt. Worth measuring
+against the historical counts — #90: 18 blocking reviews, #94: 14, #97: 4.
 
-**Reasoning effort was raised `low` → `medium` (2026-08-19) to match pass
-1, reversing the original latency-over-depth trade.** The `low` setting
-was chosen on the theory that a fast heads-up beats a thorough one when
-something runs on every push. Measured against real review rounds, that
-trades the wrong way: a local pass *weaker* than the CI pass it previews
-can only ever miss findings CI then raises, and each miss costs a full CI
-round-trip (~4 minutes of jobs plus a review pass) to save roughly 20
-seconds of local latency. PR #94 is the worked example — four review
-rounds, of which the coverage gap, a `.includes("test")` substring bug in
-a database-safety guard, and a hardcoded English metadata title were all
-diff-only findings squarely in this precheck's scope. Override per-push
-with `PRECHECK_EFFORT` if a specific push genuinely needs speed over
-parity.
+**Reasoning effort is `medium`, matching pass 1** — reversing an earlier
+latency-over-depth choice. A local pass *weaker* than the CI pass it
+previews can only miss findings CI then raises, and each miss costs a full
+round-trip (~4 min) to save ~20s. Override per-push with `PRECHECK_EFFORT`.
 
-**The missing-key path is deliberately loud, and deliberately not phrased
-as "optional."** It used to print `OPENAI_API_KEY not set locally (this is
-optional — export it to enable this precheck)`, which read as routine
-informational output — and was scrolled past unnoticed across an entire
-session's worth of pushes while CI review rounds kept surfacing findings
-this would have caught first. Every *other* skip path here covers a
-transient or unavoidable condition (no network, no diff, an unfetched base
-ref); this one covers a standing misconfiguration that silently disables
-the whole precheck indefinitely, which is a different thing and now reads
-like one: a boxed warning naming the actual cost, plus the exact command
-to fix it. `PRECHECK_OPTOUT=1` silences it for anyone who genuinely
-doesn't want the precheck — an explicit, recorded choice rather than
-learning to ignore a warning, since an ignored warning has stopped being a
-signal at all. Both paths still exit 0; fail-open is unchanged.
+**The missing-key path is deliberately loud and never phrased as
+"optional."** It once read as routine informational output and was scrolled
+past for an entire session while CI kept raising findings it would have
+caught. Every other skip path here is transient (no network, no diff, no
+base ref); this one is a standing misconfiguration that disables the
+precheck indefinitely. `PRECHECK_OPTOUT=1` silences it — an explicit
+recorded choice rather than learning to ignore a warning. Both paths exit 0.
 
-**Has no equivalent to pass 2 at all** — there's no local "does the
-skip-logic/CI-results look right" precheck, since none of that exists
-yet at push time either; pass 2's whole reason to exist is CI grounding
-that a local hook structurally can't have before a push even happens.
+Reuses `review-verdict.mjs` and `override-decisions.mjs` unchanged, not
+copies that could drift. The override-log fetch is best-effort: no PR yet
+means empty context, the same fail-open default the CI jobs use.
 
-Reuses `scripts/lib/review-verdict.mjs` and `scripts/lib/override-
-decisions.mjs` unchanged — same tested parsing logic both CI passes use,
-not a second copy that could drift from them. The override-decision log
-fetch (`gh pr view` → `gh api .../issues/<n>/comments --paginate --slurp`)
-is best-effort: if no PR exists yet for the current branch, `gh pr view`
-fails and this falls through to empty context, the same fail-open default
-either CI job's own "Fetch prior override decisions" step uses when it
-can't reach the data.
-
-Verified directly before landing (no real `OPENAI_API_KEY` available in
-this working session, so the actual-success path — a real API call
-producing a genuine APPROVE/REQUEST_CHANGES — wasn't exercised end to
-end; every other path was, for real, not by inspection): the no-key skip,
-a real OpenAI 401 on an invalid key correctly failing open, the no-diff
-skip (comparing a ref against itself), `decideVerdict`'s four branches
-(APPROVE, REQUEST_CHANGES, files-reviewed mismatch override, truncation
-override) against the actual imported function, and the override-log
-fetch's fail-open path against a real branch with no PR.
 
 ## Dependabot
 
@@ -575,64 +448,55 @@ care as any other secrets-using action, not as a rubber-stamp click.
 
 ## Shared configuration (`packages/config`, `@medinstru/config`)
 
-The single source of truth for configuration **values** in this repo: the
-web app's runtime values (`API_URL`, `SITE_URL`, `LOCALES`,
-`DEFAULT_LOCALE`), the performance budgets, and every AI automation's
-settings (model, reasoning effort, input/output limits, and which env var
-holds each key). A pnpm workspace package — `packages/*` was already in
-`pnpm-workspace.yaml`, so this needed no workspace change.
+Single source of truth for configuration **values**: the web app's runtime
+values (`API_URL`, `SITE_URL`, `LOCALES`, `DEFAULT_LOCALE`), performance
+budgets, HTTP cache and header values, cross-app wire contracts
+(`CORRELATION_HEADERS`, the managed-image prefix), auth lifetimes, and every
+AI automation's settings.
 
-**What it replaced.** `apps/web/src/lib/config.ts` (now deleted, its four
-importers repointed) plus the same literal `gpt-5.6` and `60_000` limit
-hardcoded independently in four different scripts. The highest-value catch
-was the JS budget: `apps/web/test/bundle-budget.spec.ts` (curl-measured)
-and `apps/web/scripts/perf-budget.mjs` (Lighthouse-measured) each declared
-their own copy, held in sync only by this file's own "the two must move
-together" note — an invariant a human has to remember and eventually
-won't. One shared constant makes it structural. The *raise history* stays
-in `bundle-budget.spec.ts`'s comment; only the current value moved.
+It exists because the JS budget was declared twice — `bundle-budget.spec.ts`
+(curl-measured) and `perf-budget.mjs` (Lighthouse-measured) — kept in step
+only by a comment saying they must move together. That is an invariant a
+human has to remember and eventually won't.
 
-**Plain JS + a hand-written `index.d.ts`, not TypeScript, deliberately.**
-Two consumers with incompatible needs: `apps/web` compiles it through
-TypeScript and needs real literal types (`LOCALES` feeds a
-`(typeof LOCALES)[number]` union that next-intl's routing depends on — a
-plain `string[]` would silently widen it and break locale type-safety
-app-wide), while `scripts/*.mjs` import it as plain Node ESM with no build
-step at all. Runtime JS plus declarations satisfies both without asking
-either to compile the other's format.
+**Plain JS plus a hand-written `index.d.ts`, not TypeScript**, because two
+consumers have incompatible needs: `apps/web` compiles it and needs real
+literal types (`LOCALES` feeds a `(typeof LOCALES)[number]` union next-intl's
+routing depends on; `string[]` would silently widen it), while `scripts/*.mjs`
+import it as plain Node ESM with no build step.
 
-**API key values must never go in this package**, only the *names* of the
-env vars holding them (`apiKeyEnv`). It's committed, so a value written
-there enters git history permanently and is readable by every CI job.
-Values stay in GitHub repo secrets (CI) and your own shell (local).
-`resolveApiKey()` reads by name at call time and its error text names only
-the variable, never any part of the value — so a misconfiguration can't
-leak a partially-set key into a public CI log. There's a committed test
-asserting no role carries a literal key.
+**Never put an API key value here** — only the *name* of the env var holding
+it (`apiKeyEnv`). The package is committed, so a value would enter git
+history permanently and be readable by every CI job. `resolveApiKey()` reads
+by name at call time and its error text names only the variable, so a
+misconfiguration cannot leak a partial key into a public log. A committed
+test asserts no role carries a literal key.
 
-**Only 12 config files exist in this repo and 11 of them cannot move
-here** — `tsconfig.json`, `eslint.config.mjs`, `next.config.ts`,
-`vitest.config.ts`, `playwright.config.ts`, `postcss.config.mjs`,
-`prisma.config.ts`, `components.json`, `jest-e2e.json` are tool-owned
-entry points, each discovered by its tool at a specific filename in a
-specific directory. Relocating one doesn't centralize anything; it makes
-the tool fail to find its config. What centralizes is the *values inside
-them* — `next.config.ts` importing `LOCALES` from here is the pattern,
-not moving `next.config.ts` itself.
+**Tool-owned config files cannot move here** — `tsconfig.json`,
+`eslint.config.mjs`, `next.config.ts`, `vitest.config.ts`,
+`playwright.config.ts`, `postcss.config.mjs`, `prisma.config.ts`,
+`components.json`, `jest-e2e.json` are each discovered by their tool at a
+fixed path. Relocating one centralizes nothing; it breaks discovery. What
+centralizes is the *values inside them*: `next.config.ts` importing `LOCALES`
+is the pattern.
 
-**Adding a workspace package to `apps/web` requires three separate
-Dockerfile changes plus a `docker-compose.yml` mount — four places, and
-three of them fail in ways that don't look related.** See the gotcha
-below. Any future package added here needs all four:
-1. `deps` stage: `COPY packages/<name>/package.json` (install fails
-   loudly without it).
-2. `build` stage: `COPY packages packages` (`next build` fails on config
-   load).
-3. `prod` stage: copy the built package over pnpm's dangling workspace
-   symlink (**builds clean, crashes at boot**).
-4. `docker-compose.yml`: mount `./packages:/repo/packages` on the `web`
-   service (**the dev stack breaks**, since the `dev` stage is `FROM deps`
-   and deliberately bakes in no source).
+**Adding this package to an app takes four changes, three of which fail in
+unrelated-looking ways:**
+
+1. `deps` stage: `COPY packages/<name>/package.json` — install fails loudly.
+2. `build` stage: `COPY packages packages` — the build fails on config load.
+3. `prod` stage: `rm -rf` the path, then copy the real directory over pnpm's
+   dangling workspace symlink — **builds clean, crashes at boot**. `COPY`
+   onto an existing symlink follows it rather than replacing it.
+4. `docker-compose.yml`: mount `./packages:/repo/packages` — otherwise the
+   dev stack breaks, since the `dev` stage is `FROM deps` and bakes in no
+   source.
+
+Jest needs a test-only tsconfig too: the base sets `module: nodenext`, which
+picks format from the *imported* package's `type`, so ESM survives into a
+CommonJS test run and fails with `Unexpected token 'export'` — which looks
+exactly like a file that was never transformed.
+
 
 ## Known gotchas (already solved once — don't re-derive)
 
@@ -1091,35 +955,30 @@ it there too the moment the prefix comes off.
 
 ## Edge-caching GraphQL GETs — and why errors must be excluded
 
-`apps/api` marks read-only GraphQL GET responses cacheable
-(`graphql-cache.ts`, `public, max-age=0, s-maxage=60,
-stale-while-revalidate=300, must-revalidate`) so a CDN can serve a
-product listing without a trans-Pacific hop to Render.
+`apps/api` marks read-only GraphQL GETs cacheable (`graphql-cache.ts`:
+`public, max-age=0, s-maxage=60, stale-while-revalidate=300,
+must-revalidate`) so a CDN serves a product listing without a trans-Pacific
+hop to Render.
 
-**The trap, and it is not a hypothetical one: GraphQL reports resolver
-failures as HTTP 200 with an `errors` array.** "Did this succeed" is a
-property of the BODY, not the status line. The original middleware
-replaced `Cache-Control` unconditionally, so an error carried the full
-cacheable header — verified live against the deployed API before fixing:
+**The trap: GraphQL reports resolver failures as HTTP 200 with an `errors`
+array.** Whether a response succeeded is a property of the BODY, not the
+status line. The original middleware replaced `Cache-Control`
+unconditionally, so errors went out fully cacheable — verified live before
+fixing:
 
 ```
 {product(id:"does-not-exist-abc"){id}}
-→ HTTP/2 200
-→ cache-control: public, max-age=0, s-maxage=60, stale-while-revalidate=300
+→ HTTP/2 200 + public, max-age=0, s-maxage=60, stale-while-revalidate=300
 ```
 
-Harmless while nothing cached these responses. Behind a CDN it is an
-outage amplifier: a one-second database blip is stored at that edge for
-`s-maxage`, then served stale for the whole `stale-while-revalidate`
-window on top, to every visitor routed through that location — and
-there is no purge hook yet to cut it short. A blip becomes a
-multi-minute regional outage.
+Harmless while nothing cached them; behind a CDN it is an outage amplifier.
+A one-second database blip is stored at that edge for `s-maxage`, then
+served stale for the whole `stale-while-revalidate` window on top, to
+everyone routed through that location — and there is no purge hook to cut
+it short.
 
-**Why the decision moved to `res.send`, not `res.setHeader` (where it
-was) and not `res.end` (the obvious next guess).** Read straight off
-Apollo's express integration
-(`@as-integrations/express5/dist/cjs/index.js`), which does exactly
-this, in this order:
+**Why `res.send`, not `res.setHeader` and not `res.end`.** Apollo's express
+integration does this, in this order:
 
 ```js
 res.setHeader(key, value);          // headers FIRST
@@ -1127,56 +986,47 @@ res.statusCode = response.status;   // status AFTER them
 res.send(response.body.string);
 ```
 
-So at `setHeader` time the status is still the default 200 and no body
-exists — the old wrapper had to decide blind, and decided "cacheable"
-every time. `res.send` is the first point where status and complete
-body are both final. It is also **before Express's conditional-GET
-transform**, which is what makes it the right hook rather than
-`res.end`: Express builds a 304 by blanking the body and stripping the
-`Content-*` headers while leaving `Cache-Control` alone, so a decision
-made at `end` would see an empty body, refuse it, and let Apollo's
-`no-store` ride out on the 304 — telling a shared cache to drop an
-entry it had just confirmed was still fresh, turning cheap revalidation
-into a permanent miss. Deciding at `send` also keeps the outcome
-independent of Apollo's internal plugin ordering.
+At `setHeader` time the status is still the default 200 and no body exists,
+so the old wrapper decided blind — and decided "cacheable" every time.
+`res.send` is the first point where status and complete body are both final,
+and it runs **before Express's conditional-GET transform**. That matters:
+Express builds a 304 by blanking the body and stripping `Content-*` while
+leaving `Cache-Control` alone, so deciding at `end` would see an empty body,
+refuse it, and let Apollo's `no-store` ride out on the 304 — telling a shared
+cache to drop an entry it had just confirmed fresh, turning cheap
+revalidation into a permanent miss. Deciding at `send` also keeps the outcome
+independent of Apollo's plugin ordering.
 
-`isCacheableGraphqlResponse` **fails closed in every branch** —
-unparseable body, non-object JSON, missing `data`, any `errors` key at
-all (including an empty array), absent chunk, any status but 200. Not
-caching something cacheable costs one round trip; caching an error
-costs an outage.
+`isCacheableGraphqlResponse` **fails closed in every branch**: unparseable
+body, non-object JSON, missing `data`, any `errors` key at all (including an
+empty array), absent chunk, any status but 200. Not caching something
+cacheable costs a round trip; caching an error costs an outage.
 
-`Timing-Allow-Origin` is deliberately NOT tied to cacheability — it is
-set on every GET. Browsers zero out cross-origin timing data without
-it, and a failing request is exactly the one worth measuring from RUM.
+`Timing-Allow-Origin` is deliberately **not** tied to cacheability — it is
+set on every GET. Browsers zero cross-origin timing data without it, and a
+failing request is exactly the one worth measuring from RUM.
 
-**Verified in both directions, not just forwards** (the discipline this
-file already requires elsewhere): the two regression tests in
-`products.e2e-spec.ts` were run against the *old* middleware and both
-failed, then against the new one and both passed — real HTTP through
-the real Apollo+Express stack, not a mocked response. The 304 assertion
-is the guard on the `send`-vs-`end` placement specifically; it passes
-under both, so it protects the fix rather than proving the bug.
+Verified in both directions: the regression tests in `products.e2e-spec.ts`
+fail against the old middleware and pass against the new, over real HTTP
+through the real stack. The 304 assertion guards the `send`-vs-`end`
+placement — it passes under both, so it protects the fix rather than proving
+the bug.
 
-**This pairs with a specific Cloudflare Cache Rule** — see
-[docs/cloudflare.md](./docs/cloudflare.md). Two settings there are
-load-bearing and neither is the default:
-- The match must use `http.request.uri.path`, **not** `http.request.uri`
-  — the latter includes the query string, so it never equals `/graphql`
-  and the rule silently matches nothing.
-- Edge TTL must be *"Use cache-control header if present, bypass cache
-  if not"* (`respect_origin`). The neighbouring option caches responses
-  that arrive *without* a cache-control header using Cloudflare's own
-  defaults — precisely the path an unexpected error takes. With
-  `respect_origin`, errors now carrying Apollo's `no-store` are bypassed
-  automatically, so no error-specific edge rule is needed.
+**Pairs with a Cloudflare Cache Rule** ([docs/cloudflare.md](./docs/cloudflare.md)).
+Two non-default settings are load-bearing: match on `http.request.uri.path`,
+**not** `http.request.uri` (which includes the query string, so it never
+equals `/graphql` and the rule silently matches nothing); and Edge TTL must
+be *"use cache-control header if present, bypass cache if not"*. The
+neighbouring option caches responses arriving *without* a cache-control
+header using Cloudflare's defaults — exactly the path an unexpected error
+takes. With bypass, errors carrying Apollo's `no-store` are skipped
+automatically, so no error-specific edge rule is needed.
 
-**Before login exists, revisit this.** These queries are anonymous and
-sent with `credentials: "omit"`, which is the only reason a shared
-cache is safe here at all. An authenticated response must never be
-edge-cached — that needs `private, no-store` keyed off the request
-carrying credentials, and it must land before the first authenticated
-query ships, not after.
+**Revisit before login ships.** These queries are anonymous and sent with
+`credentials: "omit"`, which is the only reason a shared cache is safe. An
+authenticated response must never be edge-cached — that needs `private,
+no-store` keyed off the request carrying credentials, and it must land
+before the first authenticated query, not after.
 
 ## Deployment
 
