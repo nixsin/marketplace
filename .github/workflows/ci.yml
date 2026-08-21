@@ -293,6 +293,7 @@ jobs:
       # times and misses on the tenth, where one of the two failure modes
       # (a committed credential) is permanent.
       - run: node --test scripts/lib/repo-hygiene.test.mjs
+      - run: node --test scripts/lib/mutation-testing.test.mjs
       - run: node --test scripts/lib/cdn-header-check.test.mjs
       - run: node --test scripts/verify-cdn-headers.test.mjs
       - run: node --test scripts/lib/render-deploy-status.test.mjs
@@ -985,6 +986,26 @@ jobs:
           name: playwright-report
           path: apps/web/playwright-report/
           retention-days: 14
+
+  mutation-test:
+    name: Mutation testing (guards)
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    needs: [changes]
+    # Per-PR rather than nightly: a full run is ~72s, and the failure it
+    # catches -- a test that passes for the wrong reason -- is cheapest to
+    # fix before merge, not the next morning. Path-filtered so a docs-only
+    # PR never pays for it.
+    if: needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'mutation-test'))
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - name: Mutate the guard files and check the tests notice
+        run: node scripts/mutation-test.mjs | tee "$GITHUB_STEP_SUMMARY"
 
   load-test:
     name: API load test (autocannon)

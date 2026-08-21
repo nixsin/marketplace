@@ -202,3 +202,59 @@ describe("siteUrlErrorMessage", () => {
     expect(message).toContain("inlined at build time");
   });
 });
+
+describe("range boundaries — the neighbours that must still be allowed", () => {
+  // Surfaced by mutation testing. Every existing case proved a private
+  // address is REJECTED; none proved the adjacent public one is ACCEPTED.
+  // So weakening `a === 192 && b === 168` to `||` broke nothing, and the
+  // check could have been silently over-broad -- which blocks valid
+  // deploys, the worse of the two failures this guard sits between.
+  it.each([
+    ["192.169.0.1", "one above the 192.168 block"],
+    ["191.168.0.1", "one below it, same second octet"],
+    ["169.255.0.1", "one above link-local"],
+    ["168.254.0.1", "one below it, same second octet"],
+    ["172.15.0.1", "one below the RFC1918 172.16-31 range"],
+    ["172.32.0.1", "one above it"],
+    ["198.52.100.1", "one above the TEST-NET-2 block"],
+    ["198.20.0.1", "one above the benchmarking range"],
+    ["100.128.0.1", "one above CGNAT"],
+    ["9.255.255.255", "one below the 10/8 block"],
+    ["11.0.0.1", "one above it"],
+    ["126.255.255.255", "one below loopback"],
+    ["128.0.0.1", "one above it"],
+    ["223.255.255.255", "one below multicast"],
+  ])("allows %s (%s)", (ip) => {
+    expect(siteUrlProblem(`http://${ip}`)).toBeNull();
+  });
+
+  it("never reaches the range checks for an out-of-range octet", () => {
+    // Asserted after being surprised by it: Node's URL parser rejects
+    // `999.1.1.1` outright, so these are refused as malformed URLs and the
+    // octet-range guard is a second line of defence rather than the first.
+    // Either way they are rejected, which is what matters -- but the
+    // REASON is worth pinning so a future parser change is visible.
+    expect(siteUrlProblem("http://999.1.1.1")).toMatch(/not a valid URL/);
+    expect(siteUrlProblem("http://256.256.256.256")).toMatch(/not a valid URL/);
+  });
+});
+
+describe("IPv6 literal parsing", () => {
+  it("requires both brackets, not either", () => {
+    // Mutation testing showed `!startsWith("[") || !endsWith("]")` could
+    // become `&&` with nothing failing -- a malformed `[::1` would then
+    // have been treated as a bare hostname.
+    expect(siteUrlProblem("http://[::1")).not.toMatch(/local address/);
+    expect(siteUrlProblem("http://::1]")).not.toMatch(/local address/);
+  });
+
+  it("only maps a well-formed ::ffff: hex pair", () => {
+    // Malformed IPv6 is rejected by the URL parser before the mapping
+    // logic runs -- again a second line of defence, worth pinning.
+    expect(siteUrlProblem("http://[::ffff:zzzz:1]")).toMatch(/not a valid URL/);
+    // A valid IPv6 that is NOT an IPv4-mapped address must not be mapped:
+    // it is public and must build.
+    expect(siteUrlProblem("http://[2606:4700:4700::1111]")).toBeNull();
+  });
+});
+
