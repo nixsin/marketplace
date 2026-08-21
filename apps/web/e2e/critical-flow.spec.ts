@@ -17,6 +17,27 @@ import { test, expect } from "@playwright/test";
 // directly to the PR isn't built yet (see CLAUDE.md for the planned
 // follow-up) — don't overclaim it here once it exists elsewhere.
 
+// Full-page screenshots, and deliberately NOT masked.
+//
+// FULL PAGE fixes the problem that actually bit: a viewport-sized shot
+// silently depends on scroll position. When pagination became a server
+// navigation, scroll reset to top and the diff read as "wrong page" rather
+// than "same page, different scroll" -- it cost real time to interpret and
+// was first misread as a data bug. fullPage removes the variable.
+//
+// NOT MASKED because the churn that would have justified it is gone.
+// Masking the product cards would keep these baselines stable through
+// content edits -- but apps/api/prisma/seed.ts is now an explicit test
+// fixture with frozen ids and distinct descending timestamps, verified
+// stable across reseeds, so its content only changes when someone
+// deliberately changes the contract. When that happens, looking at the
+// resulting page is the point, not something to hide.
+//
+// The cost of masking would have been real: blindness to anything inside a
+// card, coupling to the [data-slot="card"] selector, and -- the sharp one --
+// a mask that matched more than intended would cover most of the page and
+// make the assertion pass trivially. Revisit only if fixture edits ever
+// become frequent, and pair it with a card-count assertion if so.
 test.describe("home page", () => {
   test("renders the real product catalog", async ({ page }) => {
     await page.goto("/en");
@@ -33,7 +54,7 @@ test.describe("home page", () => {
     const cardCount = await page.locator('[data-slot="card"]').count();
     expect(cardCount).toBeGreaterThan(0);
 
-    await expect(page).toHaveScreenshot("home-en-page-1.png");
+    await expect(page).toHaveScreenshot("home-en-page-1.png", { fullPage: true });
   });
 
   test("pagination navigates to a different set of products", async ({
@@ -72,7 +93,7 @@ test.describe("home page", () => {
     // Different page -> different products, not the same 4 re-rendered.
     expect(secondPageNames.join("|")).not.toEqual(firstPageNames.join("|"));
 
-    await expect(page).toHaveScreenshot("home-en-page-2.png");
+    await expect(page).toHaveScreenshot("home-en-page-2.png", { fullPage: true });
   });
 
   test("switching language updates the UI chrome without a full navigation", async ({
@@ -92,7 +113,7 @@ test.describe("home page", () => {
       page.getByRole("heading", { name: "विशेष लिस्टिंग" }),
     ).toBeVisible();
 
-    await expect(page).toHaveScreenshot("home-hi.png");
+    await expect(page).toHaveScreenshot("home-hi.png", { fullPage: true });
   });
 });
 
