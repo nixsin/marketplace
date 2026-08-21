@@ -32,12 +32,19 @@ not as a guarantee that it *is*.
 
 ## 2. Custom domains
 
-Configured on `medinstru-web` under **Settings → Custom Domains**:
+Under each service's **Settings → Custom Domains**:
 
-| Domain | Status |
-|---|---|
-| `laxair.shop` | Verified, certificate issued |
-| `www.laxair.shop` | Verified, **redirects to apex** (Render handles this) |
+| Domain | Service | Status |
+|---|---|---|
+| `laxair.shop` | `medinstru-web` | Verified, certificate issued |
+| `www.laxair.shop` | `medinstru-web` | Verified, **redirects to apex** (Render handles this) |
+| `api.laxair.shop` | `medinstru-api` | Verified, certificate issued |
+
+`api.laxair.shop` exists so GraphQL GETs can be edge-cached. The
+`.onrender.com` hostname sits behind **Render's** Cloudflare, which
+returns `cf-cache-status: DYNAMIC` and caches nothing of ours, so
+`s-maxage` was inert until this domain existed — see
+[cloudflare.md §5.3b](./cloudflare.md#53b-caching-the-api--apilaxairshop-and-its-cache-rule).
 
 **Setup order matters.** Render verifies ownership and issues a
 certificate by reaching the origin directly, so the DNS records must be
@@ -60,11 +67,30 @@ variable set in the dashboard but absent from the Dockerfile silently
 never arrives. This has bitten twice, both times failing silently, and is
 now enforced by a test (`apps/web/test/dockerfile-env.spec.ts`).
 
+**A restart does not apply a changed `NEXT_PUBLIC_*` value — only a
+rebuild does.** Render's *Restart* reuses the existing image, and these
+values are compiled into the JS bundle by `next build`. Changing one in
+the dashboard and restarting looks like it worked and changes nothing.
+Use **Manual Deploy → Deploy latest commit**.
+
+This is directly observable without guessing, because the CSP header is
+generated at build time from the same variable:
+
+```bash
+curl -sI https://laxair.shop/en | tr ';' '\n' | grep connect-src
+#   connect-src 'self' https://api.laxair.shop
+```
+
+If that still names the old host, the new value is not in the build yet.
+Hit live on 2026-08-21 during the `api.laxair.shop` cutover: the variable
+was set and both services restarted, and the deployed bundle still called
+`medinstru-api.onrender.com`.
+
 ### `medinstru-web`
 
 | Key | Value | When read |
 |---|---|---|
-| `NEXT_PUBLIC_API_URL` | `https://medinstru-api.onrender.com/graphql` | Build |
+| `NEXT_PUBLIC_API_URL` | `https://api.laxair.shop/graphql` | Build |
 | `NEXT_PUBLIC_SITE_URL` | `https://laxair.shop` | Build |
 | `NEXT_PUBLIC_BLOB_BASE_URL` | `https://images.laxair.shop` | Build |
 
