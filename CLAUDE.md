@@ -2188,6 +2188,19 @@ query ships, not after.
 
 ## Deployment
 
+**Terraform for Render and AWS CloudFront lives under `infra/terraform/`**
+(added 2026-08-20). The stacks intentionally keep separate state so the
+CloudFront rollout does not require immediately adopting the already-live
+Render resources. The Render resources must be imported before apply; an
+unimported apply would create duplicates. The official Render provider does
+not accept the legacy free web-service plan, so the configuration uses a
+schema-valid `starter` placeholder while lifecycle ignores the imported
+services' `plan`; plan changes remain manual and cannot accidentally become a
+paid upgrade through Terraform. Both CloudFront distributions are existing
+resources too and must be imported before their first plan. Custom aliases
+require ACM certificates in `us-east-1`. See the stack README for the exact
+adoption order and cache-safety decisions.
+
 Render (`render.yaml` documents the live setup; not connected as an active
 Blueprint sync — see that file's own comment for why). Migrations run in
 CI's `migrate` job against the External DB URL (the prod Docker image has no
