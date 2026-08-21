@@ -1103,6 +1103,12 @@ rule live. The README carries the exact commands to measure it the moment
 which costs bare-root language memory) -- run them before assuming the rule
 works.
 
+The web bypass repeats the eligibility rule's `/_next/` and `/sw.js`
+exclusions so the pair is an exact complement over one path scope. Omitting
+them is a real bug: a logged-in browser sends `mi_sid` on every same-origin
+request, so a host-wide bypass de-caches immutable content-hashed assets that
+are identical for every user.
+
 Both eligibility rules set edge **and** browser TTL to `respect_origin`.
 Browser TTL is explicit rather than omitted because omitting it falls through
 to the zone default of 4 hours -- which once overrode `max-age=0` and left

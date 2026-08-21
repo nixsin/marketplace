@@ -44,12 +44,27 @@ locals {
   # pinning a CSP that named a retired API host.
   web_html_cache_expression = "(http.host eq \"${var.zone_name}\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and not any(http.request.cookies[\"mi_sid\"][*] ne \"\"))"
 
-  # The complement: anything on the web host carrying a session cookie is
-  # never cacheable. Stated explicitly rather than left implicit, so a
-  # broader rule elsewhere in the phase cannot leave authenticated HTML
-  # eligible. This is the guard that makes login safe to add later without
-  # revisiting the CDN.
-  web_html_bypass_expression = "(http.host eq \"${var.zone_name}\" and (http.request.method ne \"GET\" or any(http.request.cookies[\"mi_sid\"][*] ne \"\")))"
+  # The complement: within the SAME path scope as the rule above, anything
+  # that is not an anonymous GET is never cacheable. Stated explicitly
+  # rather than left implicit, so a broader rule elsewhere in the phase
+  # cannot leave authenticated HTML eligible. This is the guard that makes
+  # login safe to add later without revisiting the CDN.
+  #
+  # The /_next/ and /sw.js exclusions must be repeated here, and leaving
+  # them off was a real bug: a logged-in browser sends mi_sid on EVERY
+  # same-origin request, including static chunks, so a host-wide bypass
+  # stripped edge caching from content-hashed immutable assets that are
+  # byte-identical for every user -- contradicting the reason the rule
+  # above excludes them. Zero impact today because no login ships yet, but
+  # this rule exists precisely so that login can ship without revisiting
+  # the CDN, so it has to be right before then rather than after.
+  #
+  # With both exclusions present the pair is an exact complement over
+  # (host and not /_next/ and not /sw.js): eligible = GET and no session;
+  # bypass = not (GET and no session). /_next/ and /sw.js match NEITHER
+  # rule and fall through to Cloudflare's defaults, which is what the
+  # comment above always claimed.
+  web_html_bypass_expression = "(http.host eq \"${var.zone_name}\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and (http.request.method ne \"GET\" or any(http.request.cookies[\"mi_sid\"][*] ne \"\")))"
 }
 
 resource "cloudflare_dns_record" "web" {

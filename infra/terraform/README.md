@@ -246,7 +246,13 @@ sets `hi`) and the URL is already part of the cache key, so a cached response
 always carries the locale its own path implies.
 
 `/_next/` is excluded because Cloudflare's default extension-based caching
-already serves those as `HIT`; a rule here would only compete with it.
+already serves those as `HIT`; a rule here would only compete with it. **The
+exclusion is repeated on the bypass**, and leaving it off was a real bug: a
+logged-in browser sends `mi_sid` on every same-origin request, so a host-wide
+bypass strips edge caching from content-hashed immutable assets that are
+byte-identical for every user. With both exclusions present the pair is an
+exact complement over the HTML path scope, and `/_next/` and `/sw.js` match
+*neither* rule -- falling through to Cloudflare's defaults, as intended.
 `/sw.js` is excluded belt-and-braces -- it already ships `no-store`, and a
 stale service-worker script caused a live outage on 2026-08-21 by pinning a
 CSP that named a retired API host.
