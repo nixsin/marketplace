@@ -234,6 +234,71 @@ purges when a seller edits a listing, so that value doubles as the
 worst-case staleness they would see. Raise it once an invalidation hook
 exists, not before.
 
+### 5.3b Caching the API — `api.laxair.shop` and its Cache Rule
+
+`s-maxage` on GraphQL responses stays dormant while the API answers on
+`medinstru-api.onrender.com`, because that hostname sits behind
+**Render's** Cloudflare, not ours — it returns `cf-cache-status:
+DYNAMIC` and does not cache our responses. Putting the API on a
+subdomain of this zone is what activates it.
+
+Order matters, same grey-then-orange sequence the apex needed:
+
+1. **Render** → `medinstru-api` → Settings → Custom Domains → add
+   `api.laxair.shop`.
+2. **Cloudflare** → DNS → add `CNAME api → medinstru-api.onrender.com`,
+   **DNS only (grey)**. Render verifies against the origin directly;
+   proxying first fails verification with no useful error.
+3. Wait for Render to show *Certificate Issued*, then switch the record
+   to **Proxied (orange)**.
+4. Add the Cache Rule below.
+5. Set `NEXT_PUBLIC_API_URL=https://api.laxair.shop/graphql` on
+   `medinstru-web` and redeploy. The CSP `connect-src` follows
+   automatically — it is derived from that variable.
+
+**The Cache Rule is not optional.** Proxying alone changes nothing here:
+Cloudflare's default caching is extension-based, so `/graphql?query=…`
+stays `DYNAMIC` no matter what `s-maxage` says.
+
+Rules → Cache Rules → Create:
+
+```
+(http.host eq "api.laxair.shop"
+ and http.request.uri.path eq "/graphql"
+ and http.request.method eq "GET")
+```
+
+| Setting | Value | Why |
+|---|---|---|
+| Cache eligibility | Eligible for cache | — |
+| Edge TTL | *Use cache-control header if present, bypass cache if not* | The origin owns the TTL. See the warning below. |
+| Serve stale while revalidating | Enabled | Serves the stale copy instantly and refreshes behind it, so nobody waits on a cold Render dyno |
+| Browser TTL / Cache key / Vary / ETags | unset | Defaults are correct; the key already includes the query string and excludes cookies |
+
+**Two ways to get this subtly wrong, both silent:**
+
+- **`http.request.uri` instead of `http.request.uri.path`.** The former
+  includes the query string, so it never equals `/graphql` and the rule
+  matches nothing. The rule looks configured and does nothing.
+- **The second Edge TTL option** (*"…cache with Cloudflare's default TTL
+  for the response status if not"*). It caches responses that arrive
+  *without* a cache-control header, which is exactly the path an
+  unexpected error takes. The first option bypasses them instead.
+
+`GET` only — mutations are POST and must never be cached.
+
+**Errors are excluded at the origin, not here.** GraphQL reports
+resolver failures as HTTP 200 with an `errors` array, so no
+status-code-based edge rule can filter them; Cloudflare cannot see into
+the JSON body. `apps/api` therefore withholds the cacheable header from
+any response carrying errors, leaving Apollo's `no-store` in place —
+which the *"bypass cache if not"* Edge TTL setting then honours
+automatically. See CLAUDE.md's "Edge-caching GraphQL GETs" section.
+
+**Before login ships:** these queries are anonymous and sent with
+`credentials: "omit"`, which is the only reason a shared cache is safe
+here. An authenticated response must never be edge-cached.
+
 ### 5.4 Purging
 
 No purge token is configured, and none is needed yet: every cached asset
