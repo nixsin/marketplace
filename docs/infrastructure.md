@@ -4,10 +4,10 @@ Who provides what, and where each piece is documented. Start here when
 something is broken and you are not sure which provider owns it.
 
 ```
-  GoDaddy                Cloudflare                    Render
-  ───────                ──────────                    ──────
-  registers              authoritative DNS ──────────► medinstru-web   (Docker)
-  laxair.shop            for laxair.shop               medinstru-api   (Docker)
+  GoDaddy                Cloudflare       CloudFront       Render
+  ───────                ──────────       ──────────       ──────
+  registers              authoritative ─► edge CDN ──────► medinstru-web (Docker)
+  laxair.shop            DNS                                 medinstru-api (Docker)
       │                        │                       medinstru-postgres
       │ nameservers            │
       └───────────────────────►│  R2: medinstru-media
@@ -17,12 +17,18 @@ something is broken and you are not sure which provider owns it.
 | Provider | Owns | Doc | Spend |
 |---|---|---|---|
 | **GoDaddy** | Domain registration only | [godaddy.md](./godaddy.md) | Annual renewal |
-| **Cloudflare** | DNS, R2 object storage, (CDN available but off for the app) | [cloudflare.md](./cloudflare.md) | $0 — free tier |
+| **Cloudflare** | Authoritative DNS and R2 object storage | [cloudflare.md](./cloudflare.md) | $0 — free tier |
+| **AWS CloudFront** | Edge delivery for the existing Render web and API origins; pending Terraform state adoption | [../infra/terraform/README.md](../infra/terraform/README.md) | Usage based |
 | **Render** | Web services + Postgres | [render.md](./render.md) | $0 — free tier |
 
 Application-level caching decisions are in
 [caching-and-performance.md](./caching-and-performance.md); deploy
 mechanics in [deployment.md](./deployment.md).
+
+The deployable Render and CloudFront Terraform is under
+[`infra/terraform`](../infra/terraform). It is not applied automatically;
+the existing Render resources must be imported before that stack is allowed
+to manage them.
 
 ## The two items that need action
 
