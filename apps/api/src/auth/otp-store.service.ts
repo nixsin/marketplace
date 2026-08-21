@@ -1,11 +1,10 @@
 import { Injectable } from '@nestjs/common';
+import { OTP_TTL_MS } from '@medinstru/config';
 
 interface OtpEntry {
   code: string;
   expiresAt: number;
 }
-
-const OTP_TTL_MS = 5 * 60 * 1000;
 
 // TODO(Phase 1): back this with Redis (see TECHNICAL_PLAN.md §5) so it survives
 // restarts and works across multiple API instances. In-memory only holds for

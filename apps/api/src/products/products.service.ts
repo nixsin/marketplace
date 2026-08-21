@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { blobUrl } from '../storage/blob-config';
+import { MANAGED_IMAGE_PREFIX } from '@medinstru/config';
 
 // Prisma's `details Json?` column accepts any valid JSON value (object,
 // array, string, number, null) -- but the GraphQL field is typed
@@ -30,7 +31,6 @@ export function normalizeDetails<T extends { details: unknown }>(
  * blob storage. Anything else -- an absolute URL to a seller's own CDN, a
  * future upload path -- is returned untouched.
  */
-const MANAGED_IMAGE_PREFIX = '/products/';
 
 /**
  * Resolves a stored image path to the URL a browser should fetch.

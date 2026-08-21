@@ -1,3 +1,9 @@
+import {
+  publicCacheControl,
+  SHARED_MAX_AGE_SECONDS,
+  STALE_WHILE_REVALIDATE_SECONDS,
+} from '@medinstru/config';
+
 /**
  * Cache-Control for cacheable GraphQL GET responses.
  *
@@ -45,7 +51,7 @@
  * as the worst-case staleness a seller would see after editing a listing.
  * Raise it once an invalidation hook exists, not before.
  */
-export const GRAPHQL_SHARED_MAX_AGE_SECONDS = 60;
+export const GRAPHQL_SHARED_MAX_AGE_SECONDS = SHARED_MAX_AGE_SECONDS;
 
 /**
  * How long a stale response may still be served while a fresh one is
@@ -55,23 +61,19 @@ export const GRAPHQL_SHARED_MAX_AGE_SECONDS = 60;
  * far better than a spinner, and the refresh happens off the critical
  * path. This is the directive doing the visible work today.
  */
-export const GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS = 300;
+export const GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS =
+  STALE_WHILE_REVALIDATE_SECONDS;
 
 /** The assembled header value. */
 export function graphqlCacheControl(
   sharedMaxAge = GRAPHQL_SHARED_MAX_AGE_SECONDS,
   staleWhileRevalidate = GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS,
 ): string {
-  return [
-    'public',
-    'max-age=0',
-    `s-maxage=${sharedMaxAge}`,
-    `stale-while-revalidate=${staleWhileRevalidate}`,
-    // Kept alongside s-maxage: it constrains the BROWSER, which s-maxage
-    // deliberately does not touch. Dropping it would let a browser reuse
-    // a response past max-age without revalidating in some conditions.
-    'must-revalidate',
-  ].join(', ');
+  // Delegates rather than assembling its own string: apps/web sends the
+  // identical policy on the locale shell, and the two used to be a set of
+  // constants here and a hand-written literal there, reconciled only by a
+  // comment saying they matched.
+  return publicCacheControl(sharedMaxAge, staleWhileRevalidate);
 }
 
 /**

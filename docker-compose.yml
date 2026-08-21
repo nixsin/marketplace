@@ -51,6 +51,11 @@ services:
       - "4000:4000"
     volumes:
       - ./apps/api:/repo/apps/api
+      # Mounted, not COPYd: the dev stage is FROM deps and deliberately
+      # bakes in no source, so shared-config edits hot-reload like app
+      # edits. Without this the workspace symlink points at a directory
+      # holding a manifest and no source, and `pnpm dev` dies on import.
+      - ./packages:/repo/packages
       # Named volumes over node_modules, not the bind mount above — without
       # these, the bind mount would shadow the node_modules that `pnpm
       # install` populated at image-build time with whatever (likely

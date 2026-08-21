@@ -1,3 +1,8 @@
+import {
+  MANAGED_IMAGE_PREFIX,
+  OG_IMAGE_HEIGHT,
+  OG_IMAGE_WIDTH,
+} from "@medinstru/config";
 // OpenGraph preview images.
 //
 // Why this exists: product images are stored as SVG (`/products/*.svg`) --
@@ -35,8 +40,7 @@
 const BLOB_BASE_URL = process.env.NEXT_PUBLIC_BLOB_BASE_URL ?? "";
 
 /** The card size every OG consumer sizes its large preview against. */
-export const OG_IMAGE_WIDTH = 1200;
-export const OG_IMAGE_HEIGHT = 630;
+export { OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT };
 
 /**
  * The crawler-facing twin of a product image URL.
@@ -137,7 +141,7 @@ export function ogImageUrl(imageUrl: string | null | undefined): string | undefi
 }
 
 /** Product images we ship, and therefore generate PNG twins for. */
-const MANAGED_PREFIX = "/products/";
+const MANAGED_PREFIX = MANAGED_IMAGE_PREFIX;
 
 /**
  * Whether an absolute URL points at the blob host we control.

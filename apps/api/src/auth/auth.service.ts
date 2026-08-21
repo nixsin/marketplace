@@ -4,6 +4,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { OtpStoreService } from './otp-store.service';
 import { SmsService } from './sms.service';
 import { CompleteOnboardingInput } from './dto/complete-onboarding.input';
+import { ONBOARDING_TOKEN_TTL } from '@medinstru/config';
 
 function randomOtp(): string {
   return Math.floor(100000 + Math.random() * 900000).toString();
@@ -57,7 +58,7 @@ export class AuthService {
     return {
       accessToken: this.jwt.sign(
         { phone, scope: 'onboarding' },
-        { expiresIn: '15m' },
+        { expiresIn: ONBOARDING_TOKEN_TTL },
       ),
       isNewUser: true,
     };

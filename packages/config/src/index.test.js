@@ -1,15 +1,23 @@
+import { randomUUID } from "node:crypto";
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   AI_ROLES,
+  ANTHROPIC_ANALYSIS_MODEL,
   API_URL,
+  CORRELATION_HEADERS,
+  CORRELATION_ID_MAX_LENGTH,
+  CORRELATION_ID_PATTERN,
   DEFAULT_LOCALE,
   LOCALES,
   MAX_INPUT_CHARS,
   MAX_OUTPUT_TOKENS,
   OPENAI_REVIEW_MODEL,
-  ANTHROPIC_ANALYSIS_MODEL,
+  SERVICE_WORKER_CACHE_CONTROL,
+  SHARED_MAX_AGE_SECONDS,
   SITE_URL,
+  STALE_WHILE_REVALIDATE_SECONDS,
+  publicCacheControl,
   resolveApiKey,
   roleConfig,
 } from "./index.js";
@@ -178,4 +186,62 @@ describe("shared limits", () => {
     assert.ok(MAX_INPUT_CHARS > 79_402, "must exceed the largest diff this repo has produced");
     assert.equal(MAX_OUTPUT_TOKENS, 8192);
   });
+});
+
+test("publicCacheControl emits the exact directives, in order", () => {
+  // Order and spelling are load-bearing: this string is parsed by
+  // browsers and by Cloudflare, and a malformed or dropped directive
+  // silently changes caching rather than failing. Both apps send this
+  // exact value, so a change here moves the API and the web shell
+  // together -- which is the entire point of it living here.
+  assert.equal(
+    publicCacheControl(),
+    "public, max-age=0, s-maxage=60, stale-while-revalidate=300, must-revalidate",
+  );
+});
+
+test("publicCacheControl accepts overrides for tuning and tests", () => {
+  assert.equal(
+    publicCacheControl(30, 120),
+    "public, max-age=0, s-maxage=30, stale-while-revalidate=120, must-revalidate",
+  );
+});
+
+test("the stale window outlives the fresh one", () => {
+  // If these ever invert, stale-while-revalidate stops doing anything and
+  // the failure is invisible -- responses just get slower.
+  assert.ok(STALE_WHILE_REVALIDATE_SECONDS > SHARED_MAX_AGE_SECONDS);
+});
+
+test("staleness stays bounded while no purge hook exists", () => {
+  // s-maxage doubles as the worst-case staleness a seller sees after
+  // editing a listing, because nothing invalidates the edge on write.
+  assert.ok(SHARED_MAX_AGE_SECONDS <= 300);
+});
+
+test("the service worker script is never storable", () => {
+  // no-cache would permit store-and-revalidate, and a 304 preserves the
+  // STORED headers -- which is how a retired API host stayed in the CSP
+  // served on sw.js and bricked every installed worker on 2026-08-21.
+  assert.match(SERVICE_WORKER_CACHE_CONTROL, /no-store/);
+});
+
+test("correlation headers are one definition, not two", () => {
+  // apps/web produces three of these and apps/api reads them; the API's
+  // CORS allowedHeaders is built from the same object. Renaming one in a
+  // single app previously broke the request outright.
+  assert.deepEqual(Object.keys(CORRELATION_HEADERS).sort(), [
+    "clientRequestId",
+    "pageViewId",
+    "requestId",
+    "sessionId",
+  ]);
+});
+
+test("ids the web app generates satisfy the pattern the API enforces", () => {
+  // Producer and validator of the same string, previously with no shared
+  // definition. crypto.randomUUID() is what apps/web actually emits.
+  const id = randomUUID();
+  assert.ok(CORRELATION_ID_PATTERN.test(id));
+  assert.ok(id.length <= CORRELATION_ID_MAX_LENGTH);
 });

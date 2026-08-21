@@ -17,12 +17,13 @@ WORKDIR /repo
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
-# Needed even though apps/api never imports @medinstru/config: the
-# workspace *root* package.json declares it as a devDependency (the
-# scripts/*.mjs AI automations import it), and the root manifest is copied
-# above -- so a root-level `pnpm install` has to be able to resolve that
-# workspace link or it fails outright. Manifest only; no source required,
-# since nothing in this image ever loads the package.
+# apps/api now depends on @medinstru/config directly (shared header,
+# correlation and auth-lifetime values), and the workspace root declares
+# it too for the scripts/*.mjs automations -- either way `pnpm install`
+# must be able to resolve the workspace link or it fails outright.
+# Manifest only at this stage; the real source is copied in `build`, and
+# again into `prod` over pnpm's dangling symlink. All three are required
+# and they fail in three unrelated-looking ways -- see those stages.
 COPY packages/config/package.json packages/config/package.json
 # apps/api's postinstall runs `prisma generate`, which needs its schema —
 # copied ahead of the full source (below, in later stages) for the same
@@ -46,6 +47,10 @@ CMD ["sh", "-c", "pnpm exec prisma generate && pnpm start:dev"]
 FROM deps AS build
 WORKDIR /repo
 COPY apps/api apps/api
+# apps/api imports @medinstru/config, and the deps stage only copied that
+# package's manifest (enough to resolve the workspace link, not to run
+# it). Without the real source here the build fails resolving the import.
+COPY packages packages
 RUN pnpm --filter api exec prisma generate
 RUN pnpm --filter api build
 # `pnpm deploy` (not a plain `cp`/`COPY node_modules`) because pnpm's
@@ -73,6 +78,22 @@ ENV NODE_ENV=production
 # not even reachable at runtime.
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=build /out/node_modules ./node_modules
+# THE NON-OBVIOUS ONE, and the one that builds clean and crashes at boot.
+# `pnpm deploy --legacy` does NOT materialize workspace dependencies: it
+# writes node_modules/@medinstru/config as a SYMLINK to a build-stage path
+# that does not exist here, so the line above lands a dangling link and the
+# container dies with MODULE_NOT_FOUND after logging a successful start.
+# apps/web hit exactly this on 2026-08-19; copying the real directory over
+# the symlink's location is explicit and does not depend on whatever
+# relative depth pnpm happens to generate.
+# The rm is not redundant. COPY onto a path that is already a symlink
+# FOLLOWS it rather than replacing it -- verified directly: without this,
+# the link survived and Docker wrote the files to its target
+# (/repo/packages/config), which happened to make the import resolve for a
+# reason no one reading this would predict. Deleting first guarantees a
+# real directory at the path Node actually looks in.
+RUN rm -rf ./node_modules/@medinstru/config
+COPY --from=build /repo/packages/config ./node_modules/@medinstru/config
 COPY --from=build /repo/apps/api/dist ./dist
 COPY --from=build /repo/apps/api/package.json ./package.json
 EXPOSE 4000

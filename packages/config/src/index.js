@@ -149,6 +149,229 @@ export const PERFORMANCE_SCORE_BUDGET = 0.9;
 export const LIGHTHOUSE_RUNS = 5;
 
 // ---------------------------------------------------------------------
+// HTTP caching
+//
+// One policy, two origins. apps/api serves cacheable GraphQL GETs and
+// apps/web serves the locale page shell, and both want the same answer:
+// the browser always revalidates, a shared cache may serve for a while
+// without asking, and a stale copy beats a spinner while a fresh one is
+// fetched behind it.
+//
+// These lived in two places until 2026-08-21 -- named constants in
+// apps/api/src/graphql-cache.ts and a hand-written literal string in
+// apps/web/next.config.ts -- kept in step only by a comment saying the
+// web value "matches the API's own". That is the same failure mode this
+// package was created for after the JS budget was declared twice: an
+// invariant a human has to remember, and eventually will not.
+
+/**
+ * How long a SHARED cache (a CDN) may serve a response without asking.
+ *
+ * 60s is deliberately conservative. The catalogue changes rarely, so a
+ * longer window is defensible on hit rate alone -- but there is no
+ * invalidation path yet (nothing purges when a seller edits a listing),
+ * so this doubles as the worst-case staleness they would see. Raise it
+ * once a purge hook exists, not before.
+ */
+export const SHARED_MAX_AGE_SECONDS = 60;
+
+/**
+ * How long a stale response may still be served while a fresh one is
+ * fetched in the background.
+ *
+ * Longer than the fresh window on purpose: past that point the data is
+ * stale but still far better than a spinner, and the refresh happens off
+ * the critical path.
+ */
+export const STALE_WHILE_REVALIDATE_SECONDS = 300;
+
+/**
+ * The Cache-Control value for a publicly cacheable response.
+ *
+ * THREE DIRECTIVES, THREE AUDIENCES -- confusing them is the usual way
+ * this goes wrong, so they are spelled out:
+ *
+ *   max-age=0                 the BROWSER's private cache. Zero, so a
+ *                             reload always revalidates and nobody is
+ *                             stuck on a stale catalogue they cannot
+ *                             refresh.
+ *   s-maxage=N                SHARED caches only. Overrides max-age for
+ *                             them, letting an edge node answer without
+ *                             a round trip to the origin.
+ *   stale-while-revalidate=M  serve the stale copy IMMEDIATELY and
+ *                             refresh behind it. Honoured by browsers as
+ *                             well as CDNs.
+ *
+ * must-revalidate is kept alongside s-maxage because it constrains the
+ * BROWSER, which s-maxage deliberately does not touch.
+ */
+export function publicCacheControl(
+  sharedMaxAge = SHARED_MAX_AGE_SECONDS,
+  staleWhileRevalidate = STALE_WHILE_REVALIDATE_SECONDS,
+) {
+  return [
+    "public",
+    "max-age=0",
+    `s-maxage=${sharedMaxAge}`,
+    `stale-while-revalidate=${staleWhileRevalidate}`,
+    "must-revalidate",
+  ].join(", ");
+}
+
+/**
+ * Browser cache window for the favicon.
+ *
+ * Its URL never changes, so this cannot be immutable/forever -- but it
+ * was previously re-downloaded on every repeat visit, found via a cold
+ * vs. warm Lighthouse comparison.
+ */
+export const FAVICON_MAX_AGE_SECONDS = 86_400;
+
+/**
+ * How long a browser may reuse a CORS preflight result.
+ *
+ * apps/web sends a custom header on every API call (apollo-require-
+ * preflight), which makes each one a preflighted cross-origin request.
+ * With no max-age the browser re-runs the preflight before EVERY
+ * request, paying a full extra round trip each time -- expensive on the
+ * high-latency connections this app targets. 86400s is the practical
+ * ceiling (Chrome caps at 2h, Firefox at 24h; both clamp rather than
+ * reject).
+ */
+export const CORS_PREFLIGHT_MAX_AGE_SECONDS = 86_400;
+
+/**
+ * Cache-Control for the service worker script.
+ *
+ * `no-store`, and NOT `no-cache`, for a reason that cost a live outage on
+ * 2026-08-21. A worker enforces the CSP served on its own script,
+ * captured at install -- and that CSP is derived from the API URL, so it
+ * changes on an API move while sw.js's own bytes do not. `no-cache`
+ * permits storing and revalidating, and a 304 revalidation preserves the
+ * STORED headers: Cloudflare kept serving a CSP naming a retired host
+ * long after the origin stopped sending it, and every worker installed
+ * from that copy blocked every API call. `no-store` forbids keeping a
+ * copy at all, so headers can never outlive the build that produced them.
+ */
+export const SERVICE_WORKER_CACHE_CONTROL = "no-store, must-revalidate";
+
+/**
+ * HSTS lifetime, in seconds (two years).
+ *
+ * Deliberately WITHOUT `preload`: submitting to the browser preload list
+ * is effectively irreversible (it is baked into browser binaries), so it
+ * stays deferred until this header has run in production for a while
+ * rather than being added reflexively alongside the rest.
+ */
+export const HSTS_MAX_AGE_SECONDS = 63_072_000;
+
+/** The assembled HSTS value. Production only -- see hstsHeaderEntries. */
+export const HSTS_HEADER_VALUE = `max-age=${HSTS_MAX_AGE_SECONDS}; includeSubDomains`;
+
+/**
+ * Clickjacking fallback for browsers that do not honour the CSP
+ * frame-ancestors directive. No legitimate embedding use case exists for
+ * this marketplace, so the two agree on refusing outright.
+ */
+export const FRAME_OPTIONS = "DENY";
+
+/** Isolates this origin's browsing context group from any opener. */
+export const CROSS_ORIGIN_OPENER_POLICY = "same-origin";
+
+/**
+ * Opts cross-origin responses into exposing real timing and transfer-size
+ * data to the Resource Timing API.
+ *
+ * Browsers zero those values out for privacy without it, which makes a
+ * genuine cache hit impossible to confirm from frontend code (RUM) rather
+ * than a manual curl.
+ */
+export const TIMING_ALLOW_ORIGIN = "*";
+
+// ---------------------------------------------------------------------
+// Cross-app wire contracts
+//
+// Everything below was previously declared independently in apps/api and
+// apps/web. None of it is validated at runtime by anything, so a drifted
+// value fails SILENTLY -- correlation stops joining up, or an image stops
+// being recognised as ours. That is the same class of invariant the JS
+// budget was in before this package existed.
+
+/**
+ * Correlation header names, shared by producer and consumer.
+ *
+ * apps/web generates and sends the first three; apps/api reads them and
+ * echoes requestId back. The API's CORS allowedHeaders list is built from
+ * these too, so renaming one in a single app breaks the request outright
+ * rather than merely losing a log field.
+ */
+export const CORRELATION_HEADERS = {
+  requestId: "x-request-id",
+  sessionId: "x-session-id",
+  pageViewId: "x-page-view-id",
+  clientRequestId: "x-client-request-id",
+};
+
+/**
+ * Bounds on a client-supplied correlation id.
+ *
+ * apps/web produces these ids and apps/api decides whether to accept
+ * them; before this, the producer and the validator of the same string
+ * had no shared definition. A tightened pattern on one side alone means
+ * ids are silently dropped rather than rejected loudly.
+ */
+export const CORRELATION_ID_MAX_LENGTH = 64;
+export const CORRELATION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Path prefix for product images this project manages.
+ *
+ * apps/api decides which stored images to rewrite to the blob host;
+ * apps/web decides which ones it ships a PNG twin for (OpenGraph). Both
+ * answer "is this ours?" and must agree, or the API rewrites a URL the
+ * web app then declines to treat as managed.
+ */
+export const MANAGED_IMAGE_PREFIX = "/products/";
+
+// ---------------------------------------------------------------------
+// Auth and session lifetimes
+//
+// Security-relevant policy that was expressed as bare string literals
+// inside a module constructor and a service call -- not even named
+// constants, and impossible to find without knowing where to look.
+
+/** Session JWT lifetime. */
+export const SESSION_TOKEN_TTL = "7d";
+
+/**
+ * Onboarding JWT lifetime.
+ *
+ * Deliberately far shorter than a session: it proves only "this phone
+ * completed OTP verification" and is spent immediately on
+ * completeOnboarding.
+ */
+export const ONBOARDING_TOKEN_TTL = "15m";
+
+/** How long a requested OTP stays valid. */
+export const OTP_TTL_MS = 5 * 60 * 1000;
+
+/** Idle window after which a browser session id is regenerated. */
+export const SESSION_IDLE_MINUTES = 30;
+
+/** Cookie holding the browser session id. */
+export const SESSION_COOKIE_NAME = "mi_sid";
+
+// ---------------------------------------------------------------------
+// UI
+
+/** Page-number buttons rendered before the pagination control truncates. */
+export const MAX_VISIBLE_PAGES = 10;
+
+/** The card size every OpenGraph consumer sizes its large preview against. */
+export const OG_IMAGE_WIDTH = 1200;
+export const OG_IMAGE_HEIGHT = 630;
+
+// ---------------------------------------------------------------------
 // AI automations
 // ---------------------------------------------------------------------
 
