@@ -46,6 +46,15 @@ run "adopt_guarded_test_state" {
   variables {
     jwt_secret = "test"
   }
+
+  assert {
+    condition = (
+      length(render_postgres.main.ip_allow_list) == 1 &&
+      tolist(render_postgres.main.ip_allow_list)[0].cidr_block == "0.0.0.0/0" &&
+      tolist(render_postgres.main.ip_allow_list)[0].description == "everywhere"
+    )
+    error_message = "Postgres must retain external access for GitHub Actions migrations."
+  }
 }
 
 run "free_services_ignore_configuration_drift" {

@@ -2249,6 +2249,16 @@ from planning duplicate production resources. Keep service settings managed
 via the Render dashboard/API until the services are upgraded or the provider
 fixes this behavior. Render Postgres is still fully managed.
 
+Render Postgres must explicitly keep `ip_allow_list = 0.0.0.0/0` while GitHub
+Actions applies migrations through its external endpoint. Provider v1.9.1
+cleared the imported allow-all entry when this optional-computed field was
+omitted, producing Prisma `P1017` in the post-merge migration job even though
+the API stayed healthy over the internal database connection. This is the
+pre-existing password-authenticated, TLS-protected posture, not a new exposure,
+but it remains broader than ideal. Narrow it only together with a stable-egress
+self-hosted runner or private Render-side migration mechanism; GitHub-hosted
+runners have no single stable IP to allow-list.
+
 Render (`render.yaml` documents the live setup; not connected as an active
 Blueprint sync — see that file's own comment for why). Migrations run in
 CI's `migrate` job against the External DB URL (the prod Docker image has no

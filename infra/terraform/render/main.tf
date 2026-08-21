@@ -48,6 +48,14 @@ resource "render_postgres" "main" {
   version        = "18"
   environment_id = var.environment_id
 
+  # GitHub Actions runs production migrations through Render's external
+  # database endpoint. Omitting this optional-computed field caused provider
+  # v1.9.1 to clear the imported allow-all rule during the first apply.
+  ip_allow_list = [{
+    cidr_block  = "0.0.0.0/0"
+    description = "everywhere"
+  }]
+
   lifecycle {
     prevent_destroy = true
   }
