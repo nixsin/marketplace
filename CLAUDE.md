@@ -1071,8 +1071,9 @@ would delete every unrepresented dashboard rule on apply even with
 complete phase, representing every additional rule, and setting the separate
 `cache_ruleset_inventory_confirmed` acknowledgement.
 The managed rules are appended after that inventory: two eligibility rules
-(anonymous GraphQL GETs, anonymous page HTML) followed by two bypasses
-(session-bearing web requests, every other API request). The API bypass is what
+(anonymous GraphQL GETs, anonymous page HTML) followed by three bypasses
+(session-bearing web requests, the locale-negotiated bare root, every other API
+request). The API bypass is what
 neutralizes an earlier imported rule that was broader than intended -- it is
 the exact complement of its eligibility condition across the whole API
 hostname, so every other API path is bypassed too; only the canonical
