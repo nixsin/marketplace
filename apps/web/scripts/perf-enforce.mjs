@@ -11,11 +11,15 @@
 // PERF_BUDGET_ENFORCE=jss should stop the run, never quietly disable the
 // budget it was meant to configure.
 
-export const VALID_METRICS = ["score", "lcp", "js"];
+export const VALID_METRICS = ["score", "lcp", "js", "seo"];
 
 // Matches perf-budget.mjs's historical behaviour: everything is enforced
 // unless a caller narrows it, so a plain local `pnpm test:perf` is
 // unchanged by this feature existing.
+// "seo" is deliberately absent: it is measured and reported everywhere,
+// but enforcing a brand-new gate before its real variance is known is the
+// exact mistake LCP represented. Add it here once a few real runs show a
+// stable score.
 export const DEFAULT_ENFORCE = "score,lcp,js";
 
 /**

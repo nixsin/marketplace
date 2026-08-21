@@ -45,3 +45,20 @@ describe("resolveEnforcedMetrics", () => {
     }
   });
 });
+
+test('accepts "seo" as an enforceable metric', () => {
+  // Added when the Lighthouse SEO category was enabled. It is measured
+  // everywhere but absent from DEFAULT_ENFORCE on purpose -- see below.
+  assert.deepEqual([...resolveEnforcedMetrics("seo")], ["seo"]);
+  assert.ok(VALID_METRICS.includes("seo"));
+});
+
+test('does not enforce "seo" by default', () => {
+  // The whole point of the LCP episode: a gate whose real variance is
+  // unknown should be measured before it can block a merge. Locally the
+  // SEO score was 100 on 10/10 runs with zero spread, which is strong
+  // evidence it can be promoted -- but that evidence is from one machine,
+  // not from CI. Flip this once a few real CI runs agree.
+  assert.ok(!resolveEnforcedMetrics(undefined).has("seo"));
+  assert.deepEqual([...resolveEnforcedMetrics(undefined)].sort(), ["js", "lcp", "score"]);
+});
