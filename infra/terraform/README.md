@@ -63,6 +63,15 @@ the stable production objects instead of planning duplicates.
 Postgres remains fully Terraform-managed on `free` and retains the documented
 expiry risk.
 
+Postgres explicitly retains the live `0.0.0.0/0` IP allow-list because GitHub
+Actions reaches its external endpoint to apply production migrations. Provider
+v1.9.1 cleared the imported rule when the optional-computed field was omitted,
+so never remove it without first replacing the CI database-access mechanism.
+This preserves the existing password-authenticated, TLS-protected posture but
+still exposes the endpoint to internet scanning. Narrowing it requires moving
+migrations to a stable-egress/self-hosted runner or a private Render-side job;
+GitHub-hosted runners do not provide one stable address to allow-list.
+
 The Render owner (`tea-da02feht0dsc738nmfv0`) and production project
 environment (`evm-da02hptg1s2s73c6e7tg`) are non-secret stable identifiers and
 are declared in the stack so imports and plans do not depend on an extra shell
