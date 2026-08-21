@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 
 // The one real end-to-end flow that exists today: home page -> product
 // listing (real GraphQL call to a real API, against real seeded Postgres
-// data — see apps/api/prisma/seed.ts, 10 products / pageSize 4 = 3 pages)
+// data — see apps/api/prisma/seed.ts, 16 products / pageSize 4 = 4 pages)
 // -> pagination -> language switch. This is genuinely the first test in
 // this repo that runs in a real browser engine at all; every other web
 // test is a Vitest/jsdom component test. See CLAUDE.md for why this is
