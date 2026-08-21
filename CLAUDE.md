@@ -70,10 +70,13 @@ itself belongs here for the same reason: it shouldn't need to be repeated.
    never the (now-closed) PR's own Checks tab, which only ever shows the
    `pull_request`-triggered runs from while it was open.
 
-Branch protection on `main` currently requires: **Lint, Dependency audit,
-Docker image vulnerability scan, Docker dev stack smoke test, CodeQL
-(Analyze), API unit tests, API e2e tests, Web build + tests, Web performance
-budget (Lighthouse)** — 9 checks, plus 1 required approving review.
+Branch protection on `main` currently requires **11 checks** plus 1 approving
+review: Lint, Dependency audit, API unit tests, API e2e tests, Web build +
+tests, Web e2e (Playwright), Web performance budget (Lighthouse), Docker
+image vulnerability scan, Docker dev stack smoke test, Docker web prod image
+boot test, and CodeQL (Analyze). Treat that list as a snapshot and query the
+API below rather than trusting it — protection changes without touching the
+repo, and this line has been stale before.
 `enforce_admins` is `false`, so `gh pr merge --admin` bypasses the **review**
 requirement. This repo has one active contributor, so admin-bypassing the
 review gate on an otherwise-green PR is the established, expected pattern —
@@ -97,113 +100,68 @@ to merge past — only an actual failure blocks.
 ## CI pipeline (`.github/workflows/ci.yml`)
 
 **For a complete map of when every workflow and job runs — trigger matrix,
-path-filter table, the required-checks list, force-run and rerun mechanics —
-see [docs/ci.md](./docs/ci.md).** That file answers *when*; this section
-explains *why* the design is what it is.
+path-filter table, required checks, force-run and rerun mechanics — see
+[docs/ci.md](./docs/ci.md).** That file answers *when*; this section covers
+only the design decisions that are non-obvious enough to be re-derived
+wrongly.
 
+Split into small independent jobs on purpose: parallel runners, not one long
+sequential job.
 
-Split into small independent jobs on purpose (parallel runners, not one long
-sequential job). Key structure:
+**`changes` — the path filter, and its two silent failure modes.** Runs
+`dorny/paths-filter`, produces the `api`/`web`/`deps`/`docker` booleans, and
+posts an edit-in-place PR comment (`<!-- ci-skip-logic-comment -->`)
+explaining what will skip and why. Read that comment before wondering where
+a check went.
 
-- **`changes`** — runs `dorny/paths-filter` first, produces `api`/`web`/
-  `deps`/`docker` booleans, and posts/updates a PR comment
-  (`<!-- ci-skip-logic-comment -->` marker, edited in place across pushes)
-  explaining which jobs will run vs. skip and why. Read this comment on any
-  PR before wondering why a check is missing. The filter step's own `if:`
-  must cover `push` as well as `pull_request` (`!= 'workflow_dispatch'`,
-  not an enumerated allowlist) — **a real regression here silently skipped
-  every path-filtered job on every push to main for ~14 hours** (PR #33 to
-  the fix), because the `if:` read only `== 'pull_request'`; the comment
-  justifying it only ever reasoned about excluding `workflow_dispatch`, not
-  about accidentally excluding `push` too. Runs still showed green the
-  whole time — a skipped job doesn't fail a run — so nothing surfaced it
-  until the coverage/Lighthouse badges stopped updating. Also needs
-  `base: ${{ github.ref }}` specifically for `push`: per dorny/paths-
-  filter's own docs, without it a push *to* the default branch compares
-  that commit against the default branch — i.e. against itself — and
-  finds an empty diff even with the `if:` fixed. `base` is documented as
-  ignored for `pull_request` events, so setting it unconditionally doesn't
-  affect PR behavior. If a path-filtered job goes suspiciously quiet on
-  `main` again, check this first before assuming the diff is genuinely
-  empty. **A "Verify the path filter actually ran" step now guards
-  against exactly this failure mode**, deliberately independent of the
-  filter step's own `if:` (it asserts the actual requirement rather than
-  re-deriving it from whatever that condition currently says, so a future
-  regression in a *different* shape — a typo, an overly-narrow rewrite —
-  still gets caught): fails the `changes` job outright if
-  `steps.filter.outcome != 'success'` for any trigger except
-  `workflow_dispatch`. `changes` is deliberately in `migrate`'s `needs:`
-  list too (not just relied on transitively through jobs like
-  `test-api-unit`) — without that, `changes` failing would cascade those
-  jobs to `skipped` (a job whose own `needs:` dependency failed doesn't
-  run), and `skipped` already passes `migrate`'s
-  `!contains(needs.*.result, 'failure')` gate by design for the
-  path-filtering case — silently absorbing the one failure that actually
-  needs to block deploy.
-- Path-filtered jobs (skip when irrelevant): `audit` (deps only),
-  `test-api-unit`/`test-api-e2e`/`load-test` (api or deps), `test-web`/
-  `perf-budget` (web or deps), `docker-scan`/`docker-smoke`/
-  `docker-web-prod-boot` (`docker` — see below).
-- **Never** path-filtered, deliberately: `lint` (lints both apps in one
-  command), `migrate` (too risky to ever skip a real migration),
-  `ai-failure-analysis` (reacts to `failure()`, not to the diff).
-- **The `docker` filter** — both jobs build off Docker's shared layer cache
-  across both Dockerfiles (a workspace-root `pnpm install` in the `deps`
-  stage runs apps/api's `prisma generate` postinstall even for a web-only
-  build, so a web-looking change can still affect the API image), which is
-  why the filter covers `apps/api/**` *and* `apps/web/**` together rather
-  than filtering each app's effect separately. Verified directly (not
-  assumed) before narrowing this: read both Dockerfiles' `COPY` instructions
-  (explicitly scoped, no `COPY . .` — `scripts/` and `.github/` genuinely
-  never enter either image), `docker-compose.yml` (build context is the repo
-  root; used by `scripts/dev.sh`), and `.dockerignore` (directly controls
-  the build context). The filter: `apps/api/**`, `apps/web/**`, both
-  Dockerfiles, `docker-compose.yml`, `.dockerignore`, `scripts/dev.sh`
-  specifically (not a broad `scripts/**` — a first draft would have
-  excluded the one file `docker-smoke`'s own job runs, `./scripts/dev.sh`,
-  along with the CI/review tooling that's actually safe to exclude), plus
-  the existing `deps` files.
-- **`docker-scan` (Trivy) is filtered here but *also* runs weekly,
-  unconditionally, in a separate workflow** — `docker-scan-scheduled.yml`.
-  Trivy checks against an external, time-varying CVE database, so a plain
-  path filter has a real gap docker-smoke's purely-deterministic behavioral
-  test doesn't: running only when the diff touches Docker-relevant paths
-  means a newly-disclosed CVE in an *unchanged* image goes uncaught until
-  the next such PR. The first version of this filter left docker-scan
-  unconditional to sidestep that gap entirely — deliberately reconsidered
-  once "unconditional forever" was recognized as relying on an accident
-  (every push happening to double as a re-scan) rather than an actual
-  design for CVE freshness. `docker-scan-scheduled.yml` is a real design
-  for it instead, mirroring `codeql.yml`'s own schedule trigger and
-  reasoning exactly ("a push-only trigger would miss newly-disclosed
-  vulnerability patterns in code that hasn't changed"). Informational only —
-  not wired into required checks or `migrate`'s `needs:`; a failure there
-  means the current `main` image has a new CVE, not that a specific push
-  introduced anything.
-- **`ai-failure-analysis`** — PR-only, fires on any real failure among its
-  `needs:` (explicit `needs.*.result` contains-check + `always()`, not plain
-  `failure()`, because skipped deps must not suppress or falsely trigger it).
-  Fetches failed job logs via the raw `gh api .../actions/jobs/$id/logs`
-  endpoint, not `gh run view` (that gates on the *whole run* completing, not
-  just the target job — a real, confirmed `gh` CLI limitation). Posts a
-  Claude Haiku 4.5 root-cause comment. Treat it as a first guess, not ground
-  truth — verify before acting.
-- **`migrate`** — push-to-main only, applies `prisma migrate deploy` against
-  prod. Explicit `needs.*.result` check (not plain ref/event), so a skipped
-  (not failed) dependency doesn't block deploy.
+Both of these cost real time to find, because a skipped job doesn't fail a
+run — everything stays green while coverage silently stops:
 
-Other workflows: `dependency-freshness.yml` (weekly + push-to-main badge
-check, informational, not required — fails only on outdated packages not
-listed in `scripts/known-outdated-packages.txt`, so a verified upstream
-blocker doesn't leave this permanently and unfixably red; see the
-`[blocked]` convention below), `codeql.yml`,
-`docker-scan-scheduled.yml` (weekly Trivy re-scan of `main`'s images,
-informational, not required — see the `docker` filter note above for why
-it exists),
-`pr-comment-rerun.yml` (a PR comment can trigger `gh run rerun`),
-`pr-reconciliation.yml` (see its own section below), and the
-`/rerun-test` slash command
-(`.claude/commands/rerun-test.md`) for doing a rerun manually.
+- The filter step's `if:` must cover `push` as well as `pull_request`
+  (`!= 'workflow_dispatch'`, never an enumerated allowlist). A regression
+  here skipped every path-filtered job on every push to main for ~14 hours.
+- It needs `base: ${{ github.ref }}` for `push`. Without it, a push *to* the
+  default branch compares that commit against itself and finds an empty
+  diff. `base` is ignored for `pull_request`, so setting it unconditionally
+  is safe.
+
+A "Verify the path filter actually ran" step guards both: it fails `changes`
+outright if `steps.filter.outcome != 'success'` for any trigger except
+`workflow_dispatch`. Deliberately independent of the `if:` itself — it
+asserts the requirement rather than re-deriving it, so a future regression
+in a *different* shape still gets caught.
+
+`changes` is in `migrate`'s `needs:` explicitly, not just transitively.
+Without that, a failing `changes` cascades its dependents to `skipped`, and
+`skipped` passes `migrate`'s `!contains(needs.*.result, 'failure')` gate by
+design — silently absorbing the one failure that must block a deploy.
+
+**Why the `docker` filter covers both apps together.** Both images build off
+a shared layer cache, and a workspace-root `pnpm install` in the `deps` stage
+runs apps/api's `prisma generate` postinstall even for a web-only build — so
+a web-looking change can still affect the API image. Verified before
+narrowing it: both Dockerfiles use explicitly scoped `COPY` (no `COPY . .`),
+so `scripts/` and `.github/` genuinely never enter either image. `scripts/dev.sh`
+is listed individually rather than `scripts/**` because it is the one file
+`docker-smoke` actually runs.
+
+**Workflow YAML is deliberately not in the filter**, which is why the
+force-run mechanism exists.
+
+**`docker-scan` is path-filtered here but also runs weekly** in
+`docker-scan-scheduled.yml`. Trivy checks an external, time-varying CVE
+database, so filtering alone means a newly-disclosed CVE in an *unchanged*
+image goes uncaught until the next Docker-touching PR. The scheduled run is
+the actual design for CVE freshness; informational only.
+
+**`ai-failure-analysis`** fetches failed job logs via raw
+`gh api .../actions/jobs/$id/logs`, not `gh run view` — that gates on the
+*whole run* completing, not the target job. A confirmed `gh` CLI limitation.
+Its root-cause comments are a first guess, not ground truth.
+
+**`migrate`** uses an explicit `needs.*.result` check rather than a plain
+ref/event condition, so a *skipped* dependency doesn't block a deploy while
+a *failed* one does.
 
 ## SEO rendering boundary
 
@@ -227,145 +185,47 @@ condition until the product model contains truthful values for them.
 
 ## Docker prod-image boot test (`docker-web-prod-boot` job)
 
-Added 2026-08-17, same day as a real production outage this job exists
-specifically to catch a repeat of. `apps/web` on Render crashed on every
-single boot with:
+Exists because of a real production outage: `apps/web` crashed on every boot
+with `Cannot find module './src/i18n/routing'`.
 
-```
-Failed to load next.config.ts
-Error: Cannot find module './src/i18n/routing'
-code: 'MODULE_NOT_FOUND'
-```
+**Root cause, and the non-obvious part:** `next.config.ts` had gained local
+imports, and `apps/web/Dockerfile`'s prod stage copied only `next.config.ts`
+itself, never `apps/web/src`. **Next.js transpiles and loads `next.config.ts`
+at container boot, not just at build time** — visible in the stack as
+`next-config-ts/transpile-config.js` — so every boot hit `MODULE_NOT_FOUND`
+and exited immediately. Not a degraded fallback: a hard crash, so Render's
+load balancer had no healthy origin at all. Fixed by copying the whole
+`apps/web/src` tree, not just the files `next.config.ts` imports today.
 
-**Root cause**: `next.config.ts` gained real local imports
-(`src/lib/security-headers.ts`, `src/lib/config.ts` — see their own
-sections above) across #69 and #84. `apps/web/Dockerfile`'s `prod` stage
-only ever `COPY`ed `next.config.ts` itself into the final image, never
-`apps/web/src`. Next.js transpiles and loads `next.config.ts` at container
-**boot**, not just at build time (visible in the crash stack as
-`next-config-ts/transpile-config.js`), so every boot hit `MODULE_NOT_FOUND`
-and the container exited immediately — a hard crash, not a degraded
-fallback. With the container exiting on every boot, Render's load balancer
-had no healthy origin at all, hence total unreachability rather than
-slowness. Fixed in #86 by copying the whole `apps/web/src` tree into the
-prod stage, not just the two files `next.config.ts` happens to import
-today — so a future import from anywhere else under `src/` doesn't
-silently reintroduce this same class of outage.
+**Why no existing job caught it.** `docker-scan` builds the same `prod`
+target but only scans it — it never runs the container. `docker-smoke` boots
+a real stack, but via the `dev` target, which bind-mounts host source, so
+`apps/web/src` is always present regardless of what the prod stage copies.
+Neither could answer "was the image built with everything it needs".
 
-**Why neither existing Docker job could have caught this**: `docker-scan`
-builds the exact same `prod` target this outage came from, but only ever
-scans it for CVEs with Trivy — it never runs the container. `docker-smoke`
-boots a real stack, but via `docker-compose.yml`'s `dev` target, which
-bind-mounts the full host source tree — `apps/web/src` is always present
-there regardless of what the `prod` stage's own `COPY` instructions say,
-so it structurally cannot exercise the "did the image actually get built
-with everything it needs" question at all. Neither gap was theoretical:
-this exact blind spot is what let the outage ship.
+**What the job does:** builds `--target prod`, runs the real container (no
+bind mount), and polls for a genuine `200` — not `curl -f`, which passes on
+a 3xx or 204. next-intl's locale routing makes a stray redirect a real
+possibility, so the status code is compared exactly. Each iteration also
+checks `docker inspect -f '{{.State.Running}}'` and bails early, because a
+boot crash exits immediately rather than hanging. `docker run -d` succeeding
+proves nothing on its own — it returns before the process can fail.
 
-**What this job does**: `docker build --target prod -f apps/web/Dockerfile`
-(the identical build command already used by `docker-scan` above it — same
-image, different purpose), then `docker run -d` the real container (no
-bind mount, no dev-target shortcut) and poll for up to 30 iterations
-(~3 minutes worst case — each iteration can take up to a 5s request plus a
-1s sleep; not literally "30 seconds" despite the loop count, an inaccuracy
-an AI review round on this job's own introducing PR caught). Each
-iteration captures the actual status code
-(`curl -s --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}'`)
-and requires it equal exactly `200` — not `curl -f`, which only fails on
-`>= 400` and would treat a 3xx redirect or a `204` as "ready" too. That
-gap isn't hypothetical for this app specifically: next-intl's own locale
-routing is exactly the kind of layer that could redirect `/en` somewhere
-under some future misconfiguration, and `-f` alone wouldn't catch that —
-a second real finding from the same AI review round, after the loop
-already had `--connect-timeout`/`--max-time` added for a different
-reason: without them, a container that accepts the connection but never
-finishes responding could hang a single request indefinitely. A boot-time
-crash exits the container immediately rather than hanging, so the loop
-also checks `docker inspect -f '{{.State.Running}}'` each iteration and
-bails out early instead of spending the full retry budget polling a
-container that's already dead. Fails the job (with the container's logs
-printed) if a real `200` is never obtained — critically, `docker run -d`
-succeeding is not sufficient on its own to prove anything, since it
-returns immediately
-regardless of what the container does immediately after starting. A
-job-level `timeout-minutes: 10` is a second backstop on top of the loop's
-own bound, same reasoning as `comment-ci-result-on-pr`'s identical
-two-independent-limits pattern documented above.
+**The `set -e` trap, worth knowing before touching that loop.** GitHub
+Actions runs steps under `bash -e`, and `status=$(curl ...)` propagates
+curl's exit code through the assignment — so the *first* connection attempt
+before the socket is open aborted the whole step, silently defeating the
+retry loop on every run. Fixed with `|| true` **outside** the command
+substitution: `-w '%{http_code}'` already prints `000` on connection
+failure, so `|| echo 000` *inside* would produce `000000`.
 
-**Scoped to `apps/web` only, not `apps/api` too** — this is the app the
-actual outage happened on, and the root cause (a config-time import
-evaluated at process boot, specific to `next.config.ts`'s transpile-at-
-boot behavior) is Next.js-specific, not a known general pattern that also
-threatens `apps/api`'s prod image today. Add an equivalent job for
-`apps/api` if a comparable boot-time-import failure is ever found there —
-don't preemptively duplicate this for a risk that hasn't materialized.
+**Scoped to `apps/web` only.** The root cause is specific to
+`next.config.ts`'s transpile-at-boot behaviour. Add an equivalent for
+`apps/api` only if a comparable failure is ever found there.
 
-**No live API needed** — same reasoning as `perf-budget`'s own build step:
-this only checks whether the container boots and serves a response at
-all, not whether product data renders correctly. The default
-`NEXT_PUBLIC_API_URL` (unreachable in this job) just means the page
-renders its fetch-error state, which still requires `next.config.ts` to
-have loaded successfully and still returns a real `200`.
-
-**Verified directly before writing this as a CI step** (not just assumed
-to work from reading the Dockerfile diff): built and booted the pre-#86
-image locally, reproduced the identical `MODULE_NOT_FOUND` crash and
-`exit 1`; then built and booted the #86-fixed image, confirmed a real
-`curl /en` returns `200` and the container stays running. Same discipline
-as this file's own "verify, don't assume" convention throughout.
-
-**Confirmed a second time live in real CI, both directions, not just
-locally**: this job's own introducing PR (#87) only touches
-`ci.yml`/`CLAUDE.md`/scripts, which the `docker` path filter deliberately
-excludes (workflow YAML itself isn't in it — same reasoning as
-`ai-ci-results-review`'s force-run mechanism existing at all), so
-`docker-web-prod-boot` correctly showed "skipping" on that PR's own checks
-— not a bug, the filter working as designed. Force-run by hand instead
-(`gh workflow run ci.yml --ref <branch> -f force_jobs=docker-web-prod-boot`)
-twice: once against `main` before #86 had merged — the job failed, and its
-real log shows the exact same crash reproduced locally (`Failed to load
-next.config.ts` / `Error: Cannot find module './src/lib/security-headers'`
-/ `MODULE_NOT_FOUND`) — then again after merging #86 into this branch —
-the job passed, log showing `✓ Running next.config.ts took 89ms` and a
-real successful `/en` response. Confirms the design catches the real bug
-*and* doesn't false-positive on the fix, in the actual GitHub Actions
-environment, not only in a local Docker Desktop instance that could
-plausibly behave differently.
-
-**A third AI review round on the same PR caught a genuinely serious bug
-introduced by the second round's own fix** (the exact-`200` status check
-above): `status=$(curl ...)` propagates curl's exit code through the
-assignment, and GitHub Actions runs steps under `bash -e` (confirmed
-directly in this job's own real log: `shell: /usr/bin/bash -e {0}`) — so
-`set -e` aborted the whole step on the *very first* connection attempt
-that failed because the container hadn't opened its listening socket yet,
-a real race on every single run right after `docker run -d`, not a rare
-edge case. This would have silently defeated the entire 30-iteration
-retry loop, making the job flake unpredictably on timing rather than
-reliably retry as designed — worth noting as a concrete example of a fix
-for one finding introducing a worse bug than the one it fixed. Fixed with
-`|| true` *outside* the command substitution (verified `-w
-'%{http_code}'` already prints `000` on a connection failure regardless
-of curl's own exit code, so `|| echo 000` *inside* the substitution — the
-first instinct — would have doubled up into `000000` instead). Verified
-directly, not just reasoned about: reproduced the abort with a real
-`bash -e` repro before fixing, confirmed the fix under `bash -e` against
-both a real container that boots successfully (retries, then succeeds)
-and one that exits immediately (still correctly detected and failed),
-then force-ran the job a third time in real CI — passed, same
-`shell: /usr/bin/bash -e {0}` log confirming the fix works under the
-exact execution model that exposed the bug in the first place.
-
-**Path-filtered on `docker`, same as `docker-scan`/`docker-smoke`** — same
-shared-`deps`-stage reasoning already documented above. **Informational,
-not required, to start** — not yet in `migrate`'s `needs:` or branch
-protection's required checks, following the same track record this repo
-already requires before promoting a new check (`perf-budget`, then
-`test-e2e-web`, both proven stable across real runs first — see their own
-sections). Given this job exists specifically because of a real
-production outage, it's a strong candidate to promote quickly once it's
-proven stable across a few real runs — don't leave it informational
-indefinitely the way a lower-stakes new check might reasonably stay.
+**No live API needed** — this checks that the container boots and serves,
+not that product data renders. An unreachable API just yields the
+fetch-error state, which still requires `next.config.ts` to have loaded.
 
 ## Badges and the metrics dashboard (`gh-pages` branch)
 
@@ -474,11 +334,9 @@ slipping past that — not before. shadcn/Radix (this repo's actual
 component library) is also specifically built for cross-browser
 consistency, which lowers the real risk being deferred here.
 
-**Informational, not required** — started the same way `perf-budget`
-(Lighthouse) itself did; promote to required once it's proven stable
-across enough real runs, same reasoning CLAUDE.md already documents for
-why Lighthouse became required. Path-filtered on `api`, `web`, *and*
-`deps` — unlike `test-web` (`web`/`deps` only), this suite is a genuine
+**Now a required check** (it began informational, on the same
+prove-it-first track `perf-budget` followed). Path-filtered on `api`,
+`web`, *and* `deps` — unlike `test-web` (`web`/`deps` only), this suite is a genuine
 full-stack integration test, not a mocked component-test suite: its
 pagination assertion exercises real `apps/api` logic (`findPaged`'s
 Prisma queries), so an API-only change needs to run it too. A docs-only
@@ -533,10 +391,9 @@ job: `playwright.config.ts`'s `testDir: "./e2e"` has no narrower
 `testMatch`, so any `*.spec.ts` file placed here is automatically picked
 up by the existing job — a separate job would duplicate the entire
 build+Postgres+API+web-server setup just to isolate one spec file, for
-no real benefit (this job is already informational, matching what a new
-check would start as anyway; `describe`/test names already make an
-accessibility failure clearly attributable in the log without needing a
-separate check-bucket name). If a genuinely separate job is ever
+no real benefit; `describe`/test names already make an accessibility
+failure clearly attributable in the log without needing a separate
+check-bucket name. If a genuinely separate job is ever
 justified (e.g. a much heavier a11y suite, or wanting independent
 required-check status later), split it out then — not preemptively.
 
@@ -925,192 +782,47 @@ validating this file's YAML locally before it was ever pushed.
 
 ## Post-merge CI result (`comment-ci-result-on-pr` job, in `ci.yml`)
 
-Posts the push-to-main CI result directly onto the PR that produced it —
-a per-job status table plus a direct link to the run — and now updates
-that same comment **live as the run progresses**, not just once at the
-end. Exists specifically to close the gap documented in the git workflow
-section's step 6 above: squash-merging creates a brand-new commit,
-`push` fires a genuinely separate CI run for it, and a closed PR's own
-Checks tab never shows that run — so without this, finding out it even
-exists (let alone whether it passed) means already knowing to check the
-Actions tab separately. Discovered the hard way the same day this job
-was originally written.
+Posts the push-to-main CI result onto the PR that produced it — a per-job
+table plus a run link — updating live as the run progresses. Closes the gap
+in the git workflow's step 6: a closed PR's Checks tab never shows the
+separate run that `push` fired, so without this you have to already know to
+go looking.
 
-**First real firing confirmed the design worked** (PR #62's merge,
-2026-08-17): a comment posted correctly with an accurate per-job table
-and the right run link, on the first live push-to-main run it ever saw.
-That same run also surfaced two real, unrelated problems it was built to
-surface in the first place — a Lighthouse LCP budget miss (investigated
-separately and confirmed as shared-runner timing noise: identical commit
-measured 2.3s on the PR's own run, 2.6s on push-to-main, then 2.3s again
-on a rerun) and a genuine 403 on the new accessibility badge's publish
-step (`test-e2e-web` missing `permissions: contents: write` — see "Known
-gotchas" below) — both would have taken manual Actions-tab digging to
-notice without this job.
+**`needs: [changes]` only**, so it starts within seconds rather than waiting
+on the slowest job. The tradeoff is that it can no longer read
+`needs.*.result` (that context only reflects jobs actually listed in
+`needs:`), so it polls `GET /actions/runs/{run_id}/jobs` and matches on the
+API's job **display name**, not the yaml id. Live progress requires the
+polling anyway.
 
-**Redesigned same-day (still PR #62's aftermath) to start immediately
-and update live, not just once at the end** — requested directly: a
-comment that only appears once the entire run has already finished
-gives nothing to "track" *during* the run, which defeats linking it in
-the first place. `needs: [changes]` only (not the full job list), so
-this starts within seconds of `changes` completing rather than waiting
-on the slowest job (Docker scan, ~3 minutes). The real tradeoff: reduced
-`needs:` means it can no longer read other jobs' results via the
-`needs.*.result` context (that context only ever reflects jobs actually
-listed in `needs:`) — so it polls `GET /repos/{owner}/{repo}/actions/
-runs/{run_id}/jobs` directly instead, matched against the API's job
-`name` (display name) rather than the yaml job id, since that's what the
-endpoint returns. This is what live progress requires anyway; the old
-`needs.*.result` approach could only ever report a finished state.
+**Two independent limits, neither relying on the other**: the poll loop caps
+at 90 iterations (30 min) and the job sets `timeout-minutes: 35`. A genuine
+runner outage produces a "still waiting, worth checking directly" comment
+instead of silently burning the timeout.
 
-Posts an initial "🔄 CI running" comment immediately, then loops
-(`sleep 20`, refetch, re-render, PATCH the same comment) until every
-tracked job reaches `status: completed`, capped at 90 iterations (30
-minutes) as a hard bound distinct from the job's own `timeout-minutes:
-35` — two independent limits, not one relying on the other, so a genuine
-runner outage gets a "still waiting, worth checking directly" comment
-instead of silently running for the full timeout with no explanation.
-`refresh_status`/`comment_body`/`post_comment` remain bash functions with
-deliberately shared (non-`local`) state for the three status flags
-(`TABLE`/`DONE`/`HAS_FAILURE`/`HAS_CANCELLED`) — avoids three redundant
-calls per poll iteration at the cost of the function reading like it has
-side effects, which it does, on purpose. The I/O (`gh api` calls) stays
-in bash; the actual decision logic they wrap does not — see below.
+**Classify conclusions with a success allowlist, never a failure denylist.**
+A completed job can conclude `timed_out`, `action_required`, `stale`,
+`neutral`, or have a null conclusion. An early version checked only for
+`failure`, so a timed-out job would have reported "✅ All checks passed".
+All eight values plus null are covered in
+`scripts/lib/ci-progress-comment.test.mjs`.
 
-**Decision logic extracted into `scripts/lib/ci-progress-comment.mjs`,
-same PR (#66), after two separate `ai-code-review` rounds** — round one
-caught a real bug (below); round two, once that was fixed, asked for
-committed test coverage of the surrounding logic on its own merits, since
-"verified manually and described in CLAUDE.md" isn't the same as an
-actual committed, CI-run test. Same "pull pure logic into a tested
-module" move already proven on `pr-reconciliation.mjs`/`review-
-verdict.mjs`/`override-decisions.mjs` — `computeProgress` (job
-classification + table + done/failure/cancelled flags), `buildCommentBody`,
-`shouldStopPolling`, and `decideStatusLine` are now pure, exported
-functions with their own suite
-(`scripts/lib/ci-progress-comment.test.mjs`, 22 cases, run in
-`test-ci-scripts` — necessary for the same reason `pr-reconciliation.mjs`
-is tested there: this job only ever triggers on `push` to `main`, so a
-regression would ship straight to `main` unnoticed by its own introducing
-PR without a plain, unconditional `pull_request`-triggered test job
-covering it). Three thin CLI wrappers (`scripts/compute-ci-progress.mjs`,
-`scripts/build-ci-comment-body.mjs`, `scripts/decide-ci-status-line.mjs`)
-are what the workflow's bash actually calls — following `scripts/decide-
-*.mjs`'s existing pattern exactly (args in, one value or one JSON object
-out on stdout) so the test suite exercises the real code path, not a
-parallel copy that could drift from it (the same mistake an earlier
-`decide-stuck-action.mjs` draft made, per the PR reconciliation section
-below).
+**Needs `actions: read`.** An explicit `permissions:` block sets every
+unlisted scope to `none`, and this job calls `actions/*` endpoints — the
+original version didn't, because it read results from the `needs.*` context
+instead.
 
-**The bug round one caught**: `HAS_FAILURE` originally checked only
-`conclusion === "failure"`. A completed GitHub Actions job can also
-conclude `timed_out`/`action_required`/`stale`/`neutral`, or have a null
-conclusion — none of those set `HAS_FAILURE`, so a genuinely timed-out
-job would have left the final comment reading "✅ All checks passed".
-Reproduced directly (fabricated a `timed_out` job, ran the exact jq,
-confirmed `HAS_FAILURE` came back `false`) before fixing. Fixed by
-flipping from a failure/cancelled denylist to a success/skipped
-allowlist — now carried in `computeProgress` as `isOkConclusion`, with
-all 8 conclusion values (success, skipped, cancelled, failure,
-timed_out, action_required, stale, neutral, plus null) covered in the
-committed test suite, not just the ones manually checked in the PR
-description.
+Decision logic lives in `scripts/lib/ci-progress-comment.mjs`
+(`computeProgress`, `buildCommentBody`, `shouldStopPolling`,
+`decideStatusLine`), called through thin `scripts/*.mjs` CLI wrappers so the
+tests exercise the real code path rather than a parallel copy. Tested in
+`test-ci-scripts`, which is necessary because this job only triggers on
+`push` to `main` — a regression would otherwise ship unnoticed by its own PR.
 
-Because this job now runs `node scripts/*.mjs`, it also gained
-`actions/checkout` + `actions/setup-node` steps it never needed before
-(no repo code, no node, when it was pure `gh`/`jq`) — a small added
-startup cost, still far less than the old design's wait for the entire
-job list to finish.
-
-**A third `ai-code-review` round caught one more gap the same redesign
-introduced**: `refresh_status`'s `GET .../actions/runs/{id}/jobs` call
-needs `actions: read`, which this job's `permissions:` block didn't have
-— the *original* job never called any `actions/*` endpoint (it read
-results via the `needs.*` context instead), so this requirement is new
-to the redesign, not something carried over and merely forgotten from
-before. Declaring an explicit `permissions:` block sets every unlisted
-scope to `none`, not the repo default — same mechanism as the `contents:
-write` badge-publish gotcha below, different scope. Confirmed against
-precedent already in this same file rather than taking the finding at
-face value: `ai-failure-analysis` calls the identical endpoint and
-already declares `actions: read`; `ai-code-review` declares `actions:
-write` (for its own force-run capability). Fixed by adding `actions:
-read`. **Three real `ai-code-review` rounds on one PR (#66), three
-distinct genuine findings, none repeated** — the conclusion-
-classification bug, the missing test coverage, and this permissions
-gap — worth noting as a data point for how much a careful review pass
-catches on infrastructure code that's structurally hard to test
-end-to-end before merge.
-
-`if: always()`, gated to `github.event_name == 'push' && github.ref ==
-'refs/heads/main'`, **not additionally gated on `needs.changes.result`**
-— deliberately: if `changes` itself fails (e.g. its own path-filter
-self-check catching a regression), downstream `needs: [changes]` jobs
-still get created in the run with `conclusion: skipped` rather than
-vanishing from the API, so the poll loop still converges and reports a
-real `changes: failure` row instead of silently posting nothing — that's
-exactly the case where a report matters most, so an earlier draft that
-added this extra condition (skipping the whole job when `changes` failed)
-was reverted before merge.
-
-The tracked job list mirrors `migrate`'s own list plus the informational
-jobs `perf-budget`/`load-test`/`test-e2e-web` that `migrate` deliberately
-excludes but this job wants visibility into — `codeql.yml` isn't
-included since it's a separate workflow file, not reachable via this
-run's own jobs list either way.
-
-Finds the originating PR via `GET /repos/{owner}/{repo}/commits/{sha}/
-pulls` (`gh api repos/.../commits/${{ github.sha }}/pulls --jq
-'.[0].number'`) — verified directly against both a real merge commit
-(returns the right PR number) and a commit with no associated PR (empty
-array, `.[0].number` correctly evaluates to the literal string `"null"`)
-before relying on it. The failure-vs-empty distinction is handled the
-same careful way `pr-reconciliation.mjs` above already established as
-required: `lookup_exit=$?` is captured and checked *before* ever
-inspecting `$pr_number`'s value — verified directly against a real `gh
-api` failure (a genuinely invalid SHA) that a failed lookup prints raw
-JSON error content to stdout, which would otherwise be misread as a
-value rather than recognized as a failure if the exit code weren't
-checked first.
-
-A fourth `ai-code-review` round on this same PR caught this paragraph
-itself going stale: it used to describe a pure-`jq`, no-`node` design
-("this job never runs `actions/setup-node`") that the extraction above
-directly superseded — real, contradictory operational documentation
-left in place after the design it described stopped being true, exactly
-the kind of thing this file exists to keep current. What's accurate now:
-the classification/table-building logic (`computeProgress`,
-`buildCommentBody`, `shouldStopPolling`, `decideStatusLine`) is real,
-committed, `node --test`-covered code — see the extraction paragraph
-above, not a manually-verified-but-uncommitted jq script. `jq` is still
-used, just downstream of `node`, to pull individual fields (`.table`,
-`.done`, etc.) out of `compute-ci-progress.mjs`'s single JSON stdout
-value. `post_comment`'s create-vs-PATCH branching remains plain bash
-around `gh api` I/O (not extracted — it's a straightforward two-branch
-dispatch on whether `$COMMENT_ID` is set, not the kind of decision logic
-the reviewer's second-round finding was about) and is still only
-verified the way it always was: against a mocked `gh` CLI standing in
-for the real API calls, not a committed test.
-
-**First real firing confirmed the redesign worked** (PR #66's merge,
-2026-08-17): the comment appeared within seconds already showing real
-per-job results (not placeholder "pending" rows — `changes`/`lint`/
-`test-ci-scripts` had already finished by the time this job's first
-`refresh_status` ran), then was edited in place — same `created_at`,
-later `updated_at` — from "🔄 CI running" to the final "✅ All checks
-passed" as the remaining jobs (all correctly skipped except `migrate`)
-completed, about 90 seconds end to end. Confirms the core mechanics work
-as designed: repeated `gh api -X PATCH` against a bot-created comment,
-the `actions: read` permission actually being sufficient, and the
-`node`-via-`checkout`+`setup-node` addition not meaningfully slowing
-down the "starts almost immediately" goal.
-
-Edit-in-place (PATCH), not a new comment per update — deliberately, and
-now load-bearing in a way it wasn't for the original once-at-the-end
-design: without it, a run with a dozen poll iterations would leave a
-dozen separate comments on the PR instead of one evolving one. Same
-discipline as this repo's other status comments (skip-logic comment,
-override-decision log, pr-reconciliation flags).
+Finds the originating PR via `GET /commits/{sha}/pulls`. **Capture and check
+the exit status before inspecting the value** — a failed `gh api` prints raw
+JSON error content to stdout, which reads as a value if you only check the
+output. Edit-in-place (PATCH), or a long run leaves a dozen comments.
 
 ## AI code review gate (`ai-code-review` + `ai-ci-results-review` jobs)
 
@@ -1122,23 +834,10 @@ review** (`gh pr review --approve` or `--request-changes`), not just a
 comment. A `REQUEST_CHANGES` review leaves `required_pull_request_reviews`
 unsatisfied — this is a genuine merge gate.
 
-**Split into two passes since 2026-08-17** (`ai-code-review.mjs` for pass
-1, `ai-ci-results-review.mjs` for pass 2 — both new names, but only the
-first is a rename of the original single job). Motivated by a real cost
-observed live: on the PR that added the live-progress CI comment (#66,
-same day), the single combined review round-tripped through **four**
-real findings, and every single fix had to wait for the *entire* CI
-suite (Docker scans, Lighthouse, the full test matrix) to re-run before
-the reviewer even looked at it again — pure wall-clock waste, since the
-review itself never touched most of what it was waiting on. Checked
-those four findings against the idea before committing to it: a
-conclusion-classification logic bug, missing test coverage, a missing
-`actions: read` permission, and a stale doc paragraph — **all four were
-things a diff-only review could have caught**, none needed real CI
-results. This repo already had a working proof of that: the local
-pre-push precheck (`ai-code-review-precheck.mjs`, below) has run a
-diff-only, no-CI-grounding review on every push for a while already, just
-locally and non-blocking.
+**Split into two passes** (`ai-code-review.mjs`, `ai-ci-results-review.mjs`)
+because a single combined review made every fix wait for the entire CI
+suite — Docker scans, Lighthouse, the full matrix — before the reviewer
+looked again, even though most findings never needed CI results at all.
 
 - **Pass 1 (`ai-code-review`)** — diff-only, no CI grounding, `needs: []`
   (nothing at all). Starts the instant the PR event fires, genuinely in
