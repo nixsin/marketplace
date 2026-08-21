@@ -150,10 +150,17 @@ behaviour applies, the HTML rule silently does nothing and pages keep serving
 `DYNAMIC` -- no error, no failed plan, just no improvement. It cannot be
 settled without the rule live, so measure it first:
 
+**Use a real GET, never `curl -I`.** `-I` sends `HEAD`, and both managed HTML
+rules are method-gated: the eligibility rule requires `method eq "GET"`, and
+the bypass explicitly catches `method ne "GET"`. A `HEAD` probe therefore takes
+the bypass every time and reports `DYNAMIC` **whether or not the rule works** --
+a guaranteed false negative that sends you chasing the `Set-Cookie` theory for
+a rule that is fine. `-D - -o /dev/null` prints the headers from an actual GET.
+
 ```bash
-for path in /en /hi /en?page=2; do
+for path in /en /hi '/en?page=2'; do
   printf '%s  ' "$path"
-  curl -sSI "https://laxair.shop$path" \
+  curl -sS -D - -o /dev/null "https://laxair.shop$path" \
     | grep -iE 'cf-cache-status|set-cookie|cache-control' | tr '\n' ' '
   echo
 done
@@ -170,9 +177,11 @@ Run it twice -- the first request populates the edge, so judge the second.
 Then confirm the rule is *narrow* enough, which matters more than the hit rate:
 
 ```bash
-# A session-bearing request must never be served from cache.
-curl -sSI -H 'Cookie: mi_sid=fake-session-for-testing' https://laxair.shop/en \
-  | grep -i cf-cache-status        # expect BYPASS or DYNAMIC, never HIT
+# A session-bearing request must never be served from cache. GET again:
+# a HEAD here would report BYPASS because of the METHOD, telling you nothing
+# about whether the cookie test works -- false confidence, the worse failure.
+curl -sS -D - -o /dev/null -H 'Cookie: mi_sid=fake-session-for-testing' \
+  https://laxair.shop/en | grep -i cf-cache-status   # never HIT
 
 # Each locale must keep its own cached copy (the URL is in the cache key).
 curl -sS https://laxair.shop/hi | grep -o '<html[^>]*lang="[a-z]*"'   # expect hi
