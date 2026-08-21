@@ -26,7 +26,7 @@ export const PRODUCTS_PAGED_QUERY = minifyGql(`
       totalPages
       items {
         id name brand category deviceClass certifications location
-        description imageUrl
+        description imageUrl updatedAt
         seller { name }
       }
     }
@@ -50,6 +50,7 @@ interface ProductsPagedResponse {
         location: string;
         description: string;
         imageUrl: string | null;
+        updatedAt: string;
         seller: { name: string };
       }[];
     };
@@ -242,6 +243,7 @@ export async function fetchProductsPaged(
       location: p.location,
       description: p.description,
       imageUrl: p.imageUrl ?? undefined,
+      updatedAt: p.updatedAt,
       seller: p.seller.name,
     })),
   };

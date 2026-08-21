@@ -1,28 +1,24 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
 import { ProductCard, type Product } from "@/components/product-card";
 import { Pagination } from "@/components/pagination";
 import { Skeleton } from "@/components/skeleton";
 import { fetchProductsPaged, type ProductsPaged } from "@/lib/api";
 
-// Items for sale are fetched independently of the page shell — on mount,
-// and again whenever ?page changes — rather than being baked into the
-// server render of the page itself. Two reasons this split matters:
-//
-// 1. Product data is genuinely dynamic (new listings, price/description
-//    edits) and should never be treated as "safe to cache alongside the
-//    shell" — it needs to reflect current DB state on every load.
-// 2. The shell (header/footer/title, translated UI chrome) has no such
-//    requirement — it barely ever changes. Keeping its data-fetching out
-//    of page.tsx entirely is what lets Next.js prerender the shell as a
-//    static, cacheable route again (searchParams read here, client-side,
-//    doesn't taint the server render the way reading it in a Server
-//    Component does) — see page.tsx.
-export function ProductListing() {
-  const searchParams = useSearchParams();
-  const page = Math.max(1, Number(searchParams.get("page")) || 1);
+// The server supplies a short, revalidated first page so product names and
+// links exist in the initial HTML for crawlers and no-JS clients. This client
+// component keeps the existing responsive behavior: requested pages that
+// are not already in its in-memory cache load in the browser, and the next
+// likely page is prefetched after the current one settles.
+export function ProductListing({
+  page,
+  initialData,
+}: {
+  page: number;
+  initialData?: ProductsPaged;
+}) {
+  const initialPage = initialData?.page === page ? initialData : undefined;
 
   const [state, setState] = useState<{
     items: Product[];
@@ -45,14 +41,23 @@ export function ProductListing() {
     // prefetch effect tell "data has caught up with what's requested"
     // apart from "data just happens to say loading: false right now".
     page: number;
-  }>({ items: [], totalPages: 1, loading: true, page: 1 });
+  }>({
+    items: initialPage?.items ?? [],
+    totalPages: initialPage?.totalPages ?? 1,
+    loading: !initialPage,
+    page: 1,
+  });
 
   // Cache of already-fetched pages, keyed by page number — a ref, not
   // state, since writing to it must never itself trigger a re-render (see
   // the prefetch effect below). Scoped to this component instance's own
   // lifetime only; no persistence, no TTL. See #75 for the design this
   // implements and its out-of-sequence-navigation edge case.
-  const pageCache = useRef(new Map<number, ProductsPaged>());
+  const pageCache = useRef(
+    new Map<number, ProductsPaged>(
+      initialData ? [[initialData.page, initialData]] : [],
+    ),
+  );
 
   useEffect(() => {
     let cancelled = false;

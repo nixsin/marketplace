@@ -1,24 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { ProductListing } from "./product-listing";
 import { LocaleProvider } from "./locale-provider";
 import type { Product } from "./product-card";
 import { fetchProductsPaged, type ProductsPaged } from "@/lib/api";
 import en from "../../messages/en.json";
-
-// ProductListing reads the current page directly from next/navigation's
-// useSearchParams — stub it so we control what page it thinks it's on.
-// A real vi.fn(), not a fixed factory return, so a test can change what it
-// returns mid-test and force ProductListing's effects to refire, the same
-// way a real pagination click would (needed for the priority-rewiring test
-// below and the prefetch tests further down). Every other test sets it back
-// to a fixed "page=2" first, matching this file's original fixed-mock
-// behavior exactly.
-const mockUseSearchParams = vi.fn(() => new URLSearchParams("page=2"));
-vi.mock("next/navigation", () => ({
-  useSearchParams: () => mockUseSearchParams(),
-}));
 
 // fetchProductsPaged normally hits a real GraphQL endpoint over fetch() —
 // mock it so tests control exactly what resolves and when.
@@ -77,10 +65,10 @@ const product2: Product = {
   location: "Pune, India",
 };
 
-function renderListing() {
+function renderListing(page = 2, initialData?: ProductsPaged) {
   return render(
     <LocaleProvider initialLocale="en" initialMessages={en}>
-      <ProductListing />
+      <ProductListing page={page} initialData={initialData} />
     </LocaleProvider>,
   );
 }
@@ -99,6 +87,62 @@ describe("ProductListing", () => {
   // calls, not a bug in the prefetch logic itself.
   beforeEach(() => {
     mockedFetchProductsPaged.mockClear();
+  });
+
+  it("renders server-provided first-page products without fetching them again", async () => {
+    const initialData: ProductsPaged = {
+      items: [product1, product2],
+      page: 1,
+      pageSize: 4,
+      totalCount: 2,
+      totalPages: 1,
+    };
+
+    renderListing(1, initialData);
+
+    expect(screen.getByText("Digital Blood Pressure Monitor")).toBeInTheDocument();
+    expect(screen.getByText("Surgical Forceps Set")).toBeInTheDocument();
+    await vi.waitFor(() => expect(mockedFetchProductsPaged).not.toHaveBeenCalled());
+  });
+
+  it("puts real product links in the server-rendered HTML", () => {
+    const initialData: ProductsPaged = {
+      items: [product1, product2],
+      page: 1,
+      pageSize: 4,
+      totalCount: 2,
+      totalPages: 1,
+    };
+
+    const html = renderToStaticMarkup(
+      <LocaleProvider initialLocale="en" initialMessages={en}>
+        <ProductListing page={1} initialData={initialData} />
+      </LocaleProvider>,
+    );
+
+    expect(html).toContain('href="/products/1"');
+    expect(html).toContain("Digital Blood Pressure Monitor");
+    expect(html).toContain('href="/products/2"');
+    expect(html).toContain("Surgical Forceps Set");
+  });
+
+  it("server-renders a directly requested later page from matching initial data", () => {
+    const pageTwo: ProductsPaged = {
+      items: [product2],
+      page: 2,
+      pageSize: 4,
+      totalCount: 5,
+      totalPages: 2,
+    };
+
+    const html = renderToStaticMarkup(
+      <LocaleProvider initialLocale="en" initialMessages={en}>
+        <ProductListing page={2} initialData={pageTwo} />
+      </LocaleProvider>,
+    );
+
+    expect(html).toContain('href="/products/2"');
+    expect(html).toContain("Surgical Forceps Set");
   });
 
 
@@ -144,7 +188,7 @@ describe("ProductListing", () => {
     expect(screen.queryByRole("button", { name: "Send Inquiry" })).not.toBeInTheDocument();
   });
 
-  it("reads the page param from useSearchParams and forwards it to fetchProductsPaged", async () => {
+  it("forwards the server-provided page to fetchProductsPaged", async () => {
     mockedFetchProductsPaged.mockResolvedValue({
       items: [product1],
       page: 2,
@@ -222,7 +266,6 @@ describe("ProductListing", () => {
       ...product2,
       imageUrl: "https://example.com/forceps.jpg",
     };
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=1"));
     // Page-keyed, not mockResolvedValueOnce -- the prefetch effect (see
     // #75, below) now fires a background fetchProductsPaged(2) call of its
     // own right after page 1 loads, which would silently consume a
@@ -233,7 +276,7 @@ describe("ProductListing", () => {
       1: { items: [product1], totalPages: 2 },
       2: { items: [product2WithImage], totalPages: 2 },
     });
-    const { container, rerender } = renderListing();
+    const { container, rerender } = renderListing(1);
     await screen.findByText("Digital Blood Pressure Monitor");
     expect(container.querySelector("img")).not.toHaveAttribute(
       "loading",
@@ -245,10 +288,9 @@ describe("ProductListing", () => {
     // (or, if the prefetch above already warmed the cache, renders
     // instantly from it -- either way the first-rendered card should be
     // the new page's own first item, marked eager again).
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=2"));
     rerender(
       <LocaleProvider initialLocale="en" initialMessages={en}>
-        <ProductListing />
+        <ProductListing page={2} />
       </LocaleProvider>,
     );
 
@@ -292,12 +334,11 @@ describe("ProductListing", () => {
   }
 
   it("prefetches the next page once the current page finishes loading", async () => {
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=1"));
     mockPageContent({
       1: { items: [product1], totalPages: 2 },
       2: { items: [product2], totalPages: 2 },
     });
-    renderListing();
+    renderListing(1);
 
     await screen.findByText("Digital Blood Pressure Monitor");
     await vi.waitFor(() => {
@@ -306,9 +347,8 @@ describe("ProductListing", () => {
   });
 
   it("does not prefetch when the current page is the last page", async () => {
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=1"));
     mockPageContent({ 1: { items: [product1], totalPages: 1 } });
-    renderListing();
+    renderListing(1);
 
     await screen.findByText("Digital Blood Pressure Monitor");
     // Give any errant prefetch effect a chance to fire before asserting
@@ -320,12 +360,11 @@ describe("ProductListing", () => {
   });
 
   it("renders a prefetched page instantly, with no additional fetch call, when the user navigates there", async () => {
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=1"));
     mockPageContent({
       1: { items: [product1], totalPages: 2 },
       2: { items: [product2], totalPages: 2 },
     });
-    const { rerender } = renderListing();
+    const { rerender } = renderListing(1);
 
     await screen.findByText("Digital Blood Pressure Monitor");
     // Wait for the background prefetch of page 2 to actually complete
@@ -335,10 +374,9 @@ describe("ProductListing", () => {
       expect(mockedFetchProductsPaged).toHaveBeenCalledTimes(2);
     });
 
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=2"));
     rerender(
       <LocaleProvider initialLocale="en" initialMessages={en}>
-        <ProductListing />
+        <ProductListing page={2} />
       </LocaleProvider>,
     );
 
@@ -353,13 +391,12 @@ describe("ProductListing", () => {
     // The story's explicit edge case: jumping straight from page 1 to
     // page 3 skips right past the page-2 prefetch this component only
     // ever speculatively warms one page ahead.
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=1"));
     mockPageContent({
       1: { items: [product1], totalPages: 3 },
       2: { items: [product2], totalPages: 3 },
       3: { items: [product3], totalPages: 3 },
     });
-    const { rerender } = renderListing();
+    const { rerender } = renderListing(1);
 
     await screen.findByText("Digital Blood Pressure Monitor");
     await vi.waitFor(() => {
@@ -369,10 +406,9 @@ describe("ProductListing", () => {
       expect(mockedFetchProductsPaged).toHaveBeenCalledWith(2);
     });
 
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=3"));
     rerender(
       <LocaleProvider initialLocale="en" initialMessages={en}>
-        <ProductListing />
+        <ProductListing page={3} />
       </LocaleProvider>,
     );
 
@@ -395,7 +431,6 @@ describe("ProductListing", () => {
   // "must never compete with the user's own fetch" rule this feature
   // depends on.
   it("does not prefetch from stale totalPages while the newly-requested page is still loading", async () => {
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=1"));
 
     // Page 3's fetch is held open deliberately -- lets this test inspect
     // calls made *during* that window, not just the eventual outcome.
@@ -427,16 +462,15 @@ describe("ProductListing", () => {
       throw new Error(`unexpected page ${page} requested in this test`);
     });
 
-    const { rerender } = renderListing();
+    const { rerender } = renderListing(1);
     await screen.findByText("Digital Blood Pressure Monitor");
 
     // Jump straight from page 1 to page 3 -- out of sequence, skipping
     // page 2 entirely, and page 1's own totalPages (5) would wrongly
     // permit "page 4" as a plausible next page if trusted directly.
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=3"));
     rerender(
       <LocaleProvider initialLocale="en" initialMessages={en}>
-        <ProductListing />
+        <ProductListing page={3} />
       </LocaleProvider>,
     );
 
@@ -461,7 +495,6 @@ describe("ProductListing", () => {
   });
 
   it("does not crash or block later navigation when a background prefetch fails", async () => {
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=1"));
     mockedFetchProductsPaged.mockImplementation(async (page = 1) => {
       if (page === 1) {
         return {
@@ -475,7 +508,7 @@ describe("ProductListing", () => {
       if (page === 2) throw new Error("simulated network failure");
       throw new Error(`unexpected page ${page} requested in this test`);
     });
-    const { rerender } = renderListing();
+    const { rerender } = renderListing(1);
 
     await screen.findByText("Digital Blood Pressure Monitor");
     // Let the (failing) background prefetch actually run and settle. If
@@ -504,10 +537,9 @@ describe("ProductListing", () => {
       throw new Error(`unexpected page ${page} requested in this test`);
     });
 
-    mockUseSearchParams.mockReturnValue(new URLSearchParams("page=2"));
     rerender(
       <LocaleProvider initialLocale="en" initialMessages={en}>
-        <ProductListing />
+        <ProductListing page={2} />
       </LocaleProvider>,
     );
 

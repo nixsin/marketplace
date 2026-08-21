@@ -34,7 +34,7 @@ vi.mock("next-intl/server", () => ({
   },
 }));
 
-const { generateMetadata } = await import("./page");
+const { generateMetadata, productStructuredData } = await import("./page");
 
 describe("product detail generateMetadata", () => {
   beforeEach(() => {
@@ -80,6 +80,9 @@ describe("product detail generateMetadata", () => {
     expect(metadata.description).toBe(
       "A handheld point-of-care ultrasound system.",
     );
+    expect(metadata.alternates).toEqual({
+      canonical: "/en/products/p1",
+    });
     // The PNG twin, NOT the stored .svg: Facebook's scraper (which WhatsApp
     // shares) does not support SVG, so the shared card previewed with a
     // blank image frame -- the link appeared to work while looking broken,
@@ -87,6 +90,56 @@ describe("product detail generateMetadata", () => {
     expect(metadata.openGraph?.images).toEqual([
       { url: "/products/ultrasound.png", width: 1200, height: 630 },
     ]);
+  });
+
+  it("emits truthful basic Product data without invented commercial fields", () => {
+    const jsonLd = productStructuredData(
+      {
+        id: "p1",
+        name: "Portable Ultrasound",
+        description: "A handheld point-of-care ultrasound system.",
+        brand: "ScanTech",
+        category: "Diagnostics",
+        imageUrl: "/products/ultrasound.svg",
+        certifications: [],
+        location: "Delhi",
+        updatedAt: "2026-08-20T00:00:00.000Z",
+        seller: { name: "Seller", kycStatus: "APPROVED" },
+      },
+      "en",
+    );
+
+    expect(jsonLd).toMatchObject({
+      "@type": "Product",
+      name: "Portable Ultrasound",
+      brand: { "@type": "Brand", name: "ScanTech" },
+      category: "Diagnostics",
+      url: "http://localhost:3000/en/products/p1",
+    });
+    expect(jsonLd).not.toHaveProperty("offers");
+    expect(jsonLd).not.toHaveProperty("aggregateRating");
+    expect(jsonLd).not.toHaveProperty("gtin");
+  });
+
+  it("encodes a product id as one URL segment", () => {
+    const jsonLd = productStructuredData(
+      {
+        id: "device/portable?#1",
+        name: "Portable Monitor",
+        description: "Monitor",
+        brand: "MedTech",
+        category: "Diagnostics",
+        certifications: [],
+        location: "Delhi",
+        updatedAt: "2026-08-20T00:00:00.000Z",
+        seller: { name: "Seller", kycStatus: "APPROVED" },
+      },
+      "en",
+    );
+
+    expect(jsonLd.url).toBe(
+      "http://localhost:3000/en/products/device%2Fportable%3F%231",
+    );
   });
 
   it("gives X/Twitter the same raster image and a large card", async () => {

@@ -126,7 +126,7 @@ async function staleWhileRevalidate(request) {
 // product query" test exercises the real app's real request, so drift
 // here fails that test immediately rather than silently.
 const PUBLIC_GRAPHQL_QUERIES = new Set([
-  "query ProductsPaged($page: Int, $pageSize: Int) { productsPaged(page: $page, pageSize: $pageSize) { page pageSize totalCount totalPages items { id name brand category deviceClass certifications location description imageUrl seller { name } } } }",
+  "query ProductsPaged($page: Int, $pageSize: Int) { productsPaged(page: $page, pageSize: $pageSize) { page pageSize totalCount totalPages items { id name brand category deviceClass certifications location description imageUrl updatedAt seller { name } } } }",
 ]);
 
 function isPublicGraphqlRead(request, url) {

@@ -25,6 +25,8 @@ export interface Product {
   certifications: string[];
   description: string;
   imageUrl?: string;
+  /** Used by sitemap generation; cards do not display this value. */
+  updatedAt?: string;
   seller: string;
   location: string;
 }

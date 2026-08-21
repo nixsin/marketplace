@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { PRODUCTS_PAGED_QUERY } from "../src/lib/api";
 
 // Proves the actual safety property #78's §3.6 exists to guarantee: the
 // service worker (public/sw.js) must never cache a GraphQL response that
@@ -25,8 +26,11 @@ import { test, expect, type Page } from "@playwright/test";
 // NODE_ENV === "production") -- this is genuine SW behavior, not a
 // simulation.
 
-const REAL_PRODUCTS_PAGED_QUERY =
-  "query ProductsPaged($page: Int, $pageSize: Int) { productsPaged(page: $page, pageSize: $pageSize) { page pageSize totalCount totalPages items { id name brand category deviceClass certifications location description imageUrl seller { name } } } }";
+// Imported, not copied. This was a third hand-maintained copy of the same
+// string; when the query gained `updatedAt` it silently disagreed with both
+// the app and sw.js, and a test that carries its own copy agrees with itself
+// while production diverges.
+const REAL_PRODUCTS_PAGED_QUERY = PRODUCTS_PAGED_QUERY;
 
 // Waits for a real fetchProductsPaged call (query ProductsPaged(...)) to
 // finish being cached by the SW's background revalidation fetch, and

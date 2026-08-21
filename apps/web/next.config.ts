@@ -245,11 +245,10 @@ const nextConfig: NextConfig = {
             // s-maxage + stale-while-revalidate, matching the API's own
             // policy (apps/api/src/graphql-cache.ts explains the split).
             //
-            // This shell is deliberately kept statically prerenderable --
-            // product data is fetched client-side precisely so the HTML
-            // stays cacheable -- and then it was served with max-age=0 for
-            // BOTH browser and edge, which gave away the benefit the whole
-            // architecture was arranged to obtain.
+            // The first product page is now server-rendered from a 60-second
+            // revalidated snapshot so crawlers receive real links. The HTML
+            // remains publicly cacheable at the edge under this matching
+            // policy instead of making every visitor pay for that render.
             //
             // max-age=0 still keeps the browser revalidating, so a deploy
             // is picked up on the next navigation. s-maxage only affects
