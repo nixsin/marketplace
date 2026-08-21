@@ -302,6 +302,7 @@ jobs:
       # Diff ordering/reduction feeds every AI reviewer's payload; a
       # regression here silently changes what gets reviewed.
       - run: node --test scripts/lib/diff-ordering.test.mjs
+      - run: node --test scripts/lib/terraform-postgres-guard.test.mjs
       # @medinstru/config is the single source of truth for both the web
       # app's runtime values and every AI automation's settings, so a
       # regression here reaches further than any other script in this list.
