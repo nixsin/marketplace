@@ -52,10 +52,45 @@ export default defineConfig({
   expect: {
     toHaveScreenshot: { maxDiffPixels: 600 },
   },
+  // Chromium runs the whole suite. The other engines and device profiles run
+  // ONLY cross-browser.spec.ts, via testMatch.
+  //
+  // The reason is screenshots: critical-flow.spec.ts asserts against
+  // baselines, and baselines are per-project. Running it on five projects
+  // would mean five sets of Linux-generated PNGs to regenerate on every
+  // intentional UI change -- a permanent maintenance cost far larger than
+  // the coverage it buys, since business logic does not differ by engine.
+  // What DOES differ is rendering, script errors and network behaviour,
+  // which is exactly what cross-browser.spec.ts checks.
+  //
+  // WebKit matters most of the five. It is the engine with the largest
+  // real behavioural distance from Chromium, and it is what every iOS
+  // browser uses regardless of its name -- a significant share of this
+  // app's target market on mobile.
   projects: [
     {
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
+    },
+    {
+      name: "webkit",
+      testMatch: /cross-browser\.spec\.ts/,
+      use: { ...devices["Desktop Safari"] },
+    },
+    {
+      name: "firefox",
+      testMatch: /cross-browser\.spec\.ts/,
+      use: { ...devices["Desktop Firefox"] },
+    },
+    {
+      name: "mobile-safari",
+      testMatch: /cross-browser\.spec\.ts/,
+      use: { ...devices["iPhone 14"] },
+    },
+    {
+      name: "mobile-chrome",
+      testMatch: /cross-browser\.spec\.ts/,
+      use: { ...devices["Pixel 7"] },
     },
   ],
   // Only used for local `pnpm test:e2e` — CI starts the server itself as
