@@ -53,6 +53,11 @@ therefore uses a schema-valid `starter` placeholder and ignores `plan` on the
 imported services, preventing an accidental paid upgrade. Postgres remains
 `free` and retains the documented expiry risk.
 
+The Render owner (`tea-da02feht0dsc738nmfv0`) and production project
+environment (`evm-da02hptg1s2s73c6e7tg`) are non-secret stable identifiers and
+are declared in the stack so imports and plans do not depend on an extra shell
+variable or detach Postgres from its existing project environment.
+
 Do not activate `render.yaml` Blueprint sync while Terraform owns the same
 resources.
 

@@ -8,10 +8,11 @@ locals {
 }
 
 resource "render_postgres" "main" {
-  name    = "medinstru-postgres"
-  plan    = var.postgres_plan
-  region  = var.region
-  version = "18"
+  name           = "medinstru-postgres"
+  plan           = var.postgres_plan
+  region         = var.region
+  version        = "18"
+  environment_id = var.environment_id
 
   lifecycle {
     prevent_destroy = true
@@ -36,6 +37,7 @@ resource "render_web_service" "api" {
       value = render_postgres.main.connection_info.internal_connection_string
     }
     JWT_SECRET                = { value = var.jwt_secret }
+    NEXT_PUBLIC_API_URL       = { value = var.api_public_url }
     NEXT_PUBLIC_BLOB_BASE_URL = { value = var.blob_public_url }
   }
 
