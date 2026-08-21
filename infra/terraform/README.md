@@ -142,11 +142,17 @@ plans cannot modify or delete dashboard cache rules.
 
 ### What the managed ruleset contains, and why order matters
 
-Four rules, in this order. Cloudflare evaluates **every** matching rule in
-sequence and the last match wins, so the two bypasses must stay last -- a
-bypass placed before its own eligibility rule is silently overridden by it,
-with no error anywhere. A test asserts the relative order for exactly this
-reason.
+**Four managed additions, appended after whatever you inventoried.** The
+authoritative ruleset is `additional_cache_rules` (every unrelated dashboard
+rule you copied in during adoption) followed by the four below, so the live
+ruleset is larger than four whenever the inventory is non-empty -- the test
+fixture, for instance, supplies one inventoried rule and therefore expects
+five. Count the inventory in when reviewing a plan.
+
+Order within the managed four is fixed. Cloudflare evaluates **every** matching
+rule in sequence and the last match wins, so the two bypasses must stay last --
+a bypass placed before its own eligibility rule is silently overridden by it,
+with no error anywhere. Tests assert the relative order of both pairs.
 
 | # | ref | Effect |
 |---|-----|--------|
@@ -168,7 +174,13 @@ every GraphQL read is anonymous and sent with `credentials: "omit"`, so a
 cookie arriving at all means something unexpected. HTML cannot use that test
 -- next-intl's middleware sets `NEXT_LOCALE` on every page response, so every
 returning visitor carries a cookie and nothing would ever cache. HTML
-therefore keys on `mi_sid`, the session cookie, alone. `NEXT_LOCALE` is safe
+therefore keys on `mi_sid`, the session cookie, alone -- read through
+`http.request.cookies`, the parsed cookie map, never
+`http.request.headers["cookie"]`. The raw header is wrong twice over: `[0]`
+inspects only the first Cookie line while HTTP/2 permits splitting Cookie
+across several (a session in a later line reads as anonymous, so eligibility
+matches *and* the bypass misses -- authenticated HTML in a shared cache), and
+a `contains` test would match a cookie merely named `xmi_sid`. `NEXT_LOCALE` is safe
 to cache because it is derived purely from the URL (`/en` sets `en`, `/hi`
 sets `hi`) and the URL is already part of the cache key, so a cached response
 always carries the locale its own path implies.

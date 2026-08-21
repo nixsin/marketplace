@@ -19,19 +19,37 @@ locals {
   # mi_sid is the browser session id and is the one that must never be
   # shared, so it -- not cookies in general -- is what disables caching.
   #
+  # Read through http.request.cookies, the parsed cookie map, NEVER through
+  # http.request.headers["cookie"]. Two distinct bugs, and only one of them
+  # is safe:
+  #
+  #   headers["cookie"][0] inspects only the FIRST Cookie header line, and
+  #   HTTP/2 explicitly permits splitting Cookie across several lines. A
+  #   session landing in a later line reads as anonymous, so the eligibility
+  #   rule matches AND the bypass misses -- authenticated HTML in a shared
+  #   cache. This is the unsafe direction.
+  #
+  #   `contains "mi_sid"` is a substring test over the raw header, so a
+  #   cookie merely NAMED xmi_sid, or any cookie whose VALUE contained that
+  #   string, would match. That direction only over-bypasses, costing hit
+  #   rate rather than leaking, but it is still wrong.
+  #
+  # The cookie map fixes both: it parses every Cookie line and keys on the
+  # exact cookie name.
+  #
   # /_next/ is excluded because Cloudflare's default extension-based caching
   # already serves those as HIT; a rule here would only compete with it.
   # /sw.js is excluded belt-and-braces: it already ships no-store, and a
   # stale service-worker script caused a live outage on 2026-08-21 by
   # pinning a CSP that named a retired API host.
-  web_html_cache_expression = "(http.host eq \"${var.zone_name}\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and not http.request.headers[\"cookie\"][0] contains \"mi_sid\")"
+  web_html_cache_expression = "(http.host eq \"${var.zone_name}\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and not any(http.request.cookies[\"mi_sid\"][*] ne \"\"))"
 
   # The complement: anything on the web host carrying a session cookie is
   # never cacheable. Stated explicitly rather than left implicit, so a
   # broader rule elsewhere in the phase cannot leave authenticated HTML
   # eligible. This is the guard that makes login safe to add later without
   # revisiting the CDN.
-  web_html_bypass_expression = "(http.host eq \"${var.zone_name}\" and (http.request.method ne \"GET\" or http.request.headers[\"cookie\"][0] contains \"mi_sid\"))"
+  web_html_bypass_expression = "(http.host eq \"${var.zone_name}\" and (http.request.method ne \"GET\" or any(http.request.cookies[\"mi_sid\"][*] ne \"\")))"
 }
 
 resource "cloudflare_dns_record" "web" {

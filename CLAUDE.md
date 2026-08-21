@@ -1088,7 +1088,10 @@ breaks it.** The API rules bypass on *any* cookie, correct there because every
 GraphQL read is anonymous and sent with `credentials: "omit"`. HTML cannot use
 that test: next-intl sets `NEXT_LOCALE` on every page response, so every
 returning visitor carries a cookie and nothing would ever cache. HTML keys on
-the `mi_sid` session cookie alone. `NEXT_LOCALE` is safe because it is derived
+the `mi_sid` session cookie alone, read through `http.request.cookies` (the
+parsed map) and never `http.request.headers["cookie"]` -- `[0]` sees only the
+first Cookie line, and HTTP/2 permits splitting Cookie across several, so a
+session in a later line reads as anonymous and lands in a shared cache. `NEXT_LOCALE` is safe because it is derived
 purely from the URL, which is already in the cache key.
 
 Both eligibility rules set edge **and** browser TTL to `respect_origin`.

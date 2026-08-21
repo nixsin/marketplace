@@ -68,6 +68,14 @@ run "public_cache_is_narrow_and_origins_are_proxied" {
     condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-graphql-gets"]).action_parameters.browser_ttl.mode == "respect_origin"
     error_message = "Cloudflare must not override the browser TTL supplied by the origin."
   }
+
+  assert {
+    # Ref lookups removed the implicit ordering check the old positional
+    # assertions carried for free. Cloudflare runs every matching rule and the
+    # last wins, so this pair has the same silent-override risk as the web one.
+    condition     = index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "cache-public-graphql-gets") < index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "bypass-all-other-api-requests")
+    error_message = "The API bypass must come after the GraphQL cache rule or it is overridden."
+  }
 }
 
 run "page_html_is_cacheable_only_while_anonymous" {
@@ -80,7 +88,7 @@ run "page_html_is_cacheable_only_while_anonymous" {
 
   assert {
     condition = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression == (
-      "(http.host eq \"laxair.shop\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and not http.request.headers[\"cookie\"][0] contains \"mi_sid\")"
+      "(http.host eq \"laxair.shop\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and not any(http.request.cookies[\"mi_sid\"][*] ne \"\"))"
     )
     error_message = "The HTML rule must match anonymous GETs on the web host only, excluding /_next/ and /sw.js."
   }
@@ -95,6 +103,16 @@ run "page_html_is_cacheable_only_while_anonymous" {
   }
 
   assert {
+    # Both HTML expressions must read the PARSED cookie map, never the raw
+    # Cookie header. headers["cookie"][0] inspects only the first Cookie line
+    # and HTTP/2 permits splitting Cookie across several -- a session in a
+    # later line reads as anonymous, so eligibility matches and the bypass
+    # misses, putting authenticated HTML in a shared cache.
+    condition     = strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression, "http.request.cookies[\"mi_sid\"]") && strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression, "http.request.cookies[\"mi_sid\"]") && !strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression, "headers[\"cookie\"]") && !strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression, "headers[\"cookie\"]")
+    error_message = "HTML rules must key on the parsed cookie map, not the raw Cookie header."
+  }
+
+  assert {
     condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).enabled && !one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).action_parameters.cache
     error_message = "A session-bearing request must never be served page HTML from a shared cache."
   }
@@ -105,6 +123,13 @@ run "page_html_is_cacheable_only_while_anonymous" {
     # silently overridden by it. This is the assertion that would catch that.
     condition     = index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "cache-public-html") < index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "bypass-authenticated-web")
     error_message = "The authenticated bypass must come after the HTML cache rule or it is overridden."
+  }
+
+  assert {
+    condition = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression == (
+      "(http.host eq \"laxair.shop\" and (http.request.method ne \"GET\" or any(http.request.cookies[\"mi_sid\"][*] ne \"\")))"
+    )
+    error_message = "The web bypass must be the exact complement: any non-GET, or any session-bearing request."
   }
 
   assert {
