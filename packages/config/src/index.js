@@ -122,7 +122,20 @@ export const BUILD_TIME = process.env.NEXT_PUBLIC_BUILD_TIME || "unknown";
 //     for. 188.3KB alone still fits under 191KB; what actually failed was
 //     perf-budget.mjs's *Lighthouse*-measured 192.3KB, which is the same
 //     ~3-4KB measurement gap described above eating the remaining margin.
-export const JS_BUDGET_BYTES = 194 * 1024;
+// Raised 194 -> 196 (2026-08-21). The image-optimizer bypass adds ~220
+// bytes, MEASURED by building both branches and summing brotli-encoded
+// chunk sizes: 756,193 -> 756,413. Main was already sitting at the line,
+// so a 220-byte change tipped it.
+//
+// Worth the trade, and the trade is the point of measuring: those bytes
+// remove an origin round trip per product image -- ~1.86s each, proxied
+// through Render in Oregon while the R2 edge cache went unused. Trading
+// 220 bytes of JS for that is not close.
+//
+// Raised by 2KB, not to exactly fit: landing a budget one byte above
+// current usage means the next honest change fails for no reason, and a
+// gate that fails constantly stops being read.
+export const JS_BUDGET_BYTES = 196 * 1024;
 
 // §12A targets from TECHNICAL_PLAN.md.
 export const LCP_BUDGET_MS = 2500;
