@@ -205,6 +205,26 @@ it exists),
 `/rerun-test` slash command
 (`.claude/commands/rerun-test.md`) for doing a rerun manually.
 
+## SEO rendering boundary
+
+The locale home route deliberately reads `searchParams` on the server and is
+therefore dynamically rendered. Its first catalogue page is still shared and
+cached for 60 seconds through `unstable_cache`; this is the boundary that puts
+real product names and links in the initial HTML without hitting Render's API
+for every request. `ProductListing` receives the requested page as a server
+prop rather than calling `useSearchParams`: putting that hook back inside its
+static tree makes Next render only the nearest Suspense fallback during
+prerendering, silently removing those links from crawler-visible HTML.
+
+Locale root pages declare `en`/`hi` hreflang alternates because their UI copy
+is translated. Product pages intentionally do not: the product data model has
+one shared name/description, so alternates would claim translations that do
+not exist. The sitemap follows the same rule, partitions into 24,000-product
+shards behind `/sitemap.xml`, and propagates API failures so an outage cannot
+be cached as a successful empty catalogue. Product JSON-LD contains only
+known descriptive fields; do not add offers, availability, ratings, GTIN, or
+condition until the product model contains truthful values for them.
+
 ## Docker prod-image boot test (`docker-web-prod-boot` job)
 
 Added 2026-08-17, same day as a real production outage this job exists

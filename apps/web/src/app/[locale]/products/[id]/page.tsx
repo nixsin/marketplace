@@ -3,10 +3,28 @@ import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { fetchProduct } from "@/lib/api";
 import { ProductDetailView } from "@/components/product-detail";
+import type { ProductDetail } from "@/components/product-detail";
 import { OG_IMAGE_HEIGHT, OG_IMAGE_WIDTH, ogImageUrl } from "@/lib/og-image";
+import { SITE_URL } from "@medinstru/config";
 
 interface ProductDetailPageProps {
   params: Promise<{ locale: string; id: string }>;
+}
+
+export function productStructuredData(product: ProductDetail, locale: string) {
+  const encodedId = encodeURIComponent(product.id);
+  return {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    name: product.name,
+    description: product.description,
+    image: product.imageUrl
+      ? new URL(product.imageUrl, SITE_URL).toString()
+      : undefined,
+    brand: { "@type": "Brand", name: product.brand },
+    category: product.category,
+    url: new URL(`/${locale}/products/${encodedId}`, SITE_URL).toString(),
+  };
 }
 
 // Deliberately no loading.tsx for this route. Adding one would auto-wrap
@@ -31,6 +49,15 @@ export default async function ProductDetailPage({ params }: ProductDetailPagePro
 
   return (
     <div className="mx-auto w-full max-w-3xl px-6 py-16">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{
+          __html: JSON.stringify(productStructuredData(product, locale)).replace(
+            /</g,
+            "\\u003c",
+          ),
+        }}
+      />
       <h1 className="mb-6 text-2xl font-semibold tracking-tight">{product.name}</h1>
       <ProductDetailView product={product} />
     </div>
@@ -65,6 +92,11 @@ export async function generateMetadata({
   return {
     title: `${product.name} · MedInstru Market`,
     description: product.description,
+    alternates: {
+      canonical: `/${locale}/products/${encodeURIComponent(id)}`,
+      // Deliberately no hreflang yet: product names/descriptions are a
+      // single shared field, not translated content.
+    },
     openGraph: {
       title: product.name,
       description: product.description,
