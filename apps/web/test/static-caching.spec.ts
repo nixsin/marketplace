@@ -97,4 +97,45 @@ describe("static asset caching (production build)", () => {
     ]);
     expect(stdout.trim()).toBe("304");
   });
+
+  it("forbids any shared cache from storing the service worker script", async () => {
+    // Not a style preference -- this exact header caused a real outage on
+    // 2026-08-21. A worker enforces the CSP served on its own script,
+    // captured at install. That CSP is derived from NEXT_PUBLIC_API_URL,
+    // so moving the API changed it while sw.js's bytes stayed identical.
+    // Under the old `public, max-age=0`, Cloudflare stored the response,
+    // revalidated to a 304, and kept its STORED headers -- serving a CSP
+    // naming the retired API host. Every worker installed from that copy
+    // blocked every API call, and identical bytes meant browsers never
+    // installed a replacement.
+    //
+    // `no-cache` is NOT sufficient and must not be substituted: it permits
+    // storing and revalidating, which is precisely the path that preserved
+    // the stale header. Only `no-store` keeps headers from outliving the
+    // build that produced them.
+    const res = await fetch(`${server.baseUrl}/sw.js`);
+    expect(res.status).toBe(200);
+
+    const cacheControl = res.headers.get("cache-control") ?? "";
+    expect(cacheControl).toContain("no-store");
+  });
+
+  it("serves the worker script with a CSP naming the configured API origin", async () => {
+    // The coupling that made the outage possible, pinned so it is visible:
+    // this script's response carries a CSP, and that CSP is what the worker
+    // will enforce for its own fetches. If the API origin and this header
+    // ever disagree, every request the worker makes is blocked -- silently,
+    // since a blocked worker fetch surfaces as a dead request rather than a
+    // CSP violation the page can see.
+    const res = await fetch(`${server.baseUrl}/sw.js`);
+    const csp = res.headers.get("content-security-policy") ?? "";
+    expect(csp, "expected a CSP on /sw.js -- the worker inherits it").toContain(
+      "connect-src",
+    );
+
+    const apiOrigin = new URL(
+      process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql",
+    ).origin;
+    expect(csp).toContain(apiOrigin);
+  });
 });

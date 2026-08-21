@@ -13,7 +13,25 @@
 //
 // Bump this when the caching *strategy* below changes, not for ordinary
 // content updates — those self-heal within one background fetch cycle.
-const CACHE_NAME = "medinstru-shell-v1";
+//
+// v2 (2026-08-21) is a bump for a THIRD reason worth recording, because
+// nothing about it is obvious from this file alone: a worker's fetches are
+// governed by the CSP served on THIS SCRIPT's own response, captured when
+// the worker was installed. Moving the API to api.laxair.shop changed that
+// CSP (it is derived from NEXT_PUBLIC_API_URL) without changing a single
+// byte here — so Cloudflare revalidated, got a 304, and kept serving its
+// stored copy WITH THE OLD HEADER. Workers installed from it enforced
+// `connect-src` naming only the retired host and hard-failed every API
+// call, and because the script bytes were identical the browser saw no
+// reason to install a replacement. Users were stuck with no way out short
+// of clearing site data.
+//
+// So: any change to the CSP this file is served with needs a byte change
+// here too, or already-installed workers keep the old policy forever. The
+// no-store header now set on /sw.js in next.config.ts stops the edge from
+// pinning a stale header in the first place; this bump is what releases
+// the workers already holding one.
+const CACHE_NAME = "medinstru-shell-v2";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -36,10 +54,39 @@ async function staleWhileRevalidate(request) {
   const cached = await cache.match(request);
   const networkFetch = fetch(request)
     .then((response) => {
-      if (response.ok) cache.put(request, response.clone());
+      // Deliberately not awaited: a cache write must never delay or fail
+      // delivery of a response we already have. The trailing catch is not
+      // decoration -- without it a rejected put (quota, eviction race) is
+      // an unhandled rejection, since nothing downstream is watching this
+      // promise. Swallowing it is correct: the caller got its response,
+      // and the only cost is that the next visit re-fetches.
+      if (response.ok) {
+        cache.put(request, response.clone()).catch(() => {});
+      }
       return response;
     })
-    .catch(() => cached);
+    // Falling back to the cached copy is the whole point -- but only when
+    // there IS one. `.catch(() => cached)` alone resolved to `undefined`
+    // on a cold cache.
+    //
+    // BE PRECISE ABOUT WHAT THIS DOES AND DOES NOT CHANGE, because the
+    // obvious reading is wrong and a review caught it: per the Fetch
+    // spec, respondWith() yields a network error BOTH when its promise
+    // rejects and when it resolves to a non-Response. So the page sees an
+    // identical failed fetch either way -- this is not what made the
+    // catalogue disappear on 2026-08-21 (a stale edge-cached CSP was; see
+    // CACHE_NAME above), and it does not change what a user experiences.
+    //
+    // What it does change is that the original error survives. The old
+    // form discarded the reason and handed back `undefined`, so the
+    // worker's own context showed a bare dead request with nothing saying
+    // why -- which is precisely why that outage took a header-diff
+    // between origin and edge to explain rather than a console message.
+    // Re-throwing keeps the cause attached where it is debuggable.
+    .catch((error) => {
+      if (cached) return cached;
+      throw error;
+    });
   return cached ?? networkFetch;
 }
 
