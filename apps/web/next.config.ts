@@ -222,7 +222,9 @@ const nextConfig: NextConfig = {
         // Cost is one small uncached request per navigation, which
         // browsers already special-case for worker scripts anyway.
         source: "/sw.js",
-        headers: [{ key: "Cache-Control", value: "no-store, must-revalidate" }],
+        headers: [
+          { key: "Cache-Control", value: SERVICE_WORKER_CACHE_CONTROL },
+        ],
       },
       {
         // Next.js's default Cache-Control on this static/SSG route is
