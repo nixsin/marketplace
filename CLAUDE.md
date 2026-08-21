@@ -1070,13 +1070,32 @@ would delete every unrepresented dashboard rule on apply even with
 `prevent_destroy`. Enable `adopt_cache_ruleset` only after inventorying the
 complete phase, representing every additional rule, and setting the separate
 `cache_ruleset_inventory_confirmed` acknowledgement.
-The managed rules are appended after that inventory and include both an
-anonymous-GET eligibility rule and a final explicit bypass for authenticated,
-cookie-bearing, or non-GET GraphQL requests; the bypass is what neutralizes an
-earlier imported rule that was broader than intended. It is the exact
-complement of the eligibility condition across the whole API hostname, so
-every other API path is bypassed too; only the exact canonical `/graphql` path
-with an anonymous, cookieless GET is cache-eligible.
+The managed rules are appended after that inventory: two eligibility rules
+(anonymous GraphQL GETs, anonymous page HTML) followed by two bypasses
+(session-bearing web requests, every other API request). The API bypass is what
+neutralizes an earlier imported rule that was broader than intended -- it is
+the exact complement of its eligibility condition across the whole API
+hostname, so every other API path is bypassed too; only the canonical
+`/graphql` path with an anonymous, cookieless GET is cache-eligible.
+
+**Order is load-bearing and fails silently.** Cloudflare evaluates every
+matching rule in sequence and the last match wins, so a bypass placed before
+its own eligibility rule is overridden by it with no error anywhere. The
+bypasses must stay last; a test asserts the relative order.
+
+**The two cookie tests are deliberately different -- copying one onto the other
+breaks it.** The API rules bypass on *any* cookie, correct there because every
+GraphQL read is anonymous and sent with `credentials: "omit"`. HTML cannot use
+that test: next-intl sets `NEXT_LOCALE` on every page response, so every
+returning visitor carries a cookie and nothing would ever cache. HTML keys on
+the `mi_sid` session cookie alone. `NEXT_LOCALE` is safe because it is derived
+purely from the URL, which is already in the cache key.
+
+Both eligibility rules set edge **and** browser TTL to `respect_origin`.
+Browser TTL is explicit rather than omitted because omitting it falls through
+to the zone default of 4 hours -- which once overrode `max-age=0` and left
+browsers holding stale API responses. Full table in
+[infra/terraform/README.md](./infra/terraform/README.md).
 
 The first version incorrectly added AWS CloudFront Terraform after reading
 “Cloudfront” literally. Its claim that distributions already existed was also

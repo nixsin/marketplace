@@ -140,6 +140,51 @@ still required before enabling management; the first reviewed apply then
 creates it. With the adoption flag left at its safe default (`false`), normal
 plans cannot modify or delete dashboard cache rules.
 
+### What the managed ruleset contains, and why order matters
+
+Four rules, in this order. Cloudflare evaluates **every** matching rule in
+sequence and the last match wins, so the two bypasses must stay last -- a
+bypass placed before its own eligibility rule is silently overridden by it,
+with no error anywhere. A test asserts the relative order for exactly this
+reason.
+
+| # | ref | Effect |
+|---|-----|--------|
+| 1 | `cache-public-graphql-gets` | Anonymous, cookieless `GET /graphql` becomes cache-eligible |
+| 2 | `cache-public-html` | Anonymous page HTML on the apex host becomes cache-eligible |
+| 3 | `bypass-authenticated-web` | Any web request carrying a session is never cached |
+| 4 | `bypass-all-other-api-requests` | Every other API request is never cached |
+
+Both eligibility rules use `respect_origin` for edge **and** browser TTL, so
+every TTL lives in the application rather than split between code and
+dashboard. Browser TTL is explicit rather than omitted because omitting it
+falls through to the zone-level Browser Cache TTL default of 4 hours, which
+once overrode the origin's `max-age=0` and left browsers holding stale API
+responses. On HTML the same mistake would pin a whole page.
+
+**The two cookie tests are deliberately different, and copying one onto the
+other breaks it.** The API rules bypass on *any* cookie, which is right there:
+every GraphQL read is anonymous and sent with `credentials: "omit"`, so a
+cookie arriving at all means something unexpected. HTML cannot use that test
+-- next-intl's middleware sets `NEXT_LOCALE` on every page response, so every
+returning visitor carries a cookie and nothing would ever cache. HTML
+therefore keys on `mi_sid`, the session cookie, alone. `NEXT_LOCALE` is safe
+to cache because it is derived purely from the URL (`/en` sets `en`, `/hi`
+sets `hi`) and the URL is already part of the cache key, so a cached response
+always carries the locale its own path implies.
+
+`/_next/` is excluded because Cloudflare's default extension-based caching
+already serves those as `HIT`; a rule here would only compete with it.
+`/sw.js` is excluded belt-and-braces -- it already ships `no-store`, and a
+stale service-worker script caused a live outage on 2026-08-21 by pinning a
+CSP that named a retired API host.
+
+### This codifies the HTML rule; it does not apply it
+
+`adopt_cache_ruleset` still defaults to `false`, so merging this changes
+nothing in production. Until the phase is inventoried and both flags are set,
+the ruleset resource is not created and page HTML keeps serving `DYNAMIC`.
+
 The `cloudflare_r2_custom_domain` resource does not support import in provider
 v5.23. Because `images.laxair.shop` already exists, Terraform deliberately
 does not declare it; it remains dashboard-managed rather than attempting a
