@@ -65,10 +65,18 @@ run "free_services_ignore_configuration_drift" {
     api_public_url = "https://changed.invalid/graphql"
   }
 
+  # One probe per service, each driven by a variable this run block changes:
+  # JWT_SECRET covers the API service (jwt_secret moved to "changed") and
+  # NEXT_PUBLIC_API_URL covers the web service (api_public_url moved to an
+  # invalid host). Both must still report their prior-state values, which is
+  # what proves ignore_changes = all is doing its job.
+  #
+  # The API service no longer declares NEXT_PUBLIC_API_URL at all -- apps/api
+  # never reads it -- so probing that key here would assert on config that
+  # does not exist rather than on drift being ignored.
   assert {
     condition = (
       render_web_service.api.env_vars["JWT_SECRET"].value == "test" &&
-      render_web_service.api.env_vars["NEXT_PUBLIC_API_URL"].value == "https://api.laxair.shop/graphql" &&
       render_web_service.web.env_vars["NEXT_PUBLIC_API_URL"].value == "https://api.laxair.shop/graphql"
     )
     error_message = "Legacy free service configuration drift must remain ignored after import."
