@@ -88,7 +88,7 @@ run "page_html_is_cacheable_only_while_anonymous" {
 
   assert {
     condition = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression == (
-      "(http.host eq \"laxair.shop\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and not any(http.request.cookies[\"mi_sid\"][*] ne \"\"))"
+      "(http.host eq \"laxair.shop\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and http.request.uri.path ne \"/\" and not any(http.request.headers[\"authorization\"][*] ne \"\") and not any(http.request.cookies[\"mi_sid\"][*] ne \"\"))"
     )
     error_message = "The HTML rule must match anonymous GETs on the web host only, excluding /_next/ and /sw.js."
   }
@@ -128,6 +128,26 @@ run "page_html_is_cacheable_only_while_anonymous" {
   }
 
   assert {
+    # The bare root must match NEITHER rule. GET / is a 307 whose Location is
+    # negotiated from NEXT_LOCALE and Accept-Language -- measured directly:
+    # en-US yields /en, hi-IN yields /hi. Neither input is in the cache key and
+    # the response carries no Vary. It also sets NEXT_LOCALE, so a cached root
+    # would pin the wrong locale into other visitors' browsers, not merely
+    # redirect them wrongly.
+    condition     = strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression, "http.request.uri.path ne \"/\"") && strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression, "http.request.uri.path ne \"/\"")
+    error_message = "The bare root is locale-negotiated and must be excluded from both HTML rules."
+  }
+
+  assert {
+    # Authorization is rejected on the same footing as mi_sid, matching the API
+    # eligibility rule. Browsers do not send it on a normal page load, so this
+    # is defence in depth -- until the site sits behind HTTP Basic auth, when
+    # every request carries it and protected HTML would otherwise be shared.
+    condition     = strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression, "not any(http.request.headers[\"authorization\"][*] ne \"\")") && strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression, "any(http.request.headers[\"authorization\"][*] ne \"\")")
+    error_message = "Both HTML rules must treat an Authorization header as non-anonymous, as the API rule does."
+  }
+
+  assert {
     # Order is load-bearing: Cloudflare runs every matching rule in sequence
     # and the last one wins, so a bypass placed BEFORE its eligibility rule is
     # silently overridden by it. This is the assertion that would catch that.
@@ -137,7 +157,7 @@ run "page_html_is_cacheable_only_while_anonymous" {
 
   assert {
     condition = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression == (
-      "(http.host eq \"laxair.shop\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and (http.request.method ne \"GET\" or any(http.request.cookies[\"mi_sid\"][*] ne \"\")))"
+      "(http.host eq \"laxair.shop\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and http.request.uri.path ne \"/\" and (http.request.method ne \"GET\" or any(http.request.headers[\"authorization\"][*] ne \"\") or any(http.request.cookies[\"mi_sid\"][*] ne \"\")))"
     )
     error_message = "The web bypass must be the exact complement: any non-GET, or any session-bearing request."
   }

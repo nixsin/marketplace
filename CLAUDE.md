@@ -1103,6 +1103,15 @@ rule live. The README carries the exact commands to measure it the moment
 which costs bare-root language memory) -- run them before assuming the rule
 works.
 
+The bare root `/` is excluded from both HTML rules: it is a 307 whose
+`Location` is negotiated from `NEXT_LOCALE` and `Accept-Language`, neither of
+which is in the cache key, and it carries `set-cookie: NEXT_LOCALE` -- so a
+cached root would pin the wrong locale into other visitors' browsers, not just
+redirect them wrongly. It currently sends no `Cache-Control`, so
+`respect_origin` bypasses it anyway; relying on that absence is the trap, not
+the safeguard. An `Authorization` header disqualifies a request exactly as
+`mi_sid` does, matching the API rule.
+
 The web bypass repeats the eligibility rule's `/_next/` and `/sw.js`
 exclusions so the pair is an exact complement over one path scope. Omitting
 them is a real bug: a logged-in browser sends `mi_sid` on every same-origin

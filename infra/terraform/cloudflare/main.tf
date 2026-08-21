@@ -42,7 +42,34 @@ locals {
   # /sw.js is excluded belt-and-braces: it already ships no-store, and a
   # stale service-worker script caused a live outage on 2026-08-21 by
   # pinning a CSP that named a retired API host.
-  web_html_cache_expression = "(http.host eq \"${var.zone_name}\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and not any(http.request.cookies[\"mi_sid\"][*] ne \"\"))"
+  #
+  # THE BARE ROOT IS EXCLUDED, and this one is not belt-and-braces. GET /
+  # is a 307 whose Location is negotiated from the NEXT_LOCALE cookie and
+  # Accept-Language -- measured directly: en-US yields /en, hi-IN yields
+  # /hi, and the cookie overrides both. NEITHER input is in the cache key,
+  # and the response carries no Vary to say so.
+  #
+  # It also carries set-cookie: NEXT_LOCALE. So a cached root would not
+  # merely redirect the wrong way, it would PIN the wrong locale into
+  # other visitors' browsers persistently -- a worse failure than the
+  # wrong redirect itself.
+  #
+  # Today the response carries no Cache-Control at all, so respect_origin
+  # bypasses it anyway. That is not a reason to leave it matched: making
+  # correctness depend on the ABSENCE of a header is the same trap this
+  # repo already hit with GraphQL errors, where success turned out to be a
+  # property of the body rather than the status line. Excluding it costs
+  # nothing -- / is a redirect, not a rendered page, so there is no
+  # latency to win -- while /en and /hi, the pages people actually land
+  # on, still cache.
+  #
+  # AUTHORIZATION is rejected on the same footing as mi_sid, matching what
+  # the API eligibility rule already does. Browsers do not send it on a
+  # normal page load, so this is defence in depth rather than a live bug --
+  # but put the site behind HTTP Basic auth for staging protection and
+  # every request suddenly carries it, which would otherwise place
+  # protected HTML in a shared cache.
+  web_html_cache_expression = "(http.host eq \"${var.zone_name}\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and http.request.uri.path ne \"/\" and not any(http.request.headers[\"authorization\"][*] ne \"\") and not any(http.request.cookies[\"mi_sid\"][*] ne \"\"))"
 
   # The complement: within the SAME path scope as the rule above, anything
   # that is not an anonymous GET is never cacheable. Stated explicitly
@@ -64,7 +91,7 @@ locals {
   # bypass = not (GET and no session). /_next/ and /sw.js match NEITHER
   # rule and fall through to Cloudflare's defaults, which is what the
   # comment above always claimed.
-  web_html_bypass_expression = "(http.host eq \"${var.zone_name}\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and (http.request.method ne \"GET\" or any(http.request.cookies[\"mi_sid\"][*] ne \"\")))"
+  web_html_bypass_expression = "(http.host eq \"${var.zone_name}\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and http.request.uri.path ne \"/\" and (http.request.method ne \"GET\" or any(http.request.headers[\"authorization\"][*] ne \"\") or any(http.request.cookies[\"mi_sid\"][*] ne \"\")))"
 }
 
 resource "cloudflare_dns_record" "web" {

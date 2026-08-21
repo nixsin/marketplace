@@ -245,6 +245,25 @@ to cache because it is derived purely from the URL (`/en` sets `en`, `/hi`
 sets `hi`) and the URL is already part of the cache key, so a cached response
 always carries the locale its own path implies.
 
+**The bare root `/` is excluded from both rules**, and this one is not
+belt-and-braces. `GET /` is a 307 whose `Location` is negotiated from the
+`NEXT_LOCALE` cookie and `Accept-Language` -- measured directly: `en-US` yields
+`/en`, `hi-IN` yields `/hi`, and the cookie overrides both. Neither input is in
+the cache key, and the response carries no `Vary` to say so. It also carries
+`set-cookie: NEXT_LOCALE`, so a cached root would not merely redirect the wrong
+way -- it would **pin the wrong locale into other visitors' browsers**
+persistently. Today the response has no `Cache-Control` at all, so
+`respect_origin` bypasses it regardless; that is not a reason to leave it
+matched, because resting correctness on the *absence* of a header is the same
+trap this repo hit with GraphQL errors. Excluding it costs nothing -- `/` is a
+redirect, not a rendered page -- while `/en` and `/hi` still cache.
+
+An `Authorization` header disqualifies a request on the same footing as
+`mi_sid`, matching what the API eligibility rule already does. Browsers do not
+send it on a normal page load, so this is defence in depth -- until the site
+sits behind HTTP Basic auth for staging protection, when every request carries
+it and protected HTML would otherwise land in a shared cache.
+
 `/_next/` is excluded because Cloudflare's default extension-based caching
 already serves those as `HIT`; a rule here would only compete with it. **The
 exclusion is repeated on the bypass**, and leaving it off was a real bug: a
