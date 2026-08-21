@@ -204,15 +204,16 @@ would land on English next time they type the bare domain.
 
 **Five managed additions, appended after whatever you inventoried.** The
 authoritative ruleset is `additional_cache_rules` (every unrelated dashboard
-rule you copied in during adoption) followed by the four below, so the live
-ruleset is larger than four whenever the inventory is non-empty -- the test
-fixture, for instance, supplies one inventoried rule and therefore expects
-five. Count the inventory in when reviewing a plan.
+rule you copied in during adoption) followed by the five below, so the live
+ruleset is larger than five whenever the inventory is non-empty -- the test
+fixture supplies two inventoried rules and therefore asserts a total of seven.
+Count the inventory in when reviewing a plan.
 
-Order within the managed four is fixed. Cloudflare evaluates **every** matching
-rule in sequence and the last match wins, so the two bypasses must stay last --
-a bypass placed before its own eligibility rule is silently overridden by it,
-with no error anywhere. Tests assert the relative order of both pairs.
+Order within the managed five is fixed. Cloudflare evaluates **every** matching
+rule in sequence and the last match wins, so the three bypasses must stay last
+-- a bypass placed before its own eligibility rule is silently overridden by
+it, with no error anywhere. Tests assert the relative order of both eligibility
+/ bypass pairs, and that the root bypass follows the inventoried rules.
 
 | # | ref | Effect |
 |---|-----|--------|
@@ -224,7 +225,7 @@ with no error anywhere. Tests assert the relative order of both pairs.
 
 **"Matches no managed rule" is not "is not cached."** Inventoried rules are
 concatenated *before* the managed ones and the last match wins, so excluding
-`/` from the two eligibility-scoped rules is not enough on its own -- an
+`/` from the two path-scoped HTML rules is not enough on its own -- an
 imported dashboard rule broad enough to cover the apex would leave `/`
 cache-eligible with nothing after it to say otherwise. Rule 4 exists for that
 reason and is deliberately unconditional: no method, cookie or header test,
