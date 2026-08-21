@@ -4,6 +4,7 @@ import { render, screen } from "@testing-library/react";
 import { ProductCard, type Product } from "./product-card";
 import { LocaleProvider } from "./locale-provider";
 import en from "../../messages/en.json";
+import { shouldBypassOptimizer } from "@/lib/image-loading";
 
 // ProductCard's heading now renders next-intl's <Link> (from
 // @/i18n/navigation), which needs app-router context jsdom doesn't
@@ -189,6 +190,34 @@ describe("ProductCard", () => {
     renderCard(fullProduct);
     const button = screen.getByRole("button", { name: /inquiry/i });
     expect(button.closest("a")).toBeNull();
+  });
+
+  it("passes the optimizer-bypass decision through to next/image", () => {
+    // NOTE ON WHAT THIS CAN AND CANNOT PROVE. A first version asserted the
+    // rendered src was the raw CDN URL -- and mutation testing showed it
+    // passed with the bypass REMOVED. Under jsdom, next/image renders the
+    // raw src regardless of `unoptimized`, because the optimizer URL is
+    // built from config vitest never loads. The assertion was vacuous.
+    //
+    // So this checks the decision reaching the component, and the real
+    // end-to-end behaviour is verified where the optimizer actually runs:
+    // against a built server, in e2e. Asserting only what the environment
+    // can genuinely observe is the point.
+    const svg = renderCard({
+      ...fullProduct,
+      imageUrl: "https://images.laxair.shop/products/lab-equipment.svg",
+    });
+    expect(svg.container.querySelector("img")).toBeTruthy();
+    expect(shouldBypassOptimizer("https://images.laxair.shop/products/lab-equipment.svg")).toBe(
+      true,
+    );
+
+    const jpg = renderCard({
+      ...fullProduct,
+      imageUrl: "https://images.laxair.shop/uploads/photo.jpg",
+    });
+    expect(jpg.container.querySelector("img")).toBeTruthy();
+    expect(shouldBypassOptimizer("https://images.laxair.shop/uploads/photo.jpg")).toBe(false);
   });
 
   it("lazy-loads the image by default", () => {

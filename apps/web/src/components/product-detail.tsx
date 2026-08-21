@@ -12,6 +12,7 @@ import {
   productShareUrl,
   whatsappShareHref,
 } from "@/lib/whatsapp";
+import { shouldBypassOptimizer } from "@/lib/image-loading";
 
 export interface ProductDetail {
   id: string;
@@ -108,6 +109,9 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
             // This is very likely the LCP element on a standalone product
             // page -- same reasoning as ProductCard's own priority prop.
             priority
+            // Served straight from the CDN rather than proxied through the
+            // optimizer on our origin -- see src/lib/image-loading.ts.
+            unoptimized={shouldBypassOptimizer(product.imageUrl)}
           />
         </div>
       )}
