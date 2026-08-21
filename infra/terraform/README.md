@@ -1,29 +1,38 @@
-# Render + CloudFront Terraform
+# Render + Cloudflare Terraform
 
-The two stacks deliberately have separate state:
+The stacks deliberately have separate state:
 
-- `render/` owns the Render Postgres database and Docker web services.
-- `cloudfront/` owns two AWS CloudFront distributions using the Render
-  services' `*.onrender.com` hostnames as origins.
+- `render/` adopts the existing Render Postgres database and Docker services.
+- `cloudflare/` adopts the existing `laxair.shop` DNS records, R2 bucket, and
+  zone cache-settings ruleset.
 
-Keeping them separate lets CloudFront be planned and rolled out without
-Terraform first adopting the already-live Render resources.
+No stack is applied automatically. Existing resources must be imported first;
+an unimported apply can create duplicates or conflict with live resources.
+
+## Correction from the abandoned AWS draft
+
+The preceding implementation mistakenly interpreted “Cloudfront” as AWS
+CloudFront instead of this project's existing Cloudflare setup. Its statement
+that two CloudFront distributions “already exist” was itself part of that
+mistake—it was written without AWS credentials or evidence. On 2026-08-20 the
+repository owner explicitly confirmed they do not have an AWS account. No AWS
+credentials were configured, no apply/import ran, and a filesystem check found
+no Terraform state. Removing `cloudfront/` therefore removes dead HCL only;
+there is no AWS infrastructure, account, or state to migrate or destroy.
 
 ## Prerequisites
 
 - Terraform 1.9+
-- `RENDER_API_KEY` for the Render provider
-- AWS credentials for the CloudFront stack
-- ACM certificates in `us-east-1` before custom CloudFront aliases are set
-- A remote Terraform backend configured by the operator; state can contain
-  Render database connection data and must not be committed
+- `RENDER_API_KEY` for Render
+- `CLOUDFLARE_API_TOKEN` with Zone Read, DNS Read/Edit, Cache Rules Read/Edit,
+  and Workers R2 Storage Read/Edit for this account and zone
+- A remote state backend configured before adoption; state contains sensitive
+  Render connection data and must never be committed
 
-## Adopt the existing Render resources
-
-The resources already exist, so **import before apply**. Applying without
-imports attempts to create duplicates.
+## Adopt Render
 
 ```bash
+export TF_VAR_jwt_secret='<existing Render JWT_SECRET>'
 cd infra/terraform/render
 terraform init
 terraform import render_postgres.main dpg-da02hq7lk1mc73f01hkg-a
@@ -32,63 +41,87 @@ terraform import render_web_service.web srv-da02mt61egvs73fopb00
 terraform plan
 ```
 
-Set the existing production secret without writing it to a file:
+The `/default` suffix is intentional: the pinned Cloudflare provider v5.23
+documents the R2 import ID as
+`<account_id>/<bucket_name>/<jurisdiction>`. Do not shorten it to a two-part
+identifier.
+
+The provider cannot represent Render's legacy free web plan. The configuration
+therefore uses a schema-valid `starter` placeholder and ignores `plan` on the
+imported services, preventing an accidental paid upgrade. Postgres remains
+`free` and retains the documented expiry risk.
+
+Do not activate `render.yaml` Blueprint sync while Terraform owns the same
+resources.
+
+## Adopt Cloudflare
+
+Create the scoped API token in Cloudflare, export it without writing it to a
+file, then discover the live identifiers:
 
 ```bash
-export TF_VAR_jwt_secret='<existing Render JWT_SECRET>'
+export CLOUDFLARE_API_TOKEN='<scoped token>'
+scripts/cloudflare-terraform-ids.sh
 ```
 
-Render's Terraform provider does not accept the legacy `free` plan for web
-services. The configuration therefore uses a schema-valid `starter`
-placeholder and explicitly ignores `plan` on imported web services. Terraform
-will not upgrade them accidentally; plan changes remain a deliberate Render
-dashboard operation until the services leave the legacy free tier. Postgres
-still supports `free`, though the repository's documented expiry warning
-still applies.
-
-Do not manage the same resources from an active Render Blueprint and
-Terraform simultaneously. `render.yaml` remains documentation until the
-Terraform adoption is explicitly completed.
-
-## Create and test CloudFront
-
-These distributions already exist too. Obtain their IDs from AWS, then import
-them before planning:
+Copy `cloudflare/terraform.tfvars.example` to the ignored
+`cloudflare/terraform.tfvars` and set the reported `zone_id`. Initialize and
+import the resources using the IDs printed by the script:
 
 ```bash
-cd infra/terraform/cloudfront
+cd infra/terraform/cloudflare
 terraform init
-terraform import aws_cloudfront_distribution.web <existing-web-distribution-id>
-terraform import aws_cloudfront_distribution.api <existing-api-distribution-id>
+terraform import cloudflare_dns_record.web '<zone_id>/<apex_record_id>'
+terraform import cloudflare_dns_record.www '<zone_id>/<www_record_id>'
+terraform import cloudflare_dns_record.api '<zone_id>/<api_record_id>'
+terraform import cloudflare_r2_bucket.media \
+  'e922aa08db001f9e90a323fc6765e529/medinstru-media/default'
 terraform plan
 ```
 
-Import any existing custom cache policies into
-`aws_cloudfront_cache_policy.web_origin_headers` and
-`aws_cloudfront_cache_policy.graphql_public_reads`; otherwise Terraform will
-create those policies and attach them during the first reviewed apply. AWS
-credentials are not configured in this checkout, so the distribution IDs and
-current policy IDs could not be discovered automatically.
+Cache rules require a separate safety step because one Terraform ruleset owns
+the entire phase. Inspect the script's `cache_ruleset_rules_json` output, copy
+every unrelated rule into `additional_cache_rules`, then set both
+`adopt_cache_ruleset=true` and `cache_ruleset_inventory_confirmed=true`.
+Only then import it:
 
-Copy `terraform.tfvars.example`, set the existing aliases and ACM certificate
-ARNs, then inspect the full plan. A CloudFront distribution import captures
-state but does not reconstruct configuration; the first plan is the migration
-diff and must be reviewed behavior-by-behavior before apply.
+```bash
+terraform import 'cloudflare_ruleset.cache_settings[0]' \
+  'zones/<zone_id>/<cache_ruleset_id>'
+terraform plan
+```
 
-CloudFront behavior is intentionally conservative:
+If discovery reports `cache_ruleset_id=not-created`, the same confirmation is
+still required before enabling management; the first reviewed apply then
+creates it. With the adoption flag left at its safe default (`false`), normal
+plans cannot modify or delete dashboard cache rules.
 
-- `/_next/static/*` uses AWS's immutable optimized cache policy.
-- `/en`, `/en/*`, `/hi`, and `/hi/*` honor the web origin's `Cache-Control`
-  and vary by query string without accidentally matching paths such as `/engine`.
-- Other web paths are not cached, preserving middleware redirects, service-worker
-  updates, image optimization, and future authenticated routes.
-- The API forwards every method. Only GET/HEAD can be cached; POST mutations and
-  authenticated POST queries always reach Render.
-- GraphQL cache keys include every query parameter, `Authorization`, and every
-  cookie because those values are forwarded to the origin. The origin's
-  `Cache-Control: no-store` still decides that unsuccessful/non-cacheable
-  responses are not stored.
+The `cloudflare_r2_custom_domain` resource does not support import in provider
+v5.23. Because `images.laxair.shop` already exists, Terraform deliberately
+does not declare it; it remains dashboard-managed rather than attempting a
+conflicting create.
 
-After DNS cutover, update Render's `NEXT_PUBLIC_API_URL` and
-`NEXT_PUBLIC_SITE_URL` through the Render stack and rebuild the web service;
-both values are compiled into the Next.js Docker image.
+### Safety properties
+
+- The apex, `www`, and `api` CNAMEs point at Render and are proxied.
+- Only `GET /graphql` on `api.laxair.shop` is made cache-eligible.
+- Requests carrying `Authorization` or `Cookie` are excluded.
+- A final explicit bypass rule disables caching for credentialed, cookied, or
+  non-GET GraphQL traffic, non-canonical paths, and every other API endpoint,
+  even if an earlier imported dashboard rule is broad.
+- Edge and browser TTLs respect the origin's headers. GraphQL errors retain
+  Apollo's `no-store` and are not cached.
+- R2 and all three DNS records have `prevent_destroy` protection.
+- A ruleset resource owns its entire phase. If the imported live ruleset has
+  additional rules, add them to `additional_cache_rules` before enabling its
+  explicit adoption gate or Terraform will remove them.
+
+Run validation without credentials or live changes:
+
+```bash
+terraform fmt -check -recursive infra/terraform
+terraform -chdir=infra/terraform/render validate
+terraform -chdir=infra/terraform/cloudflare validate
+terraform -chdir=infra/terraform/cloudflare test
+node --test scripts/cloudflare-terraform-ids.test.mjs
+```

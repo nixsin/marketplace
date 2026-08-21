@@ -30,6 +30,14 @@ not. See §5 for what that costs and how to turn it on.
 
 ## 2. Setup — DNS
 
+The existing DNS records, R2 bucket, and zone cache-settings ruleset are
+defined for Terraform adoption under `infra/terraform/cloudflare`. They must
+be imported before apply; the account was originally configured in the
+dashboard. `images.laxair.shop` remains dashboard-managed because Cloudflare
+provider v5.23 cannot import an existing `cloudflare_r2_custom_domain`.
+See [`infra/terraform/README.md`](../infra/terraform/README.md) for the scoped
+token, discovery, and import sequence.
+
 ### 2.1 Delegation
 
 The domain is registered at GoDaddy and its nameservers point to

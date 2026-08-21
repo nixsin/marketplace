@@ -1,0 +1,7 @@
+zone_id = "replace-with-laxair-shop-zone-id"
+
+account_id       = "e922aa08db001f9e90a323fc6765e529"
+zone_name        = "laxair.shop"
+web_origin       = "medinstru-web.onrender.com"
+api_origin       = "medinstru-api.onrender.com"
+r2_bucket_name   = "medinstru-media"
