@@ -1103,7 +1103,11 @@ rule live. The README carries the exact commands to measure it the moment
 which costs bare-root language memory) -- run them before assuming the rule
 works.
 
-The bare root `/` is excluded from both HTML rules: it is a 307 whose
+The bare root gets its own unconditional bypass placed after the inventoried
+rules, because "matches no managed rule" is not "is not cached" -- inventoried
+rules come first and the last match wins, so a broad imported apex rule would
+otherwise leave `/` eligible. The bare root `/` is also excluded from both HTML
+rules: it is a 307 whose
 `Location` is negotiated from `NEXT_LOCALE` and `Accept-Language`, neither of
 which is in the cache key, and it carries `set-cookie: NEXT_LOCALE` -- so a
 cached root would pin the wrong locale into other visitors' browsers, not just

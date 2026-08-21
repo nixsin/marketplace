@@ -202,7 +202,7 @@ would land on English next time they type the bare domain.
 
 ### What the managed ruleset contains, and why order matters
 
-**Four managed additions, appended after whatever you inventoried.** The
+**Five managed additions, appended after whatever you inventoried.** The
 authoritative ruleset is `additional_cache_rules` (every unrelated dashboard
 rule you copied in during adoption) followed by the four below, so the live
 ruleset is larger than four whenever the inventory is non-empty -- the test
@@ -219,7 +219,17 @@ with no error anywhere. Tests assert the relative order of both pairs.
 | 1 | `cache-public-graphql-gets` | Anonymous, cookieless `GET /graphql` becomes cache-eligible |
 | 2 | `cache-public-html` | Anonymous page HTML on the apex host becomes cache-eligible |
 | 3 | `bypass-authenticated-web` | Any web request carrying a session is never cached |
-| 4 | `bypass-all-other-api-requests` | Every other API request is never cached |
+| 4 | `bypass-locale-negotiated-root` | The bare `/` is never cached, unconditionally |
+| 5 | `bypass-all-other-api-requests` | Every other API request is never cached |
+
+**"Matches no managed rule" is not "is not cached."** Inventoried rules are
+concatenated *before* the managed ones and the last match wins, so excluding
+`/` from the two eligibility-scoped rules is not enough on its own -- an
+imported dashboard rule broad enough to cover the apex would leave `/`
+cache-eligible with nothing after it to say otherwise. Rule 4 exists for that
+reason and is deliberately unconditional: no method, cookie or header test,
+because a plain anonymous `GET /` is precisely the request such a rule would
+leave eligible. The test fixture models this with a broad apex rule.
 
 Both eligibility rules use `respect_origin` for edge **and** browser TTL, so
 every TTL lives in the application rather than split between code and

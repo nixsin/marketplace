@@ -71,6 +71,20 @@ locals {
   # protected HTML in a shared cache.
   web_html_cache_expression = "(http.host eq \"${var.zone_name}\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and http.request.uri.path ne \"/\" and not any(http.request.headers[\"authorization\"][*] ne \"\") and not any(http.request.cookies[\"mi_sid\"][*] ne \"\"))"
 
+  # The bare root, bypassed UNCONDITIONALLY -- no method, cookie or header
+  # test. Excluding / from the two rules above stops THEM caching it, but
+  # "matches no managed rule" is not the same as "is not cached": inventoried
+  # rules are concatenated BEFORE the managed ones and the last match wins,
+  # so an imported dashboard rule broad enough to cover the apex would leave
+  # / cache-eligible with nothing after it to say otherwise.
+  #
+  # That is the exact risk bypass-all-other-api-requests already exists to
+  # neutralize on the API host, and excluding / from the web bypass had
+  # quietly removed the same protection here -- traded away for the symmetry
+  # of an exact complement, which is not worth a locale-negotiated redirect
+  # that also sets NEXT_LOCALE being served to the wrong visitors.
+  web_root_bypass_expression = "(http.host eq \"${var.zone_name}\" and http.request.uri.path eq \"/\")"
+
   # The complement: within the SAME path scope as the rule above, anything
   # that is not an anonymous GET is never cacheable. Stated explicitly
   # rather than left implicit, so a broader rule elsewhere in the phase
@@ -217,6 +231,16 @@ resource "cloudflare_ruleset" "cache_settings" {
     ref         = "bypass-authenticated-web"
     description = "Never cache page HTML for a request carrying a session"
     expression  = local.web_html_bypass_expression
+    action      = "set_cache_settings"
+    enabled     = true
+
+    action_parameters = {
+      cache = false
+    }
+    }, {
+    ref         = "bypass-locale-negotiated-root"
+    description = "Never cache the locale-negotiated bare root, whatever earlier rules say"
+    expression  = local.web_root_bypass_expression
     action      = "set_cache_settings"
     enabled     = true
 

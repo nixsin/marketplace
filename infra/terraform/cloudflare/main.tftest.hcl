@@ -13,6 +13,19 @@ variables {
     action_parameters = {
       cache = true
     }
+    }, {
+    # Models the real adoption hazard: an inventoried dashboard rule broad
+    # enough to cover the apex, concatenated BEFORE the managed rules. Since
+    # the last match wins, excluding / from the managed rules is not enough --
+    # something after this must actively say cache = false for /.
+    ref         = "existing-overbroad-web-rule"
+    description = "A pre-existing rule that would otherwise leave the apex root cacheable"
+    expression  = "(http.host eq \"laxair.shop\")"
+    action      = "set_cache_settings"
+    enabled     = true
+    action_parameters = {
+      cache = true
+    }
   }]
 }
 
@@ -31,7 +44,7 @@ run "public_cache_is_narrow_and_origins_are_proxied" {
   }
 
   assert {
-    condition     = length(cloudflare_ruleset.cache_settings[0].rules) == 5 && cloudflare_ruleset.cache_settings[0].rules[0].ref == "existing-overbroad-api-rule"
+    condition     = length(cloudflare_ruleset.cache_settings[0].rules) == 7 && cloudflare_ruleset.cache_settings[0].rules[0].ref == "existing-overbroad-api-rule"
     error_message = "Additional inventoried cache rules must remain, first, in the planned authoritative ruleset."
   }
 
@@ -145,6 +158,22 @@ run "page_html_is_cacheable_only_while_anonymous" {
     # every request carries it and protected HTML would otherwise be shared.
     condition     = strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "cache-public-html"]).expression, "not any(http.request.headers[\"authorization\"][*] ne \"\")") && strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-authenticated-web"]).expression, "any(http.request.headers[\"authorization\"][*] ne \"\")")
     error_message = "Both HTML rules must treat an Authorization header as non-anonymous, as the API rule does."
+  }
+
+  assert {
+    # "Matches no managed rule" is NOT "is not cached". Inventoried rules are
+    # concatenated first and the last match wins, so the root needs something
+    # after them actively setting cache = false -- unconditionally, with no
+    # method or cookie test, since a plain anonymous GET / is exactly the
+    # request an overbroad inventoried rule would leave cache-eligible.
+    condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-root"]).enabled && !one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-root"]).action_parameters.cache && one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-root"]).expression == "(http.host eq \"laxair.shop\" and http.request.uri.path eq \"/\")"
+    error_message = "The bare root must be bypassed unconditionally, not merely left unmatched."
+  }
+
+  assert {
+    # It must come after EVERY inventoried rule, which is the whole point.
+    condition     = index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "bypass-locale-negotiated-root") > index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "existing-overbroad-web-rule")
+    error_message = "The root bypass must follow inventoried rules or they override it."
   }
 
   assert {
