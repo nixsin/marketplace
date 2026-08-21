@@ -190,6 +190,29 @@ const nextConfig: NextConfig = {
         headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
       },
       {
+        // The service worker script must NEVER be held by a shared cache,
+        // and `no-store` rather than `no-cache` is deliberate.
+        //
+        // A worker enforces the CSP served on THIS response, captured at
+        // install time. That CSP is derived from NEXT_PUBLIC_API_URL, so
+        // it changes on an API move -- while sw.js's own bytes do not.
+        // The previous `public, max-age=0` let Cloudflare store it, and a
+        // 304 revalidation then kept the STORED HEADERS: the edge kept
+        // serving a CSP naming the retired API host long after the origin
+        // had stopped sending it. Every worker installed from that copy
+        // hard-failed every API call.
+        //
+        // `no-cache` would not have helped -- it permits storing and
+        // revalidating, which is exactly the path that preserved the
+        // stale header. `no-store` forbids keeping a copy at all, so the
+        // headers can never outlive the build that produced them.
+        //
+        // Cost is one small uncached request per navigation, which
+        // browsers already special-case for worker scripts anyway.
+        source: "/sw.js",
+        headers: [{ key: "Cache-Control", value: "no-store, must-revalidate" }],
+      },
+      {
         // Next.js's default Cache-Control on this static/SSG route is
         // `s-maxage=31536000` — a *shared-cache* (CDN) directive only.
         // Without `public`/`max-age` here, the browser's own private
