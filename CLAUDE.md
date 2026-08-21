@@ -96,6 +96,12 @@ to merge past — only an actual failure blocks.
 
 ## CI pipeline (`.github/workflows/ci.yml`)
 
+**For a complete map of when every workflow and job runs — trigger matrix,
+path-filter table, the required-checks list, force-run and rerun mechanics —
+see [docs/ci.md](./docs/ci.md).** That file answers *when*; this section
+explains *why* the design is what it is.
+
+
 Split into small independent jobs on purpose (parallel runners, not one long
 sequential job). Key structure:
 
