@@ -2224,6 +2224,13 @@ ever existed, so there is no CloudFront infrastructure or state to migrate.
 The Cloudflare replacement is a fix-forward correction, not a provider
 migration.
 
+Production Terraform state is stored in the `nixsin-marketplace` HCP Terraform
+organization, using separate `marketplace-render-production` and
+`marketplace-cloudflare-production` workspaces in local-execution mode. The
+imported Cloudflare zone cache-settings phase has the provider-assigned,
+immutable name `default`; changing that name forces replacement and is blocked
+by `prevent_destroy`.
+
 Render (`render.yaml` documents the live setup; not connected as an active
 Blueprint sync — see that file's own comment for why). Migrations run in
 CI's `migrate` job against the External DB URL (the prod Docker image has no

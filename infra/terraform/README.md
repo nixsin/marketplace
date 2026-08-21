@@ -26,8 +26,10 @@ there is no AWS infrastructure, account, or state to migrate or destroy.
 - `RENDER_API_KEY` for Render
 - `CLOUDFLARE_API_TOKEN` with Zone Read, DNS Read/Edit, Cache Rules Read/Edit,
   and Workers R2 Storage Read/Edit for this account and zone
-- A remote state backend configured before adoption; state contains sensitive
-  Render connection data and must never be committed
+- Access to the `nixsin-marketplace` HCP Terraform organization. The stacks
+  store state in separate `marketplace-render-production` and
+  `marketplace-cloudflare-production` workspaces; state contains sensitive
+  Render connection data and must never be committed.
 
 ## Adopt Render
 

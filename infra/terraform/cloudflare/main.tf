@@ -66,9 +66,11 @@ resource "cloudflare_r2_bucket" "media" {
 resource "cloudflare_ruleset" "cache_settings" {
   count = var.adopt_cache_ruleset ? 1 : 0
 
-  zone_id     = var.zone_id
-  name        = "medinstru cache policy"
-  description = "Cache safe public reads using origin freshness headers"
+  zone_id = var.zone_id
+  # Cloudflare creates this zone-level phase entry with the immutable name
+  # "default". Keep its live identity so adoption is always in-place.
+  name        = "default"
+  description = ""
   kind        = "zone"
   phase       = "http_request_cache_settings"
 
