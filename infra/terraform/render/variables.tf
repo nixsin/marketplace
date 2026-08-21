@@ -1,3 +1,15 @@
+variable "owner_id" {
+  description = "Render team that owns the production resources."
+  type        = string
+  default     = "tea-da02feht0dsc738nmfv0"
+}
+
+variable "environment_id" {
+  description = "Existing Render project environment containing the production database."
+  type        = string
+  default     = "evm-da02hptg1s2s73c6e7tg"
+}
+
 variable "repository_url" {
   description = "Git repository Render builds from."
   type        = string
