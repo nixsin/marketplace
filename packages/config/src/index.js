@@ -141,6 +141,13 @@ export const JS_BUDGET_BYTES = 196 * 1024;
 export const LCP_BUDGET_MS = 2500;
 export const PERFORMANCE_SCORE_BUDGET = 0.9;
 
+// Lighthouse's SEO category is largely static checks -- canonical present
+// and valid, indexable, crawlable links, descriptive link text, meta
+// description -- so unlike the performance score it should be near-
+// deterministic. Starts measured-but-not-enforced anyway: LCP was assumed
+// stable too, and 7 of 10 runs failed before that assumption was tested.
+export const SEO_SCORE_BUDGET = 1.0;
+
 // Single Lighthouse runs swing wildly on shared CI runners -- confirmed
 // repeatedly, most recently 2026-08-19 when unmodified `main` produced
 // LCP values from 1.4s to 3.3s within one batch of five. Taking the median

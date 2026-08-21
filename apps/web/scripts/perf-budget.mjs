@@ -11,6 +11,7 @@ import {
   LCP_BUDGET_MS,
   LIGHTHOUSE_RUNS,
   PERFORMANCE_SCORE_BUDGET,
+  SEO_SCORE_BUDGET,
 } from "@medinstru/config";
 import { resolveEnforcedMetrics } from "./perf-enforce.mjs";
 
@@ -49,6 +50,7 @@ const ENFORCED = resolveEnforcedMetrics(process.env.PERF_BUDGET_ENFORCE);
 
 const BUDGETS = {
   performanceScore: PERFORMANCE_SCORE_BUDGET,
+  seoScore: SEO_SCORE_BUDGET,
   lcpMs: LCP_BUDGET_MS,
   jsBudgetBytes: JS_BUDGET_BYTES,
 };
@@ -96,19 +98,23 @@ async function runOnce(url, n) {
   try {
     const result = await lighthouse(url, {
       port: chrome.port,
-      onlyCategories: ["performance"],
+      // Both categories in ONE Lighthouse pass, not two. A separate SEO
+      // run would double this job's 10 audits to 20 for checks that are
+      // largely static -- the performance tenet applies to CI too.
+      onlyCategories: ["performance", "seo"],
       formFactor: "mobile",
       screenEmulation: { mobile: true, width: 375, height: 667, deviceScaleFactor: 2, disabled: false },
       throttlingMethod: "simulate",
     });
     const { categories, audits } = result.lhr;
     const score = categories.performance.score;
+    const seoScore = categories.seo.score;
     const lcpMs = audits["largest-contentful-paint"].numericValue;
     const jsBytes =
       audits["resource-summary"]?.details.items.find((i) => i.resourceType === "script")
         ?.transferSize ?? 0;
-    console.log(`  run ${n}: score=${(score * 100).toFixed(0)} lcp=${(lcpMs / 1000).toFixed(1)}s js=${(jsBytes / 1024).toFixed(1)}KB`);
-    return { score, lcpMs, jsBytes };
+    console.log(`  run ${n}: score=${(score * 100).toFixed(0)} seo=${(seoScore * 100).toFixed(0)} lcp=${(lcpMs / 1000).toFixed(1)}s js=${(jsBytes / 1024).toFixed(1)}KB`);
+    return { score, seoScore, lcpMs, jsBytes };
   } finally {
     await chrome.kill();
   }
@@ -122,12 +128,14 @@ async function auditPage(label, url) {
   }
 
   const score = median(runs.map((r) => r.score));
+  const seoScore = median(runs.map((r) => r.seoScore));
   const lcpMs = median(runs.map((r) => r.lcpMs));
   const jsBytes = median(runs.map((r) => r.jsBytes));
 
   console.log(`
 Median of ${LIGHTHOUSE_RUNS} runs for ${label}:
   Performance score: ${(score * 100).toFixed(0)}/100  (budget: >=${BUDGETS.performanceScore * 100})
+  SEO score: ${(seoScore * 100).toFixed(0)}/100  (budget: >=${BUDGETS.seoScore * 100})
   LCP: ${(lcpMs / 1000).toFixed(1)}s  (budget: <=${BUDGETS.lcpMs / 1000}s)
   JS transferred: ${(jsBytes / 1024).toFixed(1)}KB  (budget: <=${BUDGETS.jsBudgetBytes / 1024}KB)
 `);
@@ -138,6 +146,7 @@ Median of ${LIGHTHOUSE_RUNS} runs for ${label}:
   if (score < BUDGETS.performanceScore) breaches.push(["score", "performance score below budget"]);
   if (lcpMs > BUDGETS.lcpMs) breaches.push(["lcp", "LCP exceeds budget"]);
   if (jsBytes > BUDGETS.jsBudgetBytes) breaches.push(["js", "JS transfer exceeds budget"]);
+  if (seoScore < BUDGETS.seoScore) breaches.push(["seo", "SEO score below budget"]);
 
   const failures = breaches.filter(([metric]) => ENFORCED.has(metric));
   for (const [, message] of failures) console.error(`FAIL (${label}): ${message}`);
@@ -147,7 +156,7 @@ Median of ${LIGHTHOUSE_RUNS} runs for ${label}:
     }
   }
 
-  return { label, score, lcpMs, jsBytes, failed: failures.length > 0 };
+  return { label, score, seoScore, lcpMs, jsBytes, failed: failures.length > 0 };
 }
 
 async function run() {
@@ -187,6 +196,7 @@ async function run() {
         JSON.stringify(
           {
             score: Math.round(defaultResult.score * 100),
+            seoScore: Math.round(defaultResult.seoScore * 100),
             lcpMs: defaultResult.lcpMs,
             jsBytes: defaultResult.jsBytes,
           },

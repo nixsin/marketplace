@@ -58,6 +58,7 @@ export declare const OG_IMAGE_HEIGHT: number;
 export declare const JS_BUDGET_BYTES: number;
 export declare const LCP_BUDGET_MS: number;
 export declare const PERFORMANCE_SCORE_BUDGET: number;
+export declare const SEO_SCORE_BUDGET: number;
 export declare const LIGHTHOUSE_RUNS: number;
 
 export declare const OPENAI_REVIEW_MODEL: string;
