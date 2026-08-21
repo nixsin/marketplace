@@ -2236,6 +2236,19 @@ The Render provider requires the non-secret owner ID
 `evm-da02hptg1s2s73c6e7tg`; both IDs are declared in Terraform so a plan cannot
 detach the imported database from that environment.
 
+The two legacy-free Render web services are update-frozen in Terraform. Provider
+v1.9.1 reads `maintenance_mode = { enabled = false, uri = "" }` from Render and
+then sends it on every service update; Render rejects maintenance-mode fields
+for free services, causing a partial apply. Their lifecycle therefore uses
+`ignore_changes = all` plus `prevent_destroy`. Read-only service data lookups
+are creation guards: if a service disappears outside Terraform, planning fails
+instead of recreating it. Recover/recreate it manually, update the declared ID
+if it changed, and let the permanent import block readopt the same state
+address. The permanent import blocks also prevent an empty/recovered HCP state
+from planning duplicate production resources. Keep service settings managed
+via the Render dashboard/API until the services are upgraded or the provider
+fixes this behavior. Render Postgres is still fully managed.
+
 Render (`render.yaml` documents the live setup; not connected as an active
 Blueprint sync — see that file's own comment for why). Migrations run in
 CI's `migrate` job against the External DB URL (the prod Docker image has no

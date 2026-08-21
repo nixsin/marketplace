@@ -48,10 +48,20 @@ documents the R2 import ID as
 `<account_id>/<bucket_name>/<jurisdiction>`. Do not shorten it to a two-part
 identifier.
 
-The provider cannot represent Render's legacy free web plan. The configuration
-therefore uses a schema-valid `starter` placeholder and ignores `plan` on the
-imported services, preventing an accidental paid upgrade. Postgres remains
-`free` and retains the documented expiry risk.
+The provider cannot represent Render's legacy free web plan. More importantly,
+provider v1.9.1 echoes the computed `maintenance_mode` object during every
+service update, while Render rejects that field for free services. Both
+imported web services therefore use `ignore_changes = all`: Terraform records
+their identities and blocks planned destruction, but their live settings remain
+dashboard/API-managed until they are upgraded or the provider is fixed. A
+read-only data lookup guards each resource, so deletion outside Terraform makes
+planning fail before Terraform can propose recreating it. Recovery is manual:
+restore or recreate the service in Render, update its stable ID if necessary,
+and update the declarative import ID if it changed before planning again.
+Permanent `import` blocks also make a fresh or recovered empty HCP state adopt
+the stable production objects instead of planning duplicates.
+Postgres remains fully Terraform-managed on `free` and retains the documented
+expiry risk.
 
 The Render owner (`tea-da02feht0dsc738nmfv0`) and production project
 environment (`evm-da02hptg1s2s73c6e7tg`) are non-secret stable identifiers and
@@ -85,6 +95,11 @@ terraform import cloudflare_r2_bucket.media \
   'e922aa08db001f9e90a323fc6765e529/medinstru-media/default'
 terraform plan
 ```
+
+The expected Render plan after import is `No changes`. Do not remove the
+service-wide lifecycle ignore, existence guard, or declarative import merely to
+make a desired setting change: provider v1.9.1 will fail the update after
+partially applying unrelated resources.
 
 Cache rules require a separate safety step because one Terraform ruleset owns
 the entire phase. Inspect the script's `cache_ruleset_rules_json` output, copy
