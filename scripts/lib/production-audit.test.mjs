@@ -217,4 +217,28 @@ describe("decodeHtmlEntities", () => {
   test("covers the entities that appear in URLs and titles", () => {
     assert.equal(decodeHtmlEntities("a&amp;b&#x27;c&quot;d"), "a&b'c\"d");
   });
+
+  test("decodes each entity exactly once, never twice", () => {
+    // The bug CodeQL flagged: decoding &amp; FIRST turns "&amp;lt;" into
+    // "&lt;", which the very next replacement in the same pass then turns
+    // into "<". Escaped markup comes back out as live markup -- one pass
+    // in, two levels of decoding out.
+    //
+    // Ordering is the whole fix, so this asserts the ordering's effect
+    // rather than the ordering itself. Verified in both directions before
+    // being written: with &amp; decoded first this returns "<script>";
+    // with it decoded last it returns the correctly single-decoded form.
+    assert.equal(decodeHtmlEntities("&amp;lt;script&amp;gt;"), "&lt;script&gt;");
+
+    // The same shape with the ampersand entity itself.
+    assert.equal(decodeHtmlEntities("&amp;amp;lt;"), "&amp;lt;");
+  });
+
+  test("still decodes ordinary single-escaped text", () => {
+    // The guard on the fix: moving &amp; to the end must not stop real
+    // entities from decoding, which is the failure that would matter for
+    // this module's actual job of reading page titles.
+    assert.equal(decodeHtmlEntities("Tom &amp; Jerry"), "Tom & Jerry");
+    assert.equal(decodeHtmlEntities("&lt;b&gt;bold&lt;/b&gt;"), "<b>bold</b>");
+  });
 });
