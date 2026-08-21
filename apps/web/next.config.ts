@@ -37,6 +37,7 @@ const BLOB_BASE_URL = process.env.NEXT_PUBLIC_BLOB_BASE_URL ?? "";
 // HSTS omits preload, why Trusted Types is a deliberate, documented gap).
 const cspHeader = buildCspHeader({
   isDev,
+  siteUrl: process.env.NEXT_PUBLIC_SITE_URL,
   apiUrl: process.env.NEXT_PUBLIC_API_URL,
   blobBaseUrl: BLOB_BASE_URL,
 });
