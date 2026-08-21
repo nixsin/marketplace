@@ -53,7 +53,11 @@ export default defineConfig({
     toHaveScreenshot: { maxDiffPixels: 600 },
   },
   // Chromium runs the whole suite. The other engines and device profiles run
-  // ONLY cross-browser.spec.ts, via testMatch.
+  // only the two engine-agnostic specs, via testMatch: cross-browser.spec.ts
+  // (rendering, script errors, network health) and scenarios.spec.ts (text
+  // wrapping, glyph width, horizontal overflow, card collision). Both are
+  // pure measurements with no baselines, so fanning them across five
+  // projects costs one page load each and never a regenerated PNG.
   //
   // The reason is screenshots: critical-flow.spec.ts asserts against
   // baselines, and baselines are per-project. Running it on five projects
@@ -74,22 +78,22 @@ export default defineConfig({
     },
     {
       name: "webkit",
-      testMatch: /cross-browser\.spec\.ts/,
+      testMatch: /(cross-browser|scenarios)\.spec\.ts/,
       use: { ...devices["Desktop Safari"] },
     },
     {
       name: "firefox",
-      testMatch: /cross-browser\.spec\.ts/,
+      testMatch: /(cross-browser|scenarios)\.spec\.ts/,
       use: { ...devices["Desktop Firefox"] },
     },
     {
       name: "mobile-safari",
-      testMatch: /cross-browser\.spec\.ts/,
+      testMatch: /(cross-browser|scenarios)\.spec\.ts/,
       use: { ...devices["iPhone 14"] },
     },
     {
       name: "mobile-chrome",
-      testMatch: /cross-browser\.spec\.ts/,
+      testMatch: /(cross-browser|scenarios)\.spec\.ts/,
       use: { ...devices["Pixel 7"] },
     },
   ],
