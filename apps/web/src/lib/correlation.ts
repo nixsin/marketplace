@@ -1,3 +1,8 @@
+import {
+  CORRELATION_HEADERS,
+  SESSION_COOKIE_NAME,
+  SESSION_IDLE_MINUTES,
+} from "@medinstru/config";
 /**
  * Browser-side correlation identifiers.
  *
@@ -21,16 +26,10 @@
  * server log tells us the request never arrived.
  */
 
-const SESSION_COOKIE = "mi_sid";
-const SESSION_IDLE_MINUTES = 30;
+const SESSION_COOKIE = SESSION_COOKIE_NAME;
 
-export const CORRELATION_HEADERS = {
-  sessionId: "x-session-id",
-  pageViewId: "x-page-view-id",
-  clientRequestId: "x-client-request-id",
-  /** Response-only: the server's own id, echoed back. */
-  requestId: "x-request-id",
-} as const;
+
+export { CORRELATION_HEADERS };
 
 /**
  * A random, opaque identifier.

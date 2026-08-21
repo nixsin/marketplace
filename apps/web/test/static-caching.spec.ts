@@ -129,13 +129,24 @@ describe("static asset caching (production build)", () => {
     // CSP violation the page can see.
     const res = await fetch(`${server.baseUrl}/sw.js`);
     const csp = res.headers.get("content-security-policy") ?? "";
-    expect(csp, "expected a CSP on /sw.js -- the worker inherits it").toContain(
-      "connect-src",
-    );
+
+    // Parsed out of the policy rather than substring-matched against the
+    // whole header. Checking "contains connect-src" AND "contains origin"
+    // independently passes on `connect-src 'none'; default-src <origin>`
+    // -- a policy that blocks every request the worker makes. The two
+    // facts have to be one fact.
+    const connectSrc = csp
+      .split(";")
+      .map((directive) => directive.trim())
+      .find((directive) => directive.startsWith("connect-src "));
+    expect(connectSrc, "expected a connect-src directive on /sw.js").toBeDefined();
 
     const apiOrigin = new URL(
       process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql",
     ).origin;
-    expect(csp).toContain(apiOrigin);
+    // A complete source expression, not a substring: `https://api.example`
+    // must not be satisfied by `https://api.example.evil.test`.
+    const sources = connectSrc!.split(/\s+/).slice(1);
+    expect(sources).toContain(apiOrigin);
   });
 });

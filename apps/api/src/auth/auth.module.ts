@@ -7,6 +7,7 @@ import { OtpStoreService } from './otp-store.service';
 import { SmsService } from './sms.service';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { RolesGuard } from './guards/roles.guard';
+import { SESSION_TOKEN_TTL } from '@medinstru/config';
 
 @Module({
   imports: [
@@ -25,7 +26,7 @@ import { RolesGuard } from './guards/roles.guard';
       // loudly instead.
       useFactory: (config: ConfigService) => ({
         secret: config.getOrThrow<string>('JWT_SECRET'),
-        signOptions: { expiresIn: '7d' },
+        signOptions: { expiresIn: SESSION_TOKEN_TTL },
       }),
     }),
   ],

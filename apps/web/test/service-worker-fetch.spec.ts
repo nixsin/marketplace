@@ -140,17 +140,23 @@ describe("service worker fetch handling", () => {
     const unhandled = vi.fn();
     process.on("unhandledRejection", unhandled);
 
-    const worker = loadWorker({
-      cached: undefined,
-      fetchImpl: () => Promise.resolve(response),
-      cachePut: () => Promise.reject(new Error("QuotaExceededError")),
-    });
+    // try/finally, because an assertion below throwing would otherwise
+    // leak a process-wide listener into every later test and into
+    // watch-mode runs -- a failure that shows up somewhere else entirely.
+    try {
+      const worker = loadWorker({
+        cached: undefined,
+        fetchImpl: () => Promise.resolve(response),
+        cachePut: () => Promise.reject(new Error("QuotaExceededError")),
+      });
 
-    await expect(respond(worker, graphqlRequest())).resolves.toBe(response);
+      await expect(respond(worker, graphqlRequest())).resolves.toBe(response);
 
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    process.off("unhandledRejection", unhandled);
-    expect(unhandled, "a rejected cache.put must not surface as unhandled").not.toHaveBeenCalled();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(unhandled, "a rejected cache.put must not surface as unhandled").not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
 
   it("does not intercept a request carrying credentials", async () => {

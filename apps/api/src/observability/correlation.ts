@@ -1,5 +1,9 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
+import {
+  CORRELATION_ID_MAX_LENGTH,
+  CORRELATION_ID_PATTERN,
+} from '@medinstru/config';
 
 /**
  * Correlation identifiers carried alongside every request.
@@ -38,12 +42,7 @@ export interface Correlation {
   clientRequestId?: string;
 }
 
-export const CORRELATION_HEADERS = {
-  requestId: 'x-request-id',
-  sessionId: 'x-session-id',
-  pageViewId: 'x-page-view-id',
-  clientRequestId: 'x-client-request-id',
-} as const;
+export { CORRELATION_HEADERS } from '@medinstru/config';
 
 /**
  * Bounds on a client-supplied identifier.
@@ -54,8 +53,8 @@ export const CORRELATION_HEADERS = {
  * appears on. Restricting to an id-shaped charset removes both, and costs
  * nothing -- every id we issue is a UUID.
  */
-const MAX_ID_LENGTH = 64;
-const ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+const MAX_ID_LENGTH = CORRELATION_ID_MAX_LENGTH;
+const ID_PATTERN = CORRELATION_ID_PATTERN;
 
 /**
  * Returns the value if it is a plausible identifier, otherwise undefined.

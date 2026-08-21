@@ -78,7 +78,14 @@ export function buildCspHeader({
 // irreversible. Add it later once this has been confirmed stable in
 // production for a while. Not environment-dependent, so not a function --
 // a plain constant is the honest shape for it.
-export const HSTS_HEADER_VALUE = "max-age=63072000; includeSubDomains";
+// Re-exported, not redeclared: the value itself lives in
+// @medinstru/config alongside every other header value, so a change to
+// the HSTS lifetime cannot land here while a doc or another consumer
+// keeps the old number. This module keeps the ENVIRONMENT logic (when
+// HSTS may be emitted at all) which is what its tests exercise.
+import { HSTS_HEADER_VALUE } from "@medinstru/config";
+
+export { HSTS_HEADER_VALUE };
 
 // Whether the header is *emitted at all* is environment-dependent, even
 // though its value isn't -- caught by an AI review: HSTS was being added

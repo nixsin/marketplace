@@ -1,0 +1,32 @@
+{
+  // Test-only compiler options, and both overrides below are load-bearing.
+  //
+  // apps/api imports @medinstru/config, which ships as plain ESM with no
+  // build step (see packages/config/package.json for why). Jest runs this
+  // suite as CommonJS.
+  //
+  // The real tsconfig sets `module: nodenext`, which makes TypeScript emit
+  // ESM or CJS per the *imported package's* own `type` field -- so
+  // @medinstru/config was transpiled but its `export` statements were
+  // preserved, and Jest's CJS runtime failed to parse them. The symptom
+  // ("Unexpected token 'export'") looks exactly like a file that was never
+  // transformed at all, which sends you chasing transformIgnorePatterns.
+  // It was being transformed the whole time, just to the wrong format.
+  //
+  // Forcing commonjs here emits require() instead. moduleResolution must
+  // move off nodenext with it -- TypeScript rejects that pairing.
+  //
+  // Both live HERE rather than in tsconfig.json so `nest build` keeps
+  // emitting exactly what it emitted before.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "module": "commonjs",
+    "moduleResolution": "node",
+    // The base config enables these, and TypeScript only permits them
+    // under node16/nodenext/bundler resolution -- which is exactly what
+    // the override above moves off. Turned off for tests only.
+    "resolvePackageJsonExports": false,
+    "resolvePackageJsonImports": false
+  }
+}

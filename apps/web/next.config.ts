@@ -2,7 +2,14 @@ import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
 import { siteUrlErrorMessage, siteUrlProblem } from "./src/lib/site-url";
-import { LOCALES } from "@medinstru/config";
+import {
+  CROSS_ORIGIN_OPENER_POLICY,
+  FAVICON_MAX_AGE_SECONDS,
+  FRAME_OPTIONS,
+  LOCALES,
+  publicCacheControl,
+  SERVICE_WORKER_CACHE_CONTROL,
+} from "@medinstru/config";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 
@@ -187,7 +194,12 @@ const nextConfig: NextConfig = {
         // cold vs. warm Lighthouse comparison — this was the one asset
         // still re-downloaded on every repeat visit).
         source: "/favicon.ico",
-        headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
+        headers: [
+          {
+            key: "Cache-Control",
+            value: `public, max-age=${FAVICON_MAX_AGE_SECONDS}`,
+          },
+        ],
       },
       {
         // The service worker script must NEVER be held by a shared cache,
@@ -210,7 +222,9 @@ const nextConfig: NextConfig = {
         // Cost is one small uncached request per navigation, which
         // browsers already special-case for worker scripts anyway.
         source: "/sw.js",
-        headers: [{ key: "Cache-Control", value: "no-store, must-revalidate" }],
+        headers: [
+          { key: "Cache-Control", value: SERVICE_WORKER_CACHE_CONTROL },
+        ],
       },
       {
         // Next.js's default Cache-Control on this static/SSG route is
@@ -240,7 +254,10 @@ const nextConfig: NextConfig = {
             // is picked up on the next navigation. s-maxage only affects
             // shared caches, and takes effect once the apex is proxied
             // through Cloudflare (see docs/cloudflare.md §5.3).
-            value: "public, max-age=0, s-maxage=60, stale-while-revalidate=300, must-revalidate",
+            // Same policy the API sends on cacheable GraphQL GETs --
+            // one definition, in @medinstru/config, rather than this
+            // string and apps/api's constants drifting apart.
+            value: publicCacheControl(),
           },
         ],
       },
@@ -282,8 +299,8 @@ const nextConfig: NextConfig = {
           // above: browsers that don't honor frame-ancestors still fall
           // back to this. No legitimate embedding use case exists for
           // this marketplace site.
-          { key: "X-Frame-Options", value: "DENY" },
-          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "X-Frame-Options", value: FRAME_OPTIONS },
+          { key: "Cross-Origin-Opener-Policy", value: CROSS_ORIGIN_OPENER_POLICY },
         ],
       },
     ];

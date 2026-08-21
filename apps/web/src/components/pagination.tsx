@@ -3,8 +3,9 @@
 import { useTranslations } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import { cn } from "@/lib/utils";
+import { MAX_VISIBLE_PAGES } from "@medinstru/config";
 
-const MAX_VISIBLE_PAGES = 10;
+
 
 interface PaginationProps {
   currentPage: number;
