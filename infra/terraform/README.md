@@ -140,65 +140,78 @@ still required before enabling management; the first reviewed apply then
 creates it. With the adoption flag left at its safe default (`false`), normal
 plans cannot modify or delete dashboard cache rules.
 
-### Verify immediately after enabling -- the HTML rule may be a no-op
+### Verified live on 2026-08-21 -- HTML caching works
 
-**This is a known open risk, deliberately deferred to adoption time rather
-than guessed at.** Cloudflare may decline to cache a response carrying
-`Set-Cookie` even when a Cache Rule marks it eligible. Every page response
-carries `set-cookie: NEXT_LOCALE`, set by next-intl's middleware. If that
-behaviour applies, the HTML rule silently does nothing and pages keep serving
-`DYNAMIC` -- no error, no failed plan, just no improvement. It cannot be
-settled without the rule live, so measure it first:
+**The `Set-Cookie` risk this section used to warn about did not materialise.**
+It was investigated by experiment after the rules went live, and the warning
+was wrong. Recorded here because the mechanism is genuinely non-obvious and
+would otherwise be re-derived from the same wrong starting point.
 
-**Use a real GET, never `curl -I`.** `-I` sends `HEAD`, and both managed HTML
-rules are method-gated: the eligibility rule requires `method eq "GET"`, and
-the bypass explicitly catches `method ne "GET"`. A `HEAD` probe therefore takes
-the bypass every time and reports `DYNAMIC` **whether or not the rule works** --
-a guaranteed false negative that sends you chasing the `Set-Cookie` theory for
-a rule that is fine. `-D - -o /dev/null` prints the headers from an actual GET.
+Measured after `terraform apply`:
 
-```bash
-for path in /en /hi '/en?page=2'; do
-  printf '%s  ' "$path"
-  curl -sS -D - -o /dev/null "https://laxair.shop$path" \
-    | grep -iE 'cf-cache-status|set-cookie|cache-control' | tr '\n' ' '
-  echo
-done
-```
-
-Run it twice -- the first request populates the edge, so judge the second.
-
-| `cf-cache-status` | Meaning |
+| Request | Result |
 |---|---|
-| `HIT` (2nd run) | Working. The gap is closed. |
-| `DYNAMIC` | The rule is not matching, or `Set-Cookie` is suppressing caching. |
-| `BYPASS` | A later rule is overriding it -- check rule order first. |
+| `en` browser -> `/en` | MISS then **HIT** |
+| `hi` browser -> `/hi` | MISS then **HIT** |
+| `hi` browser -> `/en` | **HIT** |
+| session-bearing `/en` | not cached |
+| bare root `/` | not cached |
+| `Authorization` header | not cached |
+| `/en` to a Hindi browser | still `lang="en"` |
+| `/hi` to an English browser | still `lang="hi"` |
 
-Then confirm the rule is *narrow* enough, which matters more than the hit rate:
+**Why the cookie does not block it.** next-intl does not set `NEXT_LOCALE` on
+every response. From `middleware/syncCookie.js` in the installed package, it
+writes the cookie only when it actually needs to change something:
 
-```bash
-# A session-bearing request must never be served from cache. GET again:
-# a HEAD here would report BYPASS because of the METHOD, telling you nothing
-# about whether the cookie test works -- false confidence, the worse failure.
-curl -sS -D - -o /dev/null -H 'Cookie: mi_sid=fake-session-for-testing' \
-  https://laxair.shop/en | grep -i cf-cache-status   # never HIT
-
-# Each locale must keep its own cached copy (the URL is in the cache key).
-curl -sS https://laxair.shop/hi | grep -o '<html[^>]*lang="[a-z]*"'   # expect hi
-curl -sS https://laxair.shop/en | grep -o '<html[^>]*lang="[a-z]*"'   # expect en
+```js
+if (hasCookie && cookieValue !== locale)                 // outdated -> write
+else if (!hasCookie && acceptLanguageLocale !== locale)  // disagrees -> write
+// otherwise: no Set-Cookie at all
 ```
 
-**If `Set-Cookie` turns out to be what blocks it**, the fix is to stop setting
-the cookie, since the locale is already derivable from the URL. next-intl
-4.13.6 supports `localeCookie: false` in `defineRouting` (verified in
-`routing/config.d.ts`, typed `boolean | CookieAttributes`).
+A normal browser viewing the locale its own `Accept-Language` already implies
+falls into neither branch, so the response carries no `Set-Cookie` and is
+cacheable. Once any such request populates the edge, every later visitor gets
+a `HIT` -- including the ones that would individually have set a cookie.
 
-That is **not free**, so make it a decision rather than a reflex. `NEXT_LOCALE`
-is what makes a bare `laxair.shop` visit remember a returning visitor's chosen
-language; without it that redirect falls back to `Accept-Language` detection.
-Only the bare-root entry point is affected -- every real page already carries
-its locale in the path -- but a visitor who deliberately switched to Hindi
-would land on English next time they type the bare domain.
+**`localeCookie: false` is not needed.** It is a real option in next-intl
+4.13.6 and would work, but it costs bare-root language memory for no gain.
+Do not reach for it on the strength of a single `BYPASS`.
+
+**How to mislead yourself here, since it happened.** `curl` sends no
+`Accept-Language` header at all, which no browser does. That is the
+pathological case: the resolved locale disagrees with a non-existent
+preference, so next-intl writes the cookie, Cloudflare refuses to cache a
+`Set-Cookie` response, and every probe reports `BYPASS`. Diagnosing cache
+behaviour with a bare `curl` therefore reproduces a failure real traffic never
+sees. Always pass a realistic `Accept-Language`.
+
+### Re-verifying later
+
+Use a real GET, never `curl -I` -- `-I` sends `HEAD`, and both HTML rules are
+method-gated, so a `HEAD` probe takes the bypass every time and reports
+`DYNAMIC` whether or not the rule works.
+
+```bash
+for i in 1 2; do for p in /en /hi; do
+  printf '%s ' "$p"
+  curl -sS -D - -o /dev/null -H 'Accept-Language: en-US,en' "https://laxair.shop$p" \
+    | grep -i cf-cache-status
+done; done
+```
+
+Judge the second pass. Then confirm it is still *narrow*, which matters more
+than the hit rate:
+
+```bash
+# A session-bearing request must never be served from cache.
+curl -sS -D - -o /dev/null -H 'Accept-Language: en-US,en' \
+  -H 'Cookie: mi_sid=fake-session' https://laxair.shop/en | grep -i cf-cache-status
+
+# Each locale keeps its own entry -- the URL is in the cache key.
+curl -sS -H 'Accept-Language: hi-IN,hi' https://laxair.shop/en | grep -o 'lang="[a-z]*"'
+```
 
 ### What the managed ruleset contains, and why order matters
 
