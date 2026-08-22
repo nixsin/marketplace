@@ -9,6 +9,9 @@ import {
   LOCALES,
   publicCacheControl,
   SERVICE_WORKER_CACHE_CONTROL,
+  CONTENT_TYPE_OPTIONS,
+  REFERRER_POLICY,
+  PERMISSIONS_POLICY,
 } from "@medinstru/config";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
@@ -301,6 +304,13 @@ const nextConfig: NextConfig = {
           // this marketplace site.
           { key: "X-Frame-Options", value: FRAME_OPTIONS },
           { key: "Cross-Origin-Opener-Policy", value: CROSS_ORIGIN_OPENER_POLICY },
+          // The three below were absent entirely -- not deliberate gaps like
+          // HSTS preload and Trusted Types, which docs/security-headers.md
+          // records with reasons. These had zero mentions anywhere in the
+          // repo, found by a live CDN audit rather than by reading the code.
+          { key: "X-Content-Type-Options", value: CONTENT_TYPE_OPTIONS },
+          { key: "Referrer-Policy", value: REFERRER_POLICY },
+          { key: "Permissions-Policy", value: PERMISSIONS_POLICY },
         ],
       },
     ];

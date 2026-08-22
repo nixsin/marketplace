@@ -166,13 +166,29 @@ run "page_html_is_cacheable_only_while_anonymous" {
     # after them actively setting cache = false -- unconditionally, with no
     # method or cookie test, since a plain anonymous GET / is exactly the
     # request an overbroad inventoried rule would leave cache-eligible.
-    condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-root"]).enabled && !one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-root"]).action_parameters.cache && one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-root"]).expression == "(http.host eq \"laxair.shop\" and http.request.uri.path eq \"/\")"
+    condition     = one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-paths"]).enabled && !one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-paths"]).action_parameters.cache && one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-paths"]).expression == "(http.host eq \"laxair.shop\" and not starts_with(http.request.uri.path, \"/_next/\") and not starts_with(http.request.uri.path, \"/api\") and not starts_with(http.request.uri.path, \"/_vercel\") and not http.request.uri.path contains \".\" and not (http.request.uri.path eq \"/en\" or starts_with(http.request.uri.path, \"/en/\") or http.request.uri.path eq \"/hi\" or starts_with(http.request.uri.path, \"/hi/\")))"
     error_message = "The bare root must be bypassed unconditionally, not merely left unmatched."
   }
 
   assert {
+    # /products, /foo and /about negotiate exactly like / does. They were
+    # uncached only because next-intl happens to set a cookie on those
+    # responses -- an accident, not a guarantee. localeCookie: false would
+    # have removed it and started serving one visitor's language to everyone.
+    condition     = alltrue([for l in var.locales : strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-paths"]).expression, "starts_with(http.request.uri.path, \"/${l}/\")")])
+    error_message = "Every configured locale must be excluded from the negotiated-path bypass."
+  }
+
+  assert {
+    # Dotted paths never reach the middleware (proxy.ts's matcher skips
+    # them), so /sitemap.xml and /favicon.ico must stay cacheable.
+    condition     = strcontains(one([for r in cloudflare_ruleset.cache_settings[0].rules : r if r.ref == "bypass-locale-negotiated-paths"]).expression, "not http.request.uri.path contains \".\"")
+    error_message = "Dotted paths must stay cacheable -- they never reach locale negotiation."
+  }
+
+  assert {
     # It must come after EVERY inventoried rule, which is the whole point.
-    condition     = index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "bypass-locale-negotiated-root") > index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "existing-overbroad-web-rule")
+    condition     = index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "bypass-locale-negotiated-paths") > index([for r in cloudflare_ruleset.cache_settings[0].rules : r.ref], "existing-overbroad-web-rule")
     error_message = "The root bypass must follow inventoried rules or they override it."
   }
 
