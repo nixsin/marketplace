@@ -89,7 +89,7 @@ describe('hasInquiryContact', () => {
   it.each<[string | null | undefined, string]>([
     ['98765 43210', 'local format with spaces'],
     ['not-a-number', 'free text'],
-    ['+91', 'too short'],
+    ['+0123456789', 'leading zero after the plus'],
     ['', 'empty string'],
     [null, 'null'],
     [undefined, 'absent'],
