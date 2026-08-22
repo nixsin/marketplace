@@ -1,4 +1,6 @@
 import {
+  INQUIRY_MESSAGE_MAX_LENGTH,
+  WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH,
   WHATSAPP_ACCESS_TOKEN_ENV,
   WHATSAPP_API_VERSION,
   WHATSAPP_PHONE_NUMBER_ID_ENV,
@@ -421,5 +423,21 @@ describe('an accepted send whose body will not parse', () => {
 
     expect(result).toEqual({ ok: true, providerMessageId: null });
     jest.restoreAllMocks();
+  });
+});
+
+describe('the parked truncation edge case stays unreachable (#151)', () => {
+  it('keeps the buyer-message cap below the template parameter cap', () => {
+    // sanitizeTemplateParam truncates by UTF-16 code unit and can split an
+    // emoji at the boundary -- a known, deliberately parked gap (#151).
+    //
+    // It is parked on the strength of being UNREACHABLE: no caller can
+    // produce a parameter long enough to hit the cap. That is a relationship
+    // between two constants, not a property of the code, so raising the
+    // message limit past the parameter limit would quietly make the parked
+    // bug live. This fails if that happens.
+    expect(INQUIRY_MESSAGE_MAX_LENGTH).toBeLessThan(
+      WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH,
+    );
   });
 });

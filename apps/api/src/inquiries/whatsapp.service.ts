@@ -57,11 +57,27 @@ export function normalizeE164(value: string): string | null {
  * rather than cosmetic: without it every production send fails validation.
  */
 export function sanitizeTemplateParam(value: string): string {
-  return value
-    .replace(/[\r\n\t]+/g, ' \u00b7 ')
-    .replace(/\s{2,}/g, ' ')
-    .trim()
-    .slice(0, WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH);
+  return (
+    value
+      .replace(/[\r\n\t]+/g, ' \u00b7 ')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+      // KNOWN EDGE CASE, parked deliberately -- see issue #151.
+      //
+      // .slice() counts UTF-16 code units, so a cut landing inside a surrogate
+      // pair leaves an unpaired surrogate in the outbound parameter. Verified:
+      // slicing 'x'.repeat(1023) + an emoji at 1024 does exactly that.
+      //
+      // FREQUENCY: requires a message that reaches the 1024-character cap AND
+      // has a non-BMP character straddling that exact boundary. Inquiry text is
+      // capped at 1000 and the summary is bounded well below it, so no current
+      // caller can reach the cap at all -- this is reachable only if those
+      // limits are raised.
+      //
+      // FIX WHEN TOUCHED: [...value].slice(0, max).join(''), plus a boundary
+      // test containing an emoji.
+      .slice(0, WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH)
+  );
 }
 
 /**

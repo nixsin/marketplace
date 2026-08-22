@@ -293,6 +293,15 @@ export class InquiriesService {
         // this is NOT a failure. Left PENDING: a FAILED row invites a retry
         // that double-messages the seller, while PENDING says exactly what is
         // true -- we do not know.
+        //
+        // KNOWN GAP, parked deliberately -- see issue #151. Nothing later
+        // RESOLVES a row left this way, so it stays PENDING indefinitely.
+        //
+        // FREQUENCY: requires a provider timeout or dropped connection, which
+        // cannot occur at all until Meta credentials exist. Zero today.
+        //
+        // FIX WHEN TOUCHED: a delivery webhook keyed on providerMessageId,
+        // which is already stored for exactly this purpose.
         this.logger.warn(
           `Inquiry ${inquiry.id} has an AMBIGUOUS provider outcome, left ` +
             `PENDING rather than FAILED: ${reason}`,
@@ -315,6 +324,13 @@ export class InquiriesService {
     // provider's message id, which is what an operator needs to reconcile it.
     // A stuck PENDING row is a visible, fixable inconsistency; a duplicate
     // WhatsApp message to a real seller is not.
+    //
+    // KNOWN GAP, parked deliberately -- see issue #151. Reconciliation is
+    // manual: nothing sweeps these rows.
+    //
+    // FREQUENCY: requires a database failure in the window between an
+    // accepted send and its status write -- milliseconds, and only while the
+    // provider is configured at all.
     try {
       return await this.prisma.inquiry.update({
         where: { id: inquiry.id },
