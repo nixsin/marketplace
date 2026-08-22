@@ -1,4 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  CONTENT_TYPE_OPTIONS,
+  PERMISSIONS_POLICY,
+  REFERRER_POLICY,
+} from "@medinstru/config";
 import {
   buildCspHeader,
   computeApiOrigin,
@@ -185,5 +192,53 @@ describe("upgrade-insecure-requests is gated on the real protocol", () => {
     expect(
       buildCspHeader({ ...base, isDev: true, siteUrl: "https://laxair.shop" }),
     ).not.toContain("upgrade-insecure-requests");
+  });
+});
+
+describe("the header set next.config.ts actually emits", () => {
+  // These assertions read next.config.ts as text rather than importing it.
+  // Importing pulls in the whole Next config machinery, and what needs
+  // guarding here is simply "is the header still listed" -- the values
+  // themselves are asserted from @medinstru/config just below.
+  const config = readFileSync(
+    join(__dirname, "..", "..", "next.config.ts"),
+    "utf8",
+  );
+
+  // A live CDN audit found X-Content-Type-Options, Referrer-Policy and
+  // Permissions-Policy missing from production. They were not deliberate
+  // gaps -- docs/security-headers.md records HSTS preload and Trusted
+  // Types as conscious omissions with reasons, while these three had zero
+  // mentions anywhere in the repo. Nothing failed when they were absent,
+  // which is exactly why this test exists.
+  it.each([
+    "Content-Security-Policy",
+    "X-Frame-Options",
+    "Cross-Origin-Opener-Policy",
+    "X-Content-Type-Options",
+    "Referrer-Policy",
+    "Permissions-Policy",
+  ])("still emits %s", (header) => {
+    expect(config).toContain(`key: "${header}"`);
+  });
+
+  it("denies every powerful browser feature", () => {
+    // An empty allowlist "()" denies the feature to this document and to
+    // every iframe. The app uses none of these -- verified by grepping
+    // apps/web/src for geolocation, camera, microphone, getUserMedia,
+    // payment and navigator.usb, all zero hits -- so a permissive value
+    // here would only ever be an accident.
+    for (const feature of ["camera", "microphone", "geolocation", "payment", "usb"]) {
+      expect(PERMISSIONS_POLICY).toContain(`${feature}=()`);
+    }
+    expect(PERMISSIONS_POLICY).not.toMatch(/=\(\s*\*\s*\)/);
+  });
+
+  it("does not leak a full URL to a less secure origin", () => {
+    // unsafe-url and no-referrer-when-downgrade both send the full path to
+    // plain HTTP; strict-origin-when-cross-origin is what browsers already
+    // default to, declared so it cannot drift.
+    expect(REFERRER_POLICY).toBe("strict-origin-when-cross-origin");
+    expect(CONTENT_TYPE_OPTIONS).toBe("nosniff");
   });
 });
