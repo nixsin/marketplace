@@ -518,7 +518,190 @@ CommonJS test run and fails with `Unexpected token 'export'` — which looks
 exactly like a file that was never transformed.
 
 
+## Buyer product inquiries (#91)
+
+Shipped in three parts. This is part 2, **capture**: a buyer submits a question
+on a product page and it lands in the `Inquiry` table. Part 1 (#150) added the
+schema, `normalizeE164`/`isE164` and `Product.hasInquiryContact`; part 3 adds
+delivery over WhatsApp's Cloud API. Nothing here sends anything to anyone.
+
+**The confirmation says "recorded", and that is the whole design constraint.**
+Copy that told the buyer the seller had their question was the single most
+repeated review finding on the unsplit version of this work — three separate
+rounds, two different wordings, both shown verbatim when delivery had failed.
+A buyer who believes their message arrived waits for a reply that cannot come,
+and does not retry. So `Inquiry` exposes **no `delivered` field** and
+`submitInquiry` returns a bare `{ ok: true }`: there is nothing to branch on,
+so no branch can claim the wrong thing. Three tests assert the absence — one on
+the committed `schema.gql`, one on the API result's key set, one on the copy a
+real browser renders. The delivery change has to add a real outcome before any
+of that wording can change.
+
+**The mutation is unauthenticated on purpose** (#91 story 3: a WhatsApp-shared
+link must work on a cold visit), which makes it an abuse vector by
+construction. Four limits, all counted from the `Inquiry` table rather than an
+in-process counter that would reset on deploy and be per-instance: per phone,
+per phone+product, per hashed IP, and an absolute per-seller cap. The two phone
+limits are keyed on a value **the caller types**, so on their own they are
+defeated by rotating E.164 numbers; the per-seller cap is the only one still
+standing when a caller rotates both, and its rejection message is deliberately
+vague so it cannot be used as a progress indicator. When login ships this must
+NOT quietly become authenticated — record the session alongside the inquiry and
+keep anonymous submission working.
+
+**Check and insert run in one `Serializable` transaction**, and the product is
+read *inside* it. Counting then inserting separately is a time-of-check /
+time-of-use race, and a product read before the transaction opened could have
+been reassigned in the gap — attributing an inquiry to the previous seller,
+which once delivery exists means handing a buyer's name and phone to an
+unrelated organisation. Serializable aborts rather than queues, so P2034 is
+retried (three attempts); nothing else is, because retrying a deliberate
+rate-limit refusal turns one rejection into three.
+
+**Idempotency is enforced by the unique index, not by the lookup.** The client
+generates one key per submission and reuses it on every retry — a lost response
+is indistinguishable from a failed one, so a retry is expected rather than
+exceptional. `create()`'s `findUnique` only avoids a round trip in the common
+case; when two requests both pass it before either inserts, P2002 is caught and
+**the winner's row is returned as the success**, because an error there would
+tell a buyer their inquiry failed when it demonstrably succeeded. Only the e2e
+test can prove this — it fires two identical submissions with `Promise.all` and
+asserts one row and one id.
+
+**An idempotency key is bound to its payload, and the client mints a new one
+the moment the buyer edits.** Returning the stored row for a key without
+checking what it holds loses real data silently, reproduced end to end against
+a running server: submit a question, lose the response, correct the phone
+number and reword the question, submit again — the API answers with the
+*original* row's id and the confirmation reports the edited inquiry as
+recorded. It never was. The same shape from the other direction: the DTO
+permits an 8-character key, so two anonymous callers can pick the same one and
+the second caller's lead vanishes. **The canonicalisation is shared, and it had to be**: the server binds the key
+to the *normalised* phone, so with the web client fingerprinting the raw
+string, reformatting `+919000000001` as `+91 90000 00001` read as an edit,
+minted a fresh key, and wrote a second inquiry the server would have
+recognised as the same one. `normalizeE164`/`isE164` therefore live in
+`@medinstru/config` as a cross-app wire contract, with
+`apps/api/src/inquiries/phone.ts` re-exporting them as the documented home.
+`assertSameSubmission` compares the row's
+own columns — no migration, and it compares what was actually written rather
+than a hash of what we believed we wrote — over a **fixed field list**, not
+the argument's keys. That last detail is not cosmetic: deriving the list from
+the caller made `insertInquiry`'s wider args pull `ipHash` into the
+comparison, so a genuine retry from a different address was rejected as an
+edit. A test caught it. The client side keeps a buyer from ever meeting the
+rejection: an edit really is a different submission, so it gets a new key.
+
+**The per-seller cap is a known, accepted denial-of-service surface — see
+[#152](https://github.com/nixsin/marketplace/issues/152), and do not quietly
+raise or remove it.** It is shared across every buyer of that seller, so 12
+rotating unverified numbers at the per-phone ceiling reach 60 and lock that
+seller's buyers out for the rest of the rolling hour. It ships anyway because
+the alternative is worse, not because it is fine: with no seller-wide cap an
+anonymous endpoint writes unbounded rows, and after delivery ships that is
+unbounded messages to a real person's phone. The real fix is a *non-forgeable*
+control in front of the mutation — edge rate limiting on the true source
+address, a Turnstile challenge, or verified phone ownership — and no
+rearrangement of caller-supplied inputs substitutes for one.
+
+The same issue covers a second surface worth knowing separately: **the limits
+bound accepted rows, not requests.** A rejected attempt still opens a
+transaction and runs up to four counts, and consumes no budget, so unbounded
+database load is reachable without a single row being written. A nonexistent
+`productId` is short-circuited by one indexed lookup before any transaction
+opens — a real reduction, not a fix. Only a request-level control at the edge
+bounds requests, which is why it is the first thing to do in #152 rather than
+merely the cheapest.
+
+**Two env vars, documented in `apps/api/.env.example` by name only.**
+`INQUIRY_IP_HASH_SECRET` keys the HMAC that stores a submitter's address as a
+hash; **without it nothing breaks and the per-IP limit simply does not run.**
+An unkeyed SHA-256 is not a fallback: IPv4's 2^32 space is small enough to
+enumerate, so anyone holding the table recovers the address, and labelling such
+a value "unkeyed" advertises the weakness without removing it. Storing nothing
+is the honest option, and the limiter skips a null bucket by design.
+`INQUIRY_TRUST_PROXY_HEADERS` must be exactly `"true"` before any header is
+believed, and even then **only `cf-connecting-ip`** is — `resolveCallerIp`
+returns null in every other case, including for `x-forwarded-for`, `req.ip`
+and the socket. Each was tried and each is wrong in its own way. **`x-forwarded-for` is
+APPENDED TO by proxies, not overwritten**, so a client sends their own chain,
+the proxy adds to it, and the left-most entry — nominally "the originating
+client" — stays attacker-controlled; reading it from the trusted end needs a
+configured trusted-hop count nothing here has. `req.ip` inherits that exactly,
+since Express derives it from the same header whenever app-level `trust proxy`
+is on. `socket.remoteAddress` is unforgeable but behind Render's load balancer
+it is the *balancer*, identical for every buyer — using it gave everyone one
+shared bucket and locked out every caller for every seller once the limit was
+reached. `cf-connecting-ip` alone is safe because Cloudflare **overwrites**
+it, which holds only while every route to the origin goes through the edge —
+so enabling the flag asserts the origin refuses non-proxied traffic, not
+merely that a proxy exists.
+
+**Nothing on the buyer path may carry the seller's number.** The resolver
+returns `{ id, status, createdAt }` explicitly rather than spreading the row —
+which would echo the buyer's own message and phone back to an anonymous caller
+and hand out the previous submitter's `ipHash`. That assertion is written
+against the **key set**, not a list of known-bad fields, because the row grows
+a column every time this feature does.
+
+**The rejection strings are a wire contract, not prose.**
+`categorizeInquiryError` in `apps/web/src/lib/api.ts` routes the buyer's error
+copy by matching substrings of the server's messages, so rewording one on the
+API side silently re-categorises it. That happened: the idempotency-conflict
+message read "already sent with different details" and the rate-limit branch
+matched a bare `"already sent"`, so a key conflict told the buyer they had
+sent too many inquiries recently — pointing them at a wait that cannot help.
+Both sides are now specific (`"already used"` vs `"already sent inquiries"`),
+and a test asserts the conflict message contains neither of the rate-limit
+phrases.
+
 ## Known gotchas (already solved once — don't re-derive)
+
+**`beforeEach(() => mock.mockResolvedValue(x))` silently CALLS the mock after
+every test.** Vitest (and Jest) treat a function returned from `beforeEach` as
+a teardown callback, and `mockResolvedValue` returns the `MockInstance` — which
+is itself a function. The concise arrow returns it, so the runner invokes it as
+cleanup, with no arguments. Cost real time in `inquiry-form.spec.tsx`: it
+produced a trailing `mock.calls` entry whose first argument is `undefined`
+(papered over with `.filter(Boolean)` rather than understood), and then made a
+test that installs a *throwing* implementation fail with that throw **after its
+assertions had already passed** — reported with no assertion error at all,
+which reads like the code under test throwing rather than the harness calling
+the mock. Diagnosed by bisecting to a two-`describe` file: identical test,
+passing without the `beforeEach` and failing with it. Always give these hooks a
+block body:
+
+```js
+beforeEach(() => {
+  submitInquiryMock.mockResolvedValue({ ok: true });
+});
+```
+
+Grep for `beforeEach(() => [a-zA-Z_].*Mock\.` before assuming a mock-count
+assertion is wrong about the code.
+
+**`prisma migrate status` reports "Database schema is up to date!" while the
+database has columns no committed migration ever created.** It compares
+applied migration *names* against `prisma/migrations/`, not the actual schema,
+so a `prisma migrate dev` run on a branch that was later abandoned leaves the
+column behind permanently and reads as clean forever after. Hit this directly
+(2026-08-22): the local dev `Inquiry` table carried a `bundleId text NOT NULL`
+from the abandoned `feat/bulk-inquiry` fan-out work, so every inquiry submitted
+through the running dev stack failed with `Null constraint violation on the
+(not available)` — a message that names no column and reads like an
+application bug. The API's own e2e suite passed the whole time, because
+`medinstru_test` is migrated from the committed files and had no such column.
+Diagnose by comparing the real table against the committed schema rather than
+trusting `migrate status`:
+
+```bash
+/opt/homebrew/opt/postgresql@16/bin/psql "postgresql://postgres:postgres@127.0.0.1:5432/medinstru" -c '\d "Inquiry"'
+```
+
+Confirm the column appears in no file under `apps/api/prisma/migrations/` and
+in no committed `schema.prisma`, then `ALTER TABLE ... DROP COLUMN`. Worth
+checking whenever local behaviour and CI disagree about a table this repo has
+recently changed on more than one branch.
 
 **Never run `apps/api`'s e2e suite via `docker compose exec api ...`
 against this repo's persistent dev container — it silently runs against

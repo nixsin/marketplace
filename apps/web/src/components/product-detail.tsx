@@ -5,6 +5,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { ShieldCheck } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { WhatsAppIcon } from "@/components/icons/whatsapp-icon";
+import { InquiryForm } from "@/components/inquiry-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -141,8 +142,9 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
           picker so the sharer chooses the recipient -- forwarding a listing
           to a colleague or procurement group is how B2B buying decisions
           actually circulate in this market. The seller-directed inquiry
-          flow needs a seller contact number, which neither the schema nor
-          the "whose number" decision provides yet.
+          form is the block below, and the two are not interchangeable:
+          this one hands the message to whoever the BUYER picks, that one
+          records a question for the SELLER.
 
           A real <a> rather than a click handler: it must survive the page
           being opened from a cold WhatsApp link on a slow connection,
@@ -187,6 +189,18 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
           </a>
         </Button>
       </div>
+
+      {/* Rendered only when the seller can actually be reached.
+          hasInquiryContact is a BOOLEAN, deliberately -- the seller's number
+          is never sent to the browser, so a scraper cannot harvest numbers by
+          loading product pages (#91 story 6).
+
+          Hidden rather than shown-and-failing when it is false: a form that
+          takes a buyer's question and has nowhere to send it is worse than no
+          form, because the buyer believes they have asked. */}
+      {product.hasInquiryContact && (
+        <InquiryForm productId={product.id} productName={product.name} />
+      )}
 
       <p className="text-base leading-relaxed text-muted-foreground">
         {product.description}

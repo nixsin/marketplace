@@ -373,6 +373,43 @@ export const CORRELATION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
  */
 export const MANAGED_IMAGE_PREFIX = "/products/";
 
+/**
+ * E.164: a leading +, a non-zero first digit, and at most 15 digits total.
+ *
+ * There is no eight-digit MINIMUM. An earlier version imposed one, which
+ * rejected real assignments -- Saint Helena (+290 8123) and the Cook Islands
+ * (+682 1234) are seven digits end to end -- and because
+ * Product.hasInquiryContact calls this, those sellers silently appeared to
+ * have no contact number at all.
+ */
+const E164_PATTERN = /^\+[1-9]\d{1,14}$/;
+
+/** Whether a value is already a canonical E.164 number. */
+export function isE164(value) {
+  return E164_PATTERN.test(value);
+}
+
+/**
+ * Canonicalises a submitted phone number to E.164, or null if it cannot be.
+ *
+ * SHARED because both apps must agree on it, and a second copy would drift
+ * silently -- which it did. apps/api stores and compares the canonical form,
+ * so an idempotency key is bound to THAT value; apps/web decides whether a
+ * retry is the same submission or a new one. With the web side comparing the
+ * raw string, reformatting "+919000000001" as "+91 90000 00001" read as an
+ * edit, minted a fresh key, and created a SECOND inquiry the server would
+ * have recognised as the same one -- and, once delivery ships, a second
+ * message to the seller.
+ *
+ * The form advertises a spaced example because that is how people write
+ * numbers, so the two representations are both expected in real input, not a
+ * pathological case.
+ */
+export function normalizeE164(value) {
+  const stripped = String(value).replace(/[\s\u00a0().-]/g, "");
+  return isE164(stripped) ? stripped : null;
+}
+
 // ---------------------------------------------------------------------
 // Auth and session lifetimes
 //
@@ -393,6 +430,61 @@ export const SESSION_TOKEN_TTL = "7d";
 export const ONBOARDING_TOKEN_TTL = "15m";
 
 /** How long a requested OTP stays valid. */
+// ---------------------------------------------------------------------------
+// Product inquiries (#91)
+// ---------------------------------------------------------------------------
+
+// Bounds on what a buyer can submit. Not cosmetic: message is interpolated
+// into an outbound message body, and an unbounded field is both an abuse
+// vector and a way to exceed the provider's own payload limits.
+export const INQUIRY_NAME_MAX_LENGTH = 80;
+export const INQUIRY_MESSAGE_MAX_LENGTH = 1000;
+
+// Anonymous callers can trigger outbound WhatsApp messages to real sellers,
+// so this mutation is a spam vector by construction. The API has no
+// throttling of any kind today -- not even on OTP -- so the limit lives in
+// the inquiry path itself rather than assuming a global one exists.
+export const INQUIRY_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+export const INQUIRY_RATE_LIMIT_PER_PHONE = 5;
+export const INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT = 2;
+
+// Keyed on the CALLER'S NETWORK, not on anything they type. The per-phone
+// limits above are keyed on a submitted field, so rotating E.164 numbers
+// defeats them completely -- on an unauthenticated endpoint that emits
+// outbound WhatsApp messages that made the limits decorative rather than
+// protective. Higher than the per-phone cap because one office NATs many
+// genuine buyers behind one address.
+export const INQUIRY_RATE_LIMIT_PER_IP = 15;
+
+// Whether cf-connecting-ip / x-forwarded-for may be believed.
+//
+// DEFAULTS TO OFF, and that default is the point. Those headers are only
+// trustworthy when every route to the origin passes through the proxy that
+// sets them -- and this origin is directly reachable on its .onrender.com
+// hostname, verified by curl. A caller who skips the edge can set
+// cf-connecting-ip to a fresh value on every request, which made the per-IP
+// limit forgeable in exactly the way the phone limit was.
+//
+// Turn it on only after the origin refuses traffic that did not come through
+// Cloudflare. UNTIL THEN THE PER-IP LIMIT IS SKIPPED ENTIRELY -- there is no
+// per-client address available, and the socket address is the load balancer,
+// identical for every buyer, so using it collapsed everyone into one bucket
+// and locked out the whole feature after fifteen inquiries. The per-seller
+// cap is what actually bounds a seller's exposure by default.
+export const INQUIRY_TRUST_PROXY_HEADERS_ENV = "INQUIRY_TRUST_PROXY_HEADERS";
+
+// Name only, never a value. Keying the IP hash defeats the offline dictionary
+// attack an unkeyed digest allows: IPv4 is 2^32, small enough to enumerate,
+// so a plain SHA-256 of an address is recoverable by anyone holding the table
+// and is therefore not the protection it looks like.
+export const INQUIRY_IP_HASH_SECRET_ENV = "INQUIRY_IP_HASH_SECRET";
+
+// The seller's absolute exposure, whatever the source. This is the only limit
+// that still holds when an attacker rotates BOTH phone numbers and addresses,
+// so it is the one that actually bounds how much spam a seller can be made to
+// receive. Deliberately generous enough that real demand never reaches it.
+export const INQUIRY_RATE_LIMIT_PER_SELLER = 60;
+
 export const OTP_TTL_MS = 5 * 60 * 1000;
 
 /** Idle window after which a browser session id is regenerated. */
