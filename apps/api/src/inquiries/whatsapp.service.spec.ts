@@ -168,7 +168,7 @@ describe('WhatsappService', () => {
     expect(result.reason).toContain('502');
   });
 
-  it('turns a network failure into a failure result, not a throw', async () => {
+  it('turns a network failure into an AMBIGUOUS result, not a throw', async () => {
     fetchMock.mockRejectedValue(new Error('ECONNRESET'));
 
     const result = await service.sendInquiry(
@@ -177,7 +177,14 @@ describe('WhatsappService', () => {
       CONFIGURED,
     );
 
-    expect(result).toEqual({ ok: false, reason: 'ECONNRESET' });
+    // AMBIGUOUS, not a definite failure: the request may have reached Meta
+    // and been accepted before the response was lost. Recording it as FAILED
+    // invites a retry that double-messages the seller.
+    expect(result).toEqual({
+      ok: false,
+      ambiguous: true,
+      reason: 'ECONNRESET',
+    });
   });
 
   it.each<[unknown, string]>([

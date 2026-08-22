@@ -53,6 +53,9 @@ describe("InquiryForm", () => {
 
     await waitFor(() =>
       expect(submitInquiryMock).toHaveBeenCalledWith({
+        // Generated per submission and reused across retries; its value is
+        // not predictable, only its stability.
+        idempotencyKey: expect.any(String) as string,
         productId: "seed-product-01",
         buyerName: "Asha Rao",
         buyerPhone: "+919000000001",
@@ -203,5 +206,40 @@ describe("InquiryForm resilience", () => {
     expect(
       screen.getByRole("button", { name: /send inquiry/i }),
     ).toBeEnabled();
+  });
+});
+
+describe("submission idempotency", () => {
+  beforeEach(() =>
+    submitInquiryMock.mockResolvedValue({ ok: false, reason: "network" as const }),
+  );
+  afterEach(() => vi.clearAllMocks());
+
+  it("REUSES the same key when the buyer retries after a failure", async () => {
+    // The whole mechanism depends on this. A lost response is
+    // indistinguishable from a failure, so the retry must carry the same key
+    // or the server sees a new submission -- a second inquiry and a second
+    // WhatsApp message to the seller. Generating a fresh key per attempt
+    // would look correct and silently defeat it.
+    const user = userEvent.setup();
+    renderForm();
+    await fillAndSubmit();
+    await screen.findByRole("alert");
+
+    await user.click(screen.getByRole("button", { name: /send inquiry/i }));
+
+    await waitFor(() =>
+      expect(submitInquiryMock.mock.calls.length).toBeGreaterThan(1),
+    );
+
+    // EVERY attempt carries the same key -- asserted across all calls rather
+    // than a fixed count, because how many times the form fires is an
+    // implementation detail while key stability is the actual invariant.
+    const keys = new Set(
+      submitInquiryMock.mock.calls
+        .map((c) => c?.[0]?.idempotencyKey)
+        .filter(Boolean),
+    );
+    expect(keys.size).toBe(1);
   });
 });

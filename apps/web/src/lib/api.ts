@@ -267,6 +267,12 @@ const CREATE_INQUIRY_MUTATION = minifyGql(`
 `);
 
 export interface InquiryInput {
+  /**
+   * Stable per-SUBMISSION key. Generated once when the buyer submits and
+   * REUSED on every retry -- a fresh one per attempt would defeat the whole
+   * mechanism, since the server deduplicates on this exact value.
+   */
+  idempotencyKey: string;
   productId: string;
   buyerName: string;
   buyerPhone: string;

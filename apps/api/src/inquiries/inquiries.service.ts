@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
 import { InquiryStatus } from '../../generated/prisma/enums';
-import { createHash, createHmac } from 'node:crypto';
+import { createHmac } from 'node:crypto';
 import {
   INQUIRY_IP_HASH_SECRET_ENV,
   INQUIRY_SUMMARY_NAME_MAX_LENGTH,
@@ -21,6 +21,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { WhatsappService, normalizeE164 } from './whatsapp.service';
 
 export interface CreateInquiryArgs {
+  /** Stable per-submission key; the same value on every retry. */
+  idempotencyKey: string;
   productId: string;
   buyerName: string;
   buyerPhone: string;
@@ -34,6 +36,12 @@ export interface CreateInquiryArgs {
  * table operators read to triage leads, and a hash still counts repeats --
  * which is all the limiter needs it for.
  */
+/**
+ * Shorter than this and the key is guessable, which puts us back where an
+ * unkeyed digest was. Rejecting it is better than pretending.
+ */
+const MIN_IP_HASH_SECRET_LENGTH = 16;
+
 export function hashIp(
   ip: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env,
@@ -47,13 +55,18 @@ export function hashIp(
   // anyone holding this table can recover the original address by hashing
   // guesses. The key makes that impossible without also holding the secret,
   // while keeping the value deterministic, which is all the limiter needs.
+  // NO SECRET means NO STORAGE, not a weaker hash.
+  //
+  // An unkeyed SHA-256 of an IPv4 address is reversible by anyone holding the
+  // table: 2^32 is small enough to enumerate outright. Prefixing it
+  // "unkeyed:" labelled the weakness without removing it -- the personal data
+  // was still recoverable. Declining to store anything is the only honest
+  // option, and the limiter already skips a null bucket, so the per-IP limit
+  // simply does not run rather than running on a reversible digest.
   const secret = env[INQUIRY_IP_HASH_SECRET_ENV];
-  if (secret) return createHmac('sha256', secret).update(ip).digest('hex');
+  if (!secret || secret.length < MIN_IP_HASH_SECRET_LENGTH) return null;
 
-  // No secret configured: still hashed rather than stored raw, and marked so
-  // the weaker form is visible in the data rather than indistinguishable from
-  // the keyed one.
-  return `unkeyed:${createHash('sha256').update(ip).digest('hex')}`;
+  return createHmac('sha256', secret).update(ip).digest('hex');
 }
 
 /**
@@ -125,6 +138,19 @@ export function buildInquiryMessage(input: {
   return `${buildInquirySummary(input)}\n\n${input.message}`;
 }
 
+/**
+ * Makes provider-supplied text safe to put in a log line.
+ *
+ * Meta's error.message is external input. Newlines let it forge log entries
+ * that look like they came from us, and an unbounded value inflates log
+ * volume. The 500-character truncation on the database column happened AFTER
+ * the log call, so it protected the wrong thing.
+ */
+export function sanitizeForLog(value: string, max = 200): string {
+  const flat = value.replace(/[\r\n\t]+/g, ' ').replace(/\p{Cc}/gu, '');
+  return flat.length > max ? `${flat.slice(0, max - 1)}\u2026` : flat;
+}
+
 @Injectable()
 export class InquiriesService {
   private readonly logger = new Logger(InquiriesService.name);
@@ -166,6 +192,18 @@ export class InquiriesService {
       throw new BadRequestException('Enter your name and a question.');
     }
 
+    // Already submitted? Return the SAME inquiry rather than creating another.
+    //
+    // A lost response is indistinguishable from a failed one, so a buyer or a
+    // script retrying is expected -- and without this each retry would create
+    // a row and send the seller another WhatsApp message. The unique index on
+    // idempotencyKey is what actually enforces this; the lookup just avoids
+    // the round trip in the common case.
+    const existing = await this.prisma.inquiry.findUnique({
+      where: { idempotencyKey: args.idempotencyKey },
+    });
+    if (existing) return existing;
+
     const ipHash = hashIp(args.callerIp);
 
     // The limit check and the insert run in ONE serializable transaction.
@@ -203,6 +241,7 @@ export class InquiriesService {
 
           const created = await tx.inquiry.create({
             data: {
+              idempotencyKey: args.idempotencyKey,
               productId: current.id,
               // Denormalized at inquiry time: which seller received this is a
               // historical fact and must not follow a later reassignment.
@@ -242,8 +281,22 @@ export class InquiriesService {
     });
 
     if (!result.ok) {
+      const reason = sanitizeForLog(result.reason);
+
+      if (result.ambiguous) {
+        // The request may have reached Meta before the response was lost, so
+        // this is NOT a failure. Left PENDING: a FAILED row invites a retry
+        // that double-messages the seller, while PENDING says exactly what is
+        // true -- we do not know.
+        this.logger.warn(
+          `Inquiry ${inquiry.id} has an AMBIGUOUS provider outcome, left ` +
+            `PENDING rather than FAILED: ${reason}`,
+        );
+        return inquiry;
+      }
+
       this.logger.warn(
-        `Inquiry ${inquiry.id} recorded but not delivered: ${result.reason}`,
+        `Inquiry ${inquiry.id} recorded but not delivered: ${reason}`,
       );
       return this.markFailed(inquiry, result.reason);
     }
@@ -304,7 +357,7 @@ export class InquiriesService {
       return (await this.updateFailed(inquiry.id, reason)) as unknown as T;
     } catch (error) {
       this.logger.error(
-        `Inquiry ${inquiry.id} could not be marked FAILED (${reason}); it ` +
+        `Inquiry ${inquiry.id} could not be marked FAILED (${sanitizeForLog(reason)}); it ` +
           `remains PENDING and needs reconciling: ` +
           `${error instanceof Error ? error.message : 'unknown error'}`,
       );
@@ -367,6 +420,15 @@ export class InquiriesService {
       try {
         return await run();
       } catch (error) {
+        // P2002 is the idempotency key colliding: a concurrent duplicate
+        // submission lost the race. The winner's row is the correct answer,
+        // so return it rather than retrying into the same collision.
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        ) {
+          throw error;
+        }
         const isConflict =
           error instanceof Prisma.PrismaClientKnownRequestError &&
           error.code === 'P2034';

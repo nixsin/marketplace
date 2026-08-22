@@ -82,7 +82,7 @@ is bounded. Four limits, because they fail differently:
 |---|---|---|
 | per phone | submitted `buyerPhone` | rotating numbers |
 | per phone + product | submitted fields | rotating numbers |
-| per IP | **skipped entirely unless `INQUIRY_TRUST_PROXY_HEADERS=true`**, then `cf-connecting-ip` | proxies, at a cost |
+| per IP | **skipped unless BOTH `INQUIRY_TRUST_PROXY_HEADERS=true` and a ≥16-char `INQUIRY_IP_HASH_SECRET` are set** | proxies, at a cost |
 | **per seller** | the seller | nothing available to a caller |
 
 **Proxy headers are not trusted by default.** `cf-connecting-ip` is only
@@ -124,9 +124,12 @@ depth in front of them.
 and then inserting separately is a time-of-check/time-of-use race in which
 concurrent callers all read a count below the threshold and all proceed.
 
-**IPs are stored hashed.** A raw address is personal data under DPDP sitting in
-a table operators read to triage leads; a hash still counts repeats, which is
-all the limiter needs. An unresolvable address is skipped rather than counted
+**IPs are stored HMAC-hashed, or not at all.** A raw address is personal data
+under DPDP sitting in a table operators read to triage leads. Without a
+sufficiently long `INQUIRY_IP_HASH_SECRET` nothing is stored and the per-IP
+limit simply does not run — an *unkeyed* SHA-256 is reversible by anyone
+holding the table, since IPv4's 2^32 space is enumerable outright, so a
+digest labelled "unkeyed" advertised the weakness without removing it. An unresolvable address is skipped rather than counted
 as a shared `null` bucket — otherwise one such caller could lock out all the
 others.
 
@@ -145,45 +148,29 @@ schema's own comment on `SENT` had always contradicted.
 wired up. `providerMessageId` is stored precisely so a webhook can correlate
 back to the row when it is.
 
-## Idempotency — required before going live, not before merging
+## Idempotency
 
-**Submission is not idempotent.** If a response is lost, `submitInquiry`
-reports a network failure even though the API may already have persisted and
-sent the inquiry; a retry then creates a second inquiry and a second WhatsApp
-message. `sendInquiry` has the same shape: a timeout is classified as a
-definite failure even though Meta may have accepted the request before the
-response was lost.
+**Submission is idempotent.** The client generates one key per submission and
+reuses it on every retry; `Inquiry.idempotencyKey` carries a unique index, so
+a replay returns the original row rather than creating a second inquiry and
+sending the seller a second message.
 
-The fix is a stable per-submission idempotency key with a database uniqueness
-constraint, plus treating ambiguous provider outcomes as `PENDING` rather than
-retryable `FAILED`.
+A lost response is indistinguishable from a failed one, so retries are
+expected rather than exceptional — which is why the constraint lives in the
+database and not in a client that has to remember.
 
-**It is deliberately not in the initial PR**, for one reason that can be
-checked rather than argued: **the send is a logged no-op until the Meta
-credentials exist**, so no duplicate message can reach a seller today. That
-makes this a launch prerequisite alongside the account setup below, not a
-merge blocker — and it is a schema change plus a real design decision about
-ambiguous outcomes, which is better done deliberately than bolted onto a
-review round.
+**Ambiguous provider outcomes stay `PENDING`.** A timeout or dropped
+connection means Meta may already have accepted the message, so recording it
+`FAILED` invites a retry that double-messages the seller. `PENDING` says what
+is actually true: we do not know. Only a definite provider rejection becomes
+`FAILED`.
 
-## Verify at configuration time
+This was originally deferred as a launch prerequisite, on the grounds that the
+send is a no-op without credentials. That reasoning was too weak — enabling
+the hazard takes one environment variable and no code change.
 
-Two review findings were merged over deliberately because neither can be
-settled from this repository, and both become testable the moment a Meta
-account exists. **Check them with the first real send, before any traffic.**
-
-- **Recipient format.** We send `to: "+919876543210"`. A review argued the
-  Cloud API expects country-code digits **without** the `+`. If that is right,
-  every send fails; the fix is `toE164.slice(1)`, keeping the plus form for
-  storage and validation. Settle it against the real API, not from memory.
-- **Provider error text is logged before truncation.** A multiline or very
-  long provider response could forge log lines or bloat entries. The database
-  write already truncates to 500; the log call does not.
-
-## Still required before going live
+## Still required before going live## Still required before going live
 
 - Meta Business account, a verified sending number, and an **approved
   template** matching the contract above.
-- **Idempotency keys** (above). Without them the first real provider timeout
-  can double-message a seller.
 - DPDP and CDSCO review (#91). Neither has been checked against current law.

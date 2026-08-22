@@ -8,6 +8,7 @@ import {
 } from '@medinstru/config';
 import {
   InquiriesService,
+  sanitizeForLog,
   buildInquiryMessage,
   buildInquirySummary,
   hashIp,
@@ -25,6 +26,7 @@ const PRODUCT = {
 };
 
 const ARGS = {
+  idempotencyKey: 'test-submission-key-0001',
   productId: 'seed-product-01',
   buyerName: 'Asha Rao',
   buyerPhone: '+919000000001',
@@ -132,7 +134,12 @@ describe('InquiriesService', () => {
   let prisma: {
     $transaction: jest.Mock;
     product: { findUnique: jest.Mock };
-    inquiry: { create: jest.Mock; update: jest.Mock; count: jest.Mock };
+    inquiry: {
+      findUnique: jest.Mock;
+      create: jest.Mock;
+      update: jest.Mock;
+      count: jest.Mock;
+    };
   };
   let whatsapp: { sendInquiry: jest.Mock };
 
@@ -148,7 +155,15 @@ describe('InquiriesService', () => {
         ),
       product: { findUnique: jest.fn().mockResolvedValue(PRODUCT) },
       inquiry: {
-        create: jest.fn().mockResolvedValue({ id: 'inq-1' }),
+        // Not seen before: the idempotency lookup must find nothing.
+        findUnique: jest.fn().mockResolvedValue(null),
+        // Echoes the written data back, as Prisma does -- a bare { id } mock
+        // hid the status the service actually returns.
+        create: jest
+          .fn()
+          .mockImplementation(({ data }: { data: object }) =>
+            Promise.resolve({ id: 'inq-1', ...data }),
+          ),
         update: jest
           .fn()
           .mockImplementation(({ data }: { data: unknown }) =>
@@ -169,7 +184,10 @@ describe('InquiriesService', () => {
     jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
   });
 
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    delete process.env.INQUIRY_IP_HASH_SECRET;
+    jest.restoreAllMocks();
+  });
 
   it('canonicalises a spaced number to E.164 before storing it', async () => {
     // The form advertises "+91 98765 43210" because that is how people write
@@ -344,6 +362,108 @@ describe('InquiriesService', () => {
     });
   });
 
+  describe('idempotency', () => {
+    it('returns the SAME inquiry for a repeated key, without creating another', async () => {
+      // A lost response is indistinguishable from a failed one, so a retry is
+      // expected. Without this it creates a second row AND sends the seller a
+      // second WhatsApp message.
+      const already = { id: 'inq-existing', status: 'SENT' };
+      prisma.inquiry.findUnique.mockResolvedValue(already);
+
+      const result = await service.create(ARGS);
+
+      expect(result).toBe(already);
+      expect(prisma.inquiry.create).not.toHaveBeenCalled();
+      expect(whatsapp.sendInquiry).not.toHaveBeenCalled();
+    });
+
+    it('writes the key, so the unique index can enforce it', async () => {
+      // The lookup only avoids a round trip in the common case; the database
+      // constraint is what actually stops a concurrent duplicate.
+      await service.create(ARGS);
+
+      const written = prisma.inquiry.create.mock.calls[0][0] as {
+        data: { idempotencyKey: string };
+      };
+      expect(written.data.idempotencyKey).toBe(ARGS.idempotencyKey);
+    });
+
+    it('does not retry a unique-key collision into itself', async () => {
+      // P2002 means a concurrent duplicate lost the race. Retrying would just
+      // collide again; the winner's row is the correct answer.
+      const collision = new Prisma.PrismaClientKnownRequestError('duplicate', {
+        code: 'P2002',
+        clientVersion: 'test',
+      });
+      prisma.$transaction.mockRejectedValue(collision);
+
+      await expect(service.create(ARGS)).rejects.toBe(collision);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('ambiguous provider outcomes', () => {
+    it('leaves an inquiry PENDING when the send may have gone through', async () => {
+      // A timeout is not a failure: Meta may have accepted the request before
+      // the response was lost. Marking it FAILED invites a retry that
+      // double-messages the seller. PENDING says what is actually true --
+      // we do not know.
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        ambiguous: true,
+        reason: 'provider timed out after 10000ms',
+      });
+      jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
+
+      const result = await service.create(ARGS);
+
+      expect(result).toMatchObject({ status: 'PENDING' });
+      // Never written as FAILED.
+      expect(prisma.inquiry.update).not.toHaveBeenCalled();
+    });
+
+    it('still marks a DEFINITE rejection FAILED', async () => {
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        reason: 'provider 400: Invalid recipient',
+      });
+      jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
+
+      await service.create(ARGS);
+
+      expect(prisma.inquiry.update).toHaveBeenCalled();
+    });
+  });
+
+  describe('log safety', () => {
+    it('flattens and bounds provider text before logging it', () => {
+      // Meta's error.message is external input: newlines forge log entries
+      // that look like ours, and an unbounded value inflates log volume. The
+      // 500-char database truncation happened AFTER the log call.
+      const nasty = 'boom\n2026-01-01 FAKE LOG LINE\ttab';
+      const safe = sanitizeForLog(nasty);
+
+      expect(safe).not.toMatch(/[\r\n\t]/);
+      expect(sanitizeForLog('x'.repeat(5000)).length).toBeLessThanOrEqual(200);
+    });
+
+    it('never lets raw provider text reach the logger', async () => {
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        reason: 'line one\nline two',
+      });
+      const warn = jest
+        .spyOn(service['logger'], 'warn')
+        .mockImplementation(() => undefined);
+
+      await service.create(ARGS);
+
+      for (const call of warn.mock.calls) {
+        expect(String(call[0])).not.toMatch(/\n/);
+      }
+    });
+  });
+
   it('rejects an inquiry about a product that does not exist', async () => {
     prisma.product.findUnique.mockResolvedValue(null);
     await expect(service.create(ARGS)).rejects.toBeInstanceOf(
@@ -467,9 +587,11 @@ describe('InquiriesService', () => {
       expect(prisma.inquiry.count).toHaveBeenCalledTimes(3);
     });
 
-    it('adds an IP bucket when the address resolves', async () => {
+    it('adds an IP bucket when the address resolves AND a secret exists', async () => {
       // The dimension the caller cannot type. Without it, rotating E.164
-      // numbers defeats every other limit here.
+      // numbers defeats every other limit here. Requires a hash secret --
+      // see the storage test below for why there is no unkeyed fallback.
+      process.env.INQUIRY_IP_HASH_SECRET = 'a-sufficiently-long-test-secret';
       await service.create({ ...ARGS, callerIp: '203.0.113.7' });
 
       expect(prisma.inquiry.count).toHaveBeenCalledTimes(4);
@@ -484,6 +606,7 @@ describe('InquiriesService', () => {
     it('stores the address hashed, never in the clear', async () => {
       // A raw IP is personal data under DPDP sitting in a table operators
       // read to triage leads. A hash still counts repeats.
+      process.env.INQUIRY_IP_HASH_SECRET = 'a-sufficiently-long-test-secret';
       await service.create({ ...ARGS, callerIp: '203.0.113.7' });
 
       const written = prisma.inquiry.create.mock.calls[0][0] as {
@@ -493,34 +616,39 @@ describe('InquiriesService', () => {
       expect(written.data.ipHash).toMatch(/[0-9a-f]{64}$/);
     });
 
-    it('keys the hash when a secret is configured', () => {
-      // An UNKEYED SHA-256 of an IPv4 address is not the protection it looks
-      // like: 2^32 is small enough to enumerate, so anyone holding the table
-      // can recover the address by hashing guesses. The key makes that
-      // impossible without also holding the secret.
-      const keyed = hashIp('203.0.113.7', { INQUIRY_IP_HASH_SECRET: 's3cret' });
-      const unkeyed = hashIp('203.0.113.7', {});
+    it('keys the hash with the configured secret', () => {
+      const keyed = hashIp('203.0.113.7', {
+        INQUIRY_IP_HASH_SECRET: 'a-sufficiently-long-test-secret',
+      });
 
       expect(keyed).toMatch(/^[0-9a-f]{64}$/);
-      expect(keyed).not.toBe(unkeyed);
       // Deterministic, or it could not group repeats.
-      expect(hashIp('203.0.113.7', { INQUIRY_IP_HASH_SECRET: 's3cret' })).toBe(
-        keyed,
-      );
+      expect(
+        hashIp('203.0.113.7', {
+          INQUIRY_IP_HASH_SECRET: 'a-sufficiently-long-test-secret',
+        }),
+      ).toBe(keyed);
     });
 
-    it('marks the weaker unkeyed form in the data rather than hiding it', () => {
-      // Visible in the column, so the weaker variant is distinguishable from
-      // the keyed one rather than silently indistinguishable.
-      expect(hashIp('203.0.113.7', {})).toMatch(/^unkeyed:/);
+    it('STORES NOTHING when there is no usable secret', () => {
+      // An unkeyed SHA-256 of an IPv4 address is reversible by anyone holding
+      // the table -- 2^32 is small enough to enumerate outright. An earlier
+      // version stored one prefixed "unkeyed:", which labelled the weakness
+      // without removing it: the personal data was still recoverable.
+      // Declining to store anything is the only honest option, and the
+      // limiter already skips a null bucket, so the per-IP limit simply does
+      // not run rather than running on a reversible digest.
+      expect(hashIp('203.0.113.7', {})).toBeNull();
+      // A short secret is guessable, which puts us back where we started.
       expect(
-        hashIp('203.0.113.7', { INQUIRY_IP_HASH_SECRET: 's' }),
-      ).not.toMatch(/^unkeyed:/);
+        hashIp('203.0.113.7', { INQUIRY_IP_HASH_SECRET: 'short' }),
+      ).toBeNull();
     });
 
     it('rejects once the per-IP limit is reached', async () => {
       // Asserted directly, not merely that the count happens -- the review
       // pointed out the old test proved the query ran and nothing more.
+      process.env.INQUIRY_IP_HASH_SECRET = 'a-sufficiently-long-test-secret';
       prisma.inquiry.count.mockImplementation(
         ({ where }: { where: { ipHash?: string } }) =>
           Promise.resolve(where.ipHash ? INQUIRY_RATE_LIMIT_PER_IP : 0),

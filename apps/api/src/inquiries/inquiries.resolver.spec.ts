@@ -3,6 +3,7 @@ import { InquiriesService } from './inquiries.service';
 
 describe('InquiriesResolver', () => {
   const input = {
+    idempotencyKey: 'test-submission-key-0001',
     productId: 'seed-product-01',
     buyerName: 'Asha Rao',
     buyerPhone: '+919000000001',

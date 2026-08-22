@@ -166,6 +166,19 @@ model Inquiry {
   /// still enough to count repeats, which is all the limiter needs.
   ipHash String?
 
+  /// Stable per-SUBMISSION key, supplied by the client and unique.
+  ///
+  /// A lost response is indistinguishable from a failed one, so a retry would
+  /// otherwise create a second inquiry AND send the seller a second WhatsApp
+  /// message. The client generates this once per submission and reuses it on
+  /// every retry, so the database rejects the duplicate rather than trusting
+  /// the client to notice.
+  ///
+  /// Nullable because rows written before this existed have none, and in
+  /// Postgres NULLs do not collide in a unique index -- so old rows coexist
+  /// without a backfill inventing keys that never identified anything.
+  idempotencyKey String? @unique
+
   status InquiryStatus @default(PENDING)
 
   /// Meta's message id, when the send succeeded. The only handle we have for

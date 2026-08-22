@@ -14,7 +14,14 @@ import {
 
 export type WhatsappSendResult =
   | { ok: true; providerMessageId: string | null }
-  | { ok: false; reason: string };
+  /**
+   * AMBIGUOUS: the request may or may not have reached Meta. A timeout or a
+   * dropped connection means the message might already be on its way, so
+   * this must never be treated as a definite failure -- retrying from that
+   * assumption is how a seller receives the same inquiry twice.
+   */
+  | { ok: false; ambiguous: true; reason: string }
+  | { ok: false; ambiguous?: false; reason: string };
 
 /** E.164: a leading + and 8-15 digits, first digit non-zero. */
 const E164 = /^\+[1-9]\d{7,14}$/;
@@ -253,13 +260,17 @@ export class WhatsappService {
       // lead and not a 500 shown to the buyer.
       // AbortSignal.timeout rejects with a TimeoutError; surfaced by name so
       // an operator reading failureReason can tell a stall from a refusal.
-      const reason =
-        error instanceof Error
-          ? error.name === 'TimeoutError'
-            ? `provider timed out after ${WHATSAPP_REQUEST_TIMEOUT_MS}ms`
-            : error.message
+      // A timeout or a transport error is AMBIGUOUS, not a failure: the
+      // request may have reached Meta and been accepted before the response
+      // was lost. Recording it as FAILED invites a retry that double-messages
+      // the seller.
+      const timedOut = error instanceof Error && error.name === 'TimeoutError';
+      const reason = timedOut
+        ? `provider timed out after ${WHATSAPP_REQUEST_TIMEOUT_MS}ms`
+        : error instanceof Error
+          ? error.message
           : 'unknown send failure';
-      return { ok: false, reason };
+      return { ok: false, ambiguous: true, reason };
     }
   }
 

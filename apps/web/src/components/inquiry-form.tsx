@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   INQUIRY_MESSAGE_MAX_LENGTH,
@@ -41,6 +41,13 @@ export function InquiryForm({
   const formId = useId();
   const [status, setStatus] = useState<Status>("idle");
   const [delivered, setDelivered] = useState(false);
+  // One key per SUBMISSION, held across retries.
+  //
+  // Regenerating it per attempt would defeat the server's deduplication
+  // entirely -- a lost response is indistinguishable from a failure, so the
+  // retry that follows must carry the same key or it becomes a second
+  // inquiry and a second WhatsApp message to the seller.
+  const submissionKey = useRef<string>(crypto.randomUUID());
   const [error, setError] = useState<InquiryFailure | null>(null);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -50,6 +57,7 @@ export function InquiryForm({
     setError(null);
 
     const result = await submitInquiry({
+      idempotencyKey: submissionKey.current,
       productId,
       buyerName: String(data.get("buyerName") ?? "").trim(),
       buyerPhone: String(data.get("buyerPhone") ?? "").trim(),
