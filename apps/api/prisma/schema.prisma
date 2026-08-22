@@ -153,17 +153,24 @@ model Inquiry {
   buyerPhone String
   message    String
 
-  /// SHA-256 of the caller's IP, never the IP itself.
+  /// KEYED HMAC of the caller's IP, or absent. Never the address itself, and
+  /// never an unkeyed digest.
   ///
-  /// The per-phone limit is keyed on a value the caller types, so rotating
-  /// E.164 numbers defeats it entirely -- this endpoint is unauthenticated
-  /// and sends outbound WhatsApp messages, so that made it a spam relay with
-  /// the appearance of protection. This adds a dimension the caller does not
-  /// choose freely.
+  /// The per-phone limits are keyed on values the caller types, so rotating
+  /// E.164 numbers defeats them entirely. This adds a dimension the caller
+  /// does not choose freely.
   ///
-  /// Hashed because a raw IP is personal data under DPDP, and this table is
-  /// read by operators triaging leads who have no need to see it. A hash is
-  /// still enough to count repeats, which is all the limiter needs.
+  /// A raw IP is personal data under DPDP sitting in a table operators read to
+  /// triage leads. An UNKEYED SHA-256 is barely better: IPv4's 2^32 space is
+  /// small enough to enumerate outright, so anyone holding the table recovers
+  /// the address by hashing guesses. The key makes that impossible without
+  /// also holding the secret, while keeping the value deterministic, which is
+  /// all a rate limiter needs it for.
+  ///
+  /// Null when no usable secret is configured, or when no trustworthy
+  /// per-client address is available -- the limiter skips a null bucket rather
+  /// than collapsing every such caller into one shared one. Written by the
+  /// submission flow; nothing in this change populates it.
   ipHash String?
 
   /// Stable per-SUBMISSION key, supplied by the client and unique.

@@ -393,10 +393,6 @@ export const SESSION_TOKEN_TTL = "7d";
 export const ONBOARDING_TOKEN_TTL = "15m";
 
 /** How long a requested OTP stays valid. */
-// A stalled provider connection must not hold a buyer's request open. Meta
-// accepting the socket and then never answering is the case a plain fetch
-// waits on indefinitely.
-
 export const OTP_TTL_MS = 5 * 60 * 1000;
 
 /** Idle window after which a browser session id is regenerated. */
