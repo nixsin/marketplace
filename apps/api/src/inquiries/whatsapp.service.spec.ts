@@ -475,6 +475,131 @@ describe('template parameter budgets', () => {
   });
 });
 
+describe('a 200 whose body carries an error', () => {
+  // Success is a property of the BODY, not the status line -- a lesson this
+  // repo already documented INBOUND, where a GraphQL resolver failure arrives
+  // as HTTP 200 with an `errors` array. Marking an inquiry SENT that was
+  // never accepted is the highest-stakes error here: once the buyer is told
+  // about delivery, it becomes a person waiting for a reply that is not
+  // coming.
+  const service = new WhatsappService();
+
+  afterEach(() => {
+    global.fetch = REAL_FETCH;
+    jest.restoreAllMocks();
+  });
+
+  it('is NOT reported as sent', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ error: { message: 'nope' } }),
+    });
+
+    const result = await service.sendInquiry(
+      '+919876543210',
+      { summary: 's', buyerMessage: 'q' },
+      CONFIGURED,
+    );
+
+    expect(result.ok).toBe(false);
+  });
+
+  it('still accepts a normal success body', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ messages: [{ id: 'wamid.ok' }] }),
+    });
+
+    expect(
+      await service.sendInquiry(
+        '+919876543210',
+        { summary: 's', buyerMessage: 'q' },
+        CONFIGURED,
+      ),
+    ).toEqual({ ok: true, providerMessageId: 'wamid.ok' });
+  });
+
+  it('does not trip on a null error key', async () => {
+    // `{ error: null }` is not an error, and treating it as one would refuse
+    // a send the provider accepted.
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ error: null, messages: [{ id: 'w.1' }] }),
+    });
+
+    expect(
+      (
+        await service.sendInquiry(
+          '+919876543210',
+          { summary: 's', buyerMessage: 'q' },
+          CONFIGURED,
+        )
+      ).ok,
+    ).toBe(true);
+  });
+});
+
+describe('provider HTTP status classification', () => {
+  let fetchMock: jest.Mock;
+  const service = new WhatsappService();
+
+  const respondWith = (status: number) => {
+    fetchMock = jest.fn().mockResolvedValue({
+      ok: false,
+      status,
+      statusText: 'x',
+      json: () => Promise.resolve({ error: { message: 'upstream said no' } }),
+    });
+    global.fetch = fetchMock;
+  };
+
+  afterEach(() => {
+    global.fetch = REAL_FETCH;
+    jest.restoreAllMocks();
+  });
+
+  it.each([500, 502, 503, 504])(
+    'treats %d as AMBIGUOUS, like a timeout',
+    async (status) => {
+      // Our own AbortSignal firing at 10s was "we do not know", while Meta's
+      // gateway timing out at 9s and answering 504 was "definitely not sent".
+      // Same physical situation, opposite conclusion -- and the FAILED one
+      // invites a retry that puts the inquiry on the seller's phone twice.
+      respondWith(status);
+
+      const result = await service.sendInquiry(
+        '+919876543210',
+        { summary: 's', buyerMessage: 'q' },
+        CONFIGURED,
+      );
+
+      expect(result).toMatchObject({ ok: false, ambiguous: true });
+    },
+  );
+
+  it.each([400, 401, 403, 404, 429])(
+    'keeps %d definite -- Meta answered, it did not fail to answer',
+    async (status) => {
+      // 429 included deliberately: being rate-limited is Meta rejecting the
+      // request outright, which is a real answer rather than an absence of
+      // one, so FAILED is the truthful record.
+      respondWith(status);
+
+      const result = await service.sendInquiry(
+        '+919876543210',
+        { summary: 's', buyerMessage: 'q' },
+        CONFIGURED,
+      );
+
+      expect(result.ok).toBe(false);
+      expect((result as { ambiguous?: boolean }).ambiguous).toBeFalsy();
+    },
+  );
+});
+
 describe('an accepted send whose body will not parse', () => {
   it('reports SUCCESS with an unknown id, never failure', async () => {
     // Meta has already accepted the message -- response.ok is true -- so a

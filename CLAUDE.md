@@ -695,6 +695,21 @@ a retry that double-messages the seller), and a failed `markFailed` still
 returns FAILED. Both log loudly for reconciliation — a stuck row is visible and
 fixable, a duplicate message to a real person is not.
 
+**A 5xx from the provider is AMBIGUOUS too, not just a transport timeout.**
+The asymmetry was stark before it was fixed: our own `AbortSignal` firing at
+10s recorded "we do not know", while Meta's gateway timing out at 9s and
+answering `504` recorded "definitely not sent" — the same physical situation,
+opposite conclusion, and the FAILED one invites a retry that double-messages
+the seller. 4xx stays definite, `429` included: those are Meta rejecting the
+request outright, which is a real answer rather than an absence of one.
+
+**Success is a property of the BODY, not the status line — outbound as well
+as inbound.** A `200` carrying an `error` key is refused rather than recorded
+`SENT`, the same discipline the edge-caching section above applies to this
+API's own responses. Marking an inquiry `SENT` that was never accepted is the
+highest-stakes error in this feature: once the buyer is told about delivery,
+it becomes a person waiting for a reply that is not coming.
+
 **An AMBIGUOUS outcome stays PENDING, never FAILED.** A timeout or dropped
 connection means the request may have reached Meta and been accepted before the
 response was lost. FAILED invites a retry that double-messages the seller;

@@ -225,7 +225,26 @@ export class WhatsappService {
         // Meta returns structured errors; surface the message but never the
         // whole payload, which echoes request content back into logs.
         const detail = await this.readErrorMessage(response);
-        return { ok: false, reason: `provider ${response.status}: ${detail}` };
+        const reason = `provider ${response.status}: ${detail}`;
+
+        // A 5xx is AMBIGUOUS, exactly like a timeout.
+        //
+        // The asymmetry this fixes was stark: our own AbortSignal firing at
+        // 10s was treated as "we do not know", while Meta's gateway timing
+        // out at 9s and answering 504 was treated as "definitely not sent".
+        // Same physical situation, opposite conclusion. A 502/503/504 means
+        // the request may well have reached Meta and been processed before
+        // the gateway gave up, so recording FAILED tells an operator it
+        // definitely did not send -- and a retry from that belief puts the
+        // inquiry on the seller's phone twice.
+        //
+        // 4xx stays definite, including 429: those are Meta rejecting the
+        // request outright, which is a real answer rather than an absence of
+        // one.
+        if (response.status >= 500) {
+          return { ok: false, ambiguous: true, reason };
+        }
+        return { ok: false, reason };
       }
 
       // Parsed in its OWN try. Meta has accepted the message by this point --
@@ -238,6 +257,23 @@ export class WhatsappService {
       // block, so reusing the name is a temporal-dead-zone error, not a shadow.
       try {
         const responseBody: unknown = await response.json();
+
+        // Success is a property of the BODY, not the status line.
+        //
+        // This repo already learned that inbound -- see CLAUDE.md on
+        // edge-caching GraphQL, where a resolver failure arrives as HTTP 200
+        // with an `errors` array. The same discipline outbound costs nothing
+        // and guards the highest-stakes error in this feature: marking an
+        // inquiry SENT that was never accepted, which once the buyer is told
+        // about delivery becomes a person waiting for a reply that is not
+        // coming.
+        if (hasErrorKey(responseBody)) {
+          return {
+            ok: false,
+            reason: `provider ${response.status}: error in an otherwise successful response`,
+          };
+        }
+
         return { ok: true, providerMessageId: readMessageId(responseBody) };
       } catch {
         this.logger.warn(
@@ -298,4 +334,20 @@ function readMessageId(payload: unknown): string | null {
   if (typeof first !== 'object' || first === null) return null;
   const { id } = first as { id?: unknown };
   return typeof id === 'string' ? id : null;
+}
+
+/**
+ * Whether a parsed provider response carries an error, whatever its status.
+ *
+ * Deliberately shallow and shape-agnostic: the point is not to interpret
+ * Meta's error format but to refuse to call something a success when the body
+ * says otherwise.
+ */
+function hasErrorKey(payload: unknown): boolean {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    'error' in payload &&
+    (payload as { error?: unknown }).error != null
+  );
 }
