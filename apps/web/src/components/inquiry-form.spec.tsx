@@ -164,6 +164,35 @@ describe("InquiryForm", () => {
     resolve({ ok: true });
   });
 
+  it("locks EVERY field while sending, not just the button", async () => {
+    // The button alone was disabled, so a buyer could edit the message while
+    // the request was in flight and then be shown "recorded" for the values
+    // already sent -- confirming something that did not happen, arriving
+    // through the one door still left open.
+    let resolve: (v: { ok: true }) => void = () => {};
+    submitInquiryMock.mockReturnValue(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    renderForm();
+    await fillAndSubmit();
+
+    for (const label of [/your name/i, /your phone number/i, /your question/i]) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
+    resolve({ ok: true });
+  });
+
+  it("unlocks the fields again after a failure, so a retry is possible", async () => {
+    submitInquiryMock.mockResolvedValue({ ok: false, reason: "network" as const });
+    renderForm();
+    await fillAndSubmit();
+    await screen.findByRole("alert");
+
+    expect(screen.getByLabelText(/your question/i)).toBeEnabled();
+  });
+
   it("labels the form with the product, so its purpose is clear out of context", () => {
     renderForm();
     expect(

@@ -148,6 +148,21 @@ export function InquiryForm({
         </p>
       </div>
 
+      {/* A fieldset, so EVERY control is disabled while a request is in
+          flight -- not just the submit button, which was the case before.
+          A buyer could edit the message while waiting and then be shown
+          "recorded" for the values that had already been sent: the same
+          confirming-something-that-did-not-happen defect this component is
+          built around, arriving through the one door still left open.
+
+          A fieldset rather than a `disabled` prop on each input, because
+          the next field added would silently miss it. `min-w-0` because a
+          fieldset establishes a min-content floor that stops flex children
+          shrinking. */}
+      <fieldset
+        disabled={status === "sending"}
+        className="flex min-w-0 flex-col gap-3"
+      >
       <div className="flex flex-col gap-1">
         <label htmlFor={`${formId}-name`} className="text-sm font-medium">
           {t("inquiryName")}
@@ -202,6 +217,8 @@ export function InquiryForm({
           className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-base shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 md:text-sm"
         />
       </div>
+
+      </fieldset>
 
       {error && (
         // role="alert" so the failure is announced; a silently-appearing red

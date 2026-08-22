@@ -370,7 +370,7 @@ export async function submitInquiry(
   // function's discriminated return, and the form has no catch, so it would
   // sit disabled in "sending" forever on an unhandled rejection.
   let payload: {
-    data?: { createInquiry?: { id?: string } | null };
+    data?: { createInquiry?: { id?: unknown } | null };
     errors?: { message?: string }[];
   } | null;
   try {
@@ -393,7 +393,16 @@ export async function submitInquiry(
     };
   }
 
-  return payload?.data?.createInquiry
+  // The ID is checked, not merely the object's presence.
+  //
+  // `{ data: { createInquiry: {} } }` is truthy, and a bare truthiness test
+  // reported it as a recorded inquiry -- the same defect as confirmation copy
+  // claiming an outcome nothing produced, one layer lower. Nothing that lands
+  // here should be shaped that way, but "should" is what makes it worth
+  // checking: a schema drift or an intermediary rewriting the body is exactly
+  // the case where the buyer must not be told it worked.
+  const id = payload?.data?.createInquiry?.id;
+  return typeof id === "string" && id.length > 0
     ? { ok: true }
     : { ok: false, reason: "unknown" };
 }

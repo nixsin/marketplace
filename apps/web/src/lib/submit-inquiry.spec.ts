@@ -99,6 +99,22 @@ describe("submitInquiry", () => {
     });
   });
 
+  it.each([
+    ["an empty object", {}],
+    ["a null id", { id: null }],
+    ["an empty-string id", { id: "" }],
+    ["a non-string id", { id: 42 }],
+  ])("does not report success for a payload with %s", async (_label, node) => {
+    // Every one of these is TRUTHY as an object, and a bare truthiness test
+    // reported them all as a recorded inquiry -- the same defect as
+    // confirmation copy claiming an outcome nothing produced, one layer down.
+    respond({ data: { createInquiry: node } });
+    await expect(submitInquiry(INPUT)).resolves.toEqual({
+      ok: false,
+      reason: "unknown",
+    });
+  });
+
   it("does not throw when the payload has neither data nor errors", async () => {
     respond({});
     await expect(submitInquiry(INPUT)).resolves.toEqual({
