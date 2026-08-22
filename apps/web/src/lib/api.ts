@@ -268,7 +268,7 @@ export async function fetchProductsPaged(
 
 const CREATE_INQUIRY_MUTATION = minifyGql(`
   mutation CreateInquiry($input: CreateInquiryInput!) {
-    createInquiry(input: $input) { id status }
+    createInquiry(input: $input) { id }
   }
 `);
 

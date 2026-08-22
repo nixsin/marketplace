@@ -270,11 +270,17 @@ describe('InquiriesService', () => {
           .mockImplementation(({ data }: { data: object }) =>
             Promise.resolve({ id: 'inq-1', ...data }),
           ),
-        update: jest
-          .fn()
-          .mockImplementation(({ data }: { data: unknown }) =>
-            Promise.resolve({ id: 'inq-1', ...(data as object) }),
-          ),
+        // Returns the WHOLE row with the change applied, as Prisma does. A
+        // mock echoing only `data` back is not a row the code could ever have
+        // written, and it made a partial update -- one that changes
+        // failureReason without touching status -- look as though it had
+        // erased the status.
+        update: jest.fn().mockImplementation(({ data }: { data: unknown }) =>
+          Promise.resolve({
+            ...storedRowFor('inq-1'),
+            ...(data as object),
+          }),
+        ),
         count: jest.fn().mockResolvedValue(0),
       },
     };
@@ -720,7 +726,33 @@ describe('InquiriesService', () => {
       const result = await service.create(ARGS);
 
       expect(result.status).toBe(InquiryStatus.PENDING);
-      expect(prisma.inquiry.update).not.toHaveBeenCalled();
+      // The ATTEMPT is recorded even though the status is not changed. It
+      // previously wrote nothing, so a row left PENDING by an ambiguous send
+      // was byte-identical to one left PENDING by a crash before the send --
+      // and the recovery sweep those are parked for could not tell them
+      // apart. providerMessageId cannot distinguish them either, because an
+      // ambiguous send never returns one.
+      const written = prisma.inquiry.update.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(Object.keys(written.data)).toEqual(['failureReason']);
+      expect(written.data.failureReason).toMatch(/timed out/);
+      expect(result.failureReason).toMatch(/timed out/);
+    });
+
+    it('leaves a never-attempted row distinguishable from an ambiguous one', async () => {
+      // The whole point of recording the attempt: a sweeper keys off this.
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.1',
+      });
+
+      const delivered = await service.create(ARGS);
+
+      // A delivered row carries an id and no reason; an ambiguous one carries
+      // a reason and no id; a never-attempted row carries neither.
+      expect(delivered.providerMessageId).toBe('wamid.1');
+      expect(delivered.failureReason ?? null).toBeNull();
     });
 
     it('does NOT deliver again for an idempotent retry', async () => {

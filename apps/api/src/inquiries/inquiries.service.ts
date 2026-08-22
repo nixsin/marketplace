@@ -143,26 +143,27 @@ export function assertSameSubmission<T extends SubmissionIdentity>(
  * would deliver a buyer's name and phone number to an organisation with
  * nothing to do with the listing.
  */
-export interface InsertedInquiry {
-  inquiry: Prisma.InquiryGetPayload<object>;
-  product: {
-    id: string;
-    name: string;
-    sellerId: string;
-    seller: { whatsappNumber: string | null };
-  };
+export type InsertedInquiry =
   /**
-   * Whether THIS call wrote the row.
-   *
-   * False when the idempotency key matched something already stored, and the
-   * caller must not deliver in that case: the request that created the row is
-   * what sends, so sending again puts the same inquiry on the seller's phone
-   * twice. That is the exact failure idempotency exists to prevent, and
-   * without this flag it arrives through the back door -- the deduplication
-   * works perfectly at the database and the seller is messaged anyway.
+   * This call wrote the row, and carries the product snapshot the
+   * transaction read. Delivery happens only on this shape.
    */
-  inserted: boolean;
-}
+  | {
+      inserted: true;
+      inquiry: Prisma.InquiryGetPayload<object>;
+      product: {
+        id: string;
+        name: string;
+        sellerId: string;
+        seller: { whatsappNumber: string | null };
+      };
+    }
+  /**
+   * The idempotency key already existed. NO product, deliberately: the caller
+   * must not deliver, so it has no business reading one -- and the type is
+   * what enforces that rather than a convention someone can forget.
+   */
+  | { inserted: false; inquiry: Prisma.InquiryGetPayload<object> };
 
 /** Provider text on a column an operator reads, not an unbounded sink. */
 const FAILURE_REASON_MAX_LENGTH = 500;
@@ -451,6 +452,9 @@ export class InquiriesService {
     // consumes no rate-limit budget, so a known key could drive unlimited
     // outbound requests. It belongs to the sweeper, which we trigger and
     // pace.
+    // The union makes this a type-level guarantee: `created.product` does not
+    // exist on the not-inserted branch, so delivering a duplicate is a
+    // compile error rather than a convention to remember.
     if (!created.inserted) return created.inquiry;
 
     // Wrapped, so NOTHING in delivery can fail the mutation.
@@ -481,7 +485,10 @@ export class InquiriesService {
    * has already been persisted. Nothing in it may throw: see markFailed.
    */
   private async deliver(
-    created: InsertedInquiry,
+    // The INSERTED branch only. Taking the union here would let a caller pass
+    // a duplicate and have it delivered; taking the narrowed type makes that
+    // impossible to write.
+    created: Extract<InsertedInquiry, { inserted: true }>,
     submission: SubmissionIdentity,
   ): Promise<Prisma.InquiryGetPayload<object>> {
     const { inquiry, product } = created;
@@ -541,7 +548,22 @@ export class InquiriesService {
           `Inquiry ${inquiry.id} has an AMBIGUOUS provider outcome, left ` +
             `PENDING rather than FAILED: ${reason}`,
         );
-        return inquiry;
+
+        // The ATTEMPT is recorded, even though the status is not changed.
+        //
+        // Without this the branch wrote nothing at all, so a row left PENDING
+        // by an ambiguous send was byte-identical to one left PENDING by a
+        // crash before the send -- and the recovery sweep those cases are
+        // parked for could not tell them apart. It cannot use
+        // providerMessageId to distinguish them either, because an ambiguous
+        // send never returns one; that was an error in this feature's own
+        // notes, corrected here and in #151.
+        //
+        // failureReason on a PENDING row reads oddly, but the alternative is
+        // a column that exists only to say "definitely failed" and a sweeper
+        // that cannot function. Status stays PENDING because that is what is
+        // true: we do not know.
+        return this.recordAttempt(inquiry, result.reason);
       }
 
       this.logger.warn(
@@ -588,6 +610,35 @@ export class InquiriesService {
         status: InquiryStatus.SENT,
         providerMessageId: result.providerMessageId,
       };
+    }
+  }
+
+  /**
+   * Notes an ambiguous attempt without claiming an outcome.
+   *
+   * Status deliberately untouched: PENDING is what is true. Only the reason
+   * is stored, so a later sweep can tell an attempted-but-unknown row from
+   * one that was never attempted at all.
+   */
+  private async recordAttempt(
+    inquiry: Prisma.InquiryGetPayload<object>,
+    reason: string,
+  ): Promise<Prisma.InquiryGetPayload<object>> {
+    const failureReason = sanitizeForLog(reason, FAILURE_REASON_MAX_LENGTH);
+    try {
+      return await this.prisma.inquiry.update({
+        where: { id: inquiry.id },
+        data: { failureReason },
+      });
+    } catch (error) {
+      // Same contract as markFailed: the lead is already saved, so this must
+      // not become the buyer's problem.
+      this.logger.error(
+        `Inquiry ${inquiry.id} had an ambiguous outcome that could not be ` +
+          `recorded: ` +
+          `${sanitizeForLog(error instanceof Error ? error.message : 'unknown error')}`,
+      );
+      return { ...inquiry, failureReason };
     }
   }
 
@@ -654,44 +705,53 @@ export class InquiriesService {
     return this.withSerializationRetry(() =>
       this.prisma.$transaction(
         async (tx) => {
-          // Read INSIDE the transaction, and BEFORE the idempotency check so
-          // both branches answer with the same snapshot. Reading it outside
-          // and reusing that copy would let a product reassigned in the gap
-          // have its inquiry attributed to the previous seller -- and once
-          // delivery exists, that is the buyer's name, phone and question
-          // handed to an organisation with nothing to do with the listing.
-          // Nothing reassigns products today, which is exactly why it would
-          // have gone unnoticed.
+          // The idempotency check runs FIRST, and inside each attempt.
+          //
+          // First, because a recorded submission is answerable without a
+          // product: it is not being delivered, so no snapshot is needed. The
+          // previous order read the product before this check, which made a
+          // retry throw NotFound if the product had since been removed --
+          // breaking the idempotency contract for a row that plainly exists.
+          // Unreachable while Inquiry.productId is ON DELETE RESTRICT, since
+          // a product with inquiries cannot be deleted at all, but resting
+          // correctness on a constraint elsewhere is not a reason to keep the
+          // weaker order.
+          //
+          // Inside each attempt, because two identical requests race and one
+          // is aborted with P2034 and retried. By then the winner has
+          // committed, and its row counts against the very limits this
+          // attempt is about to check -- so at a limit boundary the retry was
+          // rejected with "Too many inquiries" instead of returning the
+          // winner, and the P2002 recovery below never ran because the insert
+          // was never reached. Rechecking here also means a duplicate never
+          // consumes rate-limit budget, which is correct independently: it is
+          // one submission.
+          const seen = await tx.inquiry.findUnique({
+            where: { idempotencyKey: args.idempotencyKey },
+          });
+          if (seen) {
+            // NOT delivered: this row already exists, so the request that
+            // wrote it is what sends. No product is returned, so nothing
+            // downstream can accidentally deliver off this branch.
+            return {
+              inserted: false,
+              inquiry: assertSameSubmission(seen, args),
+            };
+          }
+
+          // Read INSIDE the transaction, and this snapshot is what the insert
+          // AND the send use. Reading it outside and reusing that copy would
+          // let a product reassigned in the gap have its inquiry attributed
+          // to the previous seller -- which once delivery exists means the
+          // buyer's name, phone and question handed to an organisation with
+          // nothing to do with the listing. Nothing reassigns products today,
+          // which is exactly why it would have gone unnoticed.
           const product = await tx.product.findUnique({
             where: { id: args.productId },
             include: { seller: true },
           });
           if (!product) {
             throw new NotFoundException(`Product ${args.productId} not found`);
-          }
-
-          // The idempotency check runs INSIDE each attempt, not only once
-          // before the first one.
-          //
-          // Two identical requests race; one is aborted with P2034 and
-          // retried. By then the winner has committed, and its row counts
-          // against the very limits this attempt is about to check -- so at a
-          // limit boundary the retry was rejected with "Too many inquiries"
-          // instead of returning the winner, and the P2002 recovery below
-          // never ran because the insert was never reached. Rechecking here
-          // also means a duplicate never consumes rate-limit budget, which is
-          // correct independently: it is one submission.
-          const seen = await tx.inquiry.findUnique({
-            where: { idempotencyKey: args.idempotencyKey },
-          });
-          if (seen) {
-            return {
-              inquiry: assertSameSubmission(seen, args),
-              product,
-              // NOT delivered: this row already exists, so the request that
-              // wrote it is what sends.
-              inserted: false,
-            };
           }
 
           // A seller with no number on file is DELIBERATELY not rejected here.
@@ -730,7 +790,7 @@ export class InquiriesService {
           // The product snapshot travels WITH the row. Looking the seller's
           // number up again after the transaction closed would reopen the
           // reassignment gap this read exists to close.
-          return { inquiry, product, inserted: true };
+          return { inserted: true, inquiry, product };
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       ),

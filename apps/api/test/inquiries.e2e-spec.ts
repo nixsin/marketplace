@@ -12,7 +12,6 @@ const CREATE_INQUIRY = `
   mutation CreateInquiry($input: CreateInquiryInput!) {
     createInquiry(input: $input) {
       id
-      status
       createdAt
     }
   }
@@ -106,13 +105,12 @@ describe('Inquiries (e2e)', () => {
     const res = await submit(variables);
 
     expect(res.body.errors).toBeUndefined();
-    // FAILED, not PENDING: this environment has no Meta credentials, so the
-    // send is refused and recorded as such. The capture change asserted
-    // PENDING here because nothing attempted delivery at all -- the status a
-    // row settles at is now a real outcome rather than a default.
+    // No `status`. It reported a real delivery outcome to an unauthenticated
+    // caller, which is more than Product.hasInquiryContact already discloses
+    // -- this test asserting 'FAILED' was itself the evidence that the change
+    // exposed delivery while claiming not to.
     expect(res.body.data.createInquiry).toEqual({
       id: expect.any(String) as string,
-      status: 'FAILED',
       createdAt: expect.any(String) as string,
     });
 
@@ -273,6 +271,8 @@ describe('Inquiries (e2e)', () => {
     expect(serialized).not.toMatch(/not configured/i);
     expect(serialized).not.toMatch(/WHATSAPP_/);
     expect(serialized).not.toMatch(/failureReason/i);
+    // Nor the delivery state itself, in any form.
+    expect(serialized).not.toMatch(/PENDING|SENT|FAILED/);
   });
 
   it('does not deliver twice for an idempotent retry', async () => {

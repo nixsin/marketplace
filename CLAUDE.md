@@ -695,6 +695,26 @@ a retry that double-messages the seller), and a failed `markFailed` still
 returns FAILED. Both log loudly for reconciliation — a stuck row is visible and
 fixable, a duplicate message to a real person is not.
 
+**The buyer-facing response exposes NO delivery state — `status` is gone.**
+It shipped in the capture change, where it was harmless because every row was
+`PENDING` and the field said nothing. Delivery turned it into a real outcome
+still handed to an unauthenticated caller, so the API reported delivery while
+this change claimed not to, and anyone could probe whether a given seller is
+currently reachable — more than `Product.hasInquiryContact` already discloses.
+`InquiryStatus` is no longer registered as a GraphQL enum either, so the state
+machine is not published through introspection. Part 4 adds `delivered`: one
+deliberate field meaning "the provider accepted it", not the internal states.
+
+**An ambiguous outcome WRITES `failureReason` while leaving `status` PENDING.**
+It previously wrote nothing, which made a row left pending by an ambiguous
+send byte-identical to one left pending by a crash before the send — and the
+recovery sweep both cases are parked for cannot function without telling them
+apart. `providerMessageId` does not distinguish them, because an ambiguous
+send never returns one; that was an error in this file's own earlier notes.
+The three states a sweeper keys off are: `FAILED` (definite, safe to re-send),
+`PENDING` with a `failureReason` (attempted, unknown — check the provider
+first), `PENDING` with neither (never attempted).
+
 **A 5xx from the provider is AMBIGUOUS too, not just a transport timeout.**
 The asymmetry was stark before it was fixed: our own `AbortSignal` firing at
 10s recorded "we do not know", while Meta's gateway timing out at 9s and
@@ -733,10 +753,9 @@ delivering. Those are definite non-deliveries and safe to re-send by
 construction — but doing it in the request path hands an attacker an
 amplifier, since a duplicate deliberately consumes no rate-limit budget. It
 belongs to the sweeper in #151, which we trigger and pace. That issue now
-carries the state table the sweeper needs (`FAILED` → re-send; `PENDING`
-without a `providerMessageId` → check first; `SENT` → never), which is the
-reason the ambiguous/definite split was worth shipping here rather than
-deferring with it.
+carries the state table the sweeper needs, which is the reason the
+ambiguous/definite split was worth shipping here rather than deferring with
+it.
 
 **Three parked cases live in [#151](https://github.com/nixsin/marketplace/issues/151)**,
 each with a `FIX(#151)` comment at the exact line. A crash between the commit

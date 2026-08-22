@@ -42,13 +42,6 @@ enum DeviceClass {
 type Inquiry {
   createdAt: DateTime!
   id: ID!
-  status: InquiryStatus!
-}
-
-enum InquiryStatus {
-  FAILED
-  PENDING
-  SENT
 }
 
 """
