@@ -168,6 +168,40 @@ export interface InsertedInquiry {
 const FAILURE_REASON_MAX_LENGTH = 500;
 
 /**
+ * The public site origin, or null when what we have is not one.
+ *
+ * SITE_URL falls back to `http://localhost:3000`, and `render.yaml` declares
+ * NEXT_PUBLIC_SITE_URL only for the WEB service -- so the API resolves that
+ * fallback in production and every seller would receive
+ * `Link: http://localhost:3000/en/products/...`. A dead link, in the outbound
+ * message that is the entire point of this feature.
+ *
+ * The same misconfiguration already shipped once on the web side, where
+ * shared links pointed at localhost. That one could be repaired at runtime by
+ * reading window.location.origin; this one cannot, because there is no
+ * browser -- which is why the link is OMITTED rather than emitted broken. A
+ * seller who gets the buyer's name, number and product still has everything
+ * they need to reply; a seller who clicks a localhost link concludes the
+ * marketplace is broken.
+ */
+export function publicSiteUrl(siteUrl: string = SITE_URL): string | null {
+  const trimmed = siteUrl.replace(/\/+$/, '');
+  if (!trimmed) return null;
+  let host: string;
+  try {
+    host = new URL(trimmed).hostname;
+  } catch {
+    return null;
+  }
+  // Loopback in any spelling, plus the unspecified address a container binds.
+  // URL.hostname keeps the brackets around an IPv6 literal, so '::1' arrives
+  // as '[::1]' and a bare comparison missed it -- caught by the test rather
+  // than by reading.
+  const local = ['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0'];
+  return local.includes(host) ? null : trimmed;
+}
+
+/**
  * The metadata half of the outbound message.
  *
  * CONTACT FIRST, and the product name bounded. The From line used to come
@@ -193,7 +227,7 @@ export function buildInquirySummary(input: {
   buyerPhone: string;
   siteUrl?: string;
 }): string {
-  const base = (input.siteUrl ?? SITE_URL).replace(/\/+$/, '');
+  const base = publicSiteUrl(input.siteUrl ?? SITE_URL);
   const name =
     input.productName.length > INQUIRY_SUMMARY_NAME_MAX_LENGTH
       ? `${input.productName.slice(0, INQUIRY_SUMMARY_NAME_MAX_LENGTH - 1)}\u2026`
@@ -206,7 +240,9 @@ export function buildInquirySummary(input: {
     ``,
     `Product: ${name}`,
     `Ref: ${input.productId}`,
-    `Link: ${base}/en/products/${input.productId}`,
+    // Omitted rather than emitted broken when no public origin is configured.
+    // The Ref line is what keeps the inquiry traceable without it.
+    ...(base ? [`Link: ${base}/en/products/${input.productId}`] : []),
   ].join('\n');
 }
 
@@ -385,9 +421,27 @@ export class InquiriesService {
     // never-attempted from attempted-ambiguous, which providerMessageId
     // already does. An outbox written in the same transaction is the fuller
     // answer.
-    return created.inserted
-      ? this.deliver(created, submission)
-      : created.inquiry;
+    if (!created.inserted) return created.inquiry;
+
+    // Wrapped, so NOTHING in delivery can fail the mutation.
+    //
+    // Every branch inside deliver() already handles its own errors, and
+    // sendInquiry returns a result rather than throwing -- but "does not
+    // throw" is a property of that code today, not a guarantee this one can
+    // rest on. sendInquiry builds its request payload BEFORE its own try, and
+    // the whole design of this method is that the lead is saved before any of
+    // it runs. An escape here tells the buyer their inquiry failed when it is
+    // sitting in the table, and invites them to submit it again.
+    try {
+      return await this.deliver(created, submission);
+    } catch (error) {
+      this.logger.error(
+        `Inquiry ${created.inquiry.id} was recorded but delivery threw ` +
+          `unexpectedly; the lead is safe and the row is left as written: ` +
+          `${sanitizeForLog(error instanceof Error ? error.message : 'unknown error')}`,
+      );
+      return created.inquiry;
+    }
   }
 
   /**
@@ -410,6 +464,18 @@ export class InquiriesService {
       // for such sellers anyway (Product.hasInquiryContact), so reaching this
       // means a direct caller, or a number removed after the page loaded.
       return this.markFailed(inquiry, 'seller has no WhatsApp number');
+    }
+
+    if (!publicSiteUrl()) {
+      // Loud, and naming the variable. The send still goes -- the buyer's
+      // number is what makes an inquiry actionable -- but the seller gets no
+      // link, and an operator should know why rather than discovering it from
+      // a seller asking.
+      this.logger.warn(
+        `[NOT CONFIGURED] NEXT_PUBLIC_SITE_URL is unset or points at ` +
+          `localhost on this service, so outbound inquiries carry no product ` +
+          `link. render.yaml declares it for the web service only.`,
+      );
     }
 
     const result = await this.whatsapp.sendInquiry(sellerNumber, {
@@ -513,7 +579,11 @@ export class InquiriesService {
         // operator reads, not a place to accumulate arbitrary length.
         data: {
           status: InquiryStatus.FAILED,
-          failureReason: reason.slice(0, FAILURE_REASON_MAX_LENGTH),
+          // Flattened before STORAGE, not only before logging. This is
+          // provider-supplied text on a column an operator reads and may
+          // paste elsewhere; newlines and control characters in it are the
+          // same hazard one step removed.
+          failureReason: sanitizeForLog(reason, FAILURE_REASON_MAX_LENGTH),
         },
       });
     } catch (error) {
@@ -530,7 +600,7 @@ export class InquiriesService {
       return {
         ...inquiry,
         status: InquiryStatus.FAILED,
-        failureReason: reason.slice(0, FAILURE_REASON_MAX_LENGTH),
+        failureReason: sanitizeForLog(reason, FAILURE_REASON_MAX_LENGTH),
       };
     }
   }

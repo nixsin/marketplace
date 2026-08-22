@@ -12,6 +12,7 @@ import {
   buildInquiryMessage,
   buildInquirySummary,
   hashIp,
+  publicSiteUrl,
 } from './inquiries.service';
 import { WhatsappService, sanitizeTemplateParam } from './whatsapp.service';
 import { randomBytes } from 'node:crypto';
@@ -152,6 +153,63 @@ describe('buildInquiryMessage', () => {
   it('includes how to reach the buyer back', () => {
     expect(message).toContain('Asha Rao');
     expect(message).toContain('+919000000001');
+  });
+});
+
+describe('publicSiteUrl', () => {
+  // SITE_URL falls back to http://localhost:3000, and render.yaml declares
+  // NEXT_PUBLIC_SITE_URL only for the WEB service -- so the API resolves that
+  // fallback in production and every seller would have received
+  // `Link: http://localhost:3000/en/products/...`. Verified by importing the
+  // config with the variable unset before this existed.
+  it.each([
+    ['http://localhost:3000', 'the development fallback'],
+    ['http://127.0.0.1:3000', 'loopback by address'],
+    ['http://[::1]:3000', 'loopback over IPv6'],
+    ['http://0.0.0.0:3000', 'the unspecified address a container binds'],
+    ['', 'nothing at all'],
+    ['not a url', 'something unparseable'],
+  ])('rejects %s (%s)', (value) => {
+    expect(publicSiteUrl(value)).toBeNull();
+  });
+
+  it('accepts a real public origin, without a trailing slash', () => {
+    expect(publicSiteUrl('https://laxair.shop/')).toBe('https://laxair.shop');
+  });
+});
+
+describe('the outbound summary without a public site url', () => {
+  it('OMITS the link rather than sending a dead one', () => {
+    // A seller who clicks a localhost link concludes the marketplace is
+    // broken. One who gets a name, a number and a product does not need the
+    // link at all -- which is why this degrades rather than refusing.
+    const summary = buildInquirySummary({
+      productName: 'Portable Digital X-Ray Machine',
+      productId: 'seed-product-01',
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+      siteUrl: 'http://localhost:3000',
+    });
+
+    expect(summary).not.toContain('localhost');
+    expect(summary).not.toContain('Link:');
+    // Everything that makes the inquiry actionable survives.
+    expect(summary).toContain('Asha Rao');
+    expect(summary).toContain('+919000000001');
+    // And it stays traceable without the link.
+    expect(summary).toContain('Ref: seed-product-01');
+  });
+
+  it('includes the link when a real origin is configured', () => {
+    expect(
+      buildInquirySummary({
+        productName: 'X',
+        productId: 'p1',
+        buyerName: 'Asha',
+        buyerPhone: '+919000000001',
+        siteUrl: 'https://laxair.shop',
+      }),
+    ).toContain('Link: https://laxair.shop/en/products/p1');
   });
 });
 
@@ -652,6 +710,39 @@ describe('InquiriesService', () => {
       await service.create(ARGS);
 
       expect(whatsapp.sendInquiry).not.toHaveBeenCalled();
+    });
+
+    it('is never failed by an unexpected throw from the provider layer', async () => {
+      // sendInquiry returns a result rather than throwing, but that is a
+      // property of its code today -- it builds its request payload before
+      // its own try. The lead is already saved by the time delivery runs, so
+      // an escape would tell the buyer their inquiry failed when it is
+      // sitting in the table, and invite them to submit it again.
+      whatsapp.sendInquiry.mockImplementation(() => {
+        throw new TypeError('payload build blew up');
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(result.id).toBe('inq-1');
+      expect(prisma.inquiry.create).toHaveBeenCalled();
+    });
+
+    it('flattens provider text before STORING it, not just before logging', async () => {
+      // failureReason is on a column an operator reads and may paste
+      // elsewhere; newlines in it are the same hazard one step removed.
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        reason: 'provider said\nERROR forged\tline',
+      });
+
+      await service.create(ARGS);
+
+      const written = prisma.inquiry.update.mock.calls[0][0] as {
+        data: { failureReason: string };
+      };
+      expect(written.data.failureReason).not.toContain('\n');
+      expect(written.data.failureReason).not.toContain('\t');
     });
 
     it('does not report failure when marking a FAILED inquiry fails', async () => {
