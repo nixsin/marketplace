@@ -86,7 +86,7 @@ describe('canReceiveInquiries', () => {
     ).toBe(true);
   });
 
-  it.each([
+  it.each<[string | null | undefined, string]>([
     ['98765 43210', 'local format with spaces'],
     ['not-a-number', 'free text'],
     ['+91', 'too short'],

@@ -147,6 +147,95 @@ describe('InquiriesService', () => {
     expect(buckets.every((b) => b === '+919876543210')).toBe(true);
   });
 
+  it('reads the product THROUGH THE TRANSACTION CLIENT, not the base client', async () => {
+    // Reading it outside and reusing the copy meant a product reassigned in
+    // the gap would have its inquiry attributed to, and DELIVERED TO, the
+    // previous seller -- handing the buyer's name, phone and question to an
+    // organisation with nothing to do with the listing. Nothing reassigns
+    // products today, which is exactly why it would have gone unnoticed.
+    //
+    // The transaction client here is a DISTINCT object from the base client.
+    // An earlier version of this test handed the callback `prisma` itself, so
+    // tx.product and this.prisma.product were the same mock and the assertion
+    // could not tell the two apart -- it passed against the very bug it was
+    // written to catch.
+    const tx = {
+      product: { findUnique: jest.fn().mockResolvedValue(PRODUCT) },
+      inquiry: {
+        create: jest
+          .fn()
+          .mockImplementation(({ data }: { data: object }) =>
+            Promise.resolve({ id: 'inq-1', ...data }),
+          ),
+        count: jest.fn().mockResolvedValue(0),
+      },
+    };
+    prisma.$transaction.mockImplementation((fn: (client: unknown) => unknown) =>
+      Promise.resolve(fn(tx)),
+    );
+
+    await service.create(ARGS);
+
+    expect(tx.product.findUnique).toHaveBeenCalled();
+    expect(prisma.product.findUnique).not.toHaveBeenCalled();
+    expect(tx.inquiry.create).toHaveBeenCalled();
+  });
+
+  it('sends to the seller the transaction saw, not a pre-read copy', async () => {
+    // The snapshot taken inside the transaction is what BOTH the insert and
+    // the send use.
+    prisma.product.findUnique.mockResolvedValue({
+      ...PRODUCT,
+      sellerId: 'org-current',
+      seller: { id: 'org-current', whatsappNumber: '+919999900000' },
+    });
+
+    await service.create(ARGS);
+
+    expect(whatsapp.sendInquiry).toHaveBeenCalledWith(
+      '+919999900000',
+      expect.anything(),
+    );
+    const written = prisma.inquiry.create.mock.calls[0][0] as {
+      data: { sellerId: string };
+    };
+    expect(written.data.sellerId).toBe('org-current');
+  });
+
+  it('trims name and message server-side', async () => {
+    // The mutation is public, so a direct caller bypasses the form's trim.
+    await service.create({ ...ARGS, buyerName: '  Asha  ', message: '  hi  ' });
+
+    const written = prisma.inquiry.create.mock.calls[0][0] as {
+      data: { buyerName: string; message: string };
+    };
+    expect(written.data.buyerName).toBe('Asha');
+    expect(written.data.message).toBe('hi');
+  });
+
+  it.each([
+    ['   ', 'hi', 'whitespace-only name'],
+    ['Asha', '   ', 'whitespace-only message'],
+  ])('rejects %s / %s (%s)', async (buyerName, message) => {
+    // @Length(2) accepts "  " and @MinLength(1) accepts " ", so the seller
+    // would receive an inquiry with no discernible sender or question.
+    await expect(
+      service.create({ ...ARGS, buyerName, message }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.inquiry.create).not.toHaveBeenCalled();
+  });
+
+  it('does not report failure when marking a DELIVERED inquiry sent fails', async () => {
+    // The provider has already accepted the message. Surfacing the write
+    // error would tell the buyer it did not go through and invite a retry
+    // that sends the seller a duplicate. A stuck PENDING row is a visible,
+    // fixable inconsistency; a duplicate WhatsApp message is not.
+    prisma.inquiry.update.mockRejectedValue(new Error('connection lost'));
+    jest.spyOn(service['logger'], 'error').mockImplementation(() => undefined);
+
+    await expect(service.create(ARGS)).resolves.toBeDefined();
+  });
+
   it('rejects an inquiry about a product that does not exist', async () => {
     prisma.product.findUnique.mockResolvedValue(null);
     await expect(service.create(ARGS)).rejects.toBeInstanceOf(

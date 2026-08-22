@@ -82,7 +82,7 @@ describe('WhatsappService', () => {
   it('rejects a malformed recipient before any network call', async () => {
     const result = await service.sendInquiry(
       '98765 43210',
-      'hello',
+      { summary: 'hello', buyerMessage: 'q' },
       CONFIGURED,
     );
 
@@ -172,7 +172,7 @@ describe('WhatsappService', () => {
     expect(result).toEqual({ ok: false, reason: 'ECONNRESET' });
   });
 
-  it.each([
+  it.each<[unknown, string]>([
     [{}, 'no messages key'],
     [{ messages: [] }, 'empty messages array'],
     [{ messages: [{}] }, 'message without an id'],
@@ -345,6 +345,31 @@ describe('template parameter budgets', () => {
     // Intact: the whole question survives, metadata notwithstanding.
     expect(params[1].text).toHaveLength(1000);
     expect(params[1].text.endsWith('q')).toBe(true);
+    jest.restoreAllMocks();
+  });
+});
+
+describe('an accepted send whose body will not parse', () => {
+  it('reports SUCCESS with an unknown id, never failure', async () => {
+    // Meta has already accepted the message -- response.ok is true -- so a
+    // body that will not parse must degrade to "sent, id unknown". Letting it
+    // fall through to the failure path marked a DELIVERED inquiry FAILED, and
+    // a retry from that state sends the seller a duplicate.
+    const service = new WhatsappService();
+    jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new SyntaxError('Unexpected end of JSON')),
+    });
+
+    const result = await service.sendInquiry(
+      '+919876543210',
+      { summary: 'hi', buyerMessage: 'q' },
+      CONFIGURED,
+    );
+
+    expect(result).toEqual({ ok: true, providerMessageId: null });
     jest.restoreAllMocks();
   });
 });

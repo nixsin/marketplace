@@ -86,7 +86,20 @@ describe('resolveCallerIp', () => {
     // this origin answers directly on its .onrender.com hostname. A caller
     // skipping the edge could set a fresh value per request and walk straight
     // past the per-IP limit.
-    expect(resolveCallerIp(req, {})).toBe('10.0.0.9');
+    expect(resolveCallerIp(req, {})).toBe('10.0.0.10');
+  });
+
+  it('uses the SOCKET address, not req.ip, while the flag is off', () => {
+    // Express derives req.ip from X-Forwarded-For whenever app-level
+    // `trust proxy` is enabled -- a setting elsewhere in the app, invisible
+    // from here. Preferring req.ip therefore let a spoofable value back in
+    // through the side door and silently undid the opt-in above.
+    expect(
+      resolveCallerIp(
+        { ip: '203.0.113.99', socket: { remoteAddress: '10.0.0.10' } },
+        {},
+      ),
+    ).toBe('10.0.0.10');
   });
 
   it('trusts them only when explicitly enabled', () => {
@@ -100,7 +113,7 @@ describe('resolveCallerIp', () => {
     // string, not for "1", "yes" or "TRUE".
     for (const value of ['1', 'yes', 'TRUE', 'on']) {
       expect(resolveCallerIp(req, { INQUIRY_TRUST_PROXY_HEADERS: value })).toBe(
-        '10.0.0.9',
+        '10.0.0.10',
       );
     }
   });

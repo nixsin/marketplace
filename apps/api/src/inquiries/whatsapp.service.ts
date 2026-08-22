@@ -197,11 +197,24 @@ export class WhatsappService {
         return { ok: false, reason: `provider ${response.status}: ${detail}` };
       }
 
+      // Parsed in its OWN try. Meta has accepted the message by this point --
+      // response.ok is true -- so a body that will not parse must degrade to
+      // "sent, id unknown" rather than reporting failure. Letting it fall to
+      // the outer catch marked a delivered inquiry FAILED, and a retry from
+      // that state sends the seller a duplicate.
+      //
       // Named apart from the request `payload` above: both live in this same
-      // block, so reusing the name is a temporal-dead-zone error rather than
-      // a shadow.
-      const responseBody: unknown = await response.json();
-      return { ok: true, providerMessageId: readMessageId(responseBody) };
+      // block, so reusing the name is a temporal-dead-zone error, not a shadow.
+      try {
+        const responseBody: unknown = await response.json();
+        return { ok: true, providerMessageId: readMessageId(responseBody) };
+      } catch {
+        this.logger.warn(
+          'Provider accepted the message but its response body did not parse; ' +
+            'recorded as sent without a provider message id.',
+        );
+        return { ok: true, providerMessageId: null };
+      }
     } catch (error) {
       // Network failure, DNS, timeout. The inquiry is already persisted, so
       // this degrades to a FAILED row an operator can retry from, not a lost

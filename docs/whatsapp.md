@@ -72,8 +72,22 @@ is bounded. Four limits, because they fail differently:
 |---|---|---|
 | per phone | submitted `buyerPhone` | rotating numbers |
 | per phone + product | submitted fields | rotating numbers |
-| per IP | `cf-connecting-ip` | proxies, at a cost |
+| per IP | the socket address, or `cf-connecting-ip` **only when `INQUIRY_TRUST_PROXY_HEADERS=true`** | proxies, at a cost |
 | **per seller** | the seller | nothing available to a caller |
+
+**Proxy headers are not trusted by default.** `cf-connecting-ip` is only
+believable when every route to the origin passes through Cloudflare — and this
+origin answers directly on its `.onrender.com` hostname, so a caller who skips
+the edge could set a fresh value per request. Set
+`INQUIRY_TRUST_PROXY_HEADERS=true` **only after** the origin refuses
+non-proxied traffic. Until then the socket address is used, which may be a
+shared load-balancer address — which is why the per-seller cap, not this, is
+what actually bounds a seller's exposure.
+
+Note this also means `req.ip` is deliberately **not** consulted while the flag
+is off: Express derives it from `X-Forwarded-For` whenever app-level
+`trust proxy` is enabled, which would let a spoofable value back in through a
+setting invisible from the inquiry code.
 
 **The two phone limits are keyed on a value the caller types**, so on their own
 they are decorative — that was a real review finding, not a hypothetical. They

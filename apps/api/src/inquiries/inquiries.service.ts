@@ -124,15 +124,6 @@ export class InquiriesService {
    * mean every provider hiccup silently discards a real buyer.
    */
   async create(args: CreateInquiryArgs) {
-    const product = await this.prisma.product.findUnique({
-      where: { id: args.productId },
-      include: { seller: true },
-    });
-
-    if (!product) {
-      throw new NotFoundException(`Product ${args.productId} not found`);
-    }
-
     // Canonicalised before anything is stored, so the value written is the
     // value that can actually be sent. The form shows a spaced example
     // because that is how people write numbers; the sender needs E.164.
@@ -143,6 +134,16 @@ export class InquiriesService {
       );
     }
 
+    // Trimmed server-side, not merely in the form. The mutation is public, so
+    // a direct caller can submit "  " for a name and a single space for a
+    // message -- @Length(2) and @MinLength(1) both accept those -- and the
+    // seller receives an inquiry with no discernible sender or question.
+    const buyerName = args.buyerName.trim();
+    const message = args.message.trim();
+    if (!buyerName || !message) {
+      throw new BadRequestException('Enter your name and a question.');
+    }
+
     const ipHash = hashIp(args.callerIp);
 
     // The limit check and the insert run in ONE serializable transaction.
@@ -151,29 +152,48 @@ export class InquiriesService {
     // proceed, which on an unauthenticated outbound-message endpoint is
     // exactly the path worth hardening. Serializable makes the database
     // reject the loser rather than trusting application-level ordering.
-    const inquiry = await this.withSerializationRetry(() =>
+    // The product and its seller are read INSIDE the transaction, and the
+    // snapshot taken there is what both the insert and the send use.
+    //
+    // Reading them before the transaction and reusing that copy afterwards
+    // meant a product reassigned in the gap would have its inquiry attributed
+    // to, and DELIVERED TO, the previous seller -- handing the buyer's name,
+    // phone number and question to an organisation that has nothing to do
+    // with the listing. Nothing reassigns products today, which is exactly
+    // why this would have gone unnoticed until something did.
+    const { inquiry, product } = await this.withSerializationRetry(() =>
       this.prisma.$transaction(
         async (tx) => {
+          const current = await tx.product.findUnique({
+            where: { id: args.productId },
+            include: { seller: true },
+          });
+          if (!current) {
+            throw new NotFoundException(`Product ${args.productId} not found`);
+          }
+
           await this.assertWithinRateLimit(tx, {
             buyerPhone,
             productId: args.productId,
-            sellerId: product.sellerId,
+            sellerId: current.sellerId,
             ipHash,
           });
 
-          return tx.inquiry.create({
+          const created = await tx.inquiry.create({
             data: {
-              productId: product.id,
+              productId: current.id,
               // Denormalized at inquiry time: which seller received this is a
               // historical fact and must not follow a later reassignment.
-              sellerId: product.sellerId,
-              buyerName: args.buyerName,
+              sellerId: current.sellerId,
+              buyerName,
               buyerPhone,
-              message: args.message,
+              message,
               ipHash,
               status: InquiryStatus.PENDING,
             },
           });
+
+          return { inquiry: created, product: current };
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       ),
@@ -191,12 +211,12 @@ export class InquiriesService {
       summary: buildInquirySummary({
         productName: product.name,
         productId: product.id,
-        buyerName: args.buyerName,
+        buyerName,
         buyerPhone,
       }),
       // The buyer's own words, kept as their own template parameter so they
       // are never truncated by metadata in front of them.
-      buyerMessage: args.message,
+      buyerMessage: message,
     });
 
     if (!result.ok) {
@@ -206,13 +226,32 @@ export class InquiriesService {
       return this.markFailed(inquiry.id, result.reason);
     }
 
-    return this.prisma.inquiry.update({
-      where: { id: inquiry.id },
-      data: {
-        status: InquiryStatus.SENT,
-        providerMessageId: result.providerMessageId,
-      },
-    });
+    // The provider has ALREADY accepted the message at this point. If
+    // recording that fact fails, the send still happened -- so surfacing the
+    // write error as a GraphQL failure would tell the buyer their inquiry did
+    // not go through and invite a retry that sends the seller a duplicate.
+    //
+    // The row is left PENDING and the discrepancy logged loudly with the
+    // provider's message id, which is what an operator needs to reconcile it.
+    // A stuck PENDING row is a visible, fixable inconsistency; a duplicate
+    // WhatsApp message to a real seller is not.
+    try {
+      return await this.prisma.inquiry.update({
+        where: { id: inquiry.id },
+        data: {
+          status: InquiryStatus.SENT,
+          providerMessageId: result.providerMessageId,
+        },
+      });
+    } catch (error) {
+      this.logger.error(
+        `Inquiry ${inquiry.id} was DELIVERED (provider id ` +
+          `${result.providerMessageId ?? 'unknown'}) but could not be marked ` +
+          `SENT; it remains PENDING and needs reconciling: ` +
+          `${error instanceof Error ? error.message : 'unknown error'}`,
+      );
+      return inquiry;
+    }
   }
 
   private markFailed(id: string, reason: string) {

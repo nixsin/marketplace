@@ -37,7 +37,14 @@ export function resolveCallerIp(
 ): string | null {
   if (!req) return null;
 
-  const socketAddress = req.ip ?? req.socket?.remoteAddress ?? null;
+  // socket.remoteAddress, NOT req.ip, when the flag is off.
+  //
+  // Express derives req.ip from X-Forwarded-For whenever app-level `trust
+  // proxy` is enabled -- which is a setting elsewhere in the app, invisible
+  // from here. Preferring req.ip therefore let a spoofable value back in
+  // through the side door and silently undid this function's whole point.
+  // The socket address is the peer we are actually speaking to.
+  const socketAddress = req.socket?.remoteAddress ?? null;
   if (env[INQUIRY_TRUST_PROXY_HEADERS_ENV] !== 'true') return socketAddress;
 
   const header = (name: string): string | null => {
