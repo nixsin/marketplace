@@ -25,10 +25,16 @@ export class Inquiry {
   createdAt: Date;
 
   /**
-   * True only when the provider accepted the message. False covers both "not
-   * delivered yet" and "delivery failed" -- the buyer is told their inquiry
-   * was received either way, because it genuinely was, and a seller-side
-   * configuration gap is not the buyer's problem to interpret.
+   * The PROVIDER ACCEPTED the message. Not the same as the seller having
+   * received or read it -- Meta can accept a send and still fail to deliver
+   * it to a number that is invalid, blocked, or no longer on WhatsApp.
+   *
+   * The UI copy is worded to match: "on its way to this seller", never "this
+   * seller has your question". An earlier version claimed receipt, which the
+   * schema comment on InquiryStatus.SENT had always contradicted.
+   *
+   * Real delivery confirmation needs Meta's delivery webhook, which is not
+   * wired up -- see docs/whatsapp.md.
    */
   @Field()
   delivered: boolean;

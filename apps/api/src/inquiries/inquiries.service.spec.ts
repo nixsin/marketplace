@@ -1,5 +1,6 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
+  WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH,
   INQUIRY_RATE_LIMIT_PER_IP,
   INQUIRY_RATE_LIMIT_PER_SELLER,
   INQUIRY_RATE_LIMIT_PER_PHONE,
@@ -8,8 +9,10 @@ import {
 import {
   InquiriesService,
   buildInquiryMessage,
+  buildInquirySummary,
   hashIp,
 } from './inquiries.service';
+import { sanitizeTemplateParam } from './whatsapp.service';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsappService } from './whatsapp.service';
@@ -61,6 +64,61 @@ describe('buildInquiryMessage', () => {
     });
     expect(trailing).toContain('https://laxair.shop/en/products/p1');
     expect(trailing).not.toContain('shop//en');
+  });
+
+  it('keeps the contact line even when the product name is absurd', () => {
+    // buildInquirySummary used to put "From: name (phone)" LAST, and
+    // sanitizeTemplateParam truncates from the end. Product names are
+    // unbounded String in the schema -- the seeded catalogue already has a
+    // deliberately absurd one -- so a long enough name pushed the buyer's
+    // name and phone off the end entirely. The seller then received an
+    // inquiry with no way to reply, which is worse than receiving nothing:
+    // it looks answerable and is not.
+    const summary = buildInquirySummary({
+      productName: 'X'.repeat(5000),
+      productId: 'seed-product-01',
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+      siteUrl: 'https://laxair.shop',
+    });
+    const sent = sanitizeTemplateParam(summary);
+
+    expect(sent).toContain('Asha Rao');
+    expect(sent).toContain('+919000000001');
+    // And the whole thing still fits its parameter, rather than relying on
+    // nothing after the contact line mattering.
+    expect(sent.length).toBeLessThanOrEqual(1024);
+  });
+
+  it('bounds the summary itself, not just what survives sanitising', () => {
+    // Ordering alone protects the contact line, so this bound is belt-and-
+    // braces -- which is exactly why it needs its own assertion. Without one,
+    // removing the cap changes nothing observable and the guarantee silently
+    // becomes "nothing after the contact line happened to matter".
+    const summary = buildInquirySummary({
+      productName: 'X'.repeat(5000),
+      productId: 'seed-product-01',
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+    });
+
+    // Fits its parameter BEFORE sanitizeTemplateParam does any truncating.
+    expect(summary.length).toBeLessThanOrEqual(
+      WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH,
+    );
+    // And the name was shortened rather than the line dropped.
+    expect(summary).toContain('Product: ');
+    expect(summary).toContain('\u2026');
+  });
+
+  it('puts the contact line before the product details', () => {
+    const summary = buildInquirySummary({
+      productName: 'X-Ray',
+      productId: 'p1',
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+    });
+    expect(summary.indexOf('Asha Rao')).toBeLessThan(summary.indexOf('X-Ray'));
   });
 
   it('includes how to reach the buyer back', () => {
@@ -124,6 +182,15 @@ describe('InquiriesService', () => {
       data: { buyerPhone: string };
     };
     expect(written.data.buyerPhone).toBe('+919876543210');
+  });
+
+  it('applies the 2-character minimum to the TRIMMED name', async () => {
+    // @Length(2) runs against the untrimmed value, so " A " passed the DTO
+    // and was stored as "A".
+    await expect(
+      service.create({ ...ARGS, buyerName: ' A ' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.inquiry.create).not.toHaveBeenCalled();
   });
 
   it('rejects a number that cannot be made valid', async () => {

@@ -9,6 +9,7 @@ import { InquiryStatus } from '../../generated/prisma/enums';
 import { createHash, createHmac } from 'node:crypto';
 import {
   INQUIRY_IP_HASH_SECRET_ENV,
+  INQUIRY_SUMMARY_NAME_MAX_LENGTH,
   INQUIRY_RATE_LIMIT_PER_IP,
   INQUIRY_RATE_LIMIT_PER_PHONE,
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
@@ -76,14 +77,32 @@ export function buildInquirySummary(input: {
   siteUrl?: string;
 }): string {
   const base = (input.siteUrl ?? SITE_URL).replace(/\/+$/, '');
+
+  // CONTACT FIRST, and the product name bounded.
+  //
+  // The From line used to come last, and sanitizeTemplateParam truncates from
+  // the end. Product names are unbounded `String` in the schema -- the seeded
+  // catalogue already has a deliberately absurd one -- so a long enough name
+  // pushed the buyer's name and phone number off the end entirely. The seller
+  // would receive an inquiry with no way to reply to it, which is worse than
+  // receiving nothing at all: it looks answerable and is not.
+  //
+  // Ordering alone would be enough to protect the contact line, but the name
+  // is bounded too so the whole summary fits deterministically rather than
+  // relying on nothing after it mattering.
+  const name =
+    input.productName.length > INQUIRY_SUMMARY_NAME_MAX_LENGTH
+      ? `${input.productName.slice(0, INQUIRY_SUMMARY_NAME_MAX_LENGTH - 1)}\u2026`
+      : input.productName;
+
   return [
     `New inquiry via the marketplace`,
     ``,
-    `Product: ${input.productName}`,
+    `From: ${input.buyerName} (${input.buyerPhone})`,
+    ``,
+    `Product: ${name}`,
     `Ref: ${input.productId}`,
     `Link: ${base}/en/products/${input.productId}`,
-    ``,
-    `From: ${input.buyerName} (${input.buyerPhone})`,
   ].join('\n');
 }
 
@@ -140,7 +159,10 @@ export class InquiriesService {
     // seller receives an inquiry with no discernible sender or question.
     const buyerName = args.buyerName.trim();
     const message = args.message.trim();
-    if (!buyerName || !message) {
+    // The DTO's @Length(2) runs against the UNTRIMMED value, so " A " passed
+    // it and was then stored as "A". The bound has to be re-applied to what
+    // is actually kept.
+    if (buyerName.length < 2 || !message) {
       throw new BadRequestException('Enter your name and a question.');
     }
 

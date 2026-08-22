@@ -59,7 +59,7 @@
     "inquirySending": "Sending…",
     "inquirySentTitle": "Inquiry received",
     "inquiryPrivacyNote": "We share these details with this seller only, so they can answer you. Sending an inquiry does not sign you up for marketing messages.",
-    "inquirySentDelivered": "This seller has your question and your number. They will reply to you directly on WhatsApp.",
+    "inquirySentDelivered": "Your question is on its way to this seller, along with your number. They'll reply to you directly on WhatsApp.",
     "inquirySentRecorded": "We've recorded your inquiry. We're still trying to reach this seller — if we can't, no one will have received it, so it's worth contacting them another way.",
     "inquiryError": {
       "network": "We couldn't reach the server. Check your connection and try again.",

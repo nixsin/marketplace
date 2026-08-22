@@ -426,6 +426,12 @@ export const WHATSAPP_TEMPLATE_DEFAULT_LANGUAGE = "en";
 // as valid.
 export const WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH = 1024;
 
+// Product names are unbounded `String` in the schema, and the seeded catalogue
+// already contains a deliberately absurd one. Bounding the name inside the
+// summary is what guarantees the whole summary fits its parameter, so nothing
+// after it can be truncated away.
+export const INQUIRY_SUMMARY_NAME_MAX_LENGTH = 200;
+
 // A stalled provider connection must not hold a buyer's request open. Meta
 // accepting the socket and then never answering is the case a plain fetch
 // waits on indefinitely.

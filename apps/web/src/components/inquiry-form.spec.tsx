@@ -101,9 +101,13 @@ describe("InquiryForm", () => {
     renderForm();
     await fillAndSubmit();
 
-    expect((await screen.findByRole("status")).textContent ?? "").toMatch(
-      /this seller has your question/i,
-    );
+    const text = (await screen.findByRole("status")).textContent ?? "";
+    // "on its way", never "this seller has it". The provider ACCEPTING a
+    // message is not the seller receiving it -- Meta can accept a send to a
+    // number that is invalid, blocked, or no longer on WhatsApp -- and the
+    // schema comment on SENT said so all along while this copy contradicted it.
+    expect(text).toMatch(/on its way to this seller/i);
+    expect(text).not.toMatch(/seller has your question/i);
   });
 
   it("says only that it was recorded when delivery failed", async () => {

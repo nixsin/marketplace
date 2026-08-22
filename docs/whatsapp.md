@@ -120,6 +120,21 @@ all the limiter needs. An unresolvable address is skipped rather than counted
 as a shared `null` bucket — otherwise one such caller could lock out all the
 others.
 
+## `delivered` means accepted, not received
+
+`InquiryStatus.SENT` and the `delivered` flag both mean **the provider
+accepted the message** — nothing more. Meta can accept a send and still fail
+to deliver it: an invalid number, a blocked contact, a number no longer on
+WhatsApp.
+
+The UI copy is worded to match ("on its way to this seller", never "this
+seller has your question"). An earlier version claimed receipt, which the
+schema's own comment on `SENT` had always contradicted.
+
+**Real delivery confirmation requires Meta's delivery webhook**, which is not
+wired up. `providerMessageId` is stored precisely so a webhook can correlate
+back to the row when it is.
+
 ## Idempotency — required before going live, not before merging
 
 **Submission is not idempotent.** If a response is lost, `submitInquiry`
