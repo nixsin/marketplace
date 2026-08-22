@@ -297,27 +297,37 @@ async function main() {
   // reseeding is idempotent.
   const approved = await prisma.organization.upsert({
     where: { gstin: '33AAACM1234A1Z5' },
+    // +999 is an ITU-RESERVED country code assigned to no operator, so these
+    // numbers cannot route anywhere. That is deliberate and load-bearing.
+    //
+    // The first version used +9198765000xx -- syntactically valid Indian
+    // mobile numbers that may well belong to real people. Seeds run in CI and
+    // in development, and the inquiry flow is public, so one seeded database
+    // in an environment holding Meta credentials would have sent strangers
+    // real buyers' names, phone numbers and questions. Never put a routable
+    // number in seed data for a feature that messages people.
+    //
     // Set in BOTH branches on purpose: `update: {}` means an already-seeded
     // row would never gain a newly added column, so a reseed on an existing
     // database would silently leave this seller unable to receive inquiries.
-    update: { whatsappNumber: '+919876500001' },
+    update: { whatsappNumber: '+99900000001' },
     create: {
       name: 'MedTech Systems Pvt Ltd',
       gstin: '33AAACM1234A1Z5',
       type: 'SELLER',
       kycStatus: 'APPROVED',
-      whatsappNumber: '+919876500001',
+      whatsappNumber: '+99900000001',
     },
   });
   const pending = await prisma.organization.upsert({
     where: { gstin: '32AABCC5678D1Z9' },
-    update: { whatsappNumber: '+919876500002' },
+    update: { whatsappNumber: '+99900000002' },
     create: {
       name: 'Coastal Medical Devices',
       gstin: '32AABCC5678D1Z9',
       type: 'SELLER',
       kycStatus: 'PENDING',
-      whatsappNumber: '+919876500002',
+      whatsappNumber: '+99900000002',
     },
   });
   // No GSTIN: the detail page must omit that line entirely rather than
