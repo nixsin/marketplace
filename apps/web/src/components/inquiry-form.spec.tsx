@@ -91,14 +91,20 @@ describe("InquiryForm", () => {
     expect(screen.queryByLabelText(/your question/i)).not.toBeInTheDocument();
   });
 
-  it("claims receipt, never delivery, even when the provider accepted it", async () => {
-    // The buyer is told what we actually know. Promising delivery would be a
-    // claim about a seller-side system they cannot act on.
+  it("does not claim the seller has the message when delivery failed", async () => {
+    // The earlier copy said "The seller has your question and your number"
+    // and was shown even when delivered was false -- a flat false claim, and
+    // the old test only checked for the literal word "delivered", which
+    // missed the semantic one entirely.
+    submitInquiryMock.mockResolvedValue({ ok: true, delivered: false });
     renderForm();
     await fillAndSubmit();
 
-    const status = await screen.findByRole("status");
-    expect(status.textContent ?? "").not.toMatch(/delivered/i);
+    const text = (await screen.findByRole("status")).textContent ?? "";
+    expect(text).not.toMatch(/delivered/i);
+    expect(text).not.toMatch(/the seller has/i);
+    // What we actually know: it is recorded.
+    expect(text).toMatch(/recorded/i);
   });
 
   it("still confirms receipt when delivery failed", async () => {
@@ -160,5 +166,27 @@ describe("InquiryForm", () => {
     expect(
       screen.getByRole("form", { name: /Digital X-Ray/i }),
     ).toBeInTheDocument();
+  });
+});
+
+describe("InquiryForm resilience", () => {
+  beforeEach(() =>
+    submitInquiryMock.mockResolvedValue({ ok: true, delivered: true }),
+  );
+  afterEach(() => vi.clearAllMocks());
+
+  it("recovers when the API layer reports a malformed response", async () => {
+    // A 2xx whose body is empty or not JSON used to throw past the API
+    // function's discriminated return; with no catch in the form, it sat
+    // disabled in "sending" forever on an unhandled rejection.
+    submitInquiryMock.mockResolvedValue({ ok: false, message: "network" });
+    renderForm();
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    // Recoverable, not stuck.
+    expect(
+      screen.getByRole("button", { name: /send inquiry/i }),
+    ).toBeEnabled();
   });
 });

@@ -3,7 +3,11 @@ import {
   WHATSAPP_API_VERSION,
   WHATSAPP_PHONE_NUMBER_ID_ENV,
 } from '@medinstru/config';
-import { WhatsappService, isE164 } from './whatsapp.service';
+import {
+  WhatsappService,
+  isE164,
+  sanitizeTemplateParam,
+} from './whatsapp.service';
 
 const CONFIGURED = {
   [WHATSAPP_ACCESS_TOKEN_ENV]: 'test-token',
@@ -49,14 +53,14 @@ describe('WhatsappService', () => {
     it('fails without throwing, and never calls the provider', async () => {
       // Throwing here would lose a real lead over a configuration gap: the
       // caller has already persisted the inquiry by this point.
-      const result = await service.sendText('+919876543210', 'hello', {});
+      const result = await service.sendInquiry('+919876543210', 'hello', {});
 
       expect(result.ok).toBe(false);
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('names the missing variables but never a value', async () => {
-      const result = await service.sendText('+919876543210', 'hello', {
+      const result = await service.sendInquiry('+919876543210', 'hello', {
         [WHATSAPP_ACCESS_TOKEN_ENV]: 'a-real-looking-secret',
       });
 
@@ -70,7 +74,11 @@ describe('WhatsappService', () => {
   });
 
   it('rejects a malformed recipient before any network call', async () => {
-    const result = await service.sendText('98765 43210', 'hello', CONFIGURED);
+    const result = await service.sendInquiry(
+      '98765 43210',
+      'hello',
+      CONFIGURED,
+    );
 
     expect(result.ok).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
@@ -82,7 +90,7 @@ describe('WhatsappService', () => {
       json: () => Promise.resolve({ messages: [{ id: 'wamid.ABC' }] }),
     });
 
-    const result = await service.sendText('+919876543210', 'hi', CONFIGURED);
+    const result = await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
 
     expect(result).toEqual({ ok: true, providerMessageId: 'wamid.ABC' });
 
@@ -109,7 +117,7 @@ describe('WhatsappService', () => {
       json: () => Promise.resolve({ error: { message: 'Invalid recipient' } }),
     });
 
-    const result = await service.sendText('+919876543210', 'hi', CONFIGURED);
+    const result = await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
@@ -127,7 +135,7 @@ describe('WhatsappService', () => {
       json: () => Promise.reject(new Error('not json')),
     });
 
-    const result = await service.sendText('+919876543210', 'hi', CONFIGURED);
+    const result = await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
@@ -137,7 +145,7 @@ describe('WhatsappService', () => {
   it('turns a network failure into a failure result, not a throw', async () => {
     fetchMock.mockRejectedValue(new Error('ECONNRESET'));
 
-    const result = await service.sendText('+919876543210', 'hi', CONFIGURED);
+    const result = await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
 
     expect(result).toEqual({ ok: false, reason: 'ECONNRESET' });
   });
@@ -157,9 +165,117 @@ describe('WhatsappService', () => {
         json: () => Promise.resolve(payload),
       });
 
-      const result = await service.sendText('+919876543210', 'hi', CONFIGURED);
+      const result = await service.sendInquiry(
+        '+919876543210',
+        'hi',
+        CONFIGURED,
+      );
 
       expect(result).toEqual({ ok: true, providerMessageId: null });
     },
   );
+});
+
+describe('sanitizeTemplateParam', () => {
+  // Meta rejects a template parameter containing a newline, a tab, or more
+  // than four consecutive spaces -- the whole message is refused, not just
+  // the parameter. The composed inquiry is deliberately multi-line, so
+  // without flattening every production send fails validation.
+  it('flattens the newlines a composed inquiry is full of', () => {
+    const flat = sanitizeTemplateParam('Product: X\nRef: p1\n\nFrom: Asha');
+    expect(flat).not.toMatch(/[\r\n\t]/);
+    expect(flat).toContain('Product: X');
+    expect(flat).toContain('From: Asha');
+  });
+
+  it('collapses runs of whitespace', () => {
+    expect(sanitizeTemplateParam('a      b')).toBe('a b');
+    expect(sanitizeTemplateParam('a\t\t\tb')).not.toMatch(/\t/);
+  });
+
+  it('bounds the length', () => {
+    expect(sanitizeTemplateParam('x'.repeat(5000)).length).toBeLessThanOrEqual(
+      900,
+    );
+  });
+});
+
+describe('WhatsappService template sends', () => {
+  const WITH_TEMPLATE = {
+    [WHATSAPP_ACCESS_TOKEN_ENV]: 'test-token',
+    [WHATSAPP_PHONE_NUMBER_ID_ENV]: '123456',
+    WHATSAPP_TEMPLATE_NAME: 'marketplace_inquiry',
+  } as unknown as NodeJS.ProcessEnv;
+
+  let service: WhatsappService;
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    service = new WhatsappService();
+    fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ messages: [{ id: 'wamid.T' }] }),
+    });
+    global.fetch = fetchMock;
+    jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it('sends a TEMPLATE, not free-form text, when one is configured', async () => {
+    // Business-initiated WhatsApp messages require an approved template.
+    // Free-form text only works inside a 24-hour window the RECIPIENT opens
+    // by messaging first -- which never happens here, because the
+    // marketplace always speaks first. The original implementation sent
+    // type:'text' and would have failed every real send while passing every
+    // test.
+    await service.sendInquiry(
+      '+919876543210',
+      'Product: X\nFrom: Asha',
+      WITH_TEMPLATE,
+    );
+
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    ) as {
+      type: string;
+      template: {
+        name: string;
+        components: { parameters: { text: string }[] }[];
+      };
+    };
+    expect(body.type).toBe('template');
+    expect(body.template.name).toBe('marketplace_inquiry');
+    // The parameter must already be flattened by the time it is sent.
+    expect(body.template.components[0].parameters[0].text).not.toMatch(/\n/);
+  });
+
+  it('falls back to text only when no template is configured', async () => {
+    await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
+
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    ) as { type: string };
+    expect(body.type).toBe('text');
+  });
+
+  it('aborts a stalled provider rather than hanging the buyer', async () => {
+    // Meta accepting the socket and never answering is what a bare fetch
+    // waits on forever, leaving the row PENDING and the form spinning.
+    const timeout = Object.assign(new Error('The operation was aborted'), {
+      name: 'TimeoutError',
+    });
+    fetchMock.mockRejectedValue(timeout);
+
+    const result = await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toMatch(/timed out/);
+  });
+
+  it('passes an abort signal on every request', async () => {
+    await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.signal).toBeDefined();
+  });
 });

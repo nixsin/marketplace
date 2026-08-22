@@ -58,7 +58,7 @@
     "inquirySubmit": "Send inquiry",
     "inquirySending": "Sending…",
     "inquirySentTitle": "Inquiry received",
-    "inquirySentMessage": "The seller has your question and your number. They will reply to you directly on WhatsApp.",
+    "inquirySentMessage": "We've recorded your inquiry and passed it to this seller. If they reply, it will come to you on WhatsApp.",
     "inquiryError": "We could not send that. Please check your phone number and try again.",
     "inquiryPrivacyNote": "We share these details with this seller only, so they can answer you. Sending an inquiry does not sign you up for marketing messages."
   },

@@ -4,10 +4,14 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { Prisma } from '../../generated/prisma/client';
 import { InquiryStatus } from '../../generated/prisma/enums';
+import { createHash } from 'node:crypto';
 import {
+  INQUIRY_RATE_LIMIT_PER_IP,
   INQUIRY_RATE_LIMIT_PER_PHONE,
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
+  INQUIRY_RATE_LIMIT_PER_SELLER,
   INQUIRY_RATE_LIMIT_WINDOW_MS,
   SITE_URL,
 } from '@medinstru/config';
@@ -19,6 +23,18 @@ export interface CreateInquiryArgs {
   buyerName: string;
   buyerPhone: string;
   message: string;
+  /** Caller's address, hashed before storage. Absent when unresolvable. */
+  callerIp?: string | null;
+}
+
+/**
+ * Hashed, never stored raw. A raw IP is personal data under DPDP sitting in a
+ * table operators read to triage leads, and a hash still counts repeats --
+ * which is all the limiter needs it for.
+ */
+export function hashIp(ip: string | null | undefined): string | null {
+  if (!ip) return null;
+  return createHash('sha256').update(ip).digest('hex');
 }
 
 /**
@@ -83,20 +99,39 @@ export class InquiriesService {
       throw new NotFoundException(`Product ${args.productId} not found`);
     }
 
-    await this.assertWithinRateLimit(args.buyerPhone, args.productId);
+    const ipHash = hashIp(args.callerIp);
 
-    const inquiry = await this.prisma.inquiry.create({
-      data: {
-        productId: product.id,
-        // Denormalized at inquiry time: which seller received this is a
-        // historical fact and must not follow a later product reassignment.
-        sellerId: product.sellerId,
-        buyerName: args.buyerName,
-        buyerPhone: args.buyerPhone,
-        message: args.message,
-        status: InquiryStatus.PENDING,
+    // The limit check and the insert run in ONE serializable transaction.
+    // Checking and then inserting separately is a time-of-check/time-of-use
+    // race: concurrent requests all read a count below the threshold and all
+    // proceed, which on an unauthenticated outbound-message endpoint is
+    // exactly the path worth hardening. Serializable makes the database
+    // reject the loser rather than trusting application-level ordering.
+    const inquiry = await this.prisma.$transaction(
+      async (tx) => {
+        await this.assertWithinRateLimit(tx, {
+          buyerPhone: args.buyerPhone,
+          productId: args.productId,
+          sellerId: product.sellerId,
+          ipHash,
+        });
+
+        return tx.inquiry.create({
+          data: {
+            productId: product.id,
+            // Denormalized at inquiry time: which seller received this is a
+            // historical fact and must not follow a later reassignment.
+            sellerId: product.sellerId,
+            buyerName: args.buyerName,
+            buyerPhone: args.buyerPhone,
+            message: args.message,
+            ipHash,
+            status: InquiryStatus.PENDING,
+          },
+        });
       },
-    });
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
 
     const sellerNumber = product.seller.whatsappNumber;
     if (!sellerNumber) {
@@ -106,7 +141,7 @@ export class InquiriesService {
       return this.markFailed(inquiry.id, 'seller has no WhatsApp number');
     }
 
-    const result = await this.whatsapp.sendText(
+    const result = await this.whatsapp.sendInquiry(
       sellerNumber,
       buildInquiryMessage({
         productName: product.name,
@@ -158,18 +193,66 @@ export class InquiriesService {
    * defeated by a restart or by horizontal scaling. Both index reads are
    * covered by (buyerPhone, createdAt) and (productId, createdAt).
    */
-  private async assertWithinRateLimit(buyerPhone: string, productId: string) {
+  /**
+   * Four limits, because they fail in different ways.
+   *
+   * The two phone limits are keyed on a value the CALLER TYPES, so on their
+   * own they are defeated by rotating E.164 numbers -- which, on an
+   * unauthenticated endpoint that emits outbound WhatsApp messages, made them
+   * decorative rather than protective. They stay because they give a real
+   * buyer sane feedback, not because they stop an attacker.
+   *
+   * The IP limit adds a dimension the caller does not choose freely. It is
+   * not unforgeable -- proxies exist -- but it raises cost from "change a
+   * form field" to "acquire addresses".
+   *
+   * The per-seller cap is the one that still holds when both of the above are
+   * rotated, so it is what actually bounds how much spam a seller can be made
+   * to receive. Nothing here is a substitute for CAPTCHA or verified phone
+   * numbers; it is defence in depth in front of them.
+   *
+   * Takes the transaction client so the counts and the insert are one atomic
+   * unit -- see the caller.
+   */
+  private async assertWithinRateLimit(
+    tx: Prisma.TransactionClient,
+    keys: {
+      buyerPhone: string;
+      productId: string;
+      sellerId: string;
+      ipHash: string | null;
+    },
+  ) {
     const since = new Date(Date.now() - INQUIRY_RATE_LIMIT_WINDOW_MS);
+    const { buyerPhone, productId, sellerId, ipHash } = keys;
 
-    const [fromPhone, forThisProduct] = await Promise.all([
-      this.prisma.inquiry.count({
-        where: { buyerPhone, createdAt: { gte: since } },
-      }),
-      this.prisma.inquiry.count({
+    const [fromPhone, forThisProduct, fromIp, forSeller] = await Promise.all([
+      tx.inquiry.count({ where: { buyerPhone, createdAt: { gte: since } } }),
+      tx.inquiry.count({
         where: { buyerPhone, productId, createdAt: { gte: since } },
       }),
+      // Skipped when the address could not be resolved: counting every
+      // unresolvable caller as one bucket would let one of them lock out all
+      // the others.
+      ipHash
+        ? tx.inquiry.count({ where: { ipHash, createdAt: { gte: since } } })
+        : Promise.resolve(0),
+      tx.inquiry.count({ where: { sellerId, createdAt: { gte: since } } }),
     ]);
 
+    if (forSeller >= INQUIRY_RATE_LIMIT_PER_SELLER) {
+      // Deliberately vague to the caller. Telling them a seller's cap is full
+      // hands an attacker a progress indicator for the one limit they cannot
+      // rotate around.
+      throw new BadRequestException(
+        'Too many inquiries right now. Please try again later.',
+      );
+    }
+    if (fromIp >= INQUIRY_RATE_LIMIT_PER_IP) {
+      throw new BadRequestException(
+        'Too many inquiries from this network recently. Please try again later.',
+      );
+    }
     if (fromPhone >= INQUIRY_RATE_LIMIT_PER_PHONE) {
       throw new BadRequestException(
         'Too many inquiries from this number recently. Please try again later.',

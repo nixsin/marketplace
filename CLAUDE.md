@@ -550,6 +550,23 @@ deploy and be per-instance. When login ships this must NOT quietly become
 authenticated; record the session alongside the inquiry and keep anonymous
 submission working.
 
+**Business-initiated sends need an APPROVED TEMPLATE, not free-form text** --
+see [docs/whatsapp.md](./docs/whatsapp.md). The first implementation sent
+`type: "text"`, which WhatsApp only permits inside a 24-hour window the
+*recipient* opens by messaging first. This flow always speaks first, so every
+production send would have been rejected while every test passed. Template
+parameters are flattened before sending: Meta rejects a parameter containing a
+newline, and rejects the whole message with it.
+
+**The phone-keyed rate limits were decorative on their own** -- keyed on a
+value the caller types, so rotating E.164 numbers defeated them completely on
+an unauthenticated endpoint that emits outbound messages. There are now four:
+per phone, per phone+product, per hashed IP, and an absolute per-seller cap
+that is the only one still standing when a caller rotates both. Check and
+insert run in one `Serializable` transaction, because counting then inserting
+is a time-of-check/time-of-use race. IPs are hashed -- DPDP, and a hash counts
+repeats just as well.
+
 **Credentials are read by name at call time**, never imported as values,
 matching the `resolveApiKey` precedent. The not-configured path logs a
 warning naming only `WHATSAPP_ACCESS_TOKEN` and `WHATSAPP_PHONE_NUMBER_ID`,

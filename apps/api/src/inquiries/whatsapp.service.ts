@@ -4,6 +4,11 @@ import {
   WHATSAPP_API_BASE_URL,
   WHATSAPP_API_VERSION,
   WHATSAPP_PHONE_NUMBER_ID_ENV,
+  WHATSAPP_REQUEST_TIMEOUT_MS,
+  WHATSAPP_TEMPLATE_DEFAULT_LANGUAGE,
+  WHATSAPP_TEMPLATE_LANGUAGE_ENV,
+  WHATSAPP_TEMPLATE_NAME_ENV,
+  WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH,
 } from '@medinstru/config';
 
 export type WhatsappSendResult =
@@ -15,6 +20,22 @@ const E164 = /^\+[1-9]\d{7,14}$/;
 
 export function isE164(value: string): boolean {
   return E164.test(value);
+}
+
+/**
+ * Makes a value safe to pass as a WhatsApp template parameter.
+ *
+ * Meta rejects a parameter containing a newline, a tab, or more than four
+ * consecutive spaces -- the whole message is refused, not just the parameter.
+ * The composed inquiry is deliberately multi-line, so flattening is required
+ * rather than cosmetic: without it every production send fails validation.
+ */
+export function sanitizeTemplateParam(value: string): string {
+  return value
+    .replace(/[\r\n\t]+/g, ' \u00b7 ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .slice(0, WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH);
 }
 
 /**
@@ -42,7 +63,22 @@ export class WhatsappService {
     );
   }
 
-  async sendText(
+  /**
+   * Sends an inquiry to a seller.
+   *
+   * TEMPLATE, not free-form text, whenever a template name is configured.
+   * WhatsApp only permits free-form text inside a 24-hour customer-service
+   * window that the RECIPIENT opens by messaging the business first. This
+   * flow is always business-initiated -- the marketplace speaks first, to a
+   * seller who has never messaged it -- so a plain text send is rejected by
+   * Meta in production even with perfectly valid credentials. The first
+   * version of this service sent `type: 'text'` and would have failed every
+   * real send while passing every test.
+   *
+   * The text path remains only for the case where a template is deliberately
+   * not configured, which is development and an open reply window.
+   */
+  async sendInquiry(
     toE164: string,
     body: string,
     env: NodeJS.ProcessEnv = process.env,
@@ -72,15 +108,37 @@ export class WhatsappService {
     }
 
     const url = `${WHATSAPP_API_BASE_URL}/${WHATSAPP_API_VERSION}/${phoneNumberId}/messages`;
+    const templateName = env[WHATSAPP_TEMPLATE_NAME_ENV];
 
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+    const payload = templateName
+      ? {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to: toE164,
+          type: 'template',
+          template: {
+            name: templateName,
+            language: {
+              code:
+                env[WHATSAPP_TEMPLATE_LANGUAGE_ENV] ??
+                WHATSAPP_TEMPLATE_DEFAULT_LANGUAGE,
+            },
+            // One body parameter carrying the whole composed inquiry,
+            // flattened. The approved template must therefore be a body with
+            // a single {{1}} placeholder -- see docs/whatsapp.md. More
+            // parameters would mean more ways for the repo and the Meta
+            // account to disagree about a template nobody here can see.
+            components: [
+              {
+                type: 'body',
+                parameters: [
+                  { type: 'text', text: sanitizeTemplateParam(body) },
+                ],
+              },
+            ],
+          },
+        }
+      : {
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
           to: toE164,
@@ -89,7 +147,20 @@ export class WhatsappService {
           // and Meta fetching it server-side adds latency to the send for a
           // preview the seller does not need.
           text: { preview_url: false, body },
-        }),
+        };
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        // A stalled connection must not hold the buyer's request open. Meta
+        // accepting the socket and never answering is exactly what a bare
+        // fetch waits on forever, leaving the row PENDING and the form spinning.
+        signal: AbortSignal.timeout(WHATSAPP_REQUEST_TIMEOUT_MS),
       });
 
       if (!response.ok) {
@@ -99,16 +170,24 @@ export class WhatsappService {
         return { ok: false, reason: `provider ${response.status}: ${detail}` };
       }
 
-      const payload: unknown = await response.json();
-      return { ok: true, providerMessageId: readMessageId(payload) };
+      // Named apart from the request `payload` above: both live in this same
+      // block, so reusing the name is a temporal-dead-zone error rather than
+      // a shadow.
+      const responseBody: unknown = await response.json();
+      return { ok: true, providerMessageId: readMessageId(responseBody) };
     } catch (error) {
       // Network failure, DNS, timeout. The inquiry is already persisted, so
       // this degrades to a FAILED row an operator can retry from, not a lost
       // lead and not a 500 shown to the buyer.
-      return {
-        ok: false,
-        reason: error instanceof Error ? error.message : 'unknown send failure',
-      };
+      // AbortSignal.timeout rejects with a TimeoutError; surfaced by name so
+      // an operator reading failureReason can tell a stall from a refusal.
+      const reason =
+        error instanceof Error
+          ? error.name === 'TimeoutError'
+            ? `provider timed out after ${WHATSAPP_REQUEST_TIMEOUT_MS}ms`
+            : error.message
+          : 'unknown send failure';
+      return { ok: false, reason };
     }
   }
 

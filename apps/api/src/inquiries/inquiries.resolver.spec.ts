@@ -29,19 +29,21 @@ describe('InquiriesResolver', () => {
 
   it('delegates to the service', async () => {
     const { resolver, service } = makeResolver('SENT');
-    await resolver.createInquiry(input);
-    expect(service.create).toHaveBeenCalledWith(input);
+    await resolver.createInquiry(input, {});
+    expect(service.create).toHaveBeenCalledWith({ ...input, callerIp: null });
   });
 
   it('reports delivered only when the provider accepted it', async () => {
     expect(
-      (await makeResolver('SENT').resolver.createInquiry(input)).delivered,
+      (await makeResolver('SENT').resolver.createInquiry(input, {})).delivered,
     ).toBe(true);
     expect(
-      (await makeResolver('PENDING').resolver.createInquiry(input)).delivered,
+      (await makeResolver('PENDING').resolver.createInquiry(input, {}))
+        .delivered,
     ).toBe(false);
     expect(
-      (await makeResolver('FAILED').resolver.createInquiry(input)).delivered,
+      (await makeResolver('FAILED').resolver.createInquiry(input, {}))
+        .delivered,
     ).toBe(false);
   });
 
@@ -49,7 +51,10 @@ describe('InquiriesResolver', () => {
     // This mutation is unauthenticated, so everything returned is readable by
     // whoever called it. Echoing the message back, or surfacing why delivery
     // failed, hands an anonymous caller information about the seller's setup.
-    const result = await makeResolver('FAILED').resolver.createInquiry(input);
+    const result = await makeResolver('FAILED').resolver.createInquiry(
+      input,
+      {},
+    );
 
     expect(Object.keys(result).sort()).toEqual([
       'createdAt',

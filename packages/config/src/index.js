@@ -374,6 +374,25 @@ export const WHATSAPP_PHONE_NUMBER_ID_ENV = "WHATSAPP_PHONE_NUMBER_ID";
 // Pinned rather than "latest". Meta's Graph API is versioned and dated; an
 // unpinned call silently changes behaviour when they roll a version, which
 // for an outbound-message path means discovering it from failed deliveries.
+// Business-initiated WhatsApp messages require a PRE-APPROVED TEMPLATE.
+// Free-form text is only deliverable inside a 24-hour customer-service window
+// that a seller opens by messaging us first -- which never happens here,
+// because the marketplace always speaks first. The name is a variable because
+// the approved template lives in the Meta account, not in this repo.
+export const WHATSAPP_TEMPLATE_NAME_ENV = "WHATSAPP_TEMPLATE_NAME";
+export const WHATSAPP_TEMPLATE_LANGUAGE_ENV = "WHATSAPP_TEMPLATE_LANGUAGE";
+export const WHATSAPP_TEMPLATE_DEFAULT_LANGUAGE = "en";
+
+// Meta rejects a template parameter containing a newline, a tab, or more than
+// four consecutive spaces. The composed inquiry is multi-line by design, so
+// every parameter is flattened before it is sent.
+export const WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH = 900;
+
+// A stalled provider connection must not hold a buyer's request open. Meta
+// accepting the socket and then never answering is the case a plain fetch
+// waits on indefinitely.
+export const WHATSAPP_REQUEST_TIMEOUT_MS = 10_000;
+
 export const WHATSAPP_API_VERSION = "v21.0";
 export const WHATSAPP_API_BASE_URL = "https://graph.facebook.com";
 
@@ -390,6 +409,20 @@ export const INQUIRY_MESSAGE_MAX_LENGTH = 1000;
 export const INQUIRY_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 export const INQUIRY_RATE_LIMIT_PER_PHONE = 5;
 export const INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT = 2;
+
+// Keyed on the CALLER'S NETWORK, not on anything they type. The per-phone
+// limits above are keyed on a submitted field, so rotating E.164 numbers
+// defeats them completely -- on an unauthenticated endpoint that emits
+// outbound WhatsApp messages that made the limits decorative rather than
+// protective. Higher than the per-phone cap because one office NATs many
+// genuine buyers behind one address.
+export const INQUIRY_RATE_LIMIT_PER_IP = 15;
+
+// The seller's absolute exposure, whatever the source. This is the only limit
+// that still holds when an attacker rotates BOTH phone numbers and addresses,
+// so it is the one that actually bounds how much spam a seller can be made to
+// receive. Deliberately generous enough that real demand never reaches it.
+export const INQUIRY_RATE_LIMIT_PER_SELLER = 60;
 
 export const OTP_TTL_MS = 5 * 60 * 1000;
 

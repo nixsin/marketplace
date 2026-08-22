@@ -9,6 +9,7 @@ import {
 } from '@nestjs/graphql';
 import { ProductsService } from './products.service';
 import { Product } from './models/product.model';
+import { isE164 } from '../inquiries/whatsapp.service';
 import { ProductPage } from './models/product-page.model';
 import { ProductsPaged } from './models/products-paged.model';
 
@@ -62,6 +63,12 @@ export class ProductsResolver {
   canReceiveInquiries(
     @Parent() product: { seller?: { whatsappNumber?: string | null } },
   ): boolean {
-    return Boolean(product.seller?.whatsappNumber);
+    // The SAME E.164 rule the send applies, not merely "is it non-empty".
+    // The column is free text, so a malformed number would otherwise advertise
+    // that the product can receive inquiries and render the form, while every
+    // send fails validation before it leaves the process -- a buyer typing a
+    // real question into a form that could never work.
+    const number = product.seller?.whatsappNumber;
+    return typeof number === 'string' && isE164(number);
   }
 }

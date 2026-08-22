@@ -1,5 +1,6 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
+  INQUIRY_RATE_LIMIT_PER_SELLER,
   INQUIRY_RATE_LIMIT_PER_PHONE,
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
 } from '@medinstru/config';
@@ -65,13 +66,22 @@ describe('buildInquiryMessage', () => {
 describe('InquiriesService', () => {
   let service: InquiriesService;
   let prisma: {
+    $transaction: jest.Mock;
     product: { findUnique: jest.Mock };
     inquiry: { create: jest.Mock; update: jest.Mock; count: jest.Mock };
   };
-  let whatsapp: { sendText: jest.Mock };
+  let whatsapp: { sendInquiry: jest.Mock };
 
   beforeEach(() => {
     prisma = {
+      // $transaction hands the callback a client; the mock passes the same
+      // object back so assertions on prisma.inquiry.* still see every call
+      // the service makes inside the transaction.
+      $transaction: jest
+        .fn()
+        .mockImplementation((fn: (tx: unknown) => unknown) =>
+          Promise.resolve(fn(prisma)),
+        ),
       product: { findUnique: jest.fn().mockResolvedValue(PRODUCT) },
       inquiry: {
         create: jest.fn().mockResolvedValue({ id: 'inq-1' }),
@@ -84,7 +94,7 @@ describe('InquiriesService', () => {
       },
     };
     whatsapp = {
-      sendText: jest
+      sendInquiry: jest
         .fn()
         .mockResolvedValue({ ok: true, providerMessageId: 'wamid.1' }),
     };
@@ -113,7 +123,7 @@ describe('InquiriesService', () => {
       order.push('persist');
       return Promise.resolve({ id: 'inq-1' });
     });
-    whatsapp.sendText.mockImplementation(() => {
+    whatsapp.sendInquiry.mockImplementation(() => {
       order.push('send');
       return Promise.resolve({ ok: true, providerMessageId: 'wamid.1' });
     });
@@ -143,7 +153,10 @@ describe('InquiriesService', () => {
   });
 
   it('still records the lead when the provider rejects the send', async () => {
-    whatsapp.sendText.mockResolvedValue({ ok: false, reason: 'provider 400' });
+    whatsapp.sendInquiry.mockResolvedValue({
+      ok: false,
+      reason: 'provider 400',
+    });
 
     const result = await service.create(ARGS);
 
@@ -161,12 +174,12 @@ describe('InquiriesService', () => {
     const result = await service.create(ARGS);
 
     expect(prisma.inquiry.create).toHaveBeenCalled();
-    expect(whatsapp.sendText).not.toHaveBeenCalled();
+    expect(whatsapp.sendInquiry).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: 'FAILED' });
   });
 
   it('truncates a runaway provider failure reason', async () => {
-    whatsapp.sendText.mockResolvedValue({
+    whatsapp.sendInquiry.mockResolvedValue({
       ok: false,
       reason: 'x'.repeat(5000),
     });
@@ -210,7 +223,77 @@ describe('InquiriesService', () => {
       // An in-memory counter resets on deploy and is per-instance, so it
       // would be defeated by a restart or by horizontal scaling.
       await service.create(ARGS);
-      expect(prisma.inquiry.count).toHaveBeenCalledTimes(2);
+      // Three when no address resolved: per-phone, per-phone-product and the
+      // per-seller cap. The IP bucket is deliberately skipped rather than
+      // counted as null -- collapsing every unresolvable caller into one
+      // shared bucket would let a single one lock out all the others.
+      expect(prisma.inquiry.count).toHaveBeenCalledTimes(3);
+    });
+
+    it('adds an IP bucket when the address resolves', async () => {
+      // The dimension the caller cannot type. Without it, rotating E.164
+      // numbers defeats every other limit here.
+      await service.create({ ...ARGS, callerIp: '203.0.113.7' });
+
+      expect(prisma.inquiry.count).toHaveBeenCalledTimes(4);
+      const buckets = prisma.inquiry.count.mock.calls.map((call) =>
+        Object.keys((call[0] as { where: object }).where)
+          .sort()
+          .join(','),
+      );
+      expect(buckets).toContain('createdAt,ipHash');
+    });
+
+    it('stores the address hashed, never in the clear', async () => {
+      // A raw IP is personal data under DPDP sitting in a table operators
+      // read to triage leads. A hash still counts repeats.
+      await service.create({ ...ARGS, callerIp: '203.0.113.7' });
+
+      const written = prisma.inquiry.create.mock.calls[0][0] as {
+        data: { ipHash: string };
+      };
+      expect(written.data.ipHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(written.data.ipHash).not.toContain('203.0.113.7');
+    });
+
+    it("caps a seller's total exposure whatever the source", async () => {
+      // The only limit still standing when an attacker rotates BOTH phone
+      // numbers and addresses, so it is what actually bounds the spam a
+      // seller can be made to receive.
+      prisma.inquiry.count.mockImplementation(
+        ({ where }: { where: { sellerId?: string } }) =>
+          Promise.resolve(where.sellerId ? INQUIRY_RATE_LIMIT_PER_SELLER : 0),
+      );
+
+      await expect(service.create(ARGS)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+    });
+
+    it('does not tell the caller which seller cap they hit', async () => {
+      // Naming it hands an attacker a progress indicator for the one limit
+      // they cannot rotate around.
+      prisma.inquiry.count.mockImplementation(
+        ({ where }: { where: { sellerId?: string } }) =>
+          Promise.resolve(where.sellerId ? INQUIRY_RATE_LIMIT_PER_SELLER : 0),
+      );
+
+      await expect(service.create(ARGS)).rejects.toThrow(
+        /Too many inquiries right now/,
+      );
+    });
+
+    it('runs the check and the insert in one serializable transaction', async () => {
+      // Counting and then inserting separately is a time-of-check/
+      // time-of-use race: concurrent callers all read a count below the
+      // threshold and all proceed.
+      await service.create(ARGS);
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+      const options = prisma.$transaction.mock.calls[0][1] as {
+        isolationLevel: string;
+      };
+      expect(options.isolationLevel).toBe('Serializable');
     });
 
     it('checks the limit before writing anything', async () => {
@@ -219,7 +302,7 @@ describe('InquiriesService', () => {
         BadRequestException,
       );
       expect(prisma.inquiry.create).not.toHaveBeenCalled();
-      expect(whatsapp.sendText).not.toHaveBeenCalled();
+      expect(whatsapp.sendInquiry).not.toHaveBeenCalled();
     });
   });
 });

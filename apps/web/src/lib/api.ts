@@ -324,10 +324,20 @@ export async function submitInquiry(input: InquiryInput): Promise<InquiryResult>
     return { ok: false, message: "network" };
   }
 
-  const payload = (await res.json()) as {
+  // Parsed inside a try. A 2xx whose body is empty, truncated or not JSON --
+  // a proxy error page, a cut connection -- would otherwise throw past this
+  // function's discriminated return, and InquiryForm has no catch, so the
+  // form would sit disabled in "sending" forever on an unhandled rejection.
+  let payload: {
     data?: { createInquiry?: { delivered?: boolean } | null };
     errors?: { message?: string }[];
   };
+  try {
+    payload = (await res.json()) as typeof payload;
+  } catch (error) {
+    reportApiFailure("submitInquiry", clientRequestId, error, res);
+    return { ok: false, message: "network" };
+  }
 
   // GraphQL reports resolver failures as HTTP 200 with an errors array, so
   // res.ok above proves nothing about whether this worked -- the same trap
