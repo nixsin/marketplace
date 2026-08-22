@@ -597,6 +597,15 @@ control in front of the mutation — edge rate limiting on the true source
 address, a Turnstile challenge, or verified phone ownership — and no
 rearrangement of caller-supplied inputs substitutes for one.
 
+The same issue covers a second surface worth knowing separately: **the limits
+bound accepted rows, not requests.** A rejected attempt still opens a
+transaction and runs up to four counts, and consumes no budget, so unbounded
+database load is reachable without a single row being written. A nonexistent
+`productId` is short-circuited by one indexed lookup before any transaction
+opens — a real reduction, not a fix. Only a request-level control at the edge
+bounds requests, which is why it is the first thing to do in #152 rather than
+merely the cheapest.
+
 **Two env vars, documented in `apps/api/.env.example` by name only.**
 `INQUIRY_IP_HASH_SECRET` keys the HMAC that stores a submitter's address as a
 hash; **without it nothing breaks and the per-IP limit simply does not run.**

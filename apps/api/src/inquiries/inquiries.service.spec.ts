@@ -183,9 +183,23 @@ describe('InquiriesService', () => {
 
     await service.create(ARGS);
 
-    expect(tx.product.findUnique).toHaveBeenCalled();
-    expect(prisma.product.findUnique).not.toHaveBeenCalled();
+    // The AUTHORITATIVE read -- the one whose seller the row is attributed
+    // to -- goes through the transaction client.
+    expect(tx.product.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ include: { seller: true } }),
+    );
     expect(tx.inquiry.create).toHaveBeenCalled();
+
+    // The base client is used ONLY for the pre-flight existence check, which
+    // selects an id and nothing else. Asserted on its arguments rather than
+    // on it never being called: it is called now, and a bare
+    // not.toHaveBeenCalled() would have to be deleted to make this pass --
+    // taking the original protection with it.
+    expect(prisma.product.findUnique).toHaveBeenCalledWith({
+      where: { id: ARGS.productId },
+      select: { id: true },
+    });
+    expect(prisma.product.findUnique).toHaveBeenCalledTimes(1);
     // The idempotency recheck goes through the transaction client too. Run
     // against the base client it would read outside the snapshot, which is
     // the whole reason it moved inside.
@@ -381,6 +395,20 @@ describe('InquiriesService', () => {
       NotFoundException,
     );
     expect(prisma.inquiry.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a nonexistent product WITHOUT opening a transaction', async () => {
+    // An unauthenticated caller spraying random productIds was paying one
+    // SERIALIZABLE transaction per request. It still costs a lookup -- only a
+    // request-level control at the edge fixes that, see #152 -- but the
+    // cheapest attack no longer buys the most expensive path.
+    prisma.product.findUnique.mockResolvedValue(null);
+
+    await expect(service.create(ARGS)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.inquiry.count).not.toHaveBeenCalled();
   });
 
   it('denormalizes the seller so a later product reassignment cannot rewrite history', async () => {

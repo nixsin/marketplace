@@ -100,6 +100,13 @@ test.describe("product details page", () => {
     const phone = `+9199${Math.floor(Math.random() * 1e8)
       .toString()
       .padStart(8, "0")}`;
+    // A fresh number clears the per-phone limits but NOT the per-seller cap,
+    // which is 60 per rolling hour and charged to whichever seller owns the
+    // first card. CI reseeds every run so it never accumulates there; a
+    // developer would need 60 local runs inside one hour to trip it, and the
+    // failure would read as a broken form. Left as-is rather than reaching
+    // into the database from a browser test: the fix for the cap itself is
+    // #152, and this is the same bucket.
     await page.getByLabel("Your phone number").fill(phone);
     await page.getByLabel("Your question").fill("Is this available in Chennai?");
     await page.getByRole("button", { name: "Send inquiry" }).click();

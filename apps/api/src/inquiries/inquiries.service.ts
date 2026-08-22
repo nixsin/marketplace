@@ -177,6 +177,27 @@ export class InquiriesService {
     });
     if (existing) return assertSameSubmission(existing, submission);
 
+    // A nonexistent product is rejected BEFORE a transaction is opened.
+    //
+    // The authoritative read still happens inside the transaction below, and
+    // still decides which seller the row is attributed to -- this does not
+    // replace it and cannot, because a product can vanish in the gap. What it
+    // removes is the cheapest attack's cost: an unauthenticated caller
+    // spraying random productIds was paying one SERIALIZABLE transaction per
+    // request, and now pays one indexed lookup.
+    //
+    // It does not bound request workload in general -- an exhausted bucket
+    // still costs a transaction and four counts per attempt -- and nothing
+    // inside this table's accounting can. That needs a request-level control
+    // at the edge; see #152.
+    const exists = await this.prisma.product.findUnique({
+      where: { id: args.productId },
+      select: { id: true },
+    });
+    if (!exists) {
+      throw new NotFoundException(`Product ${args.productId} not found`);
+    }
+
     const ipHash = hashIp(args.callerIp);
 
     try {
