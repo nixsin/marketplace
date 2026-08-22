@@ -233,7 +233,7 @@ it, with no error anywhere. Tests assert the relative order of both eligibility
 | 1 | `cache-public-graphql-gets` | Anonymous, cookieless `GET /graphql` becomes cache-eligible |
 | 2 | `cache-public-html` | Anonymous page HTML on the apex host becomes cache-eligible |
 | 3 | `bypass-authenticated-web` | Any web request carrying a session is never cached |
-| 4 | `bypass-locale-negotiated-root` | The bare `/` is never cached, unconditionally |
+| 4 | `bypass-locale-negotiated-paths` | Every locale-negotiated path is never cached, unconditionally |
 | 5 | `bypass-all-other-api-requests` | Every other API request is never cached |
 
 **"Matches no managed rule" is not "is not cached."** Inventoried rules are
@@ -244,6 +244,25 @@ cache-eligible with nothing after it to say otherwise. Rule 4 exists for that
 reason and is deliberately unconditional: no method, cookie or header test,
 because a plain anonymous `GET /` is precisely the request such a rule would
 leave eligible. The test fixture models this with a broad apex rule.
+
+**Rule 4 covers every negotiated path, not just `/`.** The set is defined by
+`apps/web/src/proxy.ts`'s matcher: any path with no dot in it, outside
+`api`/`_next`/`_vercel`, passes through next-intl and is answered with a
+redirect chosen from `NEXT_LOCALE` and `Accept-Language`. `/products`, `/foo`
+and `/about` negotiate exactly as `/` does.
+
+It started as a root-only rule, and that was too narrow. Those other paths were
+uncached **only because next-intl happens to set a cookie on their responses** --
+an accident, not a guarantee. Setting `localeCookie: false`, which this file at
+one point recommended for cache hit rate, would have removed the accident and
+silently begun serving the first visitor's language to everyone. The rule now
+states the requirement rather than relying on a side effect.
+
+The locale list comes from a Terraform `locales` variable, and
+`scripts/cloudflare-locale-drift.test.mjs` fails the build if it diverges from
+`LOCALES` in `packages/config`. Drift is silent in both directions: a locale
+added only to the app stops caching, and one removed only from the app turns its
+paths into shared-cacheable negotiated redirects.
 
 Both eligibility rules use `respect_origin` for edge **and** browser TTL, so
 every TTL lives in the application rather than split between code and

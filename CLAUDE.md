@@ -1072,8 +1072,22 @@ complete phase, representing every additional rule, and setting the separate
 `cache_ruleset_inventory_confirmed` acknowledgement.
 The managed rules are appended after that inventory: two eligibility rules
 (anonymous GraphQL GETs, anonymous page HTML) followed by three bypasses
-(session-bearing web requests, the locale-negotiated bare root, every other API
-request). The API bypass is what
+(session-bearing web requests, every locale-negotiated path, every other API
+request).
+
+**The negotiated-path bypass covers far more than `/`.** The set is whatever
+`apps/web/src/proxy.ts`'s matcher admits -- any dotless path outside
+`api`/`_next`/`_vercel` -- because all of those pass through next-intl and are
+answered with a redirect chosen from `NEXT_LOCALE` and `Accept-Language`,
+neither of which is in the cache key. It began as a root-only rule and that was
+too narrow: `/products`, `/foo` and `/about` negotiate exactly like `/` and were
+uncached **only because next-intl happens to set a cookie on them**. That is an
+accident, not a guarantee -- `localeCookie: false` would remove it and start
+serving one visitor's language to everyone. `/sitemap.xml` and `/favicon.ico`
+are unaffected: they contain a dot, so they never reach the middleware. The
+locale list is a Terraform variable, with
+`scripts/cloudflare-locale-drift.test.mjs` asserting it matches `LOCALES` in
+`packages/config`, because drift is silent in both directions. The API bypass is what
 neutralizes an earlier imported rule that was broader than intended -- it is
 the exact complement of its eligibility condition across the whole API
 hostname, so every other API path is bypassed too; only the canonical
