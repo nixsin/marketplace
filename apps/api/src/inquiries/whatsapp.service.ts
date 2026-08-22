@@ -38,27 +38,43 @@ export type WhatsappSendResult =
  * rather than cosmetic: without it every production send fails validation.
  */
 export function sanitizeTemplateParam(value: string): string {
-  return (
-    value
-      .replace(/[\r\n\t]+/g, ' \u00b7 ')
-      .replace(/\s{2,}/g, ' ')
-      .trim()
-      // TODO(#151): truncate by code point, not UTF-16 code unit.
-      //
-      // .slice() counts UTF-16 code units, so a cut landing inside a surrogate
-      // pair leaves an unpaired surrogate in the outbound parameter. Verified:
-      // slicing 'x'.repeat(1023) + an emoji at 1024 does exactly that.
-      //
-      // FREQUENCY: requires a message that reaches the 1024-character cap AND
-      // has a non-BMP character straddling that exact boundary. Inquiry text is
-      // capped at 1000 and the summary is bounded well below it, so no current
-      // caller can reach the cap at all -- this is reachable only if those
-      // limits are raised.
-      //
-      // FIX WHEN TOUCHED: [...value].slice(0, max).join(''), plus a boundary
-      // test containing an emoji.
-      .slice(0, WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH)
-  );
+  const flat = value
+    // A SINGLE SPACE, not " · ". The separator used to be three characters
+    // replacing one, which expanded the string before the cap was applied
+    // -- and the DTO permits 1000 characters against a 1024 limit, so it
+    // took only twelve line breaks to start truncating what the buyer
+    // typed. That is not a pathological input: a fourteen-line spec list is
+    // an ordinary B2B inquiry, and it lost its ending silently, after the
+    // API had accepted the message as valid.
+    //
+    // Contracting (a run becomes one space) is safe; expanding is not. The
+    // summary stays readable flattened because its own labels -- From:,
+    // Product:, Ref:, Link: -- carry the structure; the separator was
+    // decoration, and it was costing buyers their words.
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    // Truncated by CODE POINT, not UTF-16 code unit. .slice() would cut
+    // inside a surrogate pair and leave an unpaired surrogate in an
+    // outbound parameter. This was parked as unreachable on the grounds
+    // that the cap could never be hit -- which the separator expansion
+    // above had quietly made false, so the parked case was live. Fixed
+    // rather than re-parked: it is two characters of code.
+    .trim();
+  return truncateByCodePoint(flat, WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH);
+}
+
+/**
+ * Truncates without splitting a surrogate pair.
+ *
+ * String.slice counts UTF-16 code units, so a cut landing between the halves
+ * of a non-BMP character -- an emoji, most CJK extensions -- leaves an
+ * unpaired surrogate in the outbound value. Spreading iterates by code point,
+ * so a cut can only land between whole characters.
+ */
+export function truncateByCodePoint(value: string, max: number): string {
+  const points = [...value];
+  return points.length <= max ? value : points.slice(0, max).join('');
 }
 
 /**

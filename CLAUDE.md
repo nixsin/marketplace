@@ -677,6 +677,25 @@ rather than attempted and rejected one message at a time.
 `WHATSAPP_ALLOW_FREE_FORM` is a deliberate opt-in for a known-open window, not
 a fallback. Full template contract in [docs/whatsapp.md](./docs/whatsapp.md).
 
+**The template-parameter flattener must never EXPAND the string.** It replaced
+each newline run with `" · "` — three characters for one — so the DTO's
+1000-character message could reach 1024 and be cut. Twelve line breaks was
+enough, which makes a fourteen-line spec list an ordinary casualty rather than
+a pathological one: the buyer's question lost its ending silently, after Meta
+had accepted the message as valid. The separator is now a single space, and
+the summary stays readable flattened because its own labels (`From:`,
+`Product:`, `Ref:`, `Link:`) carry the structure.
+
+The guard that was supposed to prevent this compared
+`INQUIRY_MESSAGE_MAX_LENGTH` against `WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH` and
+found them correctly ordered — while the expansion happened *between* them,
+where a comparison of two constants cannot see it. It now runs real input
+through the real function and asserts nothing was cut, which is the property
+rather than a proxy for it. Truncation, where it still happens, is by **code
+point**: `.slice()` counts UTF-16 code units and splits surrogate pairs, which
+matters most for the product name, where a 200-character cap is ordinary and
+device names carry CJK and symbols routinely.
+
 **Two template parameters, not one.** `{{1}}` is the product/contact summary,
 `{{2}}` the buyer's own words. A single combined parameter meant a near-limit
 question lost its ending to the metadata in front of it — silently, after Meta

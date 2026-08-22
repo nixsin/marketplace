@@ -5,7 +5,11 @@ import {
   WHATSAPP_API_VERSION,
   WHATSAPP_PHONE_NUMBER_ID_ENV,
 } from '@medinstru/config';
-import { WhatsappService, sanitizeTemplateParam } from './whatsapp.service';
+import {
+  WhatsappService,
+  sanitizeTemplateParam,
+  truncateByCodePoint,
+} from './whatsapp.service';
 
 // Fully configured now means all THREE: a template name is required
 // alongside the credentials, because business-initiated messages cannot be
@@ -691,18 +695,53 @@ describe('an accepted send whose body will not parse', () => {
   });
 });
 
-describe('the parked truncation edge case stays unreachable (#151)', () => {
-  it('keeps the buyer-message cap below the template parameter cap', () => {
-    // sanitizeTemplateParam truncates by UTF-16 code unit and can split an
-    // emoji at the boundary -- a known, deliberately parked gap (#151).
-    //
-    // It is parked on the strength of being UNREACHABLE: no caller can
-    // produce a parameter long enough to hit the cap. That is a relationship
-    // between two constants, not a property of the code, so raising the
-    // message limit past the parameter limit would quietly make the parked
-    // bug live. This fails if that happens.
-    expect(INQUIRY_MESSAGE_MAX_LENGTH).toBeLessThan(
-      WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH,
-    );
+describe("a buyer's message survives sanitising intact", () => {
+  // This replaces a test that compared INQUIRY_MESSAGE_MAX_LENGTH against
+  // WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH and concluded the truncation gap was
+  // unreachable. The constants were indeed ordered correctly -- and the
+  // sanitiser expanded the string BETWEEN them, which a comparison of two
+  // numbers cannot see. A fourteen-line spec list at the cap was silently
+  // losing its ending, and the guard reported everything fine.
+  //
+  // So this measures the property instead of a proxy for it: real input,
+  // through the real function, asserting nothing was cut.
+  const atCap = (body: string) =>
+    body + 'x'.repeat(Math.max(0, INQUIRY_MESSAGE_MAX_LENGTH - body.length));
+
+  it.each([
+    [
+      'a fourteen-line spec list, which is an ordinary B2B inquiry',
+      Array.from(
+        { length: 14 },
+        (_, i) => `Spec line ${i} with some detail about the requirement`,
+      ).join('\n'),
+    ],
+    ['alternating characters and newlines', 'a\n'.repeat(500)],
+    ['tabs throughout', 'a\t'.repeat(500)],
+    ['no whitespace at all', 'x'.repeat(INQUIRY_MESSAGE_MAX_LENGTH)],
+  ])('is not truncated: %s', (_label, body) => {
+    const out = sanitizeTemplateParam(atCap(body));
+    expect(out.length).toBeLessThan(WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH);
+  });
+
+  it('never expands, so the cap relationship actually holds', () => {
+    // The invariant the constant comparison was standing in for. Flattening
+    // may CONTRACT a run of whitespace; it must never grow the string, or the
+    // 1000 < 1024 ordering stops meaning anything.
+    for (const input of ['a\nb', 'a\n\n\nb', 'a\tb', 'a    b', 'plain']) {
+      expect(sanitizeTemplateParam(input).length).toBeLessThanOrEqual(
+        input.length,
+      );
+    }
+  });
+
+  it('truncates by code point when it does have to truncate', () => {
+    // Only reachable now through the summary parameter or a raised cap, but
+    // the cut must not split a surrogate pair either way.
+    const cut = truncateByCodePoint('x'.repeat(1023) + '\u{1F600}', 1024);
+    const unpaired =
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    expect(unpaired.test(cut)).toBe(false);
+    expect([...cut]).toHaveLength(1024);
   });
 });

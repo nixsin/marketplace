@@ -19,7 +19,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { InquiryStatus } from '../../generated/prisma/enums';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeE164 } from './phone';
-import { WhatsappService } from './whatsapp.service';
+import { WhatsappService, truncateByCodePoint } from './whatsapp.service';
 
 export interface CreateInquiryArgs {
   /** Stable per-submission key; the same value on every retry. */
@@ -245,9 +245,14 @@ export function buildInquirySummary(input: {
   siteUrl?: string;
 }): string {
   const base = publicSiteUrl(input.siteUrl ?? SITE_URL);
+  // Truncated by CODE POINT. .slice() counts UTF-16 code units, so a product
+  // name with a non-BMP character straddling the boundary left an unpaired
+  // surrogate in the outbound summary. Readily reachable -- unlike the
+  // template-parameter cap this was parked alongside, a 200-character name is
+  // ordinary, and medical device names carry CJK and symbols routinely.
   const name =
-    input.productName.length > INQUIRY_SUMMARY_NAME_MAX_LENGTH
-      ? `${input.productName.slice(0, INQUIRY_SUMMARY_NAME_MAX_LENGTH - 1)}\u2026`
+    [...input.productName].length > INQUIRY_SUMMARY_NAME_MAX_LENGTH
+      ? `${truncateByCodePoint(input.productName, INQUIRY_SUMMARY_NAME_MAX_LENGTH - 1)}\u2026`
       : input.productName;
 
   return [
