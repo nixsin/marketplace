@@ -64,7 +64,8 @@
       "network": "We couldn't reach the server. Check your connection and try again.",
       "rate-limited": "You've sent several inquiries recently. Please wait a little while before sending another.",
       "invalid": "Please check your name and phone number, including the country code.",
-      "unknown": "Something went wrong sending that. Please try again."
+      "unknown": "Something went wrong sending that. Please try again.",
+      "conflict": "This form was already submitted with different details. Reload the page to send a new inquiry."
     }
   },
   "languageSwitcher": {

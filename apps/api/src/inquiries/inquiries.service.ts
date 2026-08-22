@@ -117,8 +117,14 @@ export function assertSameSubmission<T extends SubmissionIdentity>(
     // Names no stored value. The key can be chosen by the caller, so echoing
     // what it currently holds would let anyone read back someone else's
     // inquiry by guessing keys.
+    // "already used", NOT "already sent". categorizeInquiryError maps
+    // "already sent inquiries" to the rate-limit category, and the first
+    // wording of this message collided with it -- so a buyer hitting a key
+    // conflict was told they had sent too many inquiries recently, which is
+    // both wrong and unactionable. The client keys off these strings, so the
+    // wording is a wire contract, not prose.
     throw new BadRequestException(
-      'This submission was already sent with different details. Reload the page and try again.',
+      'This submission id was already used for different details. Reload the page and try again.',
     );
   }
   return existing;

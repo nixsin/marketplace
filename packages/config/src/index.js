@@ -373,6 +373,43 @@ export const CORRELATION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
  */
 export const MANAGED_IMAGE_PREFIX = "/products/";
 
+/**
+ * E.164: a leading +, a non-zero first digit, and at most 15 digits total.
+ *
+ * There is no eight-digit MINIMUM. An earlier version imposed one, which
+ * rejected real assignments -- Saint Helena (+290 8123) and the Cook Islands
+ * (+682 1234) are seven digits end to end -- and because
+ * Product.hasInquiryContact calls this, those sellers silently appeared to
+ * have no contact number at all.
+ */
+const E164_PATTERN = /^\+[1-9]\d{1,14}$/;
+
+/** Whether a value is already a canonical E.164 number. */
+export function isE164(value) {
+  return E164_PATTERN.test(value);
+}
+
+/**
+ * Canonicalises a submitted phone number to E.164, or null if it cannot be.
+ *
+ * SHARED because both apps must agree on it, and a second copy would drift
+ * silently -- which it did. apps/api stores and compares the canonical form,
+ * so an idempotency key is bound to THAT value; apps/web decides whether a
+ * retry is the same submission or a new one. With the web side comparing the
+ * raw string, reformatting "+919000000001" as "+91 90000 00001" read as an
+ * edit, minted a fresh key, and created a SECOND inquiry the server would
+ * have recognised as the same one -- and, once delivery ships, a second
+ * message to the seller.
+ *
+ * The form advertises a spaced example because that is how people write
+ * numbers, so the two representations are both expected in real input, not a
+ * pathological case.
+ */
+export function normalizeE164(value) {
+  const stripped = String(value).replace(/[\s\u00a0().-]/g, "");
+  return isE164(stripped) ? stripped : null;
+}
+
 // ---------------------------------------------------------------------
 // Auth and session lifetimes
 //

@@ -293,7 +293,12 @@ export interface InquiryInput {
  * only adds traffic. Categories let the UI say something actionable without
  * echoing internal error strings back to a buyer.
  */
-export type InquiryFailure = "network" | "rate-limited" | "invalid" | "unknown";
+export type InquiryFailure =
+  | "network"
+  | "rate-limited"
+  | "invalid"
+  | "conflict"
+  | "unknown";
 
 export type InquiryResult =
   | { ok: true }
@@ -308,7 +313,16 @@ export type InquiryResult =
  */
 export function categorizeInquiryError(message: string): InquiryFailure {
   const text = message.toLowerCase();
-  if (text.includes("too many") || text.includes("already sent")) {
+  // "already used", checked BEFORE the rate-limit branch and matched on its
+  // own phrase. The idempotency-conflict message once read "already sent
+  // with different details", which the rate-limit branch below swallowed --
+  // telling a buyer with a key conflict that they had sent too many
+  // inquiries recently. Wrong, and it points them at a wait that cannot
+  // help.
+  if (text.includes("already used")) return "conflict";
+  // Matched on "already sent inquiries", not a bare "already sent", so a
+  // future message merely containing those two words does not land here.
+  if (text.includes("too many") || text.includes("already sent inquiries")) {
     return "rate-limited";
   }
   if (text.includes("phone number") || text.includes("enter your name")) {

@@ -166,10 +166,29 @@ describe("categorizeInquiryError", () => {
     ["Too many inquiries from this number recently.", "rate-limited"],
     ["Too many inquiries right now. Please try again later.", "rate-limited"],
     ["You have already sent inquiries about this product recently.", "rate-limited"],
+    [
+      "This submission id was already used for different details. Reload the page and try again.",
+      "conflict",
+    ],
     ["Enter a valid phone number including the country code.", "invalid"],
     ["Enter your name and a question.", "invalid"],
   ])("maps %s to %s", (message, expected) => {
     expect(categorizeInquiryError(message)).toBe(expected);
+  });
+
+  it("does not mistake an idempotency conflict for a rate limit", () => {
+    // The conflict message once read "already sent with different details",
+    // which the rate-limit branch swallowed on a bare "already sent" -- so a
+    // buyer with a key conflict was told they had sent too many inquiries
+    // recently, pointing them at a wait that cannot help. Both sides were
+    // tightened: the message says "already used", and the rate-limit branch
+    // matches "already sent inquiries" rather than two loose words.
+    expect(
+      categorizeInquiryError("This submission id was already used for X."),
+    ).toBe("conflict");
+    expect(
+      categorizeInquiryError("You have already sent inquiries about this."),
+    ).toBe("rate-limited");
   });
 
   it("falls back to unknown rather than guessing", () => {

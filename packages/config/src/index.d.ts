@@ -45,6 +45,16 @@ export declare const CORRELATION_HEADERS: {
 export declare const CORRELATION_ID_MAX_LENGTH: number;
 export declare const CORRELATION_ID_PATTERN: RegExp;
 export declare const MANAGED_IMAGE_PREFIX: string;
+
+/** Whether a value is already a canonical E.164 number. */
+export declare function isE164(value: string): boolean;
+
+/**
+ * Canonicalises a submitted phone number to E.164, or null if it cannot be.
+ * Shared so apps/api and apps/web cannot disagree about what "the same
+ * number" means -- see the implementation's comment for what drifted.
+ */
+export declare function normalizeE164(value: string): string | null;
 // Literal types, not `string`, for the same reason LOCALES is declared
 // as a literal tuple: @nestjs/jwt types `expiresIn` as the `ms` package's
 // StringValue union, and a widened `string` is not assignable to it. The

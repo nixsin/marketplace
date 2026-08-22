@@ -576,7 +576,14 @@ number and reword the question, submit again — the API answers with the
 *original* row's id and the confirmation reports the edited inquiry as
 recorded. It never was. The same shape from the other direction: the DTO
 permits an 8-character key, so two anonymous callers can pick the same one and
-the second caller's lead vanishes. `assertSameSubmission` compares the row's
+the second caller's lead vanishes. **The canonicalisation is shared, and it had to be**: the server binds the key
+to the *normalised* phone, so with the web client fingerprinting the raw
+string, reformatting `+919000000001` as `+91 90000 00001` read as an edit,
+minted a fresh key, and wrote a second inquiry the server would have
+recognised as the same one. `normalizeE164`/`isE164` therefore live in
+`@medinstru/config` as a cross-app wire contract, with
+`apps/api/src/inquiries/phone.ts` re-exporting them as the documented home.
+`assertSameSubmission` compares the row's
 own columns — no migration, and it compares what was actually written rather
 than a hash of what we believed we wrote — over a **fixed field list**, not
 the argument's keys. That last detail is not cosmetic: deriving the list from
@@ -636,6 +643,17 @@ which would echo the buyer's own message and phone back to an anonymous caller
 and hand out the previous submitter's `ipHash`. That assertion is written
 against the **key set**, not a list of known-bad fields, because the row grows
 a column every time this feature does.
+
+**The rejection strings are a wire contract, not prose.**
+`categorizeInquiryError` in `apps/web/src/lib/api.ts` routes the buyer's error
+copy by matching substrings of the server's messages, so rewording one on the
+API side silently re-categorises it. That happened: the idempotency-conflict
+message read "already sent with different details" and the rate-limit branch
+matched a bare `"already sent"`, so a key conflict told the buyer they had
+sent too many inquiries recently — pointing them at a wait that cannot help.
+Both sides are now specific (`"already used"` vs `"already sent inquiries"`),
+and a test asserts the conflict message contains neither of the rate-limit
+phrases.
 
 ## Known gotchas (already solved once — don't re-derive)
 

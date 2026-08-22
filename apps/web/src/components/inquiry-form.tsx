@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import {
   INQUIRY_MESSAGE_MAX_LENGTH,
   INQUIRY_NAME_MAX_LENGTH,
+  normalizeE164,
 } from "@medinstru/config";
 import { submitInquiry, type InquiryFailure } from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -80,7 +81,19 @@ export function InquiryForm({
     // The fields are uncontrolled, so there is no state to diff -- and this
     // is the value the server actually stored under the current key, which
     // is the thing the key has to keep matching.
-    const fingerprint = JSON.stringify(submission);
+    //
+    // The phone is CANONICALISED first, using the server's own function.
+    // Comparing the raw string made a formatting-only edit look like a
+    // different submission: retype "+919000000001" as "+91 90000 00001" while
+    // retrying and this minted a fresh key, so the server -- which stores and
+    // compares the canonical form -- saw a new submission and wrote a SECOND
+    // inquiry, and would send a second message once delivery ships. Falls
+    // back to the raw value when it cannot be canonicalised, so an
+    // unsubmittable number still fingerprints deterministically.
+    const fingerprint = JSON.stringify({
+      ...submission,
+      buyerPhone: normalizeE164(submission.buyerPhone) ?? submission.buyerPhone,
+    });
     if (lastSubmitted.current !== null && lastSubmitted.current !== fingerprint) {
       submissionKey.current = crypto.randomUUID();
     }

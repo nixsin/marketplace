@@ -289,6 +289,38 @@ describe("submission idempotency", () => {
     expect(keys.size).toBe(1);
   });
 
+  it("KEEPS the key when the buyer only reformats the phone number", async () => {
+    // The server canonicalises with normalizeE164 and compares the canonical
+    // value, so "+919000000001" and "+91 90000 00001" are the SAME
+    // submission to it. The fingerprint compared the raw string, so
+    // reformatting minted a fresh key -- and the server, seeing a key it had
+    // never stored, wrote a SECOND inquiry, which becomes a second message to
+    // the seller once delivery ships.
+    //
+    // The form advertises a spaced example, so both spellings are ordinary
+    // real input rather than a pathological case.
+    const user = userEvent.setup();
+    renderForm();
+    await fillAndSubmit();
+    await screen.findByRole("alert");
+
+    await user.clear(screen.getByLabelText(/your phone number/i));
+    await user.type(
+      screen.getByLabelText(/your phone number/i),
+      "+91 90000 00001",
+    );
+    await user.click(screen.getByRole("button", { name: /send inquiry/i }));
+
+    await waitFor(() =>
+      expect(submitInquiryMock.mock.calls.length).toBeGreaterThan(1),
+    );
+
+    const keys = new Set(
+      submitInquiryMock.mock.calls.map((c) => c[0].idempotencyKey),
+    );
+    expect(keys.size).toBe(1);
+  });
+
   it("MINTS A NEW KEY when the buyer edits before retrying", async () => {
     // The opposite failure to the one above, and it was reproduced against a
     // real server: the buyer fixes their phone number and rewords the

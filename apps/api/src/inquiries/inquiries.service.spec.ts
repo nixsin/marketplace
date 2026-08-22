@@ -675,6 +675,21 @@ describe('assertSameSubmission', () => {
     ).toMatchObject({ id: 'inq-1' });
   });
 
+  it('rejects with a message the client does not read as a rate limit', () => {
+    // categorizeInquiryError maps "already sent inquiries" to the rate-limit
+    // category, and the first wording here was "already sent with different
+    // details" -- so a key conflict told the buyer to wait, which cannot
+    // help. These strings are a wire contract between the two apps, not
+    // prose.
+    try {
+      assertSameSubmission(stored, { ...identity, message: 'different' });
+      throw new Error('expected a rejection');
+    } catch (error) {
+      expect((error as Error).message).not.toContain('already sent');
+      expect((error as Error).message).toContain('already used');
+    }
+  });
+
   it('never echoes what the key currently holds', () => {
     // The key is caller-chosen, so a message naming the stored values would
     // let anyone read back someone else's inquiry by guessing keys.
