@@ -47,7 +47,25 @@
     "errorMessage": "We couldn't load this product. Please try again.",
     "retry": "Try again",
     "shareOnWhatsApp": "Share on WhatsApp",
-    "shareAbout": "Share {productName} on WhatsApp"
+    "shareAbout": "Share {productName} on WhatsApp",
+    "inquiryTitle": "Ask this seller",
+    "inquiryAbout": "Send an inquiry about {productName}",
+    "inquiryRecipientNote": "Your name, phone number and question are shared with this seller so they can reply.",
+    "inquiryName": "Your name",
+    "inquiryPhone": "Your phone number",
+    "inquiryPhoneHint": "Include your country code, for example +91 for India.",
+    "inquiryMessage": "Your question",
+    "inquirySubmit": "Send inquiry",
+    "inquirySending": "Sending…",
+    "inquirySentTitle": "Inquiry received",
+    "inquirySentRecorded": "We've recorded your question for this seller. If they get in touch, it will come to the number you gave us.",
+    "inquiryPrivacyNote": "We share these details with this seller only, so they can answer you. Sending an inquiry does not sign you up for marketing messages.",
+    "inquiryError": {
+      "network": "We couldn't reach the server. Check your connection and try again.",
+      "rate-limited": "You've sent several inquiries recently. Please wait a little while before sending another.",
+      "invalid": "Please check your name and phone number, including the country code.",
+      "unknown": "Something went wrong sending that. Please try again."
+    }
   },
   "languageSwitcher": {
     "label": "Language"

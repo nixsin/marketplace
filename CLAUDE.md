@@ -518,7 +518,104 @@ CommonJS test run and fails with `Unexpected token 'export'` — which looks
 exactly like a file that was never transformed.
 
 
+## Buyer product inquiries (#91)
+
+Shipped in three parts. This is part 2, **capture**: a buyer submits a question
+on a product page and it lands in the `Inquiry` table. Part 1 (#150) added the
+schema, `normalizeE164`/`isE164` and `Product.hasInquiryContact`; part 3 adds
+delivery over WhatsApp's Cloud API. Nothing here sends anything to anyone.
+
+**The confirmation says "recorded", and that is the whole design constraint.**
+Copy that told the buyer the seller had their question was the single most
+repeated review finding on the unsplit version of this work — three separate
+rounds, two different wordings, both shown verbatim when delivery had failed.
+A buyer who believes their message arrived waits for a reply that cannot come,
+and does not retry. So `Inquiry` exposes **no `delivered` field** and
+`submitInquiry` returns a bare `{ ok: true }`: there is nothing to branch on,
+so no branch can claim the wrong thing. Three tests assert the absence — one on
+the committed `schema.gql`, one on the API result's key set, one on the copy a
+real browser renders. The delivery change has to add a real outcome before any
+of that wording can change.
+
+**The mutation is unauthenticated on purpose** (#91 story 3: a WhatsApp-shared
+link must work on a cold visit), which makes it an abuse vector by
+construction. Four limits, all counted from the `Inquiry` table rather than an
+in-process counter that would reset on deploy and be per-instance: per phone,
+per phone+product, per hashed IP, and an absolute per-seller cap. The two phone
+limits are keyed on a value **the caller types**, so on their own they are
+defeated by rotating E.164 numbers; the per-seller cap is the only one still
+standing when a caller rotates both, and its rejection message is deliberately
+vague so it cannot be used as a progress indicator. When login ships this must
+NOT quietly become authenticated — record the session alongside the inquiry and
+keep anonymous submission working.
+
+**Check and insert run in one `Serializable` transaction**, and the product is
+read *inside* it. Counting then inserting separately is a time-of-check /
+time-of-use race, and a product read before the transaction opened could have
+been reassigned in the gap — attributing an inquiry to the previous seller,
+which once delivery exists means handing a buyer's name and phone to an
+unrelated organisation. Serializable aborts rather than queues, so P2034 is
+retried (three attempts); nothing else is, because retrying a deliberate
+rate-limit refusal turns one rejection into three.
+
+**Idempotency is enforced by the unique index, not by the lookup.** The client
+generates one key per submission and reuses it on every retry — a lost response
+is indistinguishable from a failed one, so a retry is expected rather than
+exceptional. `create()`'s `findUnique` only avoids a round trip in the common
+case; when two requests both pass it before either inserts, P2002 is caught and
+**the winner's row is returned as the success**, because an error there would
+tell a buyer their inquiry failed when it demonstrably succeeded. Only the e2e
+test can prove this — it fires two identical submissions with `Promise.all` and
+asserts one row and one id.
+
+**Two env vars, documented in `apps/api/.env.example` by name only.**
+`INQUIRY_IP_HASH_SECRET` keys the HMAC that stores a submitter's address as a
+hash; **without it nothing breaks and the per-IP limit simply does not run.**
+An unkeyed SHA-256 is not a fallback: IPv4's 2^32 space is small enough to
+enumerate, so anyone holding the table recovers the address, and labelling such
+a value "unkeyed" advertises the weakness without removing it. Storing nothing
+is the honest option, and the limiter skips a null bucket by design.
+`INQUIRY_TRUST_PROXY_HEADERS` must be exactly `"true"` before
+`cf-connecting-ip`/`x-forwarded-for` are believed at all; **`resolveCallerIp`
+returns null otherwise, including for the socket.** Both defaults were arrived
+at by getting them wrong: this origin also answers directly on its
+`.onrender.com` hostname, so a caller skipping the edge can forge a fresh
+header per request — and `socket.remoteAddress` behind Render's load balancer
+is the *balancer*, identical for every buyer, so using it gave everyone one
+shared bucket and locked out every caller for every seller once the limit was
+reached.
+
+**Nothing on the buyer path may carry the seller's number.** The resolver
+returns `{ id, status, createdAt }` explicitly rather than spreading the row —
+which would echo the buyer's own message and phone back to an anonymous caller
+and hand out the previous submitter's `ipHash`. That assertion is written
+against the **key set**, not a list of known-bad fields, because the row grows
+a column every time this feature does.
+
 ## Known gotchas (already solved once — don't re-derive)
+
+**`prisma migrate status` reports "Database schema is up to date!" while the
+database has columns no committed migration ever created.** It compares
+applied migration *names* against `prisma/migrations/`, not the actual schema,
+so a `prisma migrate dev` run on a branch that was later abandoned leaves the
+column behind permanently and reads as clean forever after. Hit this directly
+(2026-08-22): the local dev `Inquiry` table carried a `bundleId text NOT NULL`
+from the abandoned `feat/bulk-inquiry` fan-out work, so every inquiry submitted
+through the running dev stack failed with `Null constraint violation on the
+(not available)` — a message that names no column and reads like an
+application bug. The API's own e2e suite passed the whole time, because
+`medinstru_test` is migrated from the committed files and had no such column.
+Diagnose by comparing the real table against the committed schema rather than
+trusting `migrate status`:
+
+```bash
+/opt/homebrew/opt/postgresql@16/bin/psql "postgresql://postgres:postgres@127.0.0.1:5432/medinstru" -c '\d "Inquiry"'
+```
+
+Confirm the column appears in no file under `apps/api/prisma/migrations/` and
+in no committed `schema.prisma`, then `ALTER TABLE ... DROP COLUMN`. Worth
+checking whenever local behaviour and CI disagree about a table this repo has
+recently changed on more than one branch.
 
 **Never run `apps/api`'s e2e suite via `docker compose exec api ...`
 against this repo's persistent dev container — it silently runs against
