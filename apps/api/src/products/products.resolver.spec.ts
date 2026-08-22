@@ -74,3 +74,36 @@ describe('ProductsResolver', () => {
     });
   });
 });
+
+describe('hasInquiryContact', () => {
+  const resolver = new ProductsResolver({} as unknown as ProductsService);
+
+  it('is true only for a genuinely sendable number', () => {
+    expect(
+      resolver.hasInquiryContact({
+        seller: { whatsappNumber: '+919876543210' },
+      }),
+    ).toBe(true);
+  });
+
+  it.each<[string | null | undefined, string]>([
+    ['98765 43210', 'local format with spaces'],
+    ['not-a-number', 'free text'],
+    ['+0123456789', 'leading zero after the plus'],
+    ['', 'empty string'],
+    [null, 'null'],
+    [undefined, 'absent'],
+  ])('is false for %s (%s)', (value) => {
+    // The column is free text, so a non-empty malformed value would otherwise
+    // advertise that the product can receive inquiries and render the form,
+    // while every send fails E.164 validation before leaving the process --
+    // a buyer typing a real question into a form that could never work.
+    expect(
+      resolver.hasInquiryContact({ seller: { whatsappNumber: value } }),
+    ).toBe(false);
+  });
+
+  it('is false when the seller relation is missing entirely', () => {
+    expect(resolver.hasInquiryContact({})).toBe(false);
+  });
+});

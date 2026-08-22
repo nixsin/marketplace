@@ -297,12 +297,29 @@ async function main() {
   // reseeding is idempotent.
   const approved = await prisma.organization.upsert({
     where: { gstin: '33AAACM1234A1Z5' },
+    // +999 is an ITU-RESERVED country code assigned to no operator, so these
+    // numbers cannot route anywhere. That is deliberate and load-bearing.
+    //
+    // The first version used invented Indian mobile numbers -- syntactically
+    // valid, and quite possibly belonging to real people. The digits are not
+    // repeated here on purpose: a dialable number in a comment is still
+    // copy-pasteable, and seed-numbers.spec.ts fails on any that appear
+    // anywhere in this file, comments included. Seeds run in CI and
+    // in development, and the inquiry flow is public, so one seeded database
+    // in an environment holding Meta credentials would have sent strangers
+    // real buyers' names, phone numbers and questions. Never put a routable
+    // number in seed data for a feature that messages people.
+    //
+    // Set in BOTH branches on purpose: `update: {}` means an already-seeded
+    // row would never gain a newly added column, so a reseed on an existing
+    // database would silently leave this seller unable to receive inquiries.
     update: {},
     create: {
       name: 'MedTech Systems Pvt Ltd',
       gstin: '33AAACM1234A1Z5',
       type: 'SELLER',
       kycStatus: 'APPROVED',
+      whatsappNumber: '+99900000001',
     },
   });
   const pending = await prisma.organization.upsert({
@@ -313,10 +330,13 @@ async function main() {
       gstin: '32AABCC5678D1Z9',
       type: 'SELLER',
       kycStatus: 'PENDING',
+      whatsappNumber: '+99900000002',
     },
   });
   // No GSTIN: the detail page must omit that line entirely rather than
-  // render an empty one.
+  // render an empty one. Also deliberately has NO whatsappNumber, so the
+  // fixture exercises hasInquiryContact === false -- the inquiry form must
+  // be absent entirely rather than present and always failing (#91).
   const unverified = await prisma.organization.upsert({
     where: { gstin: '03ZZZZZ0000Z1Z0' },
     update: {},
@@ -327,13 +347,42 @@ async function main() {
       kycStatus: 'REJECTED',
     },
   });
+  // Backfilled only where nothing is set, never overwritten.
+  //
+  // The upsert `update` branches used to assign these unconditionally, so a
+  // reseed silently replaced a real verified business number someone had
+  // configured with an unroutable placeholder -- destroying local setup with
+  // no warning. `update: {}` alone is not the answer either: an
+  // already-seeded row would then never gain a newly added column at all.
+  //
+  // Conditional backfill gets both: existing configuration survives, and a
+  // row seeded before this column existed still picks up a value.
+  for (const [org, number] of [
+    [approved, '+99900000001'],
+    [pending, '+99900000002'],
+  ] as const) {
+    await prisma.organization.updateMany({
+      where: { id: org.id, whatsappNumber: null },
+      data: { whatsappNumber: number },
+    });
+  }
+
   const sellers = { approved, pending, unverified };
 
   // Reseed cleanly so schema/content changes always apply, rather than
   // being skipped by a "does it already exist" check.
-  await prisma.product.deleteMany({
-    where: { sellerId: { in: Object.values(sellers).map((o) => o.id) } },
-  });
+  const sellerIds = Object.values(sellers).map((o) => o.id);
+
+  // Inquiries FIRST. Inquiry.productId is ON DELETE RESTRICT -- deliberately,
+  // because a lead must not vanish when a listing is tidied up -- so deleting
+  // products while any inquiry references them fails outright.
+  //
+  // Found by running the seed, not by reading it: a fresh database has no
+  // inquiries, so this passes in CI and every clean checkout. It breaks the
+  // first time a developer submits one test inquiry and then reseeds, which
+  // is exactly when they are least expecting the seed to be the problem.
+  await prisma.inquiry.deleteMany({ where: { sellerId: { in: sellerIds } } });
+  await prisma.product.deleteMany({ where: { sellerId: { in: sellerIds } } });
   await prisma.product.createMany({
     // One minute apart, descending, so array order IS page order under
     // findPaged's [createdAt desc, id desc]. Without distinct timestamps

@@ -71,6 +71,7 @@ type Product {
   description: String!
   details: JSONObject
   deviceClass: DeviceClass
+  hasInquiryContact: Boolean!
   id: ID!
   imageUrl: String
   location: String!
