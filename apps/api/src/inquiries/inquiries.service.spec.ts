@@ -256,15 +256,25 @@ describe('InquiriesService', () => {
     await expect(service.create(ARGS)).resolves.toBeDefined();
   });
 
-  it('does not report failure when marking a DELIVERED inquiry sent fails', async () => {
+  it('still reports a DELIVERED inquiry as SENT when marking it fails', async () => {
     // The provider has already accepted the message. Surfacing the write
     // error would tell the buyer it did not go through and invite a retry
-    // that sends the seller a duplicate. A stuck PENDING row is a visible,
-    // fixable inconsistency; a duplicate WhatsApp message is not.
+    // that sends the seller a duplicate.
+    //
+    // And the RETURNED status matters, not just that it resolves: the
+    // resolver derives `delivered` from it, so returning the untouched
+    // PENDING row showed the buyer "we couldn't reach the seller, try another
+    // way" for a message that had in fact arrived. The earlier version of
+    // this test only asserted it resolved and sailed straight past that.
     prisma.inquiry.update.mockRejectedValue(new Error('connection lost'));
     jest.spyOn(service['logger'], 'error').mockImplementation(() => undefined);
 
-    await expect(service.create(ARGS)).resolves.toBeDefined();
+    const result = await service.create(ARGS);
+
+    expect(result).toMatchObject({
+      status: 'SENT',
+      providerMessageId: 'wamid.1',
+    });
   });
 
   it('rejects an inquiry about a product that does not exist', async () => {

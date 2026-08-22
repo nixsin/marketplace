@@ -250,7 +250,18 @@ export class InquiriesService {
           `SENT; it remains PENDING and needs reconciling: ` +
           `${error instanceof Error ? error.message : 'unknown error'}`,
       );
-      return inquiry;
+      // Returned marked SENT even though the row is not, mirroring what the
+      // FAILED path already does. Meta ACCEPTED this message; returning the
+      // untouched PENDING row made the resolver report delivered:false and
+      // show the buyer "we couldn't reach the seller, try another way" for a
+      // message that had in fact arrived. The database inconsistency is real
+      // and logged for reconciliation, but the buyer should be told what
+      // actually happened, not what the failed write recorded.
+      return {
+        ...inquiry,
+        status: InquiryStatus.SENT,
+        providerMessageId: result.providerMessageId,
+      };
     }
   }
 

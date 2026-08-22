@@ -466,9 +466,11 @@ export const INQUIRY_RATE_LIMIT_PER_IP = 15;
 // limit forgeable in exactly the way the phone limit was.
 //
 // Turn it on only after the origin refuses traffic that did not come through
-// Cloudflare. Until then the socket address is used, which is real but may be
-// a shared load-balancer address -- hence the per-seller cap being the limit
-// that actually bounds a seller's exposure.
+// Cloudflare. UNTIL THEN THE PER-IP LIMIT IS SKIPPED ENTIRELY -- there is no
+// per-client address available, and the socket address is the load balancer,
+// identical for every buyer, so using it collapsed everyone into one bucket
+// and locked out the whole feature after fifteen inquiries. The per-seller
+// cap is what actually bounds a seller's exposure by default.
 export const INQUIRY_TRUST_PROXY_HEADERS_ENV = "INQUIRY_TRUST_PROXY_HEADERS";
 
 // Name only, never a value. Keying the IP hash defeats the offline dictionary
