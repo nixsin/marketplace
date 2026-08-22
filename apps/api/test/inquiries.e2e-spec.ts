@@ -140,12 +140,16 @@ describe('Inquiries (e2e)', () => {
     expect(await prisma.inquiry.count()).toBe(1);
   });
 
-  it('lets the DATABASE settle a concurrent duplicate, not the lookup', async () => {
-    // The service's findUnique only avoids a round trip in the common case.
-    // Fired together, both requests pass it before either inserts, so what
-    // actually prevents a second inquiry -- and, once delivery exists, a
-    // second message to the seller -- is the unique index. A mocked Prisma
-    // cannot prove that; this can.
+  it('settles a concurrent duplicate to one row, whichever path runs', async () => {
+    // Deliberately asserts the OUTCOME, not the path.
+    //
+    // An earlier version of this comment claimed it exercised the unique
+    // index. It cannot: the two requests race, so the second may simply
+    // observe the first row at the pre-flight lookup and never reach the
+    // insert at all. Both routes are correct and either may run on any given
+    // execution -- what must hold every time is one row and one id. The
+    // collision path itself is covered deterministically in the unit tests,
+    // where the P2002 can be forced.
     const variables = { input: input() };
 
     const results = await Promise.all([submit(variables), submit(variables)]);
@@ -154,6 +158,27 @@ describe('Inquiries (e2e)', () => {
     expect(results.every((r) => r.body.errors === undefined)).toBe(true);
     expect(new Set(ids).size).toBe(1);
     expect(await prisma.inquiry.count()).toBe(1);
+  });
+
+  it('lets only ONE of two concurrent submissions past a limit boundary', async () => {
+    // The rate-limit test below submits sequentially, which cannot show the
+    // thing the Serializable isolation is actually for: two callers reading
+    // the same count and both proceeding. Seeded one below the ceiling, with
+    // two DISTINCT keys so idempotency cannot be what settles it.
+    for (let i = 0; i < INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT - 1; i += 1) {
+      await submit({ input: input() });
+    }
+
+    const results = await Promise.all([
+      submit({ input: input() }),
+      submit({ input: input() }),
+    ]);
+
+    const accepted = results.filter((r) => r.body.errors === undefined);
+    expect(accepted).toHaveLength(1);
+    expect(await prisma.inquiry.count()).toBe(
+      INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
+    );
   });
 
   it('rejects an inquiry about a product that does not exist', async () => {
@@ -181,6 +206,30 @@ describe('Inquiries (e2e)', () => {
     expect(await prisma.inquiry.count()).toBe(
       INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
     );
+  });
+
+  it('REJECTS a reused key carrying different details', async () => {
+    // Reproduced against a running server before this test existed: submit a
+    // question, lose the response, correct the phone number and reword the
+    // question, submit again -- and the API answered with the original row's
+    // id while the buyer was told their edited inquiry was recorded. It
+    // never was.
+    const first = input();
+    await submit({ input: first });
+
+    const edited = await submit({
+      input: {
+        ...first,
+        buyerPhone: '+919000007777',
+        message: 'Actually, please send the CE certificate too.',
+      },
+    });
+
+    expect(edited.body.errors?.[0]?.message).toMatch(/different details/i);
+    // The original is untouched, and no second row was written.
+    expect(await prisma.inquiry.count()).toBe(1);
+    const stored = await prisma.inquiry.findFirst();
+    expect(stored?.buyerPhone).toBe('+919000000001');
   });
 
   it('rejects a name or message that is only whitespace', async () => {

@@ -227,4 +227,34 @@ describe("submission idempotency", () => {
     );
     expect(keys.size).toBe(1);
   });
+
+  it("MINTS A NEW KEY when the buyer edits before retrying", async () => {
+    // The opposite failure to the one above, and it was reproduced against a
+    // real server: the buyer fixes their phone number and rewords the
+    // question, the server matches the old key, returns the ORIGINAL row,
+    // and the confirmation reports the edited inquiry as recorded. It never
+    // was. The server now rejects that mismatch outright -- this is what
+    // keeps a buyer from ever meeting the rejection, because an edit really
+    // is a different submission.
+    const user = userEvent.setup();
+    renderForm();
+    await fillAndSubmit();
+    await screen.findByRole("alert");
+
+    await user.clear(screen.getByLabelText(/your phone number/i));
+    await user.type(screen.getByLabelText(/your phone number/i), "+919000000002");
+    await user.click(screen.getByRole("button", { name: /send inquiry/i }));
+
+    await waitFor(() =>
+      expect(submitInquiryMock.mock.calls.length).toBeGreaterThan(1),
+    );
+
+    // filter(Boolean) for the same reason the test above does it: how many
+    // times the form fires is an implementation detail, and a call recorded
+    // without arguments would otherwise throw here rather than fail.
+    const calls = submitInquiryMock.mock.calls.map((c) => c?.[0]).filter(Boolean);
+    const edited = calls.find((c) => c.buyerPhone === "+919000000002");
+    const original = calls.find((c) => c.buyerPhone === "+919000000001");
+    expect(edited?.idempotencyKey).not.toBe(original?.idempotencyKey);
+  });
 });

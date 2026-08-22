@@ -58,6 +58,72 @@ export function hashIp(
   return createHmac('sha256', secret).update(ip).digest('hex');
 }
 
+/** The fields that make one submission distinct from another. */
+export interface SubmissionIdentity {
+  productId: string;
+  buyerName: string;
+  buyerPhone: string;
+  message: string;
+}
+
+/**
+ * Compared explicitly rather than by walking the argument's own keys.
+ *
+ * Deriving the list from the caller's object made the check depend on what
+ * that caller happened to pass: insertInquiry hands it the full insert args,
+ * so ipHash joined the comparison and a genuine retry from a different
+ * address was rejected as an edit. A fixed list cannot be widened by a call
+ * site, and adding a field here is a deliberate act with a test to match.
+ */
+const SUBMISSION_FIELDS = [
+  'productId',
+  'buyerName',
+  'buyerPhone',
+  'message',
+] as const;
+
+/**
+ * A reused idempotency key must carry the SAME submission, or it is not a
+ * retry of anything.
+ *
+ * Returning the stored row for a key without checking what it holds loses
+ * real data silently, and it was reproduced end to end before this existed:
+ * submit a question, lose the response, correct the phone number and the
+ * wording, submit again -- and the API answers with the ORIGINAL row's id
+ * while the confirmation tells the buyer their edited inquiry was recorded.
+ * It never was. The seller has the first version and the buyer's corrected
+ * number is gone, with nothing anywhere reporting a problem.
+ *
+ * The same shape, from a different direction: the DTO permits an 8-character
+ * key, so two anonymous callers can choose the same one. Without this check
+ * the second caller's lead is silently discarded and they are told it
+ * succeeded.
+ *
+ * Compared against the row's own columns rather than a stored fingerprint --
+ * no migration, and it compares what was actually written instead of a hash
+ * of what we believed we wrote. Rejecting is the honest answer: the request
+ * asks to record something that is not what this key already means. The web
+ * client never provokes it, because it mints a new key the moment the buyer
+ * edits anything.
+ */
+export function assertSameSubmission<T extends SubmissionIdentity>(
+  existing: T,
+  submission: SubmissionIdentity,
+): T {
+  const changed = SUBMISSION_FIELDS.some(
+    (field) => existing[field] !== submission[field],
+  );
+  if (changed) {
+    // Names no stored value. The key can be chosen by the caller, so echoing
+    // what it currently holds would let anyone read back someone else's
+    // inquiry by guessing keys.
+    throw new BadRequestException(
+      'This submission was already sent with different details. Reload the page and try again.',
+    );
+  }
+  return existing;
+}
+
 @Injectable()
 export class InquiriesService {
   private readonly logger = new Logger(InquiriesService.name);
@@ -93,6 +159,13 @@ export class InquiriesService {
       throw new BadRequestException('Enter your name and a question.');
     }
 
+    const submission = {
+      productId: args.productId,
+      buyerName,
+      buyerPhone,
+      message,
+    };
+
     // Already submitted? Return the SAME row rather than creating another.
     //
     // A lost response is indistinguishable from a failed one, so a buyer or a
@@ -102,17 +175,14 @@ export class InquiriesService {
     const existing = await this.prisma.inquiry.findUnique({
       where: { idempotencyKey: args.idempotencyKey },
     });
-    if (existing) return existing;
+    if (existing) return assertSameSubmission(existing, submission);
 
     const ipHash = hashIp(args.callerIp);
 
     try {
       return await this.insertInquiry({
         idempotencyKey: args.idempotencyKey,
-        productId: args.productId,
-        buyerName,
-        buyerPhone,
-        message,
+        ...submission,
         ipHash,
       });
     } catch (error) {
@@ -130,7 +200,12 @@ export class InquiriesService {
         });
         // Propagated when the winner cannot be read back: silence there would
         // be a success with nothing behind it.
-        if (winner) return winner;
+        //
+        // Checked here too: losing the race to a DIFFERENT submission that
+        // happened to pick the same key is exactly the collision this
+        // rejects, and it is the one path where two callers genuinely raced
+        // for one key rather than one caller retrying.
+        if (winner) return assertSameSubmission(winner, submission);
       }
       throw error;
     }
@@ -169,7 +244,7 @@ export class InquiriesService {
           const seen = await tx.inquiry.findUnique({
             where: { idempotencyKey: args.idempotencyKey },
           });
-          if (seen) return seen;
+          if (seen) return assertSameSubmission(seen, args);
 
           // Read INSIDE the transaction, and this snapshot is what the insert
           // uses. Reading it before and reusing that copy would let a product

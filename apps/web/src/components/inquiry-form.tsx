@@ -42,13 +42,25 @@ export function InquiryForm({
   const t = useTranslations("productDetails");
   const formId = useId();
   const [status, setStatus] = useState<Status>("idle");
-  // One key per SUBMISSION, held across retries.
+  // One key per SUBMISSION -- held across retries of the SAME content, and
+  // minted afresh the moment that content changes.
   //
-  // Regenerating it per attempt would defeat the server's deduplication
-  // entirely -- a lost response is indistinguishable from a failure, so the
-  // retry that follows must carry the same key or it becomes a second
-  // inquiry and a second WhatsApp message to the seller.
+  // Both halves are load-bearing. Regenerating per attempt would defeat the
+  // server's deduplication entirely: a lost response is indistinguishable
+  // from a failure, so the retry that follows must carry the same key or it
+  // becomes a second inquiry, and a second message to the seller once
+  // delivery exists.
+  //
+  // Holding it across an EDIT is the opposite failure, and it was reproduced
+  // against a real server: the buyer retries after fixing their phone number
+  // and rewording the question, the server matches the key, returns the
+  // original row, and the confirmation reports the edited inquiry as
+  // recorded. It never was -- the correction is gone and nothing says so.
+  // The server now rejects that mismatch rather than swallowing it; this
+  // keeps a buyer from ever meeting the rejection, because an edit really is
+  // a new submission.
   const submissionKey = useRef<string>(crypto.randomUUID());
+  const lastSubmitted = useRef<string | null>(null);
   const [error, setError] = useState<InquiryFailure | null>(null);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -57,12 +69,26 @@ export function InquiryForm({
     setStatus("sending");
     setError(null);
 
-    const result = await submitInquiry({
-      idempotencyKey: submissionKey.current,
+    const submission = {
       productId,
       buyerName: String(data.get("buyerName") ?? "").trim(),
       buyerPhone: String(data.get("buyerPhone") ?? "").trim(),
       message: String(data.get("message") ?? "").trim(),
+    };
+
+    // Compared against what was last SENT, not against the previous render.
+    // The fields are uncontrolled, so there is no state to diff -- and this
+    // is the value the server actually stored under the current key, which
+    // is the thing the key has to keep matching.
+    const fingerprint = JSON.stringify(submission);
+    if (lastSubmitted.current !== null && lastSubmitted.current !== fingerprint) {
+      submissionKey.current = crypto.randomUUID();
+    }
+    lastSubmitted.current = fingerprint;
+
+    const result = await submitInquiry({
+      idempotencyKey: submissionKey.current,
+      ...submission,
     });
 
     if (result.ok) {

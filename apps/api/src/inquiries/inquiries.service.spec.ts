@@ -5,7 +5,11 @@ import {
   INQUIRY_RATE_LIMIT_PER_PHONE,
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
 } from '@medinstru/config';
-import { InquiriesService, hashIp } from './inquiries.service';
+import {
+  InquiriesService,
+  assertSameSubmission,
+  hashIp,
+} from './inquiries.service';
 import { randomBytes } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -23,6 +27,24 @@ const PRODUCT = {
 // credential is indistinguishable from one at scan time, and the guard exists
 // so a real key can never be committed unnoticed.
 const TEST_IP_HASH_SECRET = randomBytes(24).toString('hex');
+
+/**
+ * A row as Prisma would return it for ARGS.
+ *
+ * Spelled out rather than mocked as `{ id, status }`, because the service
+ * compares the stored payload against the incoming one -- a stub missing
+ * those fields is not a row the code could ever have written, and it made
+ * every idempotency test look like a mismatched key.
+ */
+const storedRowFor = (id: string, overrides: object = {}) => ({
+  id,
+  status: 'PENDING',
+  productId: 'seed-product-01',
+  buyerName: 'Asha Rao',
+  buyerPhone: '+919000000001',
+  message: 'Is this available in Chennai?',
+  ...overrides,
+});
 
 const ARGS = {
   idempotencyKey: 'test-submission-key-0001',
@@ -208,7 +230,7 @@ describe('InquiriesService', () => {
       // A lost response is indistinguishable from a failed one, so a retry
       // is expected rather than exceptional. Without this it creates a second
       // row -- and once delivery exists, a second message to the seller.
-      const already = { id: 'inq-existing', status: 'SENT' };
+      const already = storedRowFor('inq-existing');
       prisma.inquiry.findUnique.mockResolvedValue(already);
 
       const result = await service.create(ARGS);
@@ -242,7 +264,7 @@ describe('InquiriesService', () => {
         clientVersion: 'test',
       });
       prisma.$transaction.mockRejectedValue(collision);
-      const winner = { id: 'inq-winner', status: 'SENT' };
+      const winner = storedRowFor('inq-winner');
       prisma.inquiry.findUnique
         .mockResolvedValueOnce(null) // the initial idempotency lookup
         .mockResolvedValueOnce(winner); // the post-collision fetch
@@ -259,7 +281,7 @@ describe('InquiriesService', () => {
       // rejected an idempotent duplicate with "Too many inquiries" instead of
       // returning the winner, and the P2002 recovery never ran because the
       // insert was never reached.
-      const winner = { id: 'inq-winner', status: 'PENDING' };
+      const winner = storedRowFor('inq-winner');
       const conflict = new Prisma.PrismaClientKnownRequestError('conflict', {
         code: 'P2034',
         clientVersion: 'test',
@@ -287,12 +309,46 @@ describe('InquiriesService', () => {
       // back out would silently restore the old behaviour.
       prisma.inquiry.findUnique
         .mockResolvedValueOnce(null)
-        .mockResolvedValue({ id: 'inq-existing', status: 'PENDING' });
+        .mockResolvedValue(storedRowFor('inq-existing'));
 
       await service.create(ARGS);
 
       expect(prisma.inquiry.count).not.toHaveBeenCalled();
       expect(prisma.inquiry.create).not.toHaveBeenCalled();
+    });
+
+    it('REJECTS a reused key carrying different details', async () => {
+      // Reproduced end to end against a real server before this existed:
+      // submit a question, lose the response, correct the phone number and
+      // reword the question, submit again -- and the API answered with the
+      // ORIGINAL row's id while the buyer was told their edited inquiry was
+      // recorded. It never was. The correction was gone and nothing anywhere
+      // reported a problem.
+      prisma.inquiry.findUnique.mockResolvedValue(
+        storedRowFor('inq-existing', { message: 'the ORIGINAL question' }),
+      );
+
+      await expect(
+        service.create({ ...ARGS, message: 'an EDITED question' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.inquiry.create).not.toHaveBeenCalled();
+    });
+
+    it('compares against the CANONICAL values, not the typed ones', async () => {
+      // The stored phone is normalised and the stored name trimmed, so a
+      // genuine retry that types the number with spaces must still match --
+      // otherwise every retry of a spaced number looks like an edit.
+      prisma.inquiry.findUnique.mockResolvedValue(
+        storedRowFor('inq-existing', { buyerPhone: '+919876543210' }),
+      );
+
+      await expect(
+        service.create({
+          ...ARGS,
+          buyerName: '  Asha Rao  ',
+          buyerPhone: '+91 98765 43210',
+        }),
+      ).resolves.toMatchObject({ id: 'inq-existing' });
     });
 
     it('still propagates a collision it cannot resolve', async () => {
@@ -536,5 +592,62 @@ describe('InquiriesService', () => {
       );
       expect(prisma.inquiry.create).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('assertSameSubmission', () => {
+  const identity = {
+    productId: 'seed-product-01',
+    buyerName: 'Asha Rao',
+    buyerPhone: '+919000000001',
+    message: 'Is this available in Chennai?',
+  };
+  const stored = { id: 'inq-1', ...identity };
+
+  it('returns the row when every field matches', () => {
+    expect(assertSameSubmission(stored, identity)).toBe(stored);
+  });
+
+  it.each(['productId', 'buyerName', 'buyerPhone', 'message'] as const)(
+    'rejects when %s differs',
+    (field) => {
+      // Every field, not just the message. An edited phone number is the one
+      // that costs the buyer a reply they can never receive, and a changed
+      // productId would attribute one seller's lead to another.
+      expect(() =>
+        assertSameSubmission(stored, {
+          ...identity,
+          [field]: 'something else',
+        }),
+      ).toThrow(BadRequestException);
+    },
+  );
+
+  it('ignores fields that are not part of the submission', () => {
+    // The comparison walks a fixed list, not the argument's own keys.
+    // Deriving it from the caller made the check depend on what that caller
+    // passed: insertInquiry hands over the full insert args, so ipHash
+    // joined in and a genuine retry from a different address was rejected as
+    // an edit. Caught by an existing test, not by review.
+    expect(
+      assertSameSubmission({ ...stored, ipHash: 'aaa' }, {
+        ...identity,
+        ipHash: 'bbb',
+      } as never),
+    ).toMatchObject({ id: 'inq-1' });
+  });
+
+  it('never echoes what the key currently holds', () => {
+    // The key is caller-chosen, so a message naming the stored values would
+    // let anyone read back someone else's inquiry by guessing keys.
+    try {
+      assertSameSubmission(stored, { ...identity, message: 'different' });
+      throw new Error('expected a rejection');
+    } catch (error) {
+      const text = (error as Error).message;
+      for (const secret of Object.values(identity)) {
+        expect(text).not.toContain(secret);
+      }
+    }
   });
 });

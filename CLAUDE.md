@@ -568,6 +568,23 @@ tell a buyer their inquiry failed when it demonstrably succeeded. Only the e2e
 test can prove this — it fires two identical submissions with `Promise.all` and
 asserts one row and one id.
 
+**An idempotency key is bound to its payload, and the client mints a new one
+the moment the buyer edits.** Returning the stored row for a key without
+checking what it holds loses real data silently, reproduced end to end against
+a running server: submit a question, lose the response, correct the phone
+number and reword the question, submit again — the API answers with the
+*original* row's id and the confirmation reports the edited inquiry as
+recorded. It never was. The same shape from the other direction: the DTO
+permits an 8-character key, so two anonymous callers can pick the same one and
+the second caller's lead vanishes. `assertSameSubmission` compares the row's
+own columns — no migration, and it compares what was actually written rather
+than a hash of what we believed we wrote — over a **fixed field list**, not
+the argument's keys. That last detail is not cosmetic: deriving the list from
+the caller made `insertInquiry`'s wider args pull `ipHash` into the
+comparison, so a genuine retry from a different address was rejected as an
+edit. A test caught it. The client side keeps a buyer from ever meeting the
+rejection: an edit really is a different submission, so it gets a new key.
+
 **Two env vars, documented in `apps/api/.env.example` by name only.**
 `INQUIRY_IP_HASH_SECRET` keys the HMAC that stores a submitter's address as a
 hash; **without it nothing breaks and the per-IP limit simply does not run.**
