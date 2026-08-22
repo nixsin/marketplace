@@ -33,7 +33,20 @@ describe('seeded WhatsApp numbers', () => {
     }
   });
 
-  it('still passes E.164, so canReceiveInquiries stays true for them', () => {
+  it('still passes E.164, so hasInquiryContact stays true for them', () => {
     for (const number of numbers) expect(isE164(number)).toBe(true);
+  });
+});
+
+describe('what the capability flag actually asserts', () => {
+  it('is true for the reserved range, which is the point of the rename', () => {
+    // The seeded +999 numbers are chosen BECAUSE they cannot route. They pass
+    // E.164, so the flag is true for them -- which is exactly why the field is
+    // called hasInquiryContact and not canReceiveInquiries. The old name
+    // claimed reachability about numbers picked for being undeliverable.
+    //
+    // Real reachability needs the provider's own number verification, which
+    // arrives with the delivery integration.
+    expect(isE164('+99900000001')).toBe(true);
   });
 });

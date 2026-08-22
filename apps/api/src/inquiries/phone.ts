@@ -5,7 +5,7 @@ const E164 = /^\+[1-9]\d{7,14}$/;
  * Phone-number validation, deliberately in its own module.
  *
  * This started inside the WhatsApp client, which coupled anything needing to
- * validate a number to the whole delivery layer -- `Product.canReceiveInquiries`
+ * validate a number to the whole delivery layer -- `Product.hasInquiryContact`
  * had to import the Cloud API service just to ask "is this number usable".
  * Nothing here knows a provider exists.
  *

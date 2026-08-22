@@ -332,7 +332,7 @@ async function main() {
   });
   // No GSTIN: the detail page must omit that line entirely rather than
   // render an empty one. Also deliberately has NO whatsappNumber, so the
-  // fixture exercises canReceiveInquiries === false -- the inquiry form must
+  // fixture exercises hasInquiryContact === false -- the inquiry form must
   // be absent entirely rather than present and always failing (#91).
   const unverified = await prisma.organization.upsert({
     where: { gstin: '03ZZZZZ0000Z1Z0' },

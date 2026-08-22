@@ -13,7 +13,7 @@ import { isE164 } from '../inquiries/phone';
 import { ProductPage } from './models/product-page.model';
 import { ProductsPaged } from './models/products-paged.model';
 
-// Explicit parent type, required for the canReceiveInquiries field resolver
+// Explicit parent type, required for the hasInquiryContact field resolver
 // below. A bare @Resolver() cannot host @ResolveField -- Nest raises
 // UndefinedResolverTypeError at boot, not at build, so this fails as a
 // container crash rather than a compile error.
@@ -55,12 +55,12 @@ export class ProductsResolver {
   }
 
   /**
-   * True when the seller has a verified WhatsApp business number on file.
-   * The number itself is deliberately never exposed -- see the field's own
-   * comment on the Product model.
+   * A syntactically valid contact number is configured -- not that it is
+   * verified, and not that it can be reached. See the field's own comment on
+   * the Product model for why the name is precise about that.
    */
   @ResolveField(() => Boolean)
-  canReceiveInquiries(
+  hasInquiryContact(
     @Parent() product: { seller?: { whatsappNumber?: string | null } },
   ): boolean {
     // The SAME E.164 rule the send applies, not merely "is it non-empty".

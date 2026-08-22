@@ -65,13 +65,13 @@ type Organization {
 
 type Product {
   brand: String!
-  canReceiveInquiries: Boolean!
   category: String!
   certifications: [String!]!
   createdAt: DateTime!
   description: String!
   details: JSONObject
   deviceClass: DeviceClass
+  hasInquiryContact: Boolean!
   id: ID!
   imageUrl: String
   location: String!

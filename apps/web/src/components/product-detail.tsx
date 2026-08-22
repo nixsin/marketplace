@@ -37,7 +37,7 @@ export interface ProductDetail {
    * product pages. Story 6 is explicit about not exposing seller staff to
    * unsolicited contact.
    */
-  canReceiveInquiries: boolean;
+  hasInquiryContact: boolean;
   seller: {
     name: string;
     gstin?: string;

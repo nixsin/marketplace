@@ -69,7 +69,7 @@ const PRODUCT_QUERY = minifyGql(`
   query Product($id: ID!) {
     product(id: $id) {
       id name brand category deviceClass certifications location
-      description imageUrl details updatedAt canReceiveInquiries
+      description imageUrl details updatedAt hasInquiryContact
       seller { name gstin kycStatus }
     }
   }
@@ -78,7 +78,7 @@ const PRODUCT_QUERY = minifyGql(`
 interface ProductResponse {
   data: {
     product: {
-      canReceiveInquiries: boolean;
+      hasInquiryContact: boolean;
       id: string;
       name: string;
       brand: string;
@@ -167,11 +167,18 @@ export async function fetchProduct(id: string): Promise<ProductDetail | null> {
     brand: p.brand,
     category: p.category,
     deviceClass: p.deviceClass ?? undefined,
-    // Coerced rather than passed through: an older API that does not yet
-    // return this field would otherwise make it undefined, and `undefined &&`
-    // renders nothing -- the form would silently vanish instead of failing
-    // loudly. Absent means "cannot receive", which is the safe reading.
-    canReceiveInquiries: Boolean(p.canReceiveInquiries),
+    // Coerced so the type is honest, NOT as a version-compatibility
+    // mechanism -- the comment here used to claim the latter and was wrong.
+    //
+    // The field is selected in PRODUCT_QUERY, so an API whose schema lacks it
+    // rejects the WHOLE query during validation; there is no response with an
+    // absent field for this to coerce. The real requirement is a deploy
+    // ORDER: the API ships before the web app, or the web app queries a field
+    // the server has never heard of and every product page fails.
+    //
+    // What the coercion does buy is a boolean rather than undefined if the
+    // shape ever loosens, so `flag && <Form/>` cannot render nothing silently.
+    hasInquiryContact: Boolean(p.hasInquiryContact),
     certifications: p.certifications,
     location: p.location,
     description: p.description,

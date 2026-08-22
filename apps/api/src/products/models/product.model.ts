@@ -46,17 +46,26 @@ export class Product {
   seller: Organization;
 
   /**
-   * Whether an inquiry can actually reach this seller (#91). Exposes only the
-   * BOOLEAN, never the number itself -- the send happens server-side, so a
-   * scraper cannot harvest seller WhatsApp numbers from the API. Story 6 is
-   * explicit that sellers must not have staff exposed to unsolicited contact,
-   * and publishing the number through a public query would do exactly that.
+   * A syntactically valid contact number is CONFIGURED for this seller.
    *
-   * Resolved from the already-loaded seller relation (both findById and
-   * findPage include it), so this costs no additional query.
+   * Deliberately not called canReceiveInquiries, and the distinction is not
+   * pedantic: it was, and the name promised reachability the check cannot
+   * establish. The seed fills the reserved +999 range precisely BECAUSE those
+   * numbers cannot route anywhere, and they satisfied the old name -- the flag
+   * said "can receive inquiries" about numbers chosen for being undeliverable.
+   *
+   * What this actually answers is "will submitting an inquiry go anywhere at
+   * all": with a number present the API attempts delivery and records the
+   * lead; with none it does not try. Real reachability needs the provider's
+   * own number verification, which arrives with the delivery integration.
+   *
+   * Exposes only the BOOLEAN, never the number. The send happens server-side
+   * so a scraper cannot harvest seller numbers from the API, and #91 story 6
+   * is explicit that sellers must not have staff exposed to unsolicited
+   * contact. Resolved from the already-loaded seller relation, so it costs no
+   * additional query.
    */
-  @Field()
-  canReceiveInquiries: boolean;
+  hasInquiryContact: boolean;
 
   @Field()
   createdAt: Date;

@@ -25,7 +25,7 @@ const PRODUCT = {
   seller: { name: "MedTech Systems", gstin: null, kycStatus: "APPROVED" },
 };
 
-describe("fetchProduct: canReceiveInquiries", () => {
+describe("fetchProduct: hasInquiryContact", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -34,14 +34,14 @@ describe("fetchProduct: canReceiveInquiries", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  function respondWith(canReceiveInquiries: unknown) {
+  function respondWith(hasInquiryContact: unknown) {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
       headers: new Headers(),
       json: () =>
         Promise.resolve({
-          data: { product: { ...PRODUCT, canReceiveInquiries } },
+          data: { product: { ...PRODUCT, hasInquiryContact } },
         }),
     });
   }
@@ -49,13 +49,13 @@ describe("fetchProduct: canReceiveInquiries", () => {
   it("carries TRUE through to the caller", async () => {
     respondWith(true);
     const product = await fetchProduct("seed-product-01");
-    expect(product?.canReceiveInquiries).toBe(true);
+    expect(product?.hasInquiryContact).toBe(true);
   });
 
   it("carries false through", async () => {
     respondWith(false);
     const product = await fetchProduct("seed-product-01");
-    expect(product?.canReceiveInquiries).toBe(false);
+    expect(product?.hasInquiryContact).toBe(false);
   });
 
   it("treats an absent field as NOT contactable", async () => {
@@ -65,7 +65,7 @@ describe("fetchProduct: canReceiveInquiries", () => {
     // Absent means "cannot receive", which is the safe reading.
     respondWith(undefined);
     const product = await fetchProduct("seed-product-01");
-    expect(product?.canReceiveInquiries).toBe(false);
+    expect(product?.hasInquiryContact).toBe(false);
   });
 
   it("requests the field, or the server never sends it", async () => {
@@ -73,6 +73,6 @@ describe("fetchProduct: canReceiveInquiries", () => {
     respondWith(true);
     await fetchProduct("seed-product-01");
     const url = String(fetchMock.mock.calls[0][0]);
-    expect(decodeURIComponent(url)).toContain("canReceiveInquiries");
+    expect(decodeURIComponent(url)).toContain("hasInquiryContact");
   });
 });

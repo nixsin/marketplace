@@ -75,12 +75,12 @@ describe('ProductsResolver', () => {
   });
 });
 
-describe('canReceiveInquiries', () => {
+describe('hasInquiryContact', () => {
   const resolver = new ProductsResolver({} as unknown as ProductsService);
 
   it('is true only for a genuinely sendable number', () => {
     expect(
-      resolver.canReceiveInquiries({
+      resolver.hasInquiryContact({
         seller: { whatsappNumber: '+919876543210' },
       }),
     ).toBe(true);
@@ -99,11 +99,11 @@ describe('canReceiveInquiries', () => {
     // while every send fails E.164 validation before leaving the process --
     // a buyer typing a real question into a form that could never work.
     expect(
-      resolver.canReceiveInquiries({ seller: { whatsappNumber: value } }),
+      resolver.hasInquiryContact({ seller: { whatsappNumber: value } }),
     ).toBe(false);
   });
 
   it('is false when the seller relation is missing entirely', () => {
-    expect(resolver.canReceiveInquiries({})).toBe(false);
+    expect(resolver.hasInquiryContact({})).toBe(false);
   });
 });
