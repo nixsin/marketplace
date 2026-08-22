@@ -50,3 +50,9 @@ variable "additional_cache_rules" {
   type        = any
   default     = []
 }
+
+variable "locales" {
+  description = "Locale prefixes the web app serves. MUST match LOCALES in packages/config/src/index.js -- scripts/cloudflare-locale-drift.test.mjs fails the build if they diverge."
+  type        = list(string)
+  default     = ["en", "hi"]
+}

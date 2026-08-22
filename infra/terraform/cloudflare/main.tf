@@ -71,19 +71,37 @@ locals {
   # protected HTML in a shared cache.
   web_html_cache_expression = "(http.host eq \"${var.zone_name}\" and http.request.method eq \"GET\" and not starts_with(http.request.uri.path, \"/_next/\") and http.request.uri.path ne \"/sw.js\" and http.request.uri.path ne \"/\" and not any(http.request.headers[\"authorization\"][*] ne \"\") and not any(http.request.cookies[\"mi_sid\"][*] ne \"\"))"
 
-  # The bare root, bypassed UNCONDITIONALLY -- no method, cookie or header
-  # test. Excluding / from the two rules above stops THEM caching it, but
-  # "matches no managed rule" is not the same as "is not cached": inventoried
-  # rules are concatenated BEFORE the managed ones and the last match wins,
-  # so an imported dashboard rule broad enough to cover the apex would leave
-  # / cache-eligible with nothing after it to say otherwise.
+  # EVERY locale-negotiated path, bypassed UNCONDITIONALLY -- no method,
+  # cookie or header test.
   #
-  # That is the exact risk bypass-all-other-api-requests already exists to
-  # neutralize on the API host, and excluding / from the web bypass had
-  # quietly removed the same protection here -- traded away for the symmetry
-  # of an exact complement, which is not worth a locale-negotiated redirect
-  # that also sets NEXT_LOCALE being served to the wrong visitors.
-  web_root_bypass_expression = "(http.host eq \"${var.zone_name}\" and http.request.uri.path eq \"/\")"
+  # The set is defined by apps/web/src/proxy.ts's matcher,
+  # "/((?!api|_next|_vercel|.*\\..*).*)": any path with no dot in it, not
+  # under api/_next/_vercel, passes through next-intl and is answered with a
+  # redirect chosen from the NEXT_LOCALE cookie and Accept-Language. Neither
+  # input is in the cache key, so caching any of them serves one visitor's
+  # language to everyone. /sitemap.xml and /favicon.ico are unaffected --
+  # they contain a dot, so they never reach the middleware and stay
+  # cacheable.
+  #
+  # This started as a root-only rule and that was too narrow. /products,
+  # /foo and /about negotiate exactly like / does, and were uncached ONLY
+  # because next-intl happens to set a cookie on those responses -- an
+  # accident, not a guarantee. Setting localeCookie: false, which the docs
+  # at one point recommended for cache hit rate, would have removed that
+  # accident and silently started serving the first visitor's language to
+  # everyone. The rule now states the requirement instead of relying on a
+  # side effect.
+  #
+  # Unconditional for the same reason as before: inventoried rules are
+  # concatenated BEFORE the managed ones and the last match wins, so a
+  # broad imported dashboard rule would otherwise leave these eligible, and
+  # a plain anonymous GET is precisely the request at risk.
+  locale_prefixed_test = join(" or ", flatten([for l in var.locales : [
+    "http.request.uri.path eq \"/${l}\"",
+    "starts_with(http.request.uri.path, \"/${l}/\")",
+  ]]))
+
+  web_negotiated_bypass_expression = "(http.host eq \"${var.zone_name}\" and not starts_with(http.request.uri.path, \"/_next/\") and not starts_with(http.request.uri.path, \"/api\") and not starts_with(http.request.uri.path, \"/_vercel\") and not http.request.uri.path contains \".\" and not (${local.locale_prefixed_test}))"
 
   # The complement: within the SAME path scope as the rule above, anything
   # that is not an anonymous GET is never cacheable. Stated explicitly
@@ -238,9 +256,9 @@ resource "cloudflare_ruleset" "cache_settings" {
       cache = false
     }
     }, {
-    ref         = "bypass-locale-negotiated-root"
-    description = "Never cache the locale-negotiated bare root, whatever earlier rules say"
-    expression  = local.web_root_bypass_expression
+    ref         = "bypass-locale-negotiated-paths"
+    description = "Never cache any locale-negotiated path, whatever earlier rules say"
+    expression  = local.web_negotiated_bypass_expression
     action      = "set_cache_settings"
     enabled     = true
 

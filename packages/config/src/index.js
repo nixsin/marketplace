@@ -285,6 +285,39 @@ export const FRAME_OPTIONS = "DENY";
 /** Isolates this origin's browsing context group from any opener. */
 export const CROSS_ORIGIN_OPENER_POLICY = "same-origin";
 
+// Tells browsers to trust the declared Content-Type and never sniff a
+// different one from the bytes. Without it a response the app intends as
+// data can be re-interpreted as script or HTML, which is the whole point
+// of the CSP this sits beside.
+export const CONTENT_TYPE_OPTIONS = "nosniff";
+
+// Matches what modern browsers already default to, declared explicitly so
+// the behaviour is a decision rather than an inherited default that a
+// future browser release could change underneath us. Full URL to same
+// origin, origin only when the scheme stays as secure, nothing on a
+// downgrade.
+export const REFERRER_POLICY = "strict-origin-when-cross-origin";
+
+// Every powerful feature is disabled because the app uses none of them --
+// verified by grepping apps/web/src for geolocation, camera, microphone,
+// getUserMedia, payment and navigator.usb, all zero hits. An empty
+// allowlist "()" denies the feature to this document and every iframe,
+// so a future dependency cannot quietly start using one.
+export const PERMISSIONS_POLICY = [
+  "accelerometer=()",
+  "autoplay=()",
+  "camera=()",
+  "display-capture=()",
+  "encrypted-media=()",
+  "geolocation=()",
+  "gyroscope=()",
+  "magnetometer=()",
+  "microphone=()",
+  "midi=()",
+  "payment=()",
+  "usb=()",
+].join(", ");
+
 /**
  * Opts cross-origin responses into exposing real timing and transfer-size
  * data to the Resource Timing API.

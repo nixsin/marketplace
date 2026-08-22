@@ -121,6 +121,25 @@ actual successful cross-origin fetch end-to-end — the `connect-src` origin
 is verified by construction (same source as `src/lib/api.ts`'s own env var)
 rather than by a live successful call.
 
+**`X-Content-Type-Options`, `Referrer-Policy` and `Permissions-Policy` were
+absent until 2026-08-21, and their absence was an oversight rather than a
+decision.** Worth recording precisely because this file already documents two
+*deliberate* omissions with reasons -- HSTS `preload` and Trusted Types -- so a
+reader could reasonably have assumed anything missing had been considered.
+These three had zero mentions anywhere in the repo: not here, not in
+`next.config.ts`, not in `@medinstru/config`. Nothing failed while they were
+absent, and they were found by auditing live production responses rather than
+by reading the code. `security-headers.spec.ts` now asserts the full header
+list, so a future removal fails a test instead of waiting for another audit.
+
+`Permissions-Policy` denies every powerful feature with an empty allowlist.
+That is safe rather than aggressive: `apps/web/src` was grepped for
+`geolocation`, `camera`, `microphone`, `getUserMedia`, `payment` and
+`navigator.usb`, all zero hits. `Referrer-Policy` is set to
+`strict-origin-when-cross-origin`, which is what browsers already default to --
+declared so the behaviour is a decision rather than an inherited default that a
+future browser release could change underneath us.
+
 **HSTS omits `preload` deliberately** — `max-age=63072000; includeSubDomains`
 only. Submitting to the HSTS preload list is effectively irreversible
 (baked into browser binaries), so it's being deferred until this header has

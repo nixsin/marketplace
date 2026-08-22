@@ -32,6 +32,9 @@ export declare const HSTS_MAX_AGE_SECONDS: number;
 export declare const HSTS_HEADER_VALUE: string;
 export declare const FRAME_OPTIONS: string;
 export declare const CROSS_ORIGIN_OPENER_POLICY: string;
+export declare const CONTENT_TYPE_OPTIONS: string;
+export declare const REFERRER_POLICY: string;
+export declare const PERMISSIONS_POLICY: string;
 export declare const TIMING_ALLOW_ORIGIN: string;
 export declare const CORRELATION_HEADERS: {
   readonly requestId: string;

@@ -1136,8 +1136,23 @@ would delete every unrepresented dashboard rule on apply even with
 complete phase, representing every additional rule, and setting the separate
 `cache_ruleset_inventory_confirmed` acknowledgement.
 The managed rules are appended after that inventory: two eligibility rules
-(anonymous GraphQL GETs, anonymous page HTML) followed by two bypasses
-(session-bearing web requests, every other API request). The API bypass is what
+(anonymous GraphQL GETs, anonymous page HTML) followed by three bypasses
+(session-bearing web requests, every locale-negotiated path, every other API
+request).
+
+**The negotiated-path bypass covers far more than `/`.** The set is whatever
+`apps/web/src/proxy.ts`'s matcher admits -- any dotless path outside
+`api`/`_next`/`_vercel` -- because all of those pass through next-intl and are
+answered with a redirect chosen from `NEXT_LOCALE` and `Accept-Language`,
+neither of which is in the cache key. It began as a root-only rule and that was
+too narrow: `/products`, `/foo` and `/about` negotiate exactly like `/` and were
+uncached **only because next-intl happens to set a cookie on them**. That is an
+accident, not a guarantee -- `localeCookie: false` would remove it and start
+serving one visitor's language to everyone. `/sitemap.xml` and `/favicon.ico`
+are unaffected: they contain a dot, so they never reach the middleware. The
+locale list is a Terraform variable, with
+`scripts/cloudflare-locale-drift.test.mjs` asserting it matches `LOCALES` in
+`packages/config`, because drift is silent in both directions. The API bypass is what
 neutralizes an earlier imported rule that was broader than intended -- it is
 the exact complement of its eligibility condition across the whole API
 hostname, so every other API path is bypassed too; only the canonical
@@ -1159,33 +1174,19 @@ first Cookie line, and HTTP/2 permits splitting Cookie across several, so a
 session in a later line reads as anonymous and lands in a shared cache. `NEXT_LOCALE` is safe because it is derived
 purely from the URL, which is already in the cache key.
 
-**Open risk, deliberately deferred to adoption time:** Cloudflare may decline
-to cache a response carrying `Set-Cookie`, and every page response carries
-`set-cookie: NEXT_LOCALE`. If so the HTML rule is a silent no-op -- pages keep
-serving `DYNAMIC`, with no error anywhere. It cannot be settled without the
-rule live. The README carries the exact commands to measure it the moment
-`adopt_cache_ruleset` is turned on, plus the fallback (`localeCookie: false`,
-which costs bare-root language memory) -- run them before assuming the rule
-works.
+**The `Set-Cookie` risk was investigated live on 2026-08-21 and did not
+materialise -- HTML caching works.** next-intl does not set `NEXT_LOCALE` on
+every response: per `middleware/syncCookie.js`, it writes the cookie only when
+an existing one is outdated, or when there is none *and* `Accept-Language`
+disagrees with the page's locale. A browser viewing the locale its own
+`Accept-Language` implies gets no `Set-Cookie`, so the response is cacheable,
+and once one such request populates the edge everyone gets a `HIT`.
+`localeCookie: false` is therefore **not** needed.
 
-The bare root gets its own unconditional bypass placed after the inventoried
-rules, because "matches no managed rule" is not "is not cached" -- inventoried
-rules come first and the last match wins, so a broad imported apex rule would
-otherwise leave `/` eligible. The bare root `/` is also excluded from both HTML
-rules: it is a 307 whose
-`Location` is negotiated from `NEXT_LOCALE` and `Accept-Language`, neither of
-which is in the cache key, and it carries `set-cookie: NEXT_LOCALE` -- so a
-cached root would pin the wrong locale into other visitors' browsers, not just
-redirect them wrongly. It currently sends no `Cache-Control`, so
-`respect_origin` bypasses it anyway; relying on that absence is the trap, not
-the safeguard. An `Authorization` header disqualifies a request exactly as
-`mi_sid` does, matching the API rule.
-
-The web bypass repeats the eligibility rule's `/_next/` and `/sw.js`
-exclusions so the pair is an exact complement over one path scope. Omitting
-them is a real bug: a logged-in browser sends `mi_sid` on every same-origin
-request, so a host-wide bypass de-caches immutable content-hashed assets that
-are identical for every user.
+The trap worth remembering: `curl` sends no `Accept-Language`, which no browser
+does, so it hits the one path that *does* write a cookie and reports `BYPASS`
+every time. Diagnosing cache behaviour with a bare `curl` reproduces a failure
+real traffic never sees -- always pass a realistic `Accept-Language`.
 
 Both eligibility rules set edge **and** browser TTL to `respect_origin`.
 Browser TTL is explicit rather than omitted because omitting it falls through
