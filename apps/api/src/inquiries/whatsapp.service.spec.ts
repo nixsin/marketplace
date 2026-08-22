@@ -55,12 +55,24 @@ describe('WhatsappService', () => {
   });
 
   describe('when credentials are absent', () => {
-    it('reports itself unconfigured', () => {
-      expect(service.isConfigured({})).toBe(false);
-      // Credentials alone are not enough -- a template name is required too.
-      expect(service.isConfigured(NO_TEMPLATE)).toBe(false);
-      expect(service.isConfigured(CONFIGURED)).toBe(true);
-    });
+    it.each([[{}], [NO_TEMPLATE]])(
+      'refuses to send when there is %#',
+      async (env) => {
+        // Asserted THROUGH sendInquiry, not through a separate isConfigured
+        // predicate. That predicate existed, had its own tests, and was called
+        // by nothing -- so it could have disagreed with the checks sendInquiry
+        // actually performs and every test would still have passed. It is gone;
+        // this asserts the behaviour that ships.
+        const result = await service.sendInquiry(
+          '+919876543210',
+          { summary: 'hello', buyerMessage: 'q' },
+          env,
+        );
+
+        expect(result.ok).toBe(false);
+        expect(global.fetch).not.toHaveBeenCalled();
+      },
+    );
 
     it('fails without throwing, and never calls the provider', async () => {
       // Throwing here would lose a real lead over a configuration gap: the
@@ -213,6 +225,56 @@ describe('WhatsappService', () => {
   );
 });
 
+describe('a seller number written the way people write numbers', () => {
+  // The asymmetry this covers was silent in BOTH directions: the buyer's
+  // number is canonicalised, the seller's was only validated. A seller stored
+  // as "+91 98765 43210" -- the exact example the buyer form advertises --
+  // was reported uncontactable by Product.hasInquiryContact, so the form
+  // never rendered, AND rejected here if a direct caller submitted anyway.
+  // No error to anyone; the seller simply never heard from a buyer.
+  let fetchMock: jest.Mock;
+  const service = new WhatsappService();
+
+  beforeEach(() => {
+    fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ messages: [{ id: 'wamid.1' }] }),
+    });
+    global.fetch = fetchMock;
+  });
+
+  afterEach(() => {
+    global.fetch = REAL_FETCH;
+    jest.restoreAllMocks();
+  });
+
+  it('is canonicalised before the request, not rejected', async () => {
+    const result = await service.sendInquiry(
+      '+91 98765 43210',
+      { summary: 's', buyerMessage: 'q' },
+      CONFIGURED,
+    );
+
+    expect(result.ok).toBe(true);
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0][1] as { body: string }).body,
+    ) as { to: string };
+    // The canonical form reaches Meta, which rejects anything else.
+    expect(body.to).toBe('+919876543210');
+  });
+
+  it('still refuses a number that cannot be made valid', async () => {
+    const result = await service.sendInquiry(
+      'not-a-number',
+      { summary: 's', buyerMessage: 'q' },
+      CONFIGURED,
+    );
+
+    expect(result.ok).toBe(false);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('sanitizeTemplateParam', () => {
   // Meta rejects a template parameter containing a newline, a tab, or more
   // than four consecutive spaces -- the whole message is refused, not just
@@ -326,15 +388,22 @@ describe('WhatsappService template sends', () => {
     expect(body.text.preview_url).toBe(false);
   });
 
-  it('accepts the free-form opt-in as configuration too', () => {
-    // The opt-in is a deliberate choice for a known open service window, so
-    // a deployment using it is configured -- just not template-based.
-    expect(
-      service.isConfigured({
-        ...NO_TEMPLATE,
-        WHATSAPP_ALLOW_FREE_FORM: 'true',
-      }),
-    ).toBe(true);
+  it('sends free-form text when the opt-in is set without a template', async () => {
+    // The opt-in is a deliberate choice for a known open service window, so a
+    // deployment using it does send -- just not a template. Asserted by the
+    // request actually being made, rather than by a predicate agreeing that
+    // it would be.
+    await service.sendInquiry(
+      '+919876543210',
+      { summary: 'summary', buyerMessage: 'question' },
+      { ...NO_TEMPLATE, WHATSAPP_ALLOW_FREE_FORM: 'true' },
+    );
+
+    expect(global.fetch).toHaveBeenCalled();
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0][1] as { body: string }).body,
+    ) as { type: string };
+    expect(body.type).toBe('text');
   });
 
   it('aborts a stalled provider rather than hanging the buyer', async () => {

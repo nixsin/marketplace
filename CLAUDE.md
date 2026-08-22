@@ -722,6 +722,25 @@ form remembers one key and one fingerprint, so reverting to earlier content
 mints a third key. Both are unreachable or near-unreachable today; neither is
 fine.
 
+**The seller's number is NORMALISED, not merely validated** — and the two
+sides must stay symmetric. The buyer's number has been canonicalised since
+part 2; the seller's was only checked with `isE164`, so a number stored as
+`+91 98765 43210` — the exact format the buyer form advertises as an example
+— made `Product.hasInquiryContact` report the seller uncontactable, hiding the
+form, *and* failed the send if a direct caller submitted anyway. Silently: no
+error to the seller, no error to anyone, they simply never hear from a buyer.
+Both call sites now use `normalizeE164`, so "reachable" means the same thing
+in both. Unreachable while the seed is the only writer of that column; it
+becomes reachable the day seller onboarding ships.
+
+**`sanitizeForLog` strips `\p{Cf}` as well as `\p{Cc}`.** Stripping only
+control characters let FORMAT characters through — U+202E RIGHT-TO-LEFT
+OVERRIDE among them, which visually reverses the rest of a line. The function
+exists to stop provider text forging log entries, and a reordered line forges
+one as effectively as an injected newline. Note the buyer's own text still
+reaches the seller's WhatsApp with such characters intact; that is a separate,
+undecided question.
+
 **`sanitizeForLog` bounds provider text before it is logged**, not after.
 Meta's `error.message` is external input: newlines let it forge log entries
 that look like ours. The 500-character column truncation happens after the log

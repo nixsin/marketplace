@@ -78,16 +78,25 @@ describe('ProductsResolver', () => {
 describe('hasInquiryContact', () => {
   const resolver = new ProductsResolver({} as unknown as ProductsService);
 
-  it('is true only for a genuinely sendable number', () => {
+  it.each([
+    ['+919876543210', 'already canonical'],
+    ['+91 98765 43210', 'spaced, the way people actually write numbers'],
+    ['+91-98765-43210', 'hyphenated'],
+    ['+91 (98765) 43210', 'with parentheses'],
+  ])('is true for %s (%s)', (value) => {
+    // The spaced form is the case that matters, and it used to return FALSE.
+    // A seller whose number was stored exactly as the buyer form advertises
+    // it -- "+91 98765 43210" -- was reported uncontactable, so the inquiry
+    // form never rendered and no buyer could reach them. Silently: no error
+    // to the seller, no error to anyone. The delivery path canonicalises the
+    // same way, so the two agree on what "reachable" means.
     expect(
-      resolver.hasInquiryContact({
-        seller: { whatsappNumber: '+919876543210' },
-      }),
+      resolver.hasInquiryContact({ seller: { whatsappNumber: value } }),
     ).toBe(true);
   });
 
   it.each<[string | null | undefined, string]>([
-    ['98765 43210', 'local format with spaces'],
+    ['98765 43210', 'local format, no country code'],
     ['not-a-number', 'free text'],
     ['+0123456789', 'leading zero after the plus'],
     ['', 'empty string'],

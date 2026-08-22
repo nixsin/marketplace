@@ -16,7 +16,7 @@ import {
 // the bug part 1 removed, because Saint Helena (+290 8123) and the Cook
 // Islands (+682 1234) are seven digits end to end. A third copy is precisely
 // what part 2 consolidated away after two of them drifted.
-import { isE164 } from './phone';
+import { normalizeE164 } from './phone';
 
 export type WhatsappSendResult =
   | { ok: true; providerMessageId: string | null }
@@ -81,23 +81,6 @@ export class WhatsappService {
   private readonly logger = new Logger(WhatsappService.name);
 
   /**
-   * All THREE are required, template name included.
-   *
-   * Treating the template as optional meant a deployment with credentials but
-   * no template silently sent free-form text Meta rejects for this flow, and
-   * marked every inquiry FAILED. A half-configured deployment should say so,
-   * not fail one message at a time.
-   */
-  isConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-    return Boolean(
-      env[WHATSAPP_ACCESS_TOKEN_ENV] &&
-      env[WHATSAPP_PHONE_NUMBER_ID_ENV] &&
-      (env[WHATSAPP_TEMPLATE_NAME_ENV] ||
-        env[WHATSAPP_ALLOW_FREE_FORM_ENV] === 'true'),
-    );
-  }
-
-  /**
    * Sends an inquiry to a seller.
    *
    * TEMPLATE, not free-form text, whenever a template name is configured.
@@ -121,7 +104,19 @@ export class WhatsappService {
     // Validated here as well as at the DTO boundary. This is the last point
     // before an outbound request leaves the system, and a malformed number
     // reaching Meta is a rejected send that costs a round trip to learn.
-    if (!isE164(toE164)) {
+    // NORMALISED, not merely validated -- the asymmetry this had with the
+    // buyer's number was a silent bug. A seller whose number is stored as
+    // "+91 98765 43210" -- the exact format the buyer form advertises as an
+    // example, because that is how people write numbers -- was rejected here
+    // AND reported uncontactable by Product.hasInquiryContact, so the form
+    // never rendered and no inquiry ever reached them. No error anywhere;
+    // they would simply never hear from anyone.
+    //
+    // Unreachable today because nothing but the seed writes this column, and
+    // it writes canonical values. It stops being unreachable the moment
+    // seller onboarding ships, which is why it is worth an extra call now.
+    const recipient = normalizeE164(toE164);
+    if (!recipient) {
       return { ok: false, reason: 'seller number is not valid E.164' };
     }
 
@@ -169,7 +164,7 @@ export class WhatsappService {
       ? {
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
-          to: toE164,
+          to: recipient,
           type: 'template',
           template: {
             name: templateName,
@@ -204,7 +199,7 @@ export class WhatsappService {
       : {
           messaging_product: 'whatsapp',
           recipient_type: 'individual',
-          to: toE164,
+          to: recipient,
           type: 'text',
           // Link previews off: the body already carries the canonical URL,
           // and Meta fetching it server-side adds latency to the send for a

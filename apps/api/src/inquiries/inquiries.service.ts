@@ -274,7 +274,12 @@ export function buildInquiryMessage(input: {
  * the log call, so it protects the wrong thing.
  */
 export function sanitizeForLog(value: string, max = 200): string {
-  const flat = value.replace(/[\r\n\t]+/g, ' ').replace(/\p{Cc}/gu, '');
+  // \p{Cf} as well as \p{Cc}. Stripping only control characters left FORMAT
+  // characters through -- U+202E RIGHT-TO-LEFT OVERRIDE among them, which
+  // visually reverses the rest of a line. This function exists precisely to
+  // stop provider text forging log entries, and a reordered line forges one
+  // just as effectively as an injected newline.
+  const flat = value.replace(/[\r\n\t]+/g, ' ').replace(/[\p{Cc}\p{Cf}]/gu, '');
   return flat.length > max ? `${flat.slice(0, max - 1)}\u2026` : flat;
 }
 
