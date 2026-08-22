@@ -29,7 +29,9 @@
     "deviceClass": "क्लास {class}",
     "priceOnRequest": "मूल्य के लिए संपर्क करें",
     "sendInquiry": "पूछताछ भेजें",
-    "sendInquiryAbout": "{productName} के बारे में पूछताछ भेजें"
+    "sendInquiryAbout": "{productName} के बारे में पूछताछ भेजें",
+    "select": "चुनें",
+    "selectForInquiry": "{productName} के बारे में पूछने के लिए चुनें"
   },
   "productDetails": {
     "deviceClass": "क्लास {class}",
@@ -64,5 +66,22 @@
   },
   "languageSwitcher": {
     "label": "भाषा"
+  },
+  "shortlist": {
+    "selectedCount": "{count, plural, one {# उत्पाद चुना गया} other {# उत्पाद चुने गए}}",
+    "ask": "इनके बारे में पूछें",
+    "clear": "हटाएँ",
+    "cancel": "रद्द करें",
+    "formLabel": "{count} उत्पादों के लिए एक पूछताछ भेजें",
+    "name": "आपका नाम",
+    "phone": "आपका फ़ोन नंबर",
+    "message": "आपका प्रश्न",
+    "submit": "{count, plural, one {# उत्पाद के लिए पूछताछ भेजें} other {# उत्पादों के लिए पूछताछ भेजें}}",
+    "sending": "भेजा जा रहा है…",
+    "sentTitle": "पूछताछ मिल गई",
+    "sentMessage": "विक्रेता के पास आपकी सूची और नंबर पहुँच गया है। वे WhatsApp पर उत्तर देंगे।",
+    "sentWithSkipped": "{skipped, plural, one {# उत्पाद छोड़ दिया गया क्योंकि आपने हाल ही में उसके बारे में पूछा था।} other {# उत्पाद छोड़ दिए गए क्योंकि आपने हाल ही में उनके बारे में पूछा था।}}",
+    "error": "हम इसे भेज नहीं सके। कृपया अपना फ़ोन नंबर जाँचें और दोबारा प्रयास करें।",
+    "tooMany": "एक साथ अधिकतम {max} उत्पाद चुनें।"
   }
 }

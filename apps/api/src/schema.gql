@@ -7,10 +7,24 @@ type AuthPayload {
   isNewUser: Boolean!
 }
 
+type BundleInquiryResult {
+  bundleId: ID!
+  delivered: Boolean!
+  productCount: Int!
+  skippedProductIds: [ID!]!
+}
+
 input CompleteOnboardingInput {
   onboardingToken: String!
   organization: CreateOrganizationInput!
   userName: String!
+}
+
+input CreateBundleInquiryInput {
+  buyerName: String!
+  buyerPhone: String!
+  message: String!
+  productIds: [ID!]!
 }
 
 input CreateInquiryInput {
@@ -65,6 +79,7 @@ enum KycStatus {
 
 type Mutation {
   completeOnboarding(input: CompleteOnboardingInput!): AuthPayload!
+  createBundleInquiry(input: CreateBundleInquiryInput!): BundleInquiryResult!
   createInquiry(input: CreateInquiryInput!): Inquiry!
   requestOtp(input: RequestOtpInput!): Boolean!
   verifyOtp(input: VerifyOtpInput!): AuthPayload!

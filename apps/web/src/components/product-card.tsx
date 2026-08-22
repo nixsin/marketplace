@@ -34,8 +34,18 @@ export interface Product {
 export function ProductCard({
   product,
   priority = false,
+  selected,
+  onSelectedChange,
 }: {
   product: Product;
+  /**
+   * Shortlist selection. Both optional so the card still renders standalone --
+   * it is used outside the catalogue listing, and a card that required
+   * selection wiring would force every caller to invent state it does not
+   * need. Absent means the checkbox is not rendered at all.
+   */
+  selected?: boolean;
+  onSelectedChange?: (productId: string) => void;
   // For the first, above-the-fold card only -- Next's <Image> defaults to
   // loading="lazy" otherwise, which a live Lighthouse audit against /hi?page=2
   // caught as the LCP image itself being lazy-loaded (lcp-discovery-insight
@@ -47,7 +57,29 @@ export function ProductCard({
   const t = useTranslations("productCard");
 
   return (
-    <Card className="w-full overflow-hidden py-0">
+    <Card className="relative w-full overflow-hidden py-0">
+      {onSelectedChange && (
+        // Absolutely positioned over the card rather than inserted into the
+        // flex row: the row's layout is load-bearing for the LCP image sizing
+        // and the responsive stack, and adding a column would change both.
+        //
+        // A real <input type="checkbox"> with a visible <label>, not a styled
+        // div with a click handler -- it has to be reachable by keyboard and
+        // announced with the product's name, which is what makes "3 selected"
+        // meaningful to a screen-reader user.
+        <div className="absolute right-2 top-2 z-10">
+          <label className="flex cursor-pointer items-center gap-2 rounded-md border border-border bg-background/95 px-2 py-1 text-xs shadow-sm backdrop-blur">
+            <input
+              type="checkbox"
+              checked={selected ?? false}
+              onChange={() => onSelectedChange(product.id)}
+              className="size-4 accent-primary"
+              aria-label={t("selectForInquiry", { productName: product.name })}
+            />
+            <span aria-hidden="true">{t("select")}</span>
+          </label>
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row">
         {product.imageUrl && (
           /* The image links to the product too -- tapping a product's photo

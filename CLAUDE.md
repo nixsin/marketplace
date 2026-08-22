@@ -558,6 +558,35 @@ Graph API version is pinned rather than "latest": an unpinned call changes
 behaviour when Meta rolls a version, and for an outbound path you learn
 about that from failed deliveries.
 
+**Shortlist inquiries: one submission, many products.** A buyer ticks
+products in the catalogue and sends one inquiry covering all of them --
+`createBundleInquiry`. One row per product, so per-product analytics and the
+per-product limit keep working, all sharing a `bundleId` that records they
+were asked together. One WhatsApp message lists the lot; a seller should not
+receive five messages to reassemble.
+
+**Single-seller assumption, enforced rather than assumed.** A selection
+spanning sellers is rejected outright. Delivering it to whichever seller came
+first would hand one seller a list of a competitor's products and give the
+buyer a confirmation nobody can answer. When a second seller ships, group by
+`sellerId` and send per group -- the rows already carry it, so nothing has to
+be undone.
+
+**The per-phone limit counts SUBMISSIONS, not rows.** Counting rows would tie
+the limit to shortlist size: one 6-item shortlist would exhaust a
+5-per-hour budget in a single action while five separate single inquiries
+would not, for more buyer decisions and more outbound messages. Products
+already at their per-product limit are dropped from the bundle and reported
+back, rather than failing a 20-item shortlist over one item asked about an
+hour ago.
+
+**Persist before send, and do not "simplify" it back.** The bundle refactor
+once computed the delivery outcome first so it could be written in a single
+insert, silently inverting the order the single-product path had always used
+-- a provider failure would have discarded the buyer entirely. Only a test
+asserting the sequence caught it. Rows are written `PENDING`, the message is
+sent, then one outcome is applied to the whole bundle by `bundleId`.
+
 **Not yet done, and blocking a real launch**: the Meta Business account,
 number verification and template approval are all account setup that
 cannot be done from this repo, so the send degrades to a logged no-op until

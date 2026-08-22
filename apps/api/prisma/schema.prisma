@@ -153,6 +153,17 @@ model Inquiry {
   buyerPhone String
   message    String
 
+  /// Groups the rows created by ONE submission. A buyer shortlisting across
+  /// the catalog produces one row per product -- so per-product analytics and
+  /// the per-product rate limit keep working -- while this preserves the fact
+  /// that they were asked together, which a bare pile of rows would lose.
+  ///
+  /// Every inquiry has one, including a single-product inquiry (a bundle of
+  /// one). Uniform on purpose: the rate limiter counts distinct bundles, and
+  /// a nullable column would make a single inquiry count differently from a
+  /// one-item shortlist for no defensible reason.
+  bundleId String
+
   status InquiryStatus @default(PENDING)
 
   /// Meta's message id, when the send succeeded. The only handle we have for
@@ -171,6 +182,8 @@ model Inquiry {
   @@index([productId, createdAt])
   // Rate limiting reads by phone within a time window.
   @@index([buyerPhone, createdAt])
+  // Fetching every row of one submission, and counting distinct bundles.
+  @@index([bundleId])
 }
 
 enum InquiryStatus {

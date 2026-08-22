@@ -29,7 +29,9 @@
     "deviceClass": "Class {class}",
     "priceOnRequest": "Price on request",
     "sendInquiry": "Send Inquiry",
-    "sendInquiryAbout": "Send inquiry about {productName}"
+    "sendInquiryAbout": "Send inquiry about {productName}",
+    "select": "Select",
+    "selectForInquiry": "Select {productName} to ask about"
   },
   "productDetails": {
     "deviceClass": "Class {class}",
@@ -64,5 +66,22 @@
   },
   "languageSwitcher": {
     "label": "Language"
+  },
+  "shortlist": {
+    "selectedCount": "{count, plural, one {# product selected} other {# products selected}}",
+    "ask": "Ask about these",
+    "clear": "Clear",
+    "cancel": "Cancel",
+    "formLabel": "Send one inquiry about {count} products",
+    "name": "Your name",
+    "phone": "Your phone number",
+    "message": "Your question",
+    "submit": "{count, plural, one {Send inquiry for # product} other {Send inquiry for # products}}",
+    "sending": "Sending…",
+    "sentTitle": "Inquiry received",
+    "sentMessage": "The seller has your shortlist and your number. They will reply on WhatsApp.",
+    "sentWithSkipped": "{skipped, plural, one {# product was left out because you asked about it recently.} other {# products were left out because you asked about them recently.}}",
+    "error": "We could not send that. Please check your phone number and try again.",
+    "tooMany": "Select at most {max} products to ask about at once."
   }
 }

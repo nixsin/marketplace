@@ -1,7 +1,9 @@
 import { Args, Mutation, Resolver } from '@nestjs/graphql';
 import { InquiryStatus } from '../../generated/prisma/enums';
+import { CreateBundleInquiryInput } from './dto/create-bundle-inquiry.input';
 import { CreateInquiryInput } from './dto/create-inquiry.input';
 import { InquiriesService } from './inquiries.service';
+import { BundleInquiryResult } from './models/bundle-inquiry.model';
 import { Inquiry } from './models/inquiry.model';
 
 @Resolver(() => Inquiry)
@@ -32,6 +34,29 @@ export class InquiriesResolver {
       status: inquiry.status,
       createdAt: inquiry.createdAt,
       delivered: inquiry.status === InquiryStatus.SENT,
+    };
+  }
+
+  /**
+   * One inquiry covering several shortlisted products.
+   *
+   * Unauthenticated for the same reason as the single-product mutation, and
+   * rate-limited by SUBMISSION rather than by row -- otherwise a shortlist
+   * would burn a buyer's whole hourly budget in one action while five
+   * separate single inquiries would not.
+   */
+  @Mutation(() => BundleInquiryResult)
+  async createBundleInquiry(
+    @Args('input') input: CreateBundleInquiryInput,
+  ): Promise<BundleInquiryResult> {
+    const result = await this.inquiries.createBundle(input);
+    return {
+      bundleId: result.bundleId,
+      productCount: result.inquiries.length,
+      skippedProductIds: result.skippedProductIds,
+      // One message covers the whole shortlist, so every row shares a
+      // delivery state; reading the first is reading all of them.
+      delivered: result.inquiries[0]?.status === InquiryStatus.SENT,
     };
   }
 }

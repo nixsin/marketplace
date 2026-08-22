@@ -4,8 +4,10 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { InquiryStatus } from '../../generated/prisma/enums';
 import {
+  INQUIRY_BULK_MAX_PRODUCTS,
   INQUIRY_RATE_LIMIT_PER_PHONE,
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
   INQUIRY_RATE_LIMIT_WINDOW_MS,
@@ -21,39 +23,68 @@ export interface CreateInquiryArgs {
   message: string;
 }
 
+export interface CreateBundleArgs {
+  productIds: string[];
+  buyerName: string;
+  buyerPhone: string;
+  message: string;
+}
+
+interface ProductForInquiry {
+  id: string;
+  name: string;
+  sellerId: string;
+  seller: { whatsappNumber: string | null };
+}
+
 /**
  * Composes the message the seller receives.
  *
- * #91 story 4: the seller should know exactly which product this is about
- * without a round trip. So the body carries the product name, its id, and the
- * canonical URL -- the same URL a buyer would share, so a forwarded inquiry
- * and a forwarded link land on the same page.
+ * Takes a LIST because a buyer can shortlist several products and send one
+ * inquiry covering all of them -- a seller should see everything they can
+ * quote in a single message, not one message per item to reassemble.
  *
- * Buyer-supplied values are last and clearly labelled. They are not escaped,
- * because WhatsApp text bodies are not markup and escaping would corrupt
- * legitimate content; the protection that matters is the length cap enforced
- * at the DTO boundary.
+ * #91 story 4: each entry carries the product name, its id and the canonical
+ * URL, so a forwarded inquiry and a forwarded link land on the same page.
+ *
+ * Buyer-supplied values are last and clearly labelled. They are not escaped:
+ * WhatsApp text bodies are not markup, so escaping would corrupt legitimate
+ * content. The cap that matters is the length limit at the DTO boundary.
  */
 export function buildInquiryMessage(input: {
-  productName: string;
-  productId: string;
+  products: { id: string; name: string }[];
   buyerName: string;
   buyerPhone: string;
   message: string;
   siteUrl?: string;
 }): string {
   const base = (input.siteUrl ?? SITE_URL).replace(/\/+$/, '');
-  return [
-    `New inquiry via the marketplace`,
-    ``,
-    `Product: ${input.productName}`,
-    `Ref: ${input.productId}`,
-    `Link: ${base}/en/products/${input.productId}`,
-    ``,
+  const single = input.products.length === 1;
+
+  const lines: string[] = [
+    single
+      ? 'New inquiry via the marketplace'
+      : `New inquiry via the marketplace (${input.products.length} products)`,
+    '',
+  ];
+
+  input.products.forEach((product, index) => {
+    // Numbered only when there is more than one, so a single-product inquiry
+    // does not read as an oddly formatted list of one.
+    lines.push(
+      single ? `Product: ${product.name}` : `${index + 1}. ${product.name}`,
+      `   Ref: ${product.id}`,
+      `   ${base}/en/products/${product.id}`,
+      '',
+    );
+  });
+
+  lines.push(
     `From: ${input.buyerName} (${input.buyerPhone})`,
-    ``,
+    '',
     input.message,
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 @Injectable()
@@ -65,120 +96,243 @@ export class InquiriesService {
     private readonly whatsapp: WhatsappService,
   ) {}
 
-  /**
-   * Records the inquiry, then attempts delivery.
-   *
-   * That order is the whole design. A send that fails -- bad credentials, Meta
-   * outage, seller number rejected -- must still leave a lead the marketplace
-   * can see and retry (#91 story 9). Sending first and persisting after would
-   * mean every provider hiccup silently discards a real buyer.
-   */
+  /** A single-product inquiry is a bundle of one -- there is no second path. */
   async create(args: CreateInquiryArgs) {
-    const product = await this.prisma.product.findUnique({
-      where: { id: args.productId },
-      include: { seller: true },
+    const result = await this.createBundle({
+      productIds: [args.productId],
+      buyerName: args.buyerName,
+      buyerPhone: args.buyerPhone,
+      message: args.message,
     });
+    // createBundle either returns at least one row or throws.
+    return result.inquiries[0];
+  }
 
-    if (!product) {
-      throw new NotFoundException(`Product ${args.productId} not found`);
+  /**
+   * One inquiry covering several shortlisted products.
+   *
+   * SINGLE-SELLER ASSUMPTION, stated as a check rather than left implicit.
+   * The marketplace has one seller today, so this sends one message covering
+   * the whole shortlist. A selection spanning sellers is REJECTED rather than
+   * quietly delivered to whichever seller happened to come first -- that
+   * would send one seller a list of a competitor's products and give the
+   * buyer a confirmation for an inquiry nobody can answer.
+   *
+   * When a second seller ships, the fix is to group by sellerId and send one
+   * message per group; the rows already carry sellerId, so nothing here has
+   * to be undone. Until then this stays simple and fails loudly.
+   *
+   * Records before sending, for the same reason the single path does: a
+   * provider failure must leave a retryable row, never a discarded buyer.
+   */
+  async createBundle(args: CreateBundleArgs) {
+    // Deduped first: a UI that lets the same card be added twice must not
+    // produce two rows, two rate-limit hits and a duplicated message line.
+    const productIds = [...new Set(args.productIds)];
+
+    if (productIds.length === 0) {
+      throw new BadRequestException('Select at least one product.');
+    }
+    if (productIds.length > INQUIRY_BULK_MAX_PRODUCTS) {
+      throw new BadRequestException(
+        `Select at most ${INQUIRY_BULK_MAX_PRODUCTS} products.`,
+      );
     }
 
-    await this.assertWithinRateLimit(args.buyerPhone, args.productId);
+    const products = (await this.prisma.product.findMany({
+      where: { id: { in: productIds } },
+      include: { seller: true },
+    })) as unknown as ProductForInquiry[];
 
-    const inquiry = await this.prisma.inquiry.create({
-      data: {
+    if (products.length !== productIds.length) {
+      const found = new Set(products.map((p) => p.id));
+      const missing = productIds.filter((id) => !found.has(id));
+      throw new NotFoundException(`Product ${missing[0]} not found`);
+    }
+
+    const sellerIds = new Set(products.map((p) => p.sellerId));
+    if (sellerIds.size > 1) {
+      throw new BadRequestException(
+        'Select products from a single seller. Sending one inquiry across ' +
+          'sellers is not supported yet.',
+      );
+    }
+
+    await this.assertBundleWithinLimit(args.buyerPhone);
+
+    // Products this buyer has already asked about too recently. Dropped
+    // rather than failing the whole submission: rejecting a 20-item shortlist
+    // because one item was asked about an hour ago is a worse outcome than
+    // sending the other 19 and saying so.
+    const skippedProductIds = await this.findProductsAtLimit(
+      args.buyerPhone,
+      productIds,
+    );
+    const eligible = products.filter((p) => !skippedProductIds.includes(p.id));
+
+    if (eligible.length === 0) {
+      throw new BadRequestException(
+        'You have already sent inquiries about these products recently.',
+      );
+    }
+
+    // One id shared by every row this submission creates. The buyer performed
+    // one action, and that is what this records -- per-product rows keep
+    // per-product analytics and limits working, while this preserves the fact
+    // that they were asked together.
+    const bundleId = randomUUID();
+
+    // PERSIST FIRST, then send. An earlier version of this refactor computed
+    // the delivery outcome first so it could be written once at insert time,
+    // which silently inverted the order the single-product path had always
+    // used -- and a provider failure would have discarded the buyer entirely.
+    // A test asserting the sequence caught it. Do not "simplify" this back
+    // into one write.
+    await this.prisma.inquiry.createMany({
+      data: eligible.map((product) => ({
+        bundleId,
         productId: product.id,
         // Denormalized at inquiry time: which seller received this is a
-        // historical fact and must not follow a later product reassignment.
+        // historical fact and must not follow a later reassignment.
         sellerId: product.sellerId,
         buyerName: args.buyerName,
         buyerPhone: args.buyerPhone,
         message: args.message,
         status: InquiryStatus.PENDING,
+      })),
+    });
+
+    const outcome = await this.deliver({
+      products: eligible,
+      buyerName: args.buyerName,
+      buyerPhone: args.buyerPhone,
+      message: args.message,
+    });
+
+    // One message covers the whole shortlist, so one outcome applies to every
+    // row it created -- updated by bundleId rather than row by row.
+    await this.prisma.inquiry.updateMany({
+      where: { bundleId },
+      data: {
+        status: outcome.status,
+        providerMessageId: outcome.providerMessageId,
+        failureReason: outcome.failureReason,
       },
     });
 
-    const sellerNumber = product.seller.whatsappNumber;
+    const inquiries = await this.prisma.inquiry.findMany({
+      where: { bundleId },
+      orderBy: { productId: 'asc' },
+    });
+
+    return { bundleId, inquiries, skippedProductIds };
+  }
+
+  /**
+   * Sends the shortlist as one message and returns the outcome, rather than
+   * writing rows itself, so a single delivery result applies to every row it
+   * covers. One message about three products must not report three different
+   * delivery states.
+   */
+  private async deliver(input: {
+    products: ProductForInquiry[];
+    buyerName: string;
+    buyerPhone: string;
+    message: string;
+  }): Promise<{
+    status: InquiryStatus;
+    providerMessageId: string | null;
+    failureReason: string | null;
+  }> {
+    const sellerNumber = input.products[0].seller.whatsappNumber;
+
     if (!sellerNumber) {
       // A seller with no number is a configuration state, not a buyer error.
-      // The lead is captured and can be delivered once the seller is
-      // onboarded, so this must not surface as a failed request.
-      return this.markFailed(inquiry.id, 'seller has no WhatsApp number');
+      // The leads are captured and deliverable once they are onboarded.
+      return {
+        status: InquiryStatus.FAILED,
+        providerMessageId: null,
+        failureReason: 'seller has no WhatsApp number',
+      };
     }
 
     const result = await this.whatsapp.sendText(
       sellerNumber,
       buildInquiryMessage({
-        productName: product.name,
-        productId: product.id,
-        buyerName: args.buyerName,
-        buyerPhone: args.buyerPhone,
-        message: args.message,
+        products: input.products,
+        buyerName: input.buyerName,
+        buyerPhone: input.buyerPhone,
+        message: input.message,
       }),
     );
 
     if (!result.ok) {
       this.logger.warn(
-        `Inquiry ${inquiry.id} recorded but not delivered: ${result.reason}`,
+        `Inquiry covering ${input.products.length} product(s) recorded but not delivered: ${result.reason}`,
       );
-      return this.markFailed(inquiry.id, result.reason);
+      return {
+        status: InquiryStatus.FAILED,
+        providerMessageId: null,
+        // Truncated: provider-supplied text on a column an operator reads,
+        // not a place to accumulate arbitrary length.
+        failureReason: result.reason.slice(0, 500),
+      };
     }
 
-    return this.prisma.inquiry.update({
-      where: { id: inquiry.id },
-      data: {
-        status: InquiryStatus.SENT,
-        providerMessageId: result.providerMessageId,
-      },
-    });
-  }
-
-  private markFailed(id: string, reason: string) {
-    return this.prisma.inquiry.update({
-      where: { id },
-      // Truncated because this is provider-supplied text on a column an
-      // operator reads, not a place to accumulate arbitrary length.
-      data: {
-        status: InquiryStatus.FAILED,
-        failureReason: reason.slice(0, 500),
-      },
-    });
+    return {
+      status: InquiryStatus.SENT,
+      providerMessageId: result.providerMessageId,
+      failureReason: null,
+    };
   }
 
   /**
-   * Two limits, because they stop different abuses.
+   * Caps SUBMISSIONS per phone, not rows.
    *
-   * Per-phone caps a scripted caller blasting many sellers. Per-phone-product
-   * stops the narrower nuisance of one buyer repeatedly messaging one seller
-   * about one item, which the broader limit alone would permit right up to
-   * its ceiling.
+   * Counting rows would tie the limit to shortlist size: one 6-item shortlist
+   * would exhaust a 5-per-hour budget in a single action, while five separate
+   * single inquiries would not -- for more buyer decisions and more outbound
+   * messages. Distinct bundles is what actually corresponds to "how many
+   * times did this person contact a seller".
    *
-   * Counted from the Inquiry table rather than held in memory on purpose: an
-   * in-process counter resets on deploy and is per-instance, so it would be
-   * defeated by a restart or by horizontal scaling. Both index reads are
-   * covered by (buyerPhone, createdAt) and (productId, createdAt).
+   * Counted from the database rather than an in-process counter, which resets
+   * on deploy and is per-instance, so a restart or a second replica defeats it.
    */
-  private async assertWithinRateLimit(buyerPhone: string, productId: string) {
+  private async assertBundleWithinLimit(buyerPhone: string) {
     const since = new Date(Date.now() - INQUIRY_RATE_LIMIT_WINDOW_MS);
+    const bundles = await this.prisma.inquiry.findMany({
+      where: { buyerPhone, createdAt: { gte: since } },
+      select: { bundleId: true },
+      distinct: ['bundleId'],
+    });
 
-    const [fromPhone, forThisProduct] = await Promise.all([
-      this.prisma.inquiry.count({
-        where: { buyerPhone, createdAt: { gte: since } },
-      }),
-      this.prisma.inquiry.count({
-        where: { buyerPhone, productId, createdAt: { gte: since } },
-      }),
-    ]);
-
-    if (fromPhone >= INQUIRY_RATE_LIMIT_PER_PHONE) {
+    if (bundles.length >= INQUIRY_RATE_LIMIT_PER_PHONE) {
       throw new BadRequestException(
         'Too many inquiries from this number recently. Please try again later.',
       );
     }
-    if (forThisProduct >= INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT) {
-      throw new BadRequestException(
-        'You have already sent inquiries about this product recently.',
-      );
-    }
+  }
+
+  /** Products this phone has already asked about too many times in the window. */
+  private async findProductsAtLimit(
+    buyerPhone: string,
+    productIds: string[],
+  ): Promise<string[]> {
+    const since = new Date(Date.now() - INQUIRY_RATE_LIMIT_WINDOW_MS);
+    const recent = await this.prisma.inquiry.groupBy({
+      by: ['productId'],
+      where: {
+        buyerPhone,
+        productId: { in: productIds },
+        createdAt: { gte: since },
+      },
+      _count: { productId: true },
+    });
+
+    return recent
+      .filter(
+        (row) => row._count.productId >= INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
+      )
+      .map((row) => row.productId);
   }
 }

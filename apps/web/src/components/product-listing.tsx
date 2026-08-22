@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ProductCard, type Product } from "@/components/product-card";
+import { ShortlistBar } from "@/components/shortlist-bar";
 import { Pagination } from "@/components/pagination";
 import { Skeleton } from "@/components/skeleton";
 import { fetchProductsPaged, type ProductsPaged } from "@/lib/api";
@@ -19,6 +20,24 @@ export function ProductListing({
   initialData?: ProductsPaged;
 }) {
   const initialPage = initialData?.page === page ? initialData : undefined;
+
+  // Shortlist state lives here rather than in a context: ProductListing is
+  // already the one client component owning the visible page of products, so
+  // a provider would add indirection without a second consumer.
+  //
+  // Deliberately NOT carried across pages. Pagination replaces state.items,
+  // and a selection that silently survived onto a page the buyer can no
+  // longer see would let them submit an inquiry for products not on screen.
+  // Keeping it per-page keeps "what is selected" and "what is visible" the
+  // same set.
+  const [shortlist, setShortlist] = useState<string[]>([]);
+
+  const toggleShortlisted = (id: string) =>
+    setShortlist((current) =>
+      current.includes(id)
+        ? current.filter((existing) => existing !== id)
+        : [...current, id],
+    );
 
   const [state, setState] = useState<{
     items: Product[];
@@ -174,10 +193,19 @@ export function ProductListing({
             key={product.id}
             product={product}
             priority={index === 0}
+            selected={shortlist.includes(product.id)}
+            onSelectedChange={toggleShortlisted}
           />
         ))}
       </div>
       <Pagination currentPage={page} totalPages={state.totalPages} />
+      {/* Renders nothing while the shortlist is empty, so a visitor who
+          never selects anything pays nothing for this. */}
+      <ShortlistBar
+        productIds={shortlist}
+        onClear={() => setShortlist([])}
+        onRemove={toggleShortlisted}
+      />
     </>
   );
 }

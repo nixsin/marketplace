@@ -341,3 +341,94 @@ export async function submitInquiry(input: InquiryInput): Promise<InquiryResult>
 
   return { ok: true, delivered: Boolean(created.delivered) };
 }
+
+
+const CREATE_BUNDLE_INQUIRY_MUTATION = minifyGql(`
+  mutation CreateBundleInquiry($input: CreateBundleInquiryInput!) {
+    createBundleInquiry(input: $input) {
+      bundleId productCount skippedProductIds delivered
+    }
+  }
+`);
+
+export interface BundleInquiryInput {
+  productIds: string[];
+  buyerName: string;
+  buyerPhone: string;
+  message: string;
+}
+
+export type BundleInquiryResult =
+  | { ok: true; productCount: number; skippedCount: number; delivered: boolean }
+  | { ok: false; message: string };
+
+/**
+ * One inquiry covering several shortlisted products.
+ *
+ * POST for the same reason submitInquiry is: a mutation must never be
+ * cacheable, and the Cloudflare rules bypass non-GET outright, so this cannot
+ * be edge-cached even by accident. credentials "omit" because the flow is
+ * anonymous by design.
+ *
+ * Returns a discriminated result rather than throwing: every failure here --
+ * validation, rate limit, a selection spanning sellers, an unreachable server
+ * -- is something the buyer must be shown in the bar they are looking at, not
+ * something that should blank the catalogue behind an error boundary.
+ */
+export async function submitBundleInquiry(
+  input: BundleInquiryInput,
+): Promise<BundleInquiryResult> {
+  const clientRequestId = newClientRequestId();
+
+  let res: Response;
+  try {
+    res = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...correlationHeaders(clientRequestId),
+      },
+      credentials: "omit",
+      body: JSON.stringify({
+        query: CREATE_BUNDLE_INQUIRY_MUTATION,
+        variables: { input },
+      }),
+    });
+  } catch (error) {
+    reportApiFailure("submitBundleInquiry", clientRequestId, error);
+    return { ok: false, message: "network" };
+  }
+
+  if (!res.ok) {
+    const error = new Error(`Failed to submit inquiry (${res.status})`);
+    reportApiFailure("submitBundleInquiry", clientRequestId, error, res);
+    return { ok: false, message: "network" };
+  }
+
+  const payload = (await res.json()) as {
+    data?: {
+      createBundleInquiry?: {
+        productCount?: number;
+        skippedProductIds?: string[];
+        delivered?: boolean;
+      } | null;
+    };
+    errors?: { message?: string }[];
+  };
+
+  // GraphQL reports resolver failures as HTTP 200 with an errors array, so
+  // res.ok above proves nothing about whether this worked.
+  if (payload.errors?.length) {
+    return { ok: false, message: payload.errors[0]?.message ?? "unknown" };
+  }
+
+  const created = payload.data?.createBundleInquiry;
+  if (!created) return { ok: false, message: "unknown" };
+
+  return {
+    ok: true,
+    productCount: created.productCount ?? 0,
+    skippedCount: created.skippedProductIds?.length ?? 0,
+    delivered: Boolean(created.delivered),
+  };
+}

@@ -420,6 +420,11 @@ export const INQUIRY_MESSAGE_MAX_LENGTH = 1000;
 // so this mutation is a spam vector by construction. The API has no
 // throttling of any kind today -- not even on OTP -- so the limit lives in
 // the inquiry path itself rather than assuming a global one exists.
+// A shortlist is capped so one submission cannot become an unbounded
+// outbound message. 20 is generous for a procurement shortlist while keeping
+// the composed message inside anything a provider will accept.
+export const INQUIRY_BULK_MAX_PRODUCTS = 20;
+
 export const INQUIRY_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
 export const INQUIRY_RATE_LIMIT_PER_PHONE = 5;
 export const INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT = 2;

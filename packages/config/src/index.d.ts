@@ -58,6 +58,7 @@ export declare const WHATSAPP_API_VERSION: string;
 export declare const WHATSAPP_API_BASE_URL: string;
 export declare const INQUIRY_NAME_MAX_LENGTH: number;
 export declare const INQUIRY_MESSAGE_MAX_LENGTH: number;
+export declare const INQUIRY_BULK_MAX_PRODUCTS: number;
 export declare const INQUIRY_RATE_LIMIT_WINDOW_MS: number;
 export declare const INQUIRY_RATE_LIMIT_PER_PHONE: number;
 export declare const INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT: number;
