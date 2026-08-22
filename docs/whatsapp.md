@@ -166,6 +166,20 @@ merge blocker — and it is a schema change plus a real design decision about
 ambiguous outcomes, which is better done deliberately than bolted onto a
 review round.
 
+## Verify at configuration time
+
+Two review findings were merged over deliberately because neither can be
+settled from this repository, and both become testable the moment a Meta
+account exists. **Check them with the first real send, before any traffic.**
+
+- **Recipient format.** We send `to: "+919876543210"`. A review argued the
+  Cloud API expects country-code digits **without** the `+`. If that is right,
+  every send fails; the fix is `toE164.slice(1)`, keeping the plus form for
+  storage and validation. Settle it against the real API, not from memory.
+- **Provider error text is logged before truncation.** A multiline or very
+  long provider response could forge log lines or bloat entries. The database
+  write already truncates to 500; the log call does not.
+
 ## Still required before going live
 
 - Meta Business account, a verified sending number, and an **approved
