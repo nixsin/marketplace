@@ -11,6 +11,7 @@ type BundleInquiryResult {
   bundleId: ID!
   delivered: Boolean!
   productCount: Int!
+  sellerCount: Int!
   skippedProductIds: [ID!]!
 }
 

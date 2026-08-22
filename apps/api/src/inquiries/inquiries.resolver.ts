@@ -54,9 +54,13 @@ export class InquiriesResolver {
       bundleId: result.bundleId,
       productCount: result.inquiries.length,
       skippedProductIds: result.skippedProductIds,
-      // One message covers the whole shortlist, so every row shares a
-      // delivery state; reading the first is reading all of them.
-      delivered: result.inquiries[0]?.status === InquiryStatus.SENT,
+      sellerCount: result.sellerCount,
+      // Every seller, not just the first. With fan-out the rows no longer
+      // share one delivery state, so reading inquiries[0] would report the
+      // first seller's outcome as if it were the whole submission's.
+      delivered:
+        result.sellerCount > 0 &&
+        result.deliveredSellerCount === result.sellerCount,
     };
   }
 }

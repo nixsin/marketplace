@@ -28,6 +28,21 @@ export class BundleInquiryResult {
   @Field(() => [ID])
   skippedProductIds: string[];
 
+  /**
+   * How many sellers this shortlist reached. A catalogue selection spans
+   * sellers, so one submission can become several messages -- the buyer is
+   * told how many, because "sent to 3 sellers" sets a different expectation
+   * about replies than "sent".
+   */
+  @Field(() => Int)
+  sellerCount: number;
+
+  /**
+   * True only when EVERY seller's message was accepted. Partial delivery is
+   * reported as false rather than true-ish: telling a buyer it worked when
+   * one seller never received it is the failure mode worth avoiding, and
+   * sellerCount is there for the UI to be more specific if it wants.
+   */
   @Field()
   delivered: boolean;
 }

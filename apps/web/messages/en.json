@@ -79,7 +79,7 @@
     "submit": "{count, plural, one {Send inquiry for # product} other {Send inquiry for # products}}",
     "sending": "Sending…",
     "sentTitle": "Inquiry received",
-    "sentMessage": "The seller has your shortlist and your number. They will reply on WhatsApp.",
+    "sentMessage": "{sellers, plural, one {The seller has your shortlist and your number. They will reply on WhatsApp.} other {# sellers have your shortlist and your number. They will reply on WhatsApp.}}",
     "sentWithSkipped": "{skipped, plural, one {# product was left out because you asked about it recently.} other {# products were left out because you asked about them recently.}}",
     "error": "We could not send that. Please check your phone number and try again.",
     "tooMany": "Select at most {max} products to ask about at once."

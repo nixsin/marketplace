@@ -346,7 +346,7 @@ export async function submitInquiry(input: InquiryInput): Promise<InquiryResult>
 const CREATE_BUNDLE_INQUIRY_MUTATION = minifyGql(`
   mutation CreateBundleInquiry($input: CreateBundleInquiryInput!) {
     createBundleInquiry(input: $input) {
-      bundleId productCount skippedProductIds delivered
+      bundleId productCount skippedProductIds sellerCount delivered
     }
   }
 `);
@@ -359,7 +359,14 @@ export interface BundleInquiryInput {
 }
 
 export type BundleInquiryResult =
-  | { ok: true; productCount: number; skippedCount: number; delivered: boolean }
+  | {
+      ok: true;
+      productCount: number;
+      skippedCount: number;
+      /** How many sellers the shortlist reached -- one message each. */
+      sellerCount: number;
+      delivered: boolean;
+    }
   | { ok: false; message: string };
 
 /**
@@ -410,6 +417,7 @@ export async function submitBundleInquiry(
       createBundleInquiry?: {
         productCount?: number;
         skippedProductIds?: string[];
+        sellerCount?: number;
         delivered?: boolean;
       } | null;
     };
@@ -429,6 +437,7 @@ export async function submitBundleInquiry(
     ok: true,
     productCount: created.productCount ?? 0,
     skippedCount: created.skippedProductIds?.length ?? 0,
+    sellerCount: created.sellerCount ?? 0,
     delivered: Boolean(created.delivered),
   };
 }

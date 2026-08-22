@@ -35,6 +35,7 @@ describe("ShortlistBar", () => {
       ok: true,
       productCount: 2,
       skippedCount: 0,
+      sellerCount: 1,
       delivered: true,
     });
   });
@@ -93,6 +94,7 @@ describe("ShortlistBar", () => {
       ok: true,
       productCount: 1,
       skippedCount: 1,
+      sellerCount: 1,
       delivered: true,
     });
     renderBar(["p1", "p2"]);
@@ -101,6 +103,33 @@ describe("ShortlistBar", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(
       /1 product was left out/i,
     );
+  });
+
+  it("tells the buyer how many sellers the shortlist reached", async () => {
+    // A shortlist spanning sellers becomes one message each. "3 sellers have
+    // your shortlist" sets a different expectation about replies than "sent".
+    submitMock.mockResolvedValue({
+      ok: true,
+      productCount: 4,
+      skippedCount: 0,
+      sellerCount: 3,
+      delivered: true,
+    });
+    renderBar(["p1", "p2", "p3", "p4"]);
+    await openAndSubmit();
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /3 sellers have your shortlist/i,
+    );
+  });
+
+  it("uses singular wording when only one seller was reached", async () => {
+    renderBar(["p1", "p2"]);
+    await openAndSubmit();
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(/the seller has your shortlist/i);
+    expect(status.textContent ?? "").not.toMatch(/1 sellers/);
   });
 
   it("announces a failure and keeps the selection", async () => {

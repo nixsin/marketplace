@@ -109,18 +109,22 @@ export class InquiriesService {
   }
 
   /**
-   * One inquiry covering several shortlisted products.
+   * One inquiry covering several shortlisted products, fanned out per seller.
    *
-   * SINGLE-SELLER ASSUMPTION, stated as a check rather than left implicit.
-   * The marketplace has one seller today, so this sends one message covering
-   * the whole shortlist. A selection spanning sellers is REJECTED rather than
-   * quietly delivered to whichever seller happened to come first -- that
-   * would send one seller a list of a competitor's products and give the
-   * buyer a confirmation for an inquiry nobody can answer.
+   * A catalogue shortlist spans sellers, and the buyer neither knows nor
+   * should need to know who owns what -- the cards show a seller NAME, never
+   * an id. So the grouping happens here: each seller receives ONE message
+   * listing only their own items, and the buyer performs one action and gets
+   * one confirmation.
    *
-   * When a second seller ships, the fix is to group by sellerId and send one
-   * message per group; the rows already carry sellerId, so nothing here has
-   * to be undone. Until then this stays simple and fails loudly.
+   * Sending the whole shortlist to a single seller would hand them a list of
+   * a competitor's products; sending one message per product would make a
+   * seller reassemble a five-message thread. Per-seller is the only grouping
+   * that is correct for both sides.
+   *
+   * Delivery is per group, so one seller's failure cannot mark another
+   * seller's rows failed -- a bad number on one org must not make the buyer
+   * think nothing was delivered.
    *
    * Records before sending, for the same reason the single path does: a
    * provider failure must leave a retryable row, never a discarded buyer.
@@ -148,14 +152,6 @@ export class InquiriesService {
       const found = new Set(products.map((p) => p.id));
       const missing = productIds.filter((id) => !found.has(id));
       throw new NotFoundException(`Product ${missing[0]} not found`);
-    }
-
-    const sellerIds = new Set(products.map((p) => p.sellerId));
-    if (sellerIds.size > 1) {
-      throw new BadRequestException(
-        'Select products from a single seller. Sending one inquiry across ' +
-          'sellers is not supported yet.',
-      );
     }
 
     await this.assertBundleWithinLimit(args.buyerPhone);
@@ -202,37 +198,59 @@ export class InquiriesService {
       })),
     });
 
-    const outcome = await this.deliver({
-      products: eligible,
-      buyerName: args.buyerName,
-      buyerPhone: args.buyerPhone,
-      message: args.message,
-    });
+    // FAN OUT. One message per seller, covering only that seller's items.
+    const bySeller = new Map<string, ProductForInquiry[]>();
+    for (const product of eligible) {
+      const group = bySeller.get(product.sellerId) ?? [];
+      group.push(product);
+      bySeller.set(product.sellerId, group);
+    }
 
-    // One message covers the whole shortlist, so one outcome applies to every
-    // row it created -- updated by bundleId rather than row by row.
-    await this.prisma.inquiry.updateMany({
-      where: { bundleId },
-      data: {
-        status: outcome.status,
-        providerMessageId: outcome.providerMessageId,
-        failureReason: outcome.failureReason,
-      },
-    });
+    let deliveredSellers = 0;
+    for (const [sellerId, sellerProducts] of bySeller) {
+      const outcome = await this.deliver({
+        products: sellerProducts,
+        buyerName: args.buyerName,
+        buyerPhone: args.buyerPhone,
+        message: args.message,
+      });
+
+      if (outcome.status === InquiryStatus.SENT) deliveredSellers += 1;
+
+      // Scoped to (bundle, seller), NOT the whole bundle. Updating by
+      // bundleId alone would let one seller's failure overwrite another
+      // seller's successful delivery -- the rows would then claim nothing
+      // arrived when most of it did.
+      await this.prisma.inquiry.updateMany({
+        where: { bundleId, sellerId },
+        data: {
+          status: outcome.status,
+          providerMessageId: outcome.providerMessageId,
+          failureReason: outcome.failureReason,
+        },
+      });
+    }
 
     const inquiries = await this.prisma.inquiry.findMany({
       where: { bundleId },
       orderBy: { productId: 'asc' },
     });
 
-    return { bundleId, inquiries, skippedProductIds };
+    return {
+      bundleId,
+      inquiries,
+      skippedProductIds,
+      sellerCount: bySeller.size,
+      deliveredSellerCount: deliveredSellers,
+    };
   }
 
   /**
-   * Sends the shortlist as one message and returns the outcome, rather than
-   * writing rows itself, so a single delivery result applies to every row it
-   * covers. One message about three products must not report three different
-   * delivery states.
+   * Sends ONE seller their slice of the shortlist and returns the outcome,
+   * rather than writing rows itself, so the caller can apply one delivery
+   * result to that seller's rows. One message about three products must not
+   * report three different delivery states -- and equally, one seller's
+   * failure must not touch another seller's rows.
    */
   private async deliver(input: {
     products: ProductForInquiry[];

@@ -63,3 +63,57 @@ describe('InquiriesResolver', () => {
     expect(serialized).not.toContain(input.buyerPhone);
   });
 });
+
+describe('InquiriesResolver.createBundleInquiry', () => {
+  const input = {
+    productIds: ['p1', 'p2'],
+    buyerName: 'Asha Rao',
+    buyerPhone: '+919000000001',
+    message: 'Please quote.',
+  };
+
+  function makeResolver(sellerCount: number, deliveredSellerCount: number) {
+    const service = {
+      createBundle: jest.fn().mockResolvedValue({
+        bundleId: 'b1',
+        inquiries: [{ id: 'i1' }, { id: 'i2' }],
+        skippedProductIds: ['p9'],
+        sellerCount,
+        deliveredSellerCount,
+      }),
+    };
+    return new InquiriesResolver(service as unknown as InquiriesService);
+  }
+
+  it('reports delivered only when EVERY seller received it', async () => {
+    // The mutation that exposed this: `deliveredSellerCount > 0` would call a
+    // half-delivered shortlist a success, telling the buyer to expect replies
+    // from sellers who never got the message.
+    expect(
+      (await makeResolver(2, 2).createBundleInquiry(input)).delivered,
+    ).toBe(true);
+    expect(
+      (await makeResolver(2, 1).createBundleInquiry(input)).delivered,
+    ).toBe(false);
+    expect(
+      (await makeResolver(2, 0).createBundleInquiry(input)).delivered,
+    ).toBe(false);
+  });
+
+  it('never reports delivered when there are no sellers at all', async () => {
+    // 0 === 0 is true, so a naive equality check would call an empty
+    // submission fully delivered.
+    expect(
+      (await makeResolver(0, 0).createBundleInquiry(input)).delivered,
+    ).toBe(false);
+  });
+
+  it('passes through the counts the UI needs to be specific', async () => {
+    const result = await makeResolver(2, 2).createBundleInquiry(input);
+
+    expect(result.sellerCount).toBe(2);
+    expect(result.productCount).toBe(2);
+    // Surfaced, not swallowed: the buyer selected these deliberately.
+    expect(result.skippedProductIds).toEqual(['p9']);
+  });
+});

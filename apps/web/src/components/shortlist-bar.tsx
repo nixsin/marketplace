@@ -38,6 +38,7 @@ export function ShortlistBar({
   const formId = useId();
   const [status, setStatus] = useState<Status>("idle");
   const [skipped, setSkipped] = useState<number>(0);
+  const [sellers, setSellers] = useState<number>(0);
 
   if (productIds.length === 0) return null;
 
@@ -60,6 +61,10 @@ export function ShortlistBar({
       // so silently dropping the ones they asked about too recently would look
       // like the feature losing their input.
       setSkipped(result.skippedCount);
+      // A shortlist spanning sellers becomes one message each. "Sent to 3
+      // sellers" sets a different expectation about replies than "sent",
+      // so the buyer is told rather than left to guess.
+      setSellers(result.sellerCount);
       setStatus("sent");
       onClear();
       return;
@@ -74,8 +79,13 @@ export function ShortlistBar({
           <div role="status" className="text-sm">
             <p className="font-medium">{t("sentTitle")}</p>
             <p className="text-muted-foreground">
-              {skipped > 0 ? t("sentWithSkipped", { skipped }) : t("sentMessage")}
+              {t("sentMessage", { sellers })}
             </p>
+            {skipped > 0 && (
+              <p className="text-muted-foreground">
+                {t("sentWithSkipped", { skipped })}
+              </p>
+            )}
           </div>
         ) : status === "open" || status === "sending" || status === "error" ? (
           <form

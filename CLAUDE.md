@@ -565,12 +565,29 @@ per-product limit keep working, all sharing a `bundleId` that records they
 were asked together. One WhatsApp message lists the lot; a seller should not
 receive five messages to reassemble.
 
-**Single-seller assumption, enforced rather than assumed.** A selection
-spanning sellers is rejected outright. Delivering it to whichever seller came
-first would hand one seller a list of a competitor's products and give the
-buyer a confirmation nobody can answer. When a second seller ships, group by
-`sellerId` and send per group -- the rows already carry it, so nothing has to
-be undone.
+**Fanned out per seller.** A catalogue shortlist spans sellers, and the buyer
+neither knows nor should need to know who owns what -- cards show a seller
+NAME, never an id -- so the grouping happens server-side. Each seller receives
+one message listing only their own items. Sending the whole shortlist to one
+seller would hand them a competitor's product list; one message per product
+would make a seller reassemble a thread. Per-seller is the only grouping
+correct for both sides.
+
+**Delivery outcomes are scoped to `(bundleId, sellerId)`, never `bundleId`
+alone.** Updating the whole bundle with one outcome lets a failure for one
+seller overwrite another seller's successful delivery, so the rows claim
+nothing arrived when most of it did. Verified in real data: a cross-seller
+bundle where one seller has no number stores two DIFFERENT failure reasons on
+rows sharing one bundle.
+
+**`delivered` means every seller, not any seller.** Reading
+`inquiries[0].status` reported the first seller's outcome as the whole
+submission's; `deliveredSellerCount > 0` calls a half-delivered shortlist a
+success and tells the buyer to expect replies from sellers who never got the
+message. It is `sellerCount > 0 && delivered === sellerCount` -- the
+`sellerCount > 0` guard matters because `0 === 0` would report an empty
+submission as fully delivered. All three were mutation-tested; the first two
+initially passed, and the resolver test was added because of it.
 
 **The per-phone limit counts SUBMISSIONS, not rows.** Counting rows would tie
 the limit to shortlist size: one 6-item shortlist would exhaust a

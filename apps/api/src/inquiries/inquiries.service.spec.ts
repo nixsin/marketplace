@@ -287,7 +287,13 @@ describe('InquiriesService.createBundle', () => {
     seller: { whatsappNumber: '+919876543210' },
   };
   const P2 = { ...P1, id: 'p2', name: 'Ultrasound US-Pro 7' };
-  const OTHER_SELLER = { ...P1, id: 'p3', sellerId: 'org-2' };
+  const OTHER_SELLER = {
+    ...P1,
+    id: 'p3',
+    name: 'Vitals Monitor VS-500',
+    sellerId: 'org-2',
+    seller: { whatsappNumber: '+919999999999' },
+  };
 
   let service: InquiriesService;
   let prisma: {
@@ -379,17 +385,92 @@ describe('InquiriesService.createBundle', () => {
     expect(new Set(written.data.map((d) => d.bundleId)).size).toBe(1);
   });
 
-  it('rejects a selection spanning sellers rather than misdelivering it', async () => {
-    // Single-seller marketplace today. Sending this to whichever seller came
-    // first would hand one seller a list of a competitor's products and give
-    // the buyer a confirmation nobody can answer.
-    prisma.product.findMany.mockResolvedValue([P1, OTHER_SELLER]);
+  describe('fan-out across sellers', () => {
+    beforeEach(() => {
+      prisma.product.findMany.mockResolvedValue([P1, P2, OTHER_SELLER]);
+    });
 
-    await expect(
-      service.createBundle({ ...ARGS, productIds: ['p1', 'p3'] }),
-    ).rejects.toBeInstanceOf(BadRequestException);
-    expect(prisma.inquiry.createMany).not.toHaveBeenCalled();
-    expect(whatsapp.sendText).not.toHaveBeenCalled();
+    const SPAN = { ...ARGS, productIds: ['p1', 'p2', 'p3'] };
+
+    it('sends one message per seller, not one per product', async () => {
+      await service.createBundle(SPAN);
+
+      // Two sellers, three products: two messages.
+      expect(whatsapp.sendText).toHaveBeenCalledTimes(2);
+      expect(whatsapp.sendText.mock.calls[0][0]).toBe('+919876543210');
+      expect(whatsapp.sendText.mock.calls[1][0]).toBe('+919999999999');
+    });
+
+    it('gives each seller only their own products', async () => {
+      // The whole reason for fanning out. One seller receiving a list of a
+      // competitor's products is the failure this prevents.
+      await service.createBundle(SPAN);
+
+      const first = whatsapp.sendText.mock.calls[0][1] as string;
+      const second = whatsapp.sendText.mock.calls[1][1] as string;
+
+      expect(first).toContain('X-Ray DR-200');
+      expect(first).toContain('Ultrasound US-Pro 7');
+      expect(first).not.toContain('p3');
+
+      expect(second).toContain('p3');
+      expect(second).not.toContain('Ultrasound US-Pro 7');
+    });
+
+    it('reports how many sellers were reached', async () => {
+      const result = await service.createBundle(SPAN);
+      expect(result.sellerCount).toBe(2);
+      expect(result.deliveredSellerCount).toBe(2);
+    });
+
+    it('scopes each delivery outcome to its own seller', async () => {
+      // Updating by bundleId alone would let one seller's failure overwrite
+      // another seller's successful delivery, so the rows would claim nothing
+      // arrived when most of it did.
+      await service.createBundle(SPAN);
+
+      const scopes = prisma.inquiry.updateMany.mock.calls.map(
+        (call) => (call[0] as { where: { sellerId?: string } }).where,
+      );
+      expect(scopes).toHaveLength(2);
+      for (const where of scopes) {
+        expect(where.sellerId).toBeTruthy();
+        expect(where.bundleId).toBeTruthy();
+      }
+    });
+
+    it('one seller failing does not mark the other seller failed', async () => {
+      whatsapp.sendText
+        .mockResolvedValueOnce({ ok: true, providerMessageId: 'wamid.1' })
+        .mockResolvedValueOnce({ ok: false, reason: 'provider 400' });
+
+      const result = await service.createBundle(SPAN);
+
+      const applied = prisma.inquiry.updateMany.mock.calls.map(
+        (call) => (call[0] as { data: { status: string } }).data.status,
+      );
+      expect(applied).toEqual(['SENT', 'FAILED']);
+      // Partial delivery is not "delivered".
+      expect(result.deliveredSellerCount).toBe(1);
+      expect(result.sellerCount).toBe(2);
+    });
+
+    it('still writes every row before any message goes out', async () => {
+      const order: string[] = [];
+      prisma.inquiry.createMany.mockImplementation(() => {
+        order.push('persist');
+        return Promise.resolve({ count: 3 });
+      });
+      whatsapp.sendText.mockImplementation(() => {
+        order.push('send');
+        return Promise.resolve({ ok: true, providerMessageId: 'w' });
+      });
+
+      await service.createBundle(SPAN);
+
+      // One persist, then one send per seller -- never interleaved.
+      expect(order).toEqual(['persist', 'send', 'send']);
+    });
   });
 
   it('dedupes repeated ids instead of writing the product twice', async () => {
