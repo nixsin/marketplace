@@ -58,6 +58,7 @@ describe('InquiriesResolver', () => {
 });
 
 describe('resolveCallerIp', () => {
+  const trusted = { INQUIRY_TRUST_PROXY_HEADERS: 'true' };
   const req = {
     ip: '10.0.0.9',
     socket: { remoteAddress: '10.0.0.10' },
@@ -68,27 +69,15 @@ describe('resolveCallerIp', () => {
   };
 
   it('yields NO address at all by default', () => {
-    // The finding this exists for. An earlier version trusted
-    // cf-connecting-ip unconditionally, claiming a client could not forge it
-    // -- true only if every route to the origin goes through Cloudflare, and
-    // this origin answers directly on its .onrender.com hostname. A caller
-    // skipping the edge could set a fresh value per request and walk straight
-    // past the per-IP limit.
-    // null, not the socket address. Behind Render's load balancer -- which
-    // fronts every service -- socket.remoteAddress is the BALANCER, identical
-    // for every buyer. Returning it gave everyone one shared ipHash, so after
-    // INQUIRY_RATE_LIMIT_PER_IP inquiries the limit rejected every caller for
-    // every seller: a global outage of the feature, caused by the fix for the
-    // spoofing problem. Without trusted headers there is no per-client
-    // address, so the honest answer is none, and the limiter skips it.
+    // An earlier version trusted cf-connecting-ip unconditionally, claiming a
+    // client could not forge it -- true only if every route to the origin
+    // goes through Cloudflare, and this origin answers directly on its
+    // .onrender.com hostname. A caller skipping the edge could set a fresh
+    // value per request and walk past the per-IP limit.
     expect(resolveCallerIp(req, {})).toBeNull();
   });
 
   it('never leaks req.ip OR the socket through while the flag is off', () => {
-    // req.ip because Express derives it from X-Forwarded-For whenever
-    // app-level `trust proxy` is enabled -- a setting invisible from here.
-    // The socket because behind a load balancer it is the balancer, shared by
-    // every buyer, which turned the per-IP limit into a global lockout.
     expect(
       resolveCallerIp(
         { ip: '203.0.113.99', socket: { remoteAddress: '10.0.0.10' } },
@@ -97,58 +86,75 @@ describe('resolveCallerIp', () => {
     ).toBeNull();
   });
 
-  it('trusts them only when explicitly enabled', () => {
-    expect(resolveCallerIp(req, { INQUIRY_TRUST_PROXY_HEADERS: 'true' })).toBe(
-      '203.0.113.7',
-    );
+  it('trusts cf-connecting-ip only when explicitly enabled', () => {
+    expect(resolveCallerIp(req, trusted)).toBe('203.0.113.7');
   });
 
   it('is not enabled by any truthy-looking value', () => {
     // A deployment flag this consequential should turn on for exactly one
     // string, not for "1", "yes" or "TRUE".
     for (const value of ['1', 'yes', 'TRUE', 'on']) {
-      expect(resolveCallerIp(req, { INQUIRY_TRUST_PROXY_HEADERS: value })).toBe(
-        null,
-      );
+      expect(
+        resolveCallerIp(req, { INQUIRY_TRUST_PROXY_HEADERS: value }),
+      ).toBeNull();
     }
   });
 
-  it('prefers cf-connecting-ip over x-forwarded-for when trusting', () => {
+  it('IGNORES x-forwarded-for entirely, even in the trusted mode', () => {
+    // The finding this exists for, and the previous version of this file
+    // asserted the opposite as if it were intended.
+    //
+    // Proxies APPEND to x-forwarded-for rather than overwriting it, so a
+    // client can send their own chain and the proxy adds to it -- leaving the
+    // left-most entry, nominally "the originating client", under the
+    // attacker's control. Rotating it walked straight past the per-IP limit
+    // on any trusted route where cf-connecting-ip happened to be absent.
+    // cf-connecting-ip is safe precisely because Cloudflare overwrites it.
     const noCf = {
-      ...req,
       headers: { 'x-forwarded-for': '198.51.100.5, 10.0.0.1' },
     };
-    expect(resolveCallerIp(noCf, { INQUIRY_TRUST_PROXY_HEADERS: 'true' })).toBe(
-      '198.51.100.5',
-    );
+    expect(resolveCallerIp(noCf, trusted)).toBeNull();
   });
 
-  it('reads only the first entry of a comma-separated forwarded chain', () => {
-    // The left-most is the originating client; the rest are appended by
-    // intermediaries.
-    const chained = {
-      headers: { 'x-forwarded-for': ' 198.51.100.5 , 10.0.0.1 , 10.0.0.2 ' },
-    };
+  it('does not fall back to req.ip, which is derived from that same header', () => {
+    // Express sets req.ip from X-Forwarded-For whenever app-level
+    // `trust proxy` is enabled -- a setting invisible from here -- so it
+    // inherits the forgery exactly.
+    expect(resolveCallerIp({ ip: '198.51.100.5' }, trusted)).toBeNull();
+  });
+
+  it('does not fall back to the socket, which is the load balancer', () => {
+    // Unforgeable but not per-client: Render fronts every service with a
+    // balancer, so this is the SAME value for every buyer. Using it gave
+    // everyone one shared bucket, and once the per-IP limit was reached it
+    // rejected every caller for every seller -- a global outage of the
+    // feature, caused by the fix for the forgery problem. null is the honest
+    // answer, and the limiter skips a null bucket.
     expect(
-      resolveCallerIp(chained, { INQUIRY_TRUST_PROXY_HEADERS: 'true' }),
-    ).toBe('198.51.100.5');
+      resolveCallerIp({ socket: { remoteAddress: '10.0.0.10' } }, trusted),
+    ).toBeNull();
+    expect(resolveCallerIp({}, trusted)).toBeNull();
+    expect(resolveCallerIp(undefined, {})).toBeNull();
   });
 
-  it('falls back to the socket only in the trusted mode, then to null', () => {
-    // In the opted-in mode the socket is a legitimate last resort, because an
-    // operator has asserted the proxy chain is real.
+  it('refuses a cf-connecting-ip carrying a chain', () => {
+    // The real header carries exactly one address. A comma means it did not
+    // come from the edge, and splitting it would quietly accept the
+    // forgeable shape this function exists to refuse.
     expect(
       resolveCallerIp(
-        { socket: { remoteAddress: '10.0.0.10' } },
-        { INQUIRY_TRUST_PROXY_HEADERS: 'true' },
+        { headers: { 'cf-connecting-ip': '198.51.100.5, 10.0.0.1' } },
+        trusted,
       ),
-    ).toBe('10.0.0.10');
-    // null, never a placeholder: the limiter skips a null bucket, because
-    // collapsing every unresolvable caller into one shared bucket would let a
-    // single one of them lock out all the others.
-    expect(
-      resolveCallerIp({}, { INQUIRY_TRUST_PROXY_HEADERS: 'true' }),
     ).toBeNull();
-    expect(resolveCallerIp(undefined, {})).toBeNull();
+  });
+
+  it('reads the first entry when the header arrives more than once', () => {
+    expect(
+      resolveCallerIp(
+        { headers: { 'cf-connecting-ip': ['203.0.113.7', '10.0.0.1'] } },
+        trusted,
+      ),
+    ).toBe('203.0.113.7');
   });
 });

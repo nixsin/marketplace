@@ -613,15 +613,22 @@ An unkeyed SHA-256 is not a fallback: IPv4's 2^32 space is small enough to
 enumerate, so anyone holding the table recovers the address, and labelling such
 a value "unkeyed" advertises the weakness without removing it. Storing nothing
 is the honest option, and the limiter skips a null bucket by design.
-`INQUIRY_TRUST_PROXY_HEADERS` must be exactly `"true"` before
-`cf-connecting-ip`/`x-forwarded-for` are believed at all; **`resolveCallerIp`
-returns null otherwise, including for the socket.** Both defaults were arrived
-at by getting them wrong: this origin also answers directly on its
-`.onrender.com` hostname, so a caller skipping the edge can forge a fresh
-header per request — and `socket.remoteAddress` behind Render's load balancer
-is the *balancer*, identical for every buyer, so using it gave everyone one
+`INQUIRY_TRUST_PROXY_HEADERS` must be exactly `"true"` before any header is
+believed, and even then **only `cf-connecting-ip`** is — `resolveCallerIp`
+returns null in every other case, including for `x-forwarded-for`, `req.ip`
+and the socket. Each was tried and each is wrong in its own way. **`x-forwarded-for` is
+APPENDED TO by proxies, not overwritten**, so a client sends their own chain,
+the proxy adds to it, and the left-most entry — nominally "the originating
+client" — stays attacker-controlled; reading it from the trusted end needs a
+configured trusted-hop count nothing here has. `req.ip` inherits that exactly,
+since Express derives it from the same header whenever app-level `trust proxy`
+is on. `socket.remoteAddress` is unforgeable but behind Render's load balancer
+it is the *balancer*, identical for every buyer — using it gave everyone one
 shared bucket and locked out every caller for every seller once the limit was
-reached.
+reached. `cf-connecting-ip` alone is safe because Cloudflare **overwrites**
+it, which holds only while every route to the origin goes through the edge —
+so enabling the flag asserts the origin refuses non-proxied traffic, not
+merely that a proxy exists.
 
 **Nothing on the buyer path may carry the seller's number.** The resolver
 returns `{ id, status, createdAt }` explicitly rather than spreading the row —
