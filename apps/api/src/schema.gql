@@ -65,6 +65,7 @@ type Organization {
 
 type Product {
   brand: String!
+  canReceiveInquiries: Boolean!
   category: String!
   certifications: [String!]!
   createdAt: DateTime!

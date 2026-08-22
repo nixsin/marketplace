@@ -30,6 +30,14 @@ export interface ProductDetail {
   // TECHNICAL_PLAN.md §6, deliberately deferred.
   details?: Record<string, unknown>;
   updatedAt: string;
+  /**
+   * Whether an inquiry can actually reach this seller (#91). The seller's
+   * WhatsApp number itself is never sent to the browser -- the send happens
+   * server-side -- so a scraper cannot harvest seller numbers by loading
+   * product pages. Story 6 is explicit about not exposing seller staff to
+   * unsolicited contact.
+   */
+  canReceiveInquiries: boolean;
   seller: {
     name: string;
     gstin?: string;

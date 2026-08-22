@@ -69,7 +69,7 @@ const PRODUCT_QUERY = minifyGql(`
   query Product($id: ID!) {
     product(id: $id) {
       id name brand category deviceClass certifications location
-      description imageUrl details updatedAt
+      description imageUrl details updatedAt canReceiveInquiries
       seller { name gstin kycStatus }
     }
   }
@@ -78,6 +78,7 @@ const PRODUCT_QUERY = minifyGql(`
 interface ProductResponse {
   data: {
     product: {
+      canReceiveInquiries: boolean;
       id: string;
       name: string;
       brand: string;
@@ -166,6 +167,11 @@ export async function fetchProduct(id: string): Promise<ProductDetail | null> {
     brand: p.brand,
     category: p.category,
     deviceClass: p.deviceClass ?? undefined,
+    // Coerced rather than passed through: an older API that does not yet
+    // return this field would otherwise make it undefined, and `undefined &&`
+    // renders nothing -- the form would silently vanish instead of failing
+    // loudly. Absent means "cannot receive", which is the safe reading.
+    canReceiveInquiries: Boolean(p.canReceiveInquiries),
     certifications: p.certifications,
     location: p.location,
     description: p.description,
@@ -248,3 +254,5 @@ export async function fetchProductsPaged(
     })),
   };
 }
+
+

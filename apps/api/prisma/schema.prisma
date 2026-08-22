@@ -44,23 +44,31 @@ enum DeviceClass {
 }
 
 model Organization {
-  id        String     @id @default(cuid())
+  id        String    @id @default(cuid())
   name      String
-  gstin     String?    @unique
+  gstin     String?   @unique
   type      OrgType
-  kycStatus KycStatus  @default(PENDING)
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  kycStatus KycStatus @default(PENDING)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 
-  users    User[]
-  licenses License[]
-  products Product[]
+  // E.164, e.g. +919876543210. The seller's VERIFIED BUSINESS number, never
+  // a personal one (#91 story 6: staff must not be exposed to unsolicited
+  // contact). Deliberately never exposed through GraphQL -- the send happens
+  // server-side, so a scraper cannot harvest seller numbers from the API.
+  // Product.canReceiveInquiries exposes only whether one is set.
+  whatsappNumber String?
+
+  users     User[]
+  licenses  License[]
+  products  Product[]
+  inquiries Inquiry[]
 
   @@index([type, kycStatus])
 }
 
 model User {
-  id             String   @id @default(cuid())
+  id             String       @id @default(cuid())
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id])
 
@@ -75,7 +83,7 @@ model User {
 }
 
 model License {
-  id             String      @id @default(cuid())
+  id             String       @id @default(cuid())
   organizationId String
   organization   Organization @relation(fields: [organizationId], references: [id])
 
@@ -118,5 +126,87 @@ model Product {
   // synthetic value, not a real backfill.
   updatedAt      DateTime     @default(now()) @updatedAt
 
+  inquiries Inquiry[]
+
   @@index([sellerId])
+}
+
+/// A buyer's inquiry about one product, delivered to the seller over
+/// WhatsApp. Recorded in its own right rather than being a fire-and-forget
+/// message: #91 story 9 wants the channel measurable (which product, which
+/// seller, did it arrive) WITHOUT reading message content, and a lead that
+/// only exists inside somebody's WhatsApp is a lead the marketplace cannot
+/// see, attribute, or recover when delivery fails.
+model Inquiry {
+  id String @id @default(cuid())
+
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+
+  // Denormalized from the product at inquiry time on purpose. Products can
+  // be reassigned between organizations; the seller who received a given
+  // inquiry is a historical fact and must not change retroactively.
+  sellerId String
+  seller   Organization @relation(fields: [sellerId], references: [id])
+
+  buyerName  String
+  buyerPhone String
+  message    String
+
+  /// SHA-256 of the caller's IP, never the IP itself.
+  ///
+  /// The per-phone limit is keyed on a value the caller types, so rotating
+  /// E.164 numbers defeats it entirely -- this endpoint is unauthenticated
+  /// and sends outbound WhatsApp messages, so that made it a spam relay with
+  /// the appearance of protection. This adds a dimension the caller does not
+  /// choose freely.
+  ///
+  /// Hashed because a raw IP is personal data under DPDP, and this table is
+  /// read by operators triaging leads who have no need to see it. A hash is
+  /// still enough to count repeats, which is all the limiter needs.
+  ipHash String?
+
+  /// Stable per-SUBMISSION key, supplied by the client and unique.
+  ///
+  /// A lost response is indistinguishable from a failed one, so a retry would
+  /// otherwise create a second inquiry AND send the seller a second WhatsApp
+  /// message. The client generates this once per submission and reuses it on
+  /// every retry, so the database rejects the duplicate rather than trusting
+  /// the client to notice.
+  ///
+  /// Nullable because rows written before this existed have none, and in
+  /// Postgres NULLs do not collide in a unique index -- so old rows coexist
+  /// without a backfill inventing keys that never identified anything.
+  idempotencyKey String? @unique
+
+  status InquiryStatus @default(PENDING)
+
+  /// Meta's message id, when the send succeeded. The only handle we have for
+  /// correlating a delivery webhook back to this row later.
+  providerMessageId String?
+
+  /// Why a send failed, for operator diagnosis. Provider error text only --
+  /// never the buyer's message body, which would duplicate content into logs.
+  failureReason String?
+
+  createdAt DateTime @default(now())
+
+  // Seller inbox, newest first.
+  @@index([sellerId, createdAt])
+  // "has this buyer already asked about this product" and per-product counts.
+  @@index([productId, createdAt])
+  // Rate limiting reads by phone within a time window.
+  @@index([buyerPhone, createdAt])
+  // The caller-independent limit, and the absolute per-seller cap.
+  @@index([ipHash, createdAt])
+}
+
+enum InquiryStatus {
+  /// Recorded, not yet handed to the provider.
+  PENDING
+  /// Provider accepted it. Not the same as the seller having read it.
+  SENT
+  /// Provider rejected it, or no provider is configured. The lead is still
+  /// recorded -- failing to deliver must never mean failing to capture.
+  FAILED
 }

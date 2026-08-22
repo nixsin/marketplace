@@ -19,6 +19,7 @@ const fullProduct: ProductDetail = {
   imageUrl: "https://example.com/ultrasound.jpg",
   details: { probeType: "Convex", displaySize: "7in" },
   updatedAt: "2026-08-18T23:37:48.872Z",
+  canReceiveInquiries: false,
   seller: {
     name: "MedTech Systems Pvt Ltd",
     gstin: "33AAACM1234A1Z5",
@@ -35,6 +36,7 @@ const minimalProduct: ProductDetail = {
   location: "Pune, India",
   description: "Stainless steel, autoclavable forceps set.",
   updatedAt: "2026-08-18T23:37:48.872Z",
+  canReceiveInquiries: false,
   seller: {
     name: "SteelCraft Direct",
     kycStatus: "PENDING",
