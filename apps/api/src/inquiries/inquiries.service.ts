@@ -185,20 +185,36 @@ const FAILURE_REASON_MAX_LENGTH = 500;
  * marketplace is broken.
  */
 export function publicSiteUrl(siteUrl: string = SITE_URL): string | null {
-  const trimmed = siteUrl.replace(/\/+$/, '');
-  if (!trimmed) return null;
-  let host: string;
+  if (!siteUrl) return null;
+
+  let url: URL;
   try {
-    host = new URL(trimmed).hostname;
+    url = new URL(siteUrl);
   } catch {
     return null;
   }
+
+  // Scheme checked, because a link is built by concatenation and anything
+  // else produces something that is not a web address at all. `javascript:`
+  // parses happily and yielded `javascript:alert(1)/en/products/<id>` in an
+  // outbound message.
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+
   // Loopback in any spelling, plus the unspecified address a container binds.
   // URL.hostname keeps the brackets around an IPv6 literal, so '::1' arrives
   // as '[::1]' and a bare comparison missed it -- caught by the test rather
   // than by reading.
   const local = ['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0'];
-  return local.includes(host) ? null : trimmed;
+  if (local.includes(url.hostname)) return null;
+
+  // ORIGIN, not the string as given. The previous version returned the input
+  // with a trailing slash trimmed, so a query, a path or embedded credentials
+  // survived into a link built by concatenation:
+  //   https://example.com?x=1     -> https://example.com?x=1/en/products/<id>
+  //   https://user:pass@example.com -> credentials in a message to a seller
+  // url.origin drops all three, which is the only part of a configured site
+  // URL a product link should be built from.
+  return url.origin;
 }
 
 /**
@@ -426,6 +442,15 @@ export class InquiriesService {
     // never-attempted from attempted-ambiguous, which providerMessageId
     // already does. An outbox written in the same transaction is the fuller
     // answer.
+    //
+    // Related, same issue: a row that reached FAILED is likewise never
+    // delivered by any later request, even once the cause is repaired --
+    // credentials set, a seller number added, a 429 window passed. Those are
+    // DEFINITE non-deliveries and safe to re-send by construction, but doing
+    // it here would hand an attacker an amplifier: a duplicate deliberately
+    // consumes no rate-limit budget, so a known key could drive unlimited
+    // outbound requests. It belongs to the sweeper, which we trigger and
+    // pace.
     if (!created.inserted) return created.inquiry;
 
     // Wrapped, so NOTHING in delivery can fail the mutation.

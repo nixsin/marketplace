@@ -727,15 +727,25 @@ class of reason: re-reading it afterwards to find the seller's number would
 reopen the reassignment gap, which once delivery exists means handing a
 buyer's name and phone to an unrelated organisation.
 
-**Two parked cases live in [#151](https://github.com/nixsin/marketplace/issues/151)**,
+**A `FAILED` row is never delivered by any later request**, even after the
+cause is repaired, because `create()` returns an existing row without
+delivering. Those are definite non-deliveries and safe to re-send by
+construction — but doing it in the request path hands an attacker an
+amplifier, since a duplicate deliberately consumes no rate-limit budget. It
+belongs to the sweeper in #151, which we trigger and pace. That issue now
+carries the state table the sweeper needs (`FAILED` → re-send; `PENDING`
+without a `providerMessageId` → check first; `SENT` → never), which is the
+reason the ambiguous/definite split was worth shipping here rather than
+deferring with it.
+
+**Three parked cases live in [#151](https://github.com/nixsin/marketplace/issues/151)**,
 each with a `FIX(#151)` comment at the exact line. A crash between the commit
 and the send strands a row no retry will ever deliver — every retry matches
 the idempotency key and returns without sending, correct for a duplicate and
 wrong for one never attempted; it needs the same PENDING sweep the ambiguous
 case does, which `providerMessageId` can already distinguish. And the web
 form remembers one key and one fingerprint, so reverting to earlier content
-mints a third key. Both are unreachable or near-unreachable today; neither is
-fine.
+mints a third key. None are reachable, or barely so, today; none are fine.
 
 **The seller's number is NORMALISED, not merely validated** — and the two
 sides must stay symmetric. The buyer's number has been canonicalised since

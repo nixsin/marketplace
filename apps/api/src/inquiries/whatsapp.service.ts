@@ -274,13 +274,39 @@ export class WhatsappService {
           };
         }
 
-        return { ok: true, providerMessageId: readMessageId(responseBody) };
+        // A 2xx with no recognisable acceptance is AMBIGUOUS, not success.
+        //
+        // Meta answers an accepted send with `{ messages: [{ id }] }`. A body
+        // without one -- `{}`, or any shape we do not recognise -- proves only
+        // that some HTTP intermediary returned 200, which a proxy error page
+        // does too. Recording SENT there tells the buyer, once part 4 reports
+        // delivery, that a message arrived which may never have been sent.
+        //
+        // Not FAILED either: Meta may genuinely have accepted it, and FAILED
+        // invites a retry that double-messages the seller. PENDING is the
+        // honest answer, and it is the same answer a timeout gets.
+        const providerMessageId = readMessageId(responseBody);
+        if (!providerMessageId) {
+          return {
+            ok: false,
+            ambiguous: true,
+            reason: `provider ${response.status} with no recognisable acceptance in the body`,
+          };
+        }
+        return { ok: true, providerMessageId };
       } catch {
+        // Same reasoning: an unparseable body cannot confirm anything. This
+        // previously recorded SENT with a null id, which is the one outcome
+        // that is definitely wrong -- it claims certainty from an absence.
         this.logger.warn(
-          'Provider accepted the message but its response body did not parse; ' +
-            'recorded as sent without a provider message id.',
+          'Provider returned a success status with an unparseable body; ' +
+            'left ambiguous rather than recorded as sent.',
         );
-        return { ok: true, providerMessageId: null };
+        return {
+          ok: false,
+          ambiguous: true,
+          reason: 'provider response body did not parse',
+        };
       }
     } catch (error) {
       // Network failure, DNS, timeout. The inquiry is already persisted, so

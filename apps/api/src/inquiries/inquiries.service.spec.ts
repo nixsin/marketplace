@@ -173,6 +173,28 @@ describe('publicSiteUrl', () => {
     expect(publicSiteUrl(value)).toBeNull();
   });
 
+  it.each([
+    ['https://example.com?x=1', 'a query string'],
+    ['https://user:pass@example.com', 'embedded credentials'],
+    ['https://example.com/base/', 'a path'],
+  ])('reduces %s to its ORIGIN (%s)', (value) => {
+    // The link is built by CONCATENATION, so anything beyond the origin
+    // survives into it: `https://example.com?x=1` became
+    // `https://example.com?x=1/en/products/<id>`, putting the product path
+    // inside the query. Embedded credentials would have gone into a message
+    // sent to a seller.
+    expect(publicSiteUrl(value)).toBe('https://example.com');
+  });
+
+  it.each([
+    ['ftp://example.com', 'a non-web scheme'],
+    ['javascript:alert(1)', 'a script url'],
+  ])('rejects %s (%s)', (value) => {
+    // Both parse happily. `javascript:alert(1)` yielded
+    // `javascript:alert(1)/en/products/<id>` in an outbound message.
+    expect(publicSiteUrl(value)).toBeNull();
+  });
+
   it('accepts a real public origin, without a trailing slash', () => {
     expect(publicSiteUrl('https://laxair.shop/')).toBe('https://laxair.shop');
   });

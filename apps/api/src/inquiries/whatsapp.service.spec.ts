@@ -205,10 +205,18 @@ describe('WhatsappService', () => {
     [{ messages: [{}] }, 'message without an id'],
     [null, 'null payload'],
   ])(
-    'still reports success when the payload shape is unexpected (%#: %s)',
+    'leaves an unexpected payload shape AMBIGUOUS (%#: %s)',
     async (payload) => {
-      // A provider shape change must degrade to "sent, id unknown" rather
-      // than discarding a send that actually succeeded.
+      // This asserted `{ ok: true, providerMessageId: null }` -- "sent, id
+      // unknown" -- on the reasoning that a shape change must not discard a
+      // send that actually succeeded. True as far as it went, but it
+      // conflated "we cannot read the id" with "it was accepted": a 2xx
+      // proves only that some HTTP intermediary answered, which a proxy error
+      // page does too.
+      //
+      // Ambiguous keeps both properties. The send is not discarded, and it is
+      // not claimed either -- which matters once part 4 reports delivery to
+      // the buyer, where SENT means someone is told their message arrived.
       fetchMock.mockResolvedValue({
         ok: true,
         json: () => Promise.resolve(payload),
@@ -220,7 +228,7 @@ describe('WhatsappService', () => {
         CONFIGURED,
       );
 
-      expect(result).toEqual({ ok: true, providerMessageId: null });
+      expect(result).toMatchObject({ ok: false, ambiguous: true });
     },
   );
 });
@@ -475,6 +483,55 @@ describe('template parameter budgets', () => {
   });
 });
 
+describe('a 200 that does not actually confirm a send', () => {
+  // A 2xx proves only that some HTTP intermediary returned success -- a proxy
+  // error page does too. Meta answers an accepted send with
+  // `{ messages: [{ id }] }`; without one there is nothing to confirm.
+  //
+  // AMBIGUOUS rather than FAILED: Meta may genuinely have accepted it, and
+  // FAILED invites a retry that double-messages the seller. This previously
+  // recorded SENT with a null id, which is the one outcome definitely wrong
+  // -- it claims certainty from an absence.
+  const service = new WhatsappService();
+
+  afterEach(() => {
+    global.fetch = REAL_FETCH;
+    jest.restoreAllMocks();
+  });
+
+  const send = () =>
+    service.sendInquiry(
+      '+919876543210',
+      { summary: 's', buyerMessage: 'q' },
+      CONFIGURED,
+    );
+
+  it.each([
+    ['an empty object', {}],
+    ['an empty messages array', { messages: [] }],
+    ['a message without an id', { messages: [{}] }],
+    ['an unrecognised shape', { ok: 'yes' }],
+  ])('leaves %s ambiguous, not sent', async (_label, body) => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(body),
+    });
+
+    expect(await send()).toMatchObject({ ok: false, ambiguous: true });
+  });
+
+  it('leaves an unparseable body ambiguous, not sent', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new SyntaxError('unexpected end of JSON')),
+    });
+
+    expect(await send()).toMatchObject({ ok: false, ambiguous: true });
+  });
+});
+
 describe('a 200 whose body carries an error', () => {
   // Success is a property of the BODY, not the status line -- a lesson this
   // repo already documented INBOUND, where a GraphQL resolver failure arrives
@@ -601,11 +658,16 @@ describe('provider HTTP status classification', () => {
 });
 
 describe('an accepted send whose body will not parse', () => {
-  it('reports SUCCESS with an unknown id, never failure', async () => {
-    // Meta has already accepted the message -- response.ok is true -- so a
-    // body that will not parse must degrade to "sent, id unknown". Letting it
-    // fall through to the failure path marked a DELIVERED inquiry FAILED, and
-    // a retry from that state sends the seller a duplicate.
+  it('is AMBIGUOUS -- neither claimed as sent nor recorded as failed', async () => {
+    // This asserted SUCCESS, reasoning that response.ok proves Meta accepted
+    // the message and that falling through to the failure path would mark a
+    // DELIVERED inquiry FAILED, whose retry duplicates.
+    //
+    // Half right. FAILED is indeed wrong, for exactly that reason. But so is
+    // SENT: a 2xx proves only that some HTTP intermediary answered, and an
+    // unparseable body confirms nothing at all -- it claims certainty from an
+    // absence. Ambiguous avoids both, and it is the same answer a timeout
+    // gets for the same reason.
     const service = new WhatsappService();
     jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
     global.fetch = jest.fn().mockResolvedValue({
@@ -620,7 +682,7 @@ describe('an accepted send whose body will not parse', () => {
       CONFIGURED,
     );
 
-    expect(result).toEqual({ ok: true, providerMessageId: null });
+    expect(result).toMatchObject({ ok: false, ambiguous: true });
   });
 
   afterEach(() => {
