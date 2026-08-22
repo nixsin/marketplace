@@ -655,6 +655,68 @@ Both sides are now specific (`"already used"` vs `"already sent inquiries"`),
 and a test asserts the conflict message contains neither of the rate-limit
 phrases.
 
+## Buyer inquiry delivery (#91, part 3)
+
+Part 3 of three. Part 1 (#150) added the schema and phone validation, part 2
+(#153) the capture path. This one hands a recorded inquiry to WhatsApp's Cloud
+API and records what came back. **It does not tell the buyer**: the GraphQL
+`Inquiry` still exposes no delivery field and the confirmation still says only
+"recorded", which stays true either way. Surfacing the outcome is part 4,
+alone, because the confirmation copy is the highest-risk part of this feature
+by review history — three separate rounds on the unsplit version were copy
+claiming more than the API knew.
+
+**Business-initiated messages need a PRE-APPROVED TEMPLATE.** Free-form text
+is only deliverable inside a 24-hour window the *recipient* opens by messaging
+the business first, which never happens here because the marketplace always
+speaks first. The first implementation sent `type: 'text'` and would have
+failed every production send while passing every test. So
+`WHATSAPP_TEMPLATE_NAME` is **required configuration**, not optional: unset
+means sends are refused before the request, with the missing variable named,
+rather than attempted and rejected one message at a time.
+`WHATSAPP_ALLOW_FREE_FORM` is a deliberate opt-in for a known-open window, not
+a fallback. Full template contract in [docs/whatsapp.md](./docs/whatsapp.md).
+
+**Two template parameters, not one.** `{{1}}` is the product/contact summary,
+`{{2}}` the buyer's own words. A single combined parameter meant a near-limit
+question lost its ending to the metadata in front of it — silently, after Meta
+had accepted the message as valid. Within the summary the contact line comes
+**first** and the product name is bounded, because parameters truncate from
+the end and product names are unbounded `String` in the schema: a long enough
+name pushed the buyer's phone number off entirely, so the seller received an
+inquiry that looked answerable and was not.
+
+**Record first, then deliver, and delivery can never fail the mutation.** By
+the time any delivery code runs the lead is saved, so every branch either
+updates the row or logs and returns what it knows. Two paths are deliberately
+asymmetric with what the database says: an accepted send whose status write
+fails still returns SENT (Meta *did* accept it, and reporting otherwise invites
+a retry that double-messages the seller), and a failed `markFailed` still
+returns FAILED. Both log loudly for reconciliation — a stuck row is visible and
+fixable, a duplicate message to a real person is not.
+
+**An AMBIGUOUS outcome stays PENDING, never FAILED.** A timeout or dropped
+connection means the request may have reached Meta and been accepted before the
+response was lost. FAILED invites a retry that double-messages the seller;
+PENDING says what is true — we do not know. Nothing resolves one today; that
+needs Meta's delivery webhook keyed on `providerMessageId`, which is stored for
+exactly that purpose (TODO in the code, tracked in
+[#151](https://github.com/nixsin/marketplace/issues/151)).
+
+**Delivery is gated on `InsertedInquiry.inserted`.** An idempotent retry
+returns the stored row *without* sending. Without that flag the database
+deduplicates perfectly and the seller is messaged twice anyway — the exact
+failure idempotency exists to prevent, arriving through the back door. The
+product snapshot travels back from the transaction with the row for the same
+class of reason: re-reading it afterwards to find the seller's number would
+reopen the reassignment gap, which once delivery exists means handing a
+buyer's name and phone to an unrelated organisation.
+
+**`sanitizeForLog` bounds provider text before it is logged**, not after.
+Meta's `error.message` is external input: newlines let it forge log entries
+that look like ours. The 500-character column truncation happens after the log
+call, so it protects the wrong thing.
+
 ## Known gotchas (already solved once — don't re-derive)
 
 **`beforeEach(() => mock.mockResolvedValue(x))` silently CALLS the mock after

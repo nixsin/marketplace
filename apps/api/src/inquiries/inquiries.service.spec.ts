@@ -4,14 +4,19 @@ import {
   INQUIRY_RATE_LIMIT_PER_SELLER,
   INQUIRY_RATE_LIMIT_PER_PHONE,
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
+  WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH,
 } from '@medinstru/config';
 import {
   InquiriesService,
   assertSameSubmission,
+  buildInquiryMessage,
+  buildInquirySummary,
   hashIp,
 } from './inquiries.service';
+import { WhatsappService, sanitizeTemplateParam } from './whatsapp.service';
 import { randomBytes } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client';
+import { InquiryStatus } from '../../generated/prisma/enums';
 import { PrismaService } from '../prisma/prisma.service';
 
 const PRODUCT = {
@@ -54,6 +59,102 @@ const ARGS = {
   message: 'Is this available in Chennai?',
 };
 
+describe('buildInquiryMessage', () => {
+  const message = buildInquiryMessage({
+    productName: 'Portable Digital X-Ray Machine',
+    productId: 'seed-product-01',
+    buyerName: 'Asha Rao',
+    buyerPhone: '+919000000001',
+    message: 'Is this available in Chennai?',
+    siteUrl: 'https://laxair.shop',
+  });
+
+  it('identifies the product without a round trip (#91 story 4)', () => {
+    expect(message).toContain('Portable Digital X-Ray Machine');
+    expect(message).toContain('seed-product-01');
+  });
+
+  it('carries the same canonical URL a buyer would share', () => {
+    // A forwarded inquiry and a forwarded link must land on one page.
+    expect(message).toContain(
+      'https://laxair.shop/en/products/seed-product-01',
+    );
+  });
+
+  it('does not double the slash when the site URL has a trailing one', () => {
+    const trailing = buildInquiryMessage({
+      productName: 'X',
+      productId: 'p1',
+      buyerName: 'B',
+      buyerPhone: '+919000000001',
+      message: 'hi',
+      siteUrl: 'https://laxair.shop/',
+    });
+    expect(trailing).toContain('https://laxair.shop/en/products/p1');
+    expect(trailing).not.toContain('shop//en');
+  });
+
+  it('keeps the contact line even when the product name is absurd', () => {
+    // buildInquirySummary used to put "From: name (phone)" LAST, and
+    // sanitizeTemplateParam truncates from the end. Product names are
+    // unbounded String in the schema -- the seeded catalogue already has a
+    // deliberately absurd one -- so a long enough name pushed the buyer's
+    // name and phone off the end entirely. The seller then received an
+    // inquiry with no way to reply, which is worse than receiving nothing:
+    // it looks answerable and is not.
+    const summary = buildInquirySummary({
+      productName: 'X'.repeat(5000),
+      productId: 'seed-product-01',
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+      siteUrl: 'https://laxair.shop',
+    });
+    const sent = sanitizeTemplateParam(summary);
+
+    expect(sent).toContain('Asha Rao');
+    expect(sent).toContain('+919000000001');
+    // And the whole thing still fits its parameter, rather than relying on
+    // nothing after the contact line mattering.
+    expect(sent.length).toBeLessThanOrEqual(1024);
+  });
+
+  it('bounds the summary itself, not just what survives sanitising', () => {
+    // Ordering alone protects the contact line, so this bound is belt-and-
+    // braces -- which is exactly why it needs its own assertion. Without one,
+    // removing the cap changes nothing observable and the guarantee silently
+    // becomes "nothing after the contact line happened to matter".
+    const summary = buildInquirySummary({
+      productName: 'X'.repeat(5000),
+      productId: 'seed-product-01',
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+    });
+
+    // Fits its parameter BEFORE sanitizeTemplateParam does any truncating.
+    expect(summary.length).toBeLessThanOrEqual(
+      WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH,
+    );
+    // And the name was shortened rather than the line dropped.
+    expect(summary).toContain('Product: ');
+    expect(summary).toContain('\u2026');
+  });
+
+  it('puts the contact line before the product details', () => {
+    const summary = buildInquirySummary({
+      productName: 'X-Ray',
+      productId: 'p1',
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+    });
+    expect(summary.indexOf('Asha Rao')).toBeLessThan(summary.indexOf('X-Ray'));
+  });
+
+  it('includes how to reach the buyer back', () => {
+    expect(message).toContain('Asha Rao');
+    expect(message).toContain('+919000000001');
+  });
+});
+
 describe('InquiriesService', () => {
   let service: InquiriesService;
   let prisma: {
@@ -62,9 +163,11 @@ describe('InquiriesService', () => {
     inquiry: {
       findUnique: jest.Mock;
       create: jest.Mock;
+      update: jest.Mock;
       count: jest.Mock;
     };
   };
+  let whatsapp: { sendInquiry: jest.Mock };
 
   beforeEach(() => {
     prisma = {
@@ -87,10 +190,23 @@ describe('InquiriesService', () => {
           .mockImplementation(({ data }: { data: object }) =>
             Promise.resolve({ id: 'inq-1', ...data }),
           ),
+        update: jest
+          .fn()
+          .mockImplementation(({ data }: { data: unknown }) =>
+            Promise.resolve({ id: 'inq-1', ...(data as object) }),
+          ),
         count: jest.fn().mockResolvedValue(0),
       },
     };
-    service = new InquiriesService(prisma as unknown as PrismaService);
+    whatsapp = {
+      sendInquiry: jest
+        .fn()
+        .mockResolvedValue({ ok: true, providerMessageId: 'wamid.1' }),
+    };
+    service = new InquiriesService(
+      prisma as unknown as PrismaService,
+      whatsapp as unknown as WhatsappService,
+    );
     jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
   });
 
@@ -427,6 +543,175 @@ describe('InquiriesService', () => {
     // carrying it here would reach an anonymous caller (#91 story 6).
     const result = await service.create(ARGS);
     expect(JSON.stringify(result)).not.toContain('+919876543210');
+  });
+
+  describe('delivery', () => {
+    it('records the inquiry BEFORE attempting delivery', async () => {
+      // #91 story 9. A send that fails -- bad credentials, a Meta outage, a
+      // number Meta rejects -- must still leave a lead the marketplace can
+      // see and retry. Sending first and persisting after loses the lead
+      // exactly when something is already wrong.
+      const order: string[] = [];
+      prisma.inquiry.create.mockImplementation(({ data }: { data: object }) => {
+        order.push('create');
+        return Promise.resolve({ id: 'inq-1', ...data });
+      });
+      whatsapp.sendInquiry.mockImplementation(() => {
+        order.push('send');
+        return Promise.resolve({ ok: true, providerMessageId: 'wamid.1' });
+      });
+
+      await service.create(ARGS);
+
+      expect(order).toEqual(['create', 'send']);
+    });
+
+    it('marks a delivered inquiry SENT and keeps the provider message id', async () => {
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.abc',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.SENT);
+      expect(result.providerMessageId).toBe('wamid.abc');
+    });
+
+    it('sends to the seller the TRANSACTION saw, not a later re-read', async () => {
+      // The product snapshot travels with the row. Looking the number up
+      // again after the transaction closed would reopen the reassignment gap
+      // -- and once delivery exists, that gap hands a buyer's name and phone
+      // number to an organisation with nothing to do with the listing.
+      prisma.product.findUnique.mockResolvedValue({
+        ...PRODUCT,
+        sellerId: 'org-current',
+        seller: { id: 'org-current', whatsappNumber: '+919999900000' },
+      });
+
+      await service.create(ARGS);
+
+      expect(whatsapp.sendInquiry).toHaveBeenCalledWith(
+        '+919999900000',
+        expect.anything(),
+      );
+    });
+
+    it('still records the lead when the provider rejects the send', async () => {
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        reason: 'provider 400: invalid recipient',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.FAILED);
+      expect(prisma.inquiry.create).toHaveBeenCalled();
+    });
+
+    it('still records the lead when the seller has no number', async () => {
+      // A configuration state, not a buyer error. The form is hidden for such
+      // sellers, so reaching this means a direct caller or a number removed
+      // after the page loaded -- and the lead is deliverable once they are
+      // onboarded.
+      prisma.product.findUnique.mockResolvedValue({
+        ...PRODUCT,
+        seller: { id: 'org-1', whatsappNumber: null },
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.FAILED);
+      expect(whatsapp.sendInquiry).not.toHaveBeenCalled();
+      expect(prisma.inquiry.create).toHaveBeenCalled();
+    });
+
+    it('leaves an AMBIGUOUS outcome PENDING, never FAILED', async () => {
+      // A timeout or a dropped connection means the request may have reached
+      // Meta and been accepted before the response was lost. FAILED invites a
+      // retry that double-messages the seller; PENDING says what is true --
+      // we do not know.
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        ambiguous: true,
+        reason: 'provider timed out after 10000ms',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.PENDING);
+      expect(prisma.inquiry.update).not.toHaveBeenCalled();
+    });
+
+    it('does NOT deliver again for an idempotent retry', async () => {
+      // The whole mechanism defeated through the back door: the database
+      // deduplicates perfectly and the seller is messaged twice anyway.
+      // Delivery is gated on this call having actually written the row.
+      prisma.inquiry.findUnique.mockResolvedValue(storedRowFor('inq-existing'));
+
+      await service.create(ARGS);
+
+      expect(whatsapp.sendInquiry).not.toHaveBeenCalled();
+    });
+
+    it('does not report failure when marking a FAILED inquiry fails', async () => {
+      // The inquiry is already persisted, so a transient write error must not
+      // escape and tell the buyer their submission failed -- inviting them to
+      // resubmit something that was recorded.
+      whatsapp.sendInquiry.mockResolvedValue({ ok: false, reason: 'nope' });
+      prisma.inquiry.update.mockRejectedValue(new Error('db down'));
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.FAILED);
+    });
+
+    it('still reports a DELIVERED inquiry as SENT when marking it fails', async () => {
+      // Meta ACCEPTED this message. Returning the untouched PENDING row made
+      // the resolver report delivered:false and show the buyer "we could not
+      // reach the seller" for a message that had in fact arrived.
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.xyz',
+      });
+      prisma.inquiry.update.mockRejectedValue(new Error('db down'));
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.SENT);
+      expect(result.providerMessageId).toBe('wamid.xyz');
+    });
+
+    it('truncates a runaway provider failure reason', async () => {
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        reason: 'x'.repeat(5000),
+      });
+
+      await service.create(ARGS);
+
+      const written = prisma.inquiry.update.mock.calls[0][0] as {
+        data: { failureReason: string };
+      };
+      expect(written.data.failureReason.length).toBeLessThanOrEqual(500);
+    });
+
+    it('never lets raw provider text reach the logger', async () => {
+      // Meta's error.message is external input. Newlines let it forge log
+      // entries that look like ours, and the column truncation happens after
+      // the log call, so it protects the wrong thing.
+      const warn = jest.spyOn(service['logger'], 'warn');
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        reason: 'line one\nERROR forged line two\ttabbed',
+      });
+
+      await service.create(ARGS);
+
+      const logged = warn.mock.calls.map((c) => String(c[0])).join(' ');
+      expect(logged).not.toContain('\n');
+      expect(logged).not.toContain('\t');
+    });
   });
 
   describe('rate limiting', () => {

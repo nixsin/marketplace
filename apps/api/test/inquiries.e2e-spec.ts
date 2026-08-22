@@ -106,9 +106,13 @@ describe('Inquiries (e2e)', () => {
     const res = await submit(variables);
 
     expect(res.body.errors).toBeUndefined();
+    // FAILED, not PENDING: this environment has no Meta credentials, so the
+    // send is refused and recorded as such. The capture change asserted
+    // PENDING here because nothing attempted delivery at all -- the status a
+    // row settles at is now a real outcome rather than a default.
     expect(res.body.data.createInquiry).toEqual({
       id: expect.any(String) as string,
-      status: 'PENDING',
+      status: 'FAILED',
       createdAt: expect.any(String) as string,
     });
 
@@ -122,7 +126,7 @@ describe('Inquiries (e2e)', () => {
 
     const stored = await prisma.inquiry.findFirst();
     expect(stored?.buyerPhone).toBe('+919000000001');
-    expect(stored?.status).toBe('PENDING');
+    expect(stored?.status).toBe('FAILED');
   });
 
   it('canonicalises the phone number before it reaches the database', async () => {
@@ -237,6 +241,56 @@ describe('Inquiries (e2e)', () => {
     expect(await prisma.inquiry.count()).toBe(1);
     const stored = await prisma.inquiry.findFirst();
     expect(stored?.buyerPhone).toBe('+919000000001');
+  });
+
+  it('records the lead as FAILED when delivery is not configured', async () => {
+    // The e2e environment has no Meta credentials, which is the point: a
+    // deployment without them must still CAPTURE every lead. Sending first
+    // and persisting after would lose the lead precisely when something is
+    // already wrong (#91 story 9).
+    //
+    // Asserted through real HTTP because the unit tests mock the provider
+    // entirely -- they can prove the branch is taken, not that an unconfigured
+    // service reaches it.
+    const res = await submit({ input: input() });
+
+    expect(res.body.errors).toBeUndefined();
+    const stored = await prisma.inquiry.findFirst();
+    expect(stored?.status).toBe('FAILED');
+    expect(stored?.failureReason).toMatch(/not configured/i);
+    // The buyer's own details survived the failed send.
+    expect(stored?.buyerPhone).toBe('+919000000001');
+    expect(stored?.message).toBe('Is this available in Chennai?');
+  });
+
+  it('never tells the buyer why delivery failed', async () => {
+    // failureReason names provider state an anonymous caller has no business
+    // seeing -- which variables are unset, what Meta said. It is for the
+    // operator reading the table, not for the response.
+    const res = await submit({ input: input() });
+
+    const serialized = JSON.stringify(res.body);
+    expect(serialized).not.toMatch(/not configured/i);
+    expect(serialized).not.toMatch(/WHATSAPP_/);
+    expect(serialized).not.toMatch(/failureReason/i);
+  });
+
+  it('does not deliver twice for an idempotent retry', async () => {
+    // The database deduplicates perfectly and the seller is messaged twice
+    // anyway, if delivery is not gated on this call having written the row.
+    // Visible here as a second status write: a redelivered retry would
+    // re-stamp failureReason with a fresh timestamp-free value, so the
+    // observable proof is that the row is untouched between the two calls.
+    const variables = { input: input() };
+
+    await submit(variables);
+    const afterFirst = await prisma.inquiry.findFirst();
+    await submit(variables);
+    const afterSecond = await prisma.inquiry.findFirst();
+
+    expect(await prisma.inquiry.count()).toBe(1);
+    expect(afterSecond?.id).toBe(afterFirst?.id);
+    expect(afterSecond?.status).toBe(afterFirst?.status);
   });
 
   it('rejects a name or message that is only whitespace', async () => {

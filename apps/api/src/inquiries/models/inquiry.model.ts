@@ -13,9 +13,15 @@ registerEnumType(InquiryStatus, { name: 'InquiryStatus' });
  * endpoint into a contact-harvesting API, which is exactly what #91 story 6
  * exists to prevent.
  *
- * There is no `delivered` field, because nothing delivers yet. Adding one now
- * would mean shipping a boolean that is always false and copy that has to
- * pretend otherwise; it lands with the delivery change.
+ * There is STILL no `delivered` field, and that is deliberate for one more
+ * change. This one makes delivery real -- rows now reach SENT and FAILED, and
+ * a seller's phone actually rings -- but reporting that outcome to the buyer
+ * is its own change, because the confirmation copy is the single highest-risk
+ * part of this feature: three separate review rounds on the unsplit version
+ * were about copy claiming more than the API knew.
+ *
+ * Until then the buyer is told their inquiry was recorded, which stays true
+ * whether or not the send succeeded. Under-claiming is the safe direction.
  */
 @ObjectType()
 export class Inquiry {
