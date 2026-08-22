@@ -294,8 +294,8 @@ export class InquiriesService {
         // that double-messages the seller, while PENDING says exactly what is
         // true -- we do not know.
         //
-        // KNOWN GAP, parked deliberately -- see issue #151. Nothing later
-        // RESOLVES a row left this way, so it stays PENDING indefinitely.
+        // TODO(#151): reconcile ambiguous PENDING rows via a delivery
+        // webhook. Nothing resolves one today, so it stays PENDING forever.
         //
         // FREQUENCY: requires a provider timeout or dropped connection, which
         // cannot occur at all until Meta credentials exist. Zero today.
@@ -325,8 +325,8 @@ export class InquiriesService {
     // A stuck PENDING row is a visible, fixable inconsistency; a duplicate
     // WhatsApp message to a real seller is not.
     //
-    // KNOWN GAP, parked deliberately -- see issue #151. Reconciliation is
-    // manual: nothing sweeps these rows.
+    // TODO(#151): sweep rows stuck PENDING after an accepted send.
+    // Reconciliation is manual today; nothing sweeps them.
     //
     // FREQUENCY: requires a database failure in the window between an
     // accepted send and its status write -- milliseconds, and only while the

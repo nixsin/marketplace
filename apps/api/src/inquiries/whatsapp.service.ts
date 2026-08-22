@@ -62,7 +62,7 @@ export function sanitizeTemplateParam(value: string): string {
       .replace(/[\r\n\t]+/g, ' \u00b7 ')
       .replace(/\s{2,}/g, ' ')
       .trim()
-      // KNOWN EDGE CASE, parked deliberately -- see issue #151.
+      // TODO(#151): truncate by code point, not UTF-16 code unit.
       //
       // .slice() counts UTF-16 code units, so a cut landing inside a surrogate
       // pair leaves an unpaired surrogate in the outbound parameter. Verified:
