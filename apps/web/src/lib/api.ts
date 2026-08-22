@@ -69,7 +69,7 @@ const PRODUCT_QUERY = minifyGql(`
   query Product($id: ID!) {
     product(id: $id) {
       id name brand category deviceClass certifications location
-      description imageUrl details updatedAt
+      description imageUrl details updatedAt canReceiveInquiries
       seller { name gstin kycStatus }
     }
   }
@@ -78,6 +78,7 @@ const PRODUCT_QUERY = minifyGql(`
 interface ProductResponse {
   data: {
     product: {
+      canReceiveInquiries: boolean;
       id: string;
       name: string;
       brand: string;
@@ -166,6 +167,11 @@ export async function fetchProduct(id: string): Promise<ProductDetail | null> {
     brand: p.brand,
     category: p.category,
     deviceClass: p.deviceClass ?? undefined,
+    // Coerced rather than passed through: an older API that does not yet
+    // return this field would otherwise make it undefined, and `undefined &&`
+    // renders nothing -- the form would silently vanish instead of failing
+    // loudly. Absent means "cannot receive", which is the safe reading.
+    canReceiveInquiries: Boolean(p.canReceiveInquiries),
     certifications: p.certifications,
     location: p.location,
     description: p.description,
@@ -247,4 +253,144 @@ export async function fetchProductsPaged(
       seller: p.seller.name,
     })),
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Product inquiries (#91)
+// ---------------------------------------------------------------------------
+
+const CREATE_INQUIRY_MUTATION = minifyGql(`
+  mutation CreateInquiry($input: CreateInquiryInput!) {
+    createInquiry(input: $input) { id status delivered }
+  }
+`);
+
+export interface InquiryInput {
+  /**
+   * Stable per-SUBMISSION key. Generated once when the buyer submits and
+   * REUSED on every retry -- a fresh one per attempt would defeat the whole
+   * mechanism, since the server deduplicates on this exact value.
+   */
+  idempotencyKey: string;
+  productId: string;
+  buyerName: string;
+  buyerPhone: string;
+  message: string;
+}
+
+/**
+ * A CATEGORY, not raw server text.
+ *
+ * The form previously rendered one fixed "check your phone number" message
+ * for every failure, which is wrong for a network error and actively
+ * misleading for a rate limit, where retrying immediately cannot succeed and
+ * only adds traffic. Categories let the UI say something actionable without
+ * echoing arbitrary internal error strings back to a buyer.
+ */
+export type InquiryFailure = "network" | "rate-limited" | "invalid" | "unknown";
+
+export type InquiryResult =
+  | { ok: true; delivered: boolean }
+  | { ok: false; reason: InquiryFailure };
+
+/**
+ * Maps a server error to a category the UI can act on.
+ *
+ * Matched on the messages the API actually produces, and defaulting to
+ * "unknown" rather than guessing -- a wrong category is worse than a generic
+ * one, because it tells the buyer to do something that cannot help.
+ */
+export function categorizeInquiryError(message: string): InquiryFailure {
+  const text = message.toLowerCase();
+  if (text.includes("too many") || text.includes("already sent")) {
+    return "rate-limited";
+  }
+  if (text.includes("phone number") || text.includes("enter your name")) {
+    return "invalid";
+  }
+  return "unknown";
+}
+
+/**
+ * A POST, unlike every other call in this file.
+ *
+ * The GraphQL-over-GET pattern the reads use exists so a CDN can cache them.
+ * A mutation must never be cacheable, and POST is what guarantees that at
+ * every layer -- the Cloudflare rules bypass non-GET outright, so this cannot
+ * be edge-cached even by accident.
+ *
+ * credentials: "omit" for the same reason as the reads: these requests are
+ * anonymous by design (#91 story 3 -- a WhatsApp-shared link must work on a
+ * cold visit with no login), and sending credentials would both break CORS
+ * and quietly make the endpoint authenticated.
+ *
+ * Returns a discriminated result rather than throwing, because every failure
+ * here is something a buyer has to be shown in the form they are looking at:
+ * a validation error, a rate limit, or "we could not reach the server". None
+ * of those should reach an error boundary and blank the page they were
+ * filling in.
+ */
+export async function submitInquiry(input: InquiryInput): Promise<InquiryResult> {
+  const clientRequestId = newClientRequestId();
+
+  let res: Response;
+  try {
+    res = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...correlationHeaders(clientRequestId),
+      },
+      credentials: "omit",
+      body: JSON.stringify({
+        query: CREATE_INQUIRY_MUTATION,
+        variables: { input },
+      }),
+    });
+  } catch (error) {
+    reportApiFailure("submitInquiry", clientRequestId, error);
+    return { ok: false, reason: "network" };
+  }
+
+  if (!res.ok) {
+    const error = new Error(`Failed to submit inquiry (${res.status})`);
+    reportApiFailure("submitInquiry", clientRequestId, error, res);
+    return { ok: false, reason: "network" };
+  }
+
+  // Parsed inside a try. A 2xx whose body is empty, truncated or not JSON --
+  // a proxy error page, a cut connection -- would otherwise throw past this
+  // function's discriminated return, and InquiryForm has no catch, so the
+  // form would sit disabled in "sending" forever on an unhandled rejection.
+  let payload: {
+    data?: { createInquiry?: { delivered?: boolean } | null };
+    errors?: { message?: string }[];
+  };
+  try {
+    payload = (await res.json()) as typeof payload;
+  } catch (error) {
+    reportApiFailure("submitInquiry", clientRequestId, error, res);
+    return { ok: false, reason: "network" };
+  }
+
+  // GraphQL reports resolver failures as HTTP 200 with an errors array, so
+  // res.ok above proves nothing about whether this worked -- the same trap
+  // the API's own cache middleware exists to handle.
+  //
+  // Optional-chained from `payload` itself, not just its properties: `null`
+  // is VALID JSON, so res.json() resolves happily and `payload.errors` then
+  // throws a TypeError past this function's discriminated return. Found by a
+  // test written for the malformed-body case, not by reading the code.
+  if (payload?.errors?.length) {
+    return {
+      ok: false,
+      reason: categorizeInquiryError(payload.errors[0]?.message ?? ""),
+    };
+  }
+
+  const created = payload?.data?.createInquiry;
+  if (!created) return { ok: false, reason: "unknown" };
+
+  return { ok: true, delivered: Boolean(created.delivered) };
 }

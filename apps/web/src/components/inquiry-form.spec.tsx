@@ -1,0 +1,245 @@
+// @vitest-environment jsdom
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { LocaleProvider } from "./locale-provider";
+import en from "../../messages/en.json";
+import { InquiryForm } from "./inquiry-form";
+import { submitInquiry } from "@/lib/api";
+
+vi.mock("@/lib/api", () => ({ submitInquiry: vi.fn() }));
+
+const submitInquiryMock = vi.mocked(submitInquiry);
+
+function renderForm() {
+  return render(
+    <LocaleProvider initialLocale="en" initialMessages={en}>
+      <InquiryForm productId="seed-product-01" productName="Digital X-Ray" />
+    </LocaleProvider>,
+  );
+}
+
+async function fillAndSubmit() {
+  const user = userEvent.setup();
+  await user.type(screen.getByLabelText(/your name/i), "Asha Rao");
+  await user.type(screen.getByLabelText(/your phone number/i), "+919000000001");
+  await user.type(screen.getByLabelText(/your question/i), "Available in Chennai?");
+  await user.click(screen.getByRole("button", { name: /send inquiry/i }));
+}
+
+describe("InquiryForm", () => {
+  beforeEach(() => {
+    submitInquiryMock.mockResolvedValue({ ok: true, delivered: true });
+  });
+  afterEach(() => vi.clearAllMocks());
+
+  it("tells the buyer who receives their details before they type them", () => {
+    // #91 story 5. Stated up front, not after submission.
+    renderForm();
+    expect(screen.getByText(/go to this seller on WhatsApp/i)).toBeInTheDocument();
+  });
+
+  it("says an inquiry is not marketing consent", () => {
+    // #91 story 10.
+    renderForm();
+    expect(
+      screen.getByText(/does not sign you up for marketing messages/i),
+    ).toBeInTheDocument();
+  });
+
+  it("submits what the buyer typed", async () => {
+    renderForm();
+    await fillAndSubmit();
+
+    await waitFor(() =>
+      expect(submitInquiryMock).toHaveBeenCalledWith({
+        // Generated per submission and reused across retries; its value is
+        // not predictable, only its stability.
+        idempotencyKey: expect.any(String) as string,
+        productId: "seed-product-01",
+        buyerName: "Asha Rao",
+        buyerPhone: "+919000000001",
+        message: "Available in Chennai?",
+      }),
+    );
+  });
+
+  it("trims whitespace so a stray space is not sent as part of a phone number", async () => {
+    const user = userEvent.setup();
+    renderForm();
+    await user.type(screen.getByLabelText(/your name/i), "  Asha Rao  ");
+    await user.type(screen.getByLabelText(/your phone number/i), " +919000000001 ");
+    await user.type(screen.getByLabelText(/your question/i), " hello ");
+    await user.click(screen.getByRole("button", { name: /send inquiry/i }));
+
+    await waitFor(() =>
+      expect(submitInquiryMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          buyerName: "Asha Rao",
+          buyerPhone: "+919000000001",
+          message: "hello",
+        }),
+      ),
+    );
+  });
+
+  it("confirms receipt, and announces it", async () => {
+    renderForm();
+    await fillAndSubmit();
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent(/inquiry received/i);
+    // The form is replaced, so a screen-reader user needs the result
+    // announced rather than silently swapped in.
+    expect(screen.queryByLabelText(/your question/i)).not.toBeInTheDocument();
+  });
+
+  it("claims the seller has it ONLY when delivery actually succeeded", async () => {
+    // Two earlier versions asserted more than the API knew -- first "the
+    // seller has your question and your number", then "passed it to this
+    // seller" -- and both were shown verbatim when delivered was false. A
+    // buyer told their message reached a seller who never received it waits
+    // for a reply that cannot come, and does not retry.
+    submitInquiryMock.mockResolvedValue({ ok: true, delivered: true });
+    renderForm();
+    await fillAndSubmit();
+
+    const text = (await screen.findByRole("status")).textContent ?? "";
+    // "on its way", never "this seller has it". The provider ACCEPTING a
+    // message is not the seller receiving it -- Meta can accept a send to a
+    // number that is invalid, blocked, or no longer on WhatsApp -- and the
+    // schema comment on SENT said so all along while this copy contradicted it.
+    expect(text).toMatch(/on its way to this seller/i);
+    expect(text).not.toMatch(/seller has your question/i);
+  });
+
+  it("says only that it was recorded when delivery failed", async () => {
+    submitInquiryMock.mockResolvedValue({ ok: true, delivered: false });
+    renderForm();
+    await fillAndSubmit();
+
+    const text = (await screen.findByRole("status")).textContent ?? "";
+    expect(text).toMatch(/recorded/i);
+    // No claim of receipt, transfer, or delivery in any wording.
+    expect(text).not.toMatch(/seller has your/i);
+    expect(text).not.toMatch(/passed it to/i);
+    expect(text).not.toMatch(/delivered/i);
+    // And it tells them what to do about it.
+    expect(text).toMatch(/another way/i);
+  });
+
+  it("still confirms receipt when delivery failed", async () => {
+    // The lead IS recorded server-side. Telling the buyer it failed would
+    // invite them to resend into the same wall.
+    submitInquiryMock.mockResolvedValue({ ok: true, delivered: false });
+    renderForm();
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      /inquiry received/i,
+    );
+  });
+
+  it("announces a failure and keeps what the buyer typed", async () => {
+    submitInquiryMock.mockResolvedValue({ ok: false, reason: "network" as const });
+    renderForm();
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    // Losing a filled-in form on a failed submit is the fastest way to make
+    // someone give up rather than retry.
+    expect(screen.getByLabelText(/your question/i)).toHaveValue(
+      "Available in Chennai?",
+    );
+  });
+
+  it("never surfaces the raw server error to the buyer", async () => {
+    // Server messages can name internal state ("seller has no WhatsApp
+    // number"); the buyer gets something they can act on instead.
+    submitInquiryMock.mockResolvedValue({ ok: false, reason: "unknown" as const });
+    renderForm();
+    await fillAndSubmit();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent ?? "").not.toContain("seller has no WhatsApp");
+  });
+
+  it("disables the button while sending, so one click is one inquiry", async () => {
+    let resolve: (v: { ok: true; delivered: boolean }) => void = () => {};
+    submitInquiryMock.mockReturnValue(
+      new Promise((r) => {
+        resolve = r;
+      }),
+    );
+    renderForm();
+    await fillAndSubmit();
+
+    const button = screen.getByRole("button", { name: /sending/i });
+    expect(button).toBeDisabled();
+    resolve({ ok: true, delivered: true });
+  });
+
+  it("labels the form with the product, so its purpose is clear out of context", () => {
+    renderForm();
+    expect(
+      screen.getByRole("form", { name: /Digital X-Ray/i }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("InquiryForm resilience", () => {
+  beforeEach(() =>
+    submitInquiryMock.mockResolvedValue({ ok: true, delivered: true }),
+  );
+  afterEach(() => vi.clearAllMocks());
+
+  it("recovers when the API layer reports a malformed response", async () => {
+    // A 2xx whose body is empty or not JSON used to throw past the API
+    // function's discriminated return; with no catch in the form, it sat
+    // disabled in "sending" forever on an unhandled rejection.
+    submitInquiryMock.mockResolvedValue({ ok: false, reason: "network" as const });
+    renderForm();
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    // Recoverable, not stuck.
+    expect(
+      screen.getByRole("button", { name: /send inquiry/i }),
+    ).toBeEnabled();
+  });
+});
+
+describe("submission idempotency", () => {
+  beforeEach(() =>
+    submitInquiryMock.mockResolvedValue({ ok: false, reason: "network" as const }),
+  );
+  afterEach(() => vi.clearAllMocks());
+
+  it("REUSES the same key when the buyer retries after a failure", async () => {
+    // The whole mechanism depends on this. A lost response is
+    // indistinguishable from a failure, so the retry must carry the same key
+    // or the server sees a new submission -- a second inquiry and a second
+    // WhatsApp message to the seller. Generating a fresh key per attempt
+    // would look correct and silently defeat it.
+    const user = userEvent.setup();
+    renderForm();
+    await fillAndSubmit();
+    await screen.findByRole("alert");
+
+    await user.click(screen.getByRole("button", { name: /send inquiry/i }));
+
+    await waitFor(() =>
+      expect(submitInquiryMock.mock.calls.length).toBeGreaterThan(1),
+    );
+
+    // EVERY attempt carries the same key -- asserted across all calls rather
+    // than a fixed count, because how many times the form fires is an
+    // implementation detail while key stability is the actual invariant.
+    const keys = new Set(
+      submitInquiryMock.mock.calls
+        .map((c) => c?.[0]?.idempotencyKey)
+        .filter(Boolean),
+    );
+    expect(keys.size).toBe(1);
+  });
+});
