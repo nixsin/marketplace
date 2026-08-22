@@ -6,7 +6,7 @@ import {
   INQUIRY_MESSAGE_MAX_LENGTH,
   INQUIRY_NAME_MAX_LENGTH,
 } from "@medinstru/config";
-import { submitInquiry } from "@/lib/api";
+import { submitInquiry, type InquiryFailure } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { WhatsAppIcon } from "@/components/icons/whatsapp-icon";
@@ -41,7 +41,7 @@ export function InquiryForm({
   const formId = useId();
   const [status, setStatus] = useState<Status>("idle");
   const [delivered, setDelivered] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<InquiryFailure | null>(null);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -69,7 +69,7 @@ export function InquiryForm({
       return;
     }
     setStatus("error");
-    setError(result.message);
+    setError(result.reason);
   }
 
   if (status === "sent") {
@@ -154,7 +154,10 @@ export function InquiryForm({
         // role="alert" so the failure is announced; a silently-appearing red
         // line below a button is invisible to a screen reader.
         <p role="alert" className="text-sm text-destructive">
-          {t("inquiryError")}
+          {/* Specific to what actually went wrong. One fixed "check your
+              phone number" was wrong for a network error and actively
+              misleading for a rate limit, where retrying cannot succeed. */}
+          {t(`inquiryError.${error ?? "unknown"}`)}
         </p>
       )}
 

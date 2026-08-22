@@ -37,15 +37,20 @@ export function resolveCallerIp(
 ): string | null {
   if (!req) return null;
 
-  // socket.remoteAddress, NOT req.ip, when the flag is off.
+  // NULL when proxy headers are not trusted, and that is deliberate.
   //
-  // Express derives req.ip from X-Forwarded-For whenever app-level `trust
-  // proxy` is enabled -- which is a setting elsewhere in the app, invisible
-  // from here. Preferring req.ip therefore let a spoofable value back in
-  // through the side door and silently undid this function's whole point.
-  // The socket address is the peer we are actually speaking to.
-  const socketAddress = req.socket?.remoteAddress ?? null;
-  if (env[INQUIRY_TRUST_PROXY_HEADERS_ENV] !== 'true') return socketAddress;
+  // The previous version returned socket.remoteAddress here. Behind Render's
+  // load balancer -- which fronts every service -- that address is the
+  // BALANCER, identical for every buyer. Every caller therefore shared one
+  // ipHash, so after INQUIRY_RATE_LIMIT_PER_IP inquiries the limit rejected
+  // everyone, for every seller, for the rest of the window. A global outage
+  // of the feature, caused by the fix for the spoofing problem.
+  //
+  // Without trusted proxy headers there is simply no per-client address
+  // available, so the honest answer is none. The limiter skips a null bucket
+  // rather than collapsing everyone into a shared one, and the per-seller cap
+  // remains what actually bounds a seller's exposure.
+  if (env[INQUIRY_TRUST_PROXY_HEADERS_ENV] !== 'true') return null;
 
   const header = (name: string): string | null => {
     const value = req.headers?.[name];
@@ -55,8 +60,14 @@ export function resolveCallerIp(
     return raw ? raw.split(',')[0].trim() || null : null;
   };
 
+  // req.ip and the socket are acceptable here only because trusting proxy
+  // headers is the explicit, opted-in mode.
   return (
-    header('cf-connecting-ip') ?? header('x-forwarded-for') ?? socketAddress
+    header('cf-connecting-ip') ??
+    header('x-forwarded-for') ??
+    req.ip ??
+    req.socket?.remoteAddress ??
+    null
   );
 }
 

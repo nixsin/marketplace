@@ -204,7 +204,7 @@ export class InquiriesService {
       // A seller with no number is a configuration state, not a buyer error.
       // The lead is captured and can be delivered once the seller is
       // onboarded, so this must not surface as a failed request.
-      return this.markFailed(inquiry.id, 'seller has no WhatsApp number');
+      return this.markFailed(inquiry, 'seller has no WhatsApp number');
     }
 
     const result = await this.whatsapp.sendInquiry(sellerNumber, {
@@ -223,7 +223,7 @@ export class InquiriesService {
       this.logger.warn(
         `Inquiry ${inquiry.id} recorded but not delivered: ${result.reason}`,
       );
-      return this.markFailed(inquiry.id, result.reason);
+      return this.markFailed(inquiry, result.reason);
     }
 
     // The provider has ALREADY accepted the message at this point. If
@@ -254,7 +254,40 @@ export class InquiriesService {
     }
   }
 
-  private markFailed(id: string, reason: string) {
+  /**
+   * Records a delivery failure, and cannot itself fail the mutation.
+   *
+   * The SENT path was already defensive about this; the FAILED path was not,
+   * which is a difference with no justification. The inquiry is ALREADY
+   * persisted by the time either runs, so letting a transient database error
+   * escape tells the buyer their submission failed and invites them to
+   * resubmit something already recorded.
+   */
+  private async markFailed<T extends { id: string }>(
+    inquiry: T,
+    reason: string,
+  ): Promise<T> {
+    try {
+      return (await this.updateFailed(inquiry.id, reason)) as unknown as T;
+    } catch (error) {
+      this.logger.error(
+        `Inquiry ${inquiry.id} could not be marked FAILED (${reason}); it ` +
+          `remains PENDING and needs reconciling: ` +
+          `${error instanceof Error ? error.message : 'unknown error'}`,
+      );
+      // The row that WAS persisted, with what we know applied in memory.
+      // Returning null would push the failure onto the caller, which is the
+      // very thing this catch exists to prevent; re-reading from the database
+      // that just failed is no more likely to work.
+      return {
+        ...inquiry,
+        status: InquiryStatus.FAILED,
+        failureReason: reason.slice(0, 500),
+      };
+    }
+  }
+
+  private updateFailed(id: string, reason: string) {
     return this.prisma.inquiry.update({
       where: { id },
       // Truncated because this is provider-supplied text on a column an

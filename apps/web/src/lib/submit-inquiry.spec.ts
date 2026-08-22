@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { submitInquiry } from "./api";
+import { categorizeInquiryError, submitInquiry } from "./api";
 
 /**
  * Direct tests for submitInquiry's own failure handling.
@@ -9,21 +9,22 @@ import { submitInquiry } from "./api";
  * a gap the review named explicitly. These drive the real function against a
  * stubbed fetch.
  */
+const INPUT = {
+  productId: "seed-product-01",
+  buyerName: "Asha Rao",
+  buyerPhone: "+919000000001",
+  message: "Is this available?",
+};
+
+let fetchMock: ReturnType<typeof vi.fn>;
+
+beforeEach(() => {
+  fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+});
+afterEach(() => vi.unstubAllGlobals());
+
 describe("submitInquiry", () => {
-  const INPUT = {
-    productId: "seed-product-01",
-    buyerName: "Asha Rao",
-    buyerPhone: "+919000000001",
-    message: "Is this available?",
-  };
-
-  let fetchMock: ReturnType<typeof vi.fn>;
-
-  beforeEach(() => {
-    fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-  });
-  afterEach(() => vi.unstubAllGlobals());
 
   // headers included because reportApiFailure reads the correlation id off
   // the response; a stub without them fails for the wrong reason.
@@ -61,7 +62,7 @@ describe("submitInquiry", () => {
     respond({ errors: [{ message: "Too many inquiries" }] });
     await expect(submitInquiry(INPUT)).resolves.toEqual({
       ok: false,
-      message: "Too many inquiries",
+      reason: "rate-limited",
     });
   });
 
@@ -78,7 +79,7 @@ describe("submitInquiry", () => {
 
     await expect(submitInquiry(INPUT)).resolves.toEqual({
       ok: false,
-      message: "network",
+      reason: "network",
     });
   });
 
@@ -86,7 +87,7 @@ describe("submitInquiry", () => {
     respond(null);
     await expect(submitInquiry(INPUT)).resolves.toEqual({
       ok: false,
-      message: "unknown",
+      reason: "unknown",
     });
   });
 
@@ -94,7 +95,7 @@ describe("submitInquiry", () => {
     respond({});
     await expect(submitInquiry(INPUT)).resolves.toEqual({
       ok: false,
-      message: "unknown",
+      reason: "unknown",
     });
   });
 
@@ -102,7 +103,7 @@ describe("submitInquiry", () => {
     respond({}, false);
     await expect(submitInquiry(INPUT)).resolves.toEqual({
       ok: false,
-      message: "network",
+      reason: "network",
     });
   });
 
@@ -110,7 +111,43 @@ describe("submitInquiry", () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     await expect(submitInquiry(INPUT)).resolves.toEqual({
       ok: false,
-      message: "network",
+      reason: "network",
     });
+  });
+});
+
+describe("categorizeInquiryError", () => {
+  // The form used to render one fixed "check your phone number" for every
+  // failure — wrong for a network error, actively misleading for a rate
+  // limit, where retrying immediately cannot succeed and only adds traffic.
+  it.each<[string, string]>([
+    ["Too many inquiries from this number recently.", "rate-limited"],
+    ["Too many inquiries right now. Please try again later.", "rate-limited"],
+    ["You have already sent inquiries about this product recently.", "rate-limited"],
+    ["Enter a valid phone number including the country code.", "invalid"],
+    ["Enter your name and a question.", "invalid"],
+  ])("maps %s to %s", (message, expected) => {
+    expect(categorizeInquiryError(message)).toBe(expected);
+  });
+
+  it("falls back to unknown rather than guessing", () => {
+    // A wrong category is worse than a generic one: it tells the buyer to do
+    // something that cannot help.
+    expect(categorizeInquiryError("Internal server error")).toBe("unknown");
+    expect(categorizeInquiryError("")).toBe("unknown");
+  });
+
+  it("never returns raw server text to the caller", async () => {
+    // Server messages can name internal state; the buyer gets a category.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: () =>
+        Promise.resolve({ errors: [{ message: "seller has no WhatsApp number" }] }),
+    });
+
+    const result = await submitInquiry(INPUT);
+    expect(result).toEqual({ ok: false, reason: "unknown" });
   });
 });

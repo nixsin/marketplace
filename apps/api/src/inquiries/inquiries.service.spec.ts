@@ -225,6 +225,37 @@ describe('InquiriesService', () => {
     expect(prisma.inquiry.create).not.toHaveBeenCalled();
   });
 
+  it('does not report failure when marking a FAILED inquiry fails either', async () => {
+    // The SENT path was already defensive; the FAILED path was not, which is
+    // a difference with no justification. The inquiry is already persisted by
+    // the time either runs, so letting the write error escape tells the buyer
+    // their submission failed and invites them to resubmit it.
+    whatsapp.sendInquiry.mockResolvedValue({
+      ok: false,
+      reason: 'provider 400',
+    });
+    prisma.inquiry.update.mockRejectedValue(new Error('connection lost'));
+    jest.spyOn(service['logger'], 'error').mockImplementation(() => undefined);
+
+    const result = await service.create(ARGS);
+
+    // A usable row, never null -- returning null would push the failure onto
+    // the caller, which is the very thing the catch exists to prevent.
+    expect(result).toBeDefined();
+    expect(result).toMatchObject({ status: 'FAILED' });
+  });
+
+  it('does not report failure when the seller has no number and the write fails', async () => {
+    prisma.product.findUnique.mockResolvedValue({
+      ...PRODUCT,
+      seller: { id: 'org-1', whatsappNumber: null },
+    });
+    prisma.inquiry.update.mockRejectedValue(new Error('connection lost'));
+    jest.spyOn(service['logger'], 'error').mockImplementation(() => undefined);
+
+    await expect(service.create(ARGS)).resolves.toBeDefined();
+  });
+
   it('does not report failure when marking a DELIVERED inquiry sent fails', async () => {
     // The provider has already accepted the message. Surfacing the write
     // error would tell the buyer it did not go through and invite a retry

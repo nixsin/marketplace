@@ -112,8 +112,31 @@ all the limiter needs. An unresolvable address is skipped rather than counted
 as a shared `null` bucket — otherwise one such caller could lock out all the
 others.
 
+## Idempotency — required before going live, not before merging
+
+**Submission is not idempotent.** If a response is lost, `submitInquiry`
+reports a network failure even though the API may already have persisted and
+sent the inquiry; a retry then creates a second inquiry and a second WhatsApp
+message. `sendInquiry` has the same shape: a timeout is classified as a
+definite failure even though Meta may have accepted the request before the
+response was lost.
+
+The fix is a stable per-submission idempotency key with a database uniqueness
+constraint, plus treating ambiguous provider outcomes as `PENDING` rather than
+retryable `FAILED`.
+
+**It is deliberately not in the initial PR**, for one reason that can be
+checked rather than argued: **the send is a logged no-op until the Meta
+credentials exist**, so no duplicate message can reach a seller today. That
+makes this a launch prerequisite alongside the account setup below, not a
+merge blocker — and it is a schema change plus a real design decision about
+ambiguous outcomes, which is better done deliberately than bolted onto a
+review round.
+
 ## Still required before going live
 
 - Meta Business account, a verified sending number, and an **approved
   template** matching the contract above.
+- **Idempotency keys** (above). Without them the first real provider timeout
+  can double-message a seller.
 - DPDP and CDSCO review (#91). Neither has been checked against current law.

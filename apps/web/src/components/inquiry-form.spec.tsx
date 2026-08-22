@@ -134,7 +134,7 @@ describe("InquiryForm", () => {
   });
 
   it("announces a failure and keeps what the buyer typed", async () => {
-    submitInquiryMock.mockResolvedValue({ ok: false, message: "network" });
+    submitInquiryMock.mockResolvedValue({ ok: false, reason: "network" as const });
     renderForm();
     await fillAndSubmit();
 
@@ -149,10 +149,7 @@ describe("InquiryForm", () => {
   it("never surfaces the raw server error to the buyer", async () => {
     // Server messages can name internal state ("seller has no WhatsApp
     // number"); the buyer gets something they can act on instead.
-    submitInquiryMock.mockResolvedValue({
-      ok: false,
-      message: "seller has no WhatsApp number",
-    });
+    submitInquiryMock.mockResolvedValue({ ok: false, reason: "unknown" as const });
     renderForm();
     await fillAndSubmit();
 
@@ -193,7 +190,7 @@ describe("InquiryForm resilience", () => {
     // A 2xx whose body is empty or not JSON used to throw past the API
     // function's discriminated return; with no catch in the form, it sat
     // disabled in "sending" forever on an unhandled rejection.
-    submitInquiryMock.mockResolvedValue({ ok: false, message: "network" });
+    submitInquiryMock.mockResolvedValue({ ok: false, reason: "network" as const });
     renderForm();
     await fillAndSubmit();
 

@@ -273,9 +273,38 @@ export interface InquiryInput {
   message: string;
 }
 
+/**
+ * A CATEGORY, not raw server text.
+ *
+ * The form previously rendered one fixed "check your phone number" message
+ * for every failure, which is wrong for a network error and actively
+ * misleading for a rate limit, where retrying immediately cannot succeed and
+ * only adds traffic. Categories let the UI say something actionable without
+ * echoing arbitrary internal error strings back to a buyer.
+ */
+export type InquiryFailure = "network" | "rate-limited" | "invalid" | "unknown";
+
 export type InquiryResult =
   | { ok: true; delivered: boolean }
-  | { ok: false; message: string };
+  | { ok: false; reason: InquiryFailure };
+
+/**
+ * Maps a server error to a category the UI can act on.
+ *
+ * Matched on the messages the API actually produces, and defaulting to
+ * "unknown" rather than guessing -- a wrong category is worse than a generic
+ * one, because it tells the buyer to do something that cannot help.
+ */
+export function categorizeInquiryError(message: string): InquiryFailure {
+  const text = message.toLowerCase();
+  if (text.includes("too many") || text.includes("already sent")) {
+    return "rate-limited";
+  }
+  if (text.includes("phone number") || text.includes("enter your name")) {
+    return "invalid";
+  }
+  return "unknown";
+}
 
 /**
  * A POST, unlike every other call in this file.
@@ -315,13 +344,13 @@ export async function submitInquiry(input: InquiryInput): Promise<InquiryResult>
     });
   } catch (error) {
     reportApiFailure("submitInquiry", clientRequestId, error);
-    return { ok: false, message: "network" };
+    return { ok: false, reason: "network" };
   }
 
   if (!res.ok) {
     const error = new Error(`Failed to submit inquiry (${res.status})`);
     reportApiFailure("submitInquiry", clientRequestId, error, res);
-    return { ok: false, message: "network" };
+    return { ok: false, reason: "network" };
   }
 
   // Parsed inside a try. A 2xx whose body is empty, truncated or not JSON --
@@ -336,7 +365,7 @@ export async function submitInquiry(input: InquiryInput): Promise<InquiryResult>
     payload = (await res.json()) as typeof payload;
   } catch (error) {
     reportApiFailure("submitInquiry", clientRequestId, error, res);
-    return { ok: false, message: "network" };
+    return { ok: false, reason: "network" };
   }
 
   // GraphQL reports resolver failures as HTTP 200 with an errors array, so
@@ -348,11 +377,14 @@ export async function submitInquiry(input: InquiryInput): Promise<InquiryResult>
   // throws a TypeError past this function's discriminated return. Found by a
   // test written for the malformed-body case, not by reading the code.
   if (payload?.errors?.length) {
-    return { ok: false, message: payload.errors[0]?.message ?? "unknown" };
+    return {
+      ok: false,
+      reason: categorizeInquiryError(payload.errors[0]?.message ?? ""),
+    };
   }
 
   const created = payload?.data?.createInquiry;
-  if (!created) return { ok: false, message: "unknown" };
+  if (!created) return { ok: false, reason: "unknown" };
 
   return { ok: true, delivered: Boolean(created.delivered) };
 }
