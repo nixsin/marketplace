@@ -36,9 +36,12 @@ describe("InquiryForm", () => {
   it("tells the buyer who receives their details before they type them", () => {
     // #91 story 5. Stated up front, not after submission.
     renderForm();
-    expect(
-      screen.getByText(/shared with this seller so they can reply/i),
-    ).toBeInTheDocument();
+    const disclosure = screen.getByText(/recorded for this seller/i);
+    expect(disclosure).toBeInTheDocument();
+    // And it does not claim a transfer that has not happened. This is the
+    // confirmation-copy defect one step earlier in the flow, at the point
+    // where the buyer decides whether to type anything at all.
+    expect(disclosure.textContent ?? "").not.toMatch(/shared with|sent to/i);
   });
 
   it("says an inquiry is not marketing consent", () => {

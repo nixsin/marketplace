@@ -17,12 +17,35 @@ import { join } from 'node:path';
 describe('committed GraphQL schema', () => {
   const schema = readFileSync(join(__dirname, '..', 'schema.gql'), 'utf8');
 
+  /**
+   * The body of one named type, so a field can be asserted to be ON it.
+   *
+   * The first version of this test took a type name and then ignored it,
+   * asserting only that the string appeared somewhere in the file -- so a
+   * field moved to an unrelated type would have kept it green, which is
+   * close to the only failure worth catching here. Throws rather than
+   * returning empty on a missing type: an absent block would otherwise make
+   * every field assertion for it fail with "does not contain", pointing at
+   * the field instead of at the type that vanished.
+   */
+  function typeBlock(name: string): string {
+    const match = new RegExp(
+      `^(?:type|input|enum) ${name} \\{$([\\s\\S]*?)^\\}$`,
+      'm',
+    ).exec(schema);
+    if (!match) throw new Error(`${name} is not declared in schema.gql`);
+    return match[1];
+  }
+
   it.each([
     ['CreateInquiryInput', 'idempotencyKey: String!'],
     ['CreateInquiryInput', 'buyerPhone: String!'],
+    ['CreateInquiryInput', 'productId: ID!'],
+    ['Inquiry', 'status: InquiryStatus!'],
     ['Product', 'hasInquiryContact: Boolean!'],
-  ])('%s exposes %s', (_type, field) => {
-    expect(schema).toContain(field);
+    ['Mutation', 'createInquiry(input: CreateInquiryInput!): Inquiry!'],
+  ])('%s exposes %s', (type, field) => {
+    expect(typeBlock(type)).toContain(field);
   });
 
   it('never exposes the seller WhatsApp number', () => {
@@ -30,6 +53,9 @@ describe('committed GraphQL schema', () => {
     // seller numbers; a field slipping into the schema would undo that
     // silently, and the delivery change makes the number more valuable to
     // harvest, not less.
+    //
+    // Checked against the WHOLE file rather than one type: the point is that
+    // the number is on no type at all.
     expect(schema.toLowerCase()).not.toContain('whatsappnumber');
   });
 
@@ -39,5 +65,17 @@ describe('committed GraphQL schema', () => {
     // field is worse than an absent one: it invites copy that pretends to
     // report an outcome nothing produced.
     expect(schema).not.toContain('delivered');
+  });
+
+  it('returns nothing from the mutation but id, status and time', () => {
+    // The mutation is unauthenticated, so every field on Inquiry is readable
+    // by whoever called it. Asserted on the full field list rather than by
+    // naming forbidden ones, because the risk is a field nobody thought of.
+    expect(
+      typeBlock('Inquiry')
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean),
+    ).toEqual(['createdAt: DateTime!', 'id: ID!', 'status: InquiryStatus!']);
   });
 });

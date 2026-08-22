@@ -155,6 +155,22 @@ export class InquiriesService {
     return this.withSerializationRetry(() =>
       this.prisma.$transaction(
         async (tx) => {
+          // The idempotency check runs INSIDE each attempt, not only once
+          // before the first one.
+          //
+          // Two identical requests race; one is aborted with P2034 and
+          // retried. By then the winner has committed, and its row counts
+          // against the very limits this attempt is about to check -- so at a
+          // limit boundary the retry was rejected with "Too many inquiries"
+          // instead of returning the winner, and the P2002 recovery below
+          // never ran because the insert was never reached. Rechecking here
+          // also means a duplicate never consumes rate-limit budget, which is
+          // correct independently: it is one submission.
+          const seen = await tx.inquiry.findUnique({
+            where: { idempotencyKey: args.idempotencyKey },
+          });
+          if (seen) return seen;
+
           // Read INSIDE the transaction, and this snapshot is what the insert
           // uses. Reading it before and reusing that copy would let a product
           // reassigned in the gap have its inquiry attributed to the previous
@@ -166,6 +182,17 @@ export class InquiriesService {
           if (!product) {
             throw new NotFoundException(`Product ${args.productId} not found`);
           }
+
+          // A seller with no number on file is DELIBERATELY not rejected here.
+          //
+          // Product.hasInquiryContact hides the form so a buyer is never shown
+          // one that leads nowhere; it is a UI affordance, not an access
+          // control, and this is the deliberate asymmetry rather than a gap in
+          // it. A direct caller submitting anyway gets the lead captured for
+          // whenever that seller is onboarded -- which is the point: throwing
+          // it away would discard a real buyer to enforce a rule with no
+          // operational consequence, and in this change nothing is delivered
+          // to any seller regardless of what they have on file.
 
           await this.assertWithinRateLimit(tx, {
             buyerPhone,

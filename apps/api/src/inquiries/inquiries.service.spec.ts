@@ -136,6 +136,7 @@ describe('InquiriesService', () => {
     const tx = {
       product: { findUnique: jest.fn().mockResolvedValue(PRODUCT) },
       inquiry: {
+        findUnique: jest.fn().mockResolvedValue(null),
         create: jest
           .fn()
           .mockImplementation(({ data }: { data: object }) =>
@@ -153,6 +154,10 @@ describe('InquiriesService', () => {
     expect(tx.product.findUnique).toHaveBeenCalled();
     expect(prisma.product.findUnique).not.toHaveBeenCalled();
     expect(tx.inquiry.create).toHaveBeenCalled();
+    // The idempotency recheck goes through the transaction client too. Run
+    // against the base client it would read outside the snapshot, which is
+    // the whole reason it moved inside.
+    expect(tx.inquiry.findUnique).toHaveBeenCalled();
   });
 
   it('records the seller the transaction saw, not a pre-read copy', async () => {
@@ -243,6 +248,50 @@ describe('InquiriesService', () => {
         .mockResolvedValueOnce(winner); // the post-collision fetch
 
       await expect(service.create(ARGS)).resolves.toBe(winner);
+      expect(prisma.inquiry.create).not.toHaveBeenCalled();
+    });
+
+    it('returns the winner when a RETRY finds the race already settled', async () => {
+      // The boundary case the concurrent test above cannot reach, because it
+      // starts from zero rows. Two identical requests race, this one is
+      // aborted with P2034 and retried -- and by then the winner's row counts
+      // against the very limits the retry re-checks. At a limit boundary that
+      // rejected an idempotent duplicate with "Too many inquiries" instead of
+      // returning the winner, and the P2002 recovery never ran because the
+      // insert was never reached.
+      const winner = { id: 'inq-winner', status: 'PENDING' };
+      const conflict = new Prisma.PrismaClientKnownRequestError('conflict', {
+        code: 'P2034',
+        clientVersion: 'test',
+      });
+      let attempt = 0;
+      prisma.$transaction.mockImplementation((fn: (tx: unknown) => unknown) => {
+        attempt += 1;
+        if (attempt === 1) return Promise.reject(conflict);
+        return Promise.resolve(fn(prisma));
+      });
+      prisma.inquiry.findUnique
+        .mockResolvedValueOnce(null) // the pre-flight lookup, before the race
+        .mockResolvedValue(winner); // inside the retried transaction
+      // Every bucket is at its ceiling, which is what made this fail.
+      prisma.inquiry.count.mockResolvedValue(INQUIRY_RATE_LIMIT_PER_PHONE);
+
+      await expect(service.create(ARGS)).resolves.toBe(winner);
+      expect(prisma.inquiry.create).not.toHaveBeenCalled();
+    });
+
+    it('does not spend rate-limit budget on a duplicate', async () => {
+      // A repeat of one submission is not a second submission, so it must not
+      // count against the caller. Falls out of checking idempotency inside
+      // the transaction, and is worth asserting because moving that check
+      // back out would silently restore the old behaviour.
+      prisma.inquiry.findUnique
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue({ id: 'inq-existing', status: 'PENDING' });
+
+      await service.create(ARGS);
+
+      expect(prisma.inquiry.count).not.toHaveBeenCalled();
       expect(prisma.inquiry.create).not.toHaveBeenCalled();
     });
 

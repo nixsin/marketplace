@@ -105,7 +105,18 @@ export function InquiryForm({
       <div>
         <p className="font-medium text-foreground">{t("inquiryTitle")}</p>
         {/* #91 story 5: the buyer should know who receives their details
-            before they type them, not after. */}
+            before they type them, not after.
+
+            Says "recorded for this seller", present tense and accurate: the
+            details ARE collected so this seller can reply, and nothing has
+            been passed to anyone yet. The earlier wording -- "are shared
+            with this seller" -- claimed a transfer that has not happened,
+            which is the same defect as the confirmation copy this component
+            was rewritten around, moved one step earlier in the flow to the
+            point where the buyer decides whether to type anything at all.
+            Under-disclosing would be its own problem: the purpose of
+            collection is to pass these details to the seller, and that is
+            what the buyer is agreeing to. */}
         <p className="mt-0.5 text-sm text-muted-foreground">
           {t("inquiryRecipientNote")}
         </p>
@@ -119,6 +130,14 @@ export function InquiryForm({
           id={`${formId}-name`}
           name="buyerName"
           required
+          // Mirrors the DTO's @Length(2). Without it a one-character name
+          // reached the server, whose class-validator message
+          // ("buyerName must be longer than or equal to 2 characters")
+          // matches no branch in categorizeInquiryError -- so the buyer was
+          // shown "Something went wrong" for something they could have fixed
+          // in a second. Caught at the input, not by pattern-matching server
+          // text, because the browser can say which field is wrong.
+          minLength={2}
           maxLength={INQUIRY_NAME_MAX_LENGTH}
           autoComplete="name"
         />
