@@ -373,8 +373,29 @@ export class InquiriesService {
     ]);
 
     if (forSeller >= INQUIRY_RATE_LIMIT_PER_SELLER) {
-      // Deliberately vague. Naming the seller cap hands an attacker a progress
-      // indicator for the one limit they cannot rotate around.
+      // FIX(#152): this cap is itself a targeted denial of service.
+      //
+      // It is shared across every buyer of this seller, so reaching it
+      // rejects all of them -- and 12 rotating, unverified E.164 numbers at
+      // the per-phone ceiling reach it, locking a seller's buyers out for the
+      // rest of the rolling hour. Nothing verifies phone ownership, and the
+      // per-IP limit is skipped by default, so no other limit here stands in
+      // the way.
+      //
+      // Shipped anyway because the alternative is worse, not because it is
+      // fine: with no seller-wide cap an anonymous endpoint writes unbounded
+      // rows, and once delivery ships that is unbounded outbound messages to
+      // a real person's phone. A time-bounded lockout is the lesser harm.
+      //
+      // The actual fix is a NON-FORGEABLE control in front of this mutation
+      // -- edge rate limiting on the true source address, a Turnstile
+      // challenge, or verified phone ownership. #152 has the analysis and the
+      // options. Until one lands, this cap is the only thing holding the
+      // line, which is exactly why it must not be quietly raised or removed.
+      //
+      // Deliberately vague to the caller. Naming the seller cap hands an
+      // attacker a progress indicator for the one limit they cannot rotate
+      // around.
       throw new BadRequestException(
         'Too many inquiries right now. Please try again later.',
       );

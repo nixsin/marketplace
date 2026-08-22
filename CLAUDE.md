@@ -585,6 +585,18 @@ comparison, so a genuine retry from a different address was rejected as an
 edit. A test caught it. The client side keeps a buyer from ever meeting the
 rejection: an edit really is a different submission, so it gets a new key.
 
+**The per-seller cap is a known, accepted denial-of-service surface — see
+[#152](https://github.com/nixsin/marketplace/issues/152), and do not quietly
+raise or remove it.** It is shared across every buyer of that seller, so 12
+rotating unverified numbers at the per-phone ceiling reach 60 and lock that
+seller's buyers out for the rest of the rolling hour. It ships anyway because
+the alternative is worse, not because it is fine: with no seller-wide cap an
+anonymous endpoint writes unbounded rows, and after delivery ships that is
+unbounded messages to a real person's phone. The real fix is a *non-forgeable*
+control in front of the mutation — edge rate limiting on the true source
+address, a Turnstile challenge, or verified phone ownership — and no
+rearrangement of caller-supplied inputs substitutes for one.
+
 **Two env vars, documented in `apps/api/.env.example` by name only.**
 `INQUIRY_IP_HASH_SECRET` keys the HMAC that stores a submitter's address as a
 hash; **without it nothing breaks and the per-IP limit simply does not run.**
