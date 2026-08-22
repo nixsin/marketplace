@@ -1,4 +1,4 @@
-import { isE164 } from './phone';
+import { isE164, normalizeE164 } from './phone';
 
 describe('isE164', () => {
   it.each(['+919876543210', '+14155552671', '+441234567890'])(
@@ -36,4 +36,29 @@ describe('isE164', () => {
     ['+91 98765 43210', 'contains spaces'],
     ['', 'empty'],
   ])('rejects %s (%s)', (value) => expect(isE164(value)).toBe(false));
+});
+
+describe('normalizeE164', () => {
+  it('canonicalises the way people actually write numbers', () => {
+    for (const written of [
+      '+91 98765 43210',
+      '+91-98765-43210',
+      '+91 (98765) 43210',
+    ]) {
+      expect(normalizeE164(written)).toBe('+919876543210');
+    }
+  });
+
+  it('returns null for something that cannot be made valid', () => {
+    // Null rather than a best guess: the caller rejects at the boundary
+    // instead of storing a number that fails at delivery.
+    expect(normalizeE164('not-a-number')).toBeNull();
+    expect(normalizeE164('98765 43210')).toBeNull();
+  });
+
+  it('collapses the same number written differently to one value', () => {
+    // Three spellings must be one rate-limit bucket, not three.
+    const forms = ['+919876543210', '+91 98765 43210', '+91-98765-43210'];
+    expect(new Set(forms.map(normalizeE164)).size).toBe(1);
+  });
 });

@@ -29,3 +29,20 @@ const E164 = /^\+[1-9]\d{1,14}$/;
 export function isE164(value: string): boolean {
   return E164.test(value);
 }
+
+/**
+ * Canonicalises a submitted number to E.164.
+ *
+ * The form advertises "+91 98765 43210" because that is how people write
+ * numbers, and class-validator's IsPhoneNumber accepts that form -- while
+ * anything downstream comparing or sending needs the canonical one. Without
+ * normalising, the same number written three ways is three different values:
+ * three rate-limit buckets, and a stored number that fails at delivery.
+ *
+ * Returns null when the value cannot be made valid, so the caller rejects it
+ * at the boundary rather than storing something undeliverable.
+ */
+export function normalizeE164(value: string): string | null {
+  const stripped = value.replace(/[\s\u00a0().-]/g, '');
+  return isE164(stripped) ? stripped : null;
+}

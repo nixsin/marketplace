@@ -52,6 +52,15 @@ export declare const MANAGED_IMAGE_PREFIX: string;
 // consumer with a narrower type than the value's own runtime shape.
 export declare const SESSION_TOKEN_TTL: "7d";
 export declare const ONBOARDING_TOKEN_TTL: "15m";
+export declare const INQUIRY_NAME_MAX_LENGTH: number;
+export declare const INQUIRY_MESSAGE_MAX_LENGTH: number;
+export declare const INQUIRY_RATE_LIMIT_WINDOW_MS: number;
+export declare const INQUIRY_RATE_LIMIT_PER_PHONE: number;
+export declare const INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT: number;
+export declare const INQUIRY_RATE_LIMIT_PER_IP: number;
+export declare const INQUIRY_RATE_LIMIT_PER_SELLER: number;
+export declare const INQUIRY_TRUST_PROXY_HEADERS_ENV: string;
+export declare const INQUIRY_IP_HASH_SECRET_ENV: string;
 export declare const OTP_TTL_MS: number;
 export declare const SESSION_IDLE_MINUTES: number;
 export declare const SESSION_COOKIE_NAME: string;
