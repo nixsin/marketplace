@@ -416,6 +416,16 @@ export const WHATSAPP_TEMPLATE_NAME_ENV = "WHATSAPP_TEMPLATE_NAME";
 export const WHATSAPP_TEMPLATE_LANGUAGE_ENV = "WHATSAPP_TEMPLATE_LANGUAGE";
 export const WHATSAPP_TEMPLATE_DEFAULT_LANGUAGE = "en";
 
+// Free-form text is a DELIBERATE OPT-IN, not a fallback.
+//
+// Falling back to it whenever the template name was merely absent meant a
+// deployment with credentials but no template would send a request Meta is
+// known to reject for this flow, and mark every inquiry FAILED -- a
+// half-configured deployment failing silently rather than saying so. The
+// template name is required configuration alongside the token and phone id;
+// this flag exists only for a known-open service window in development.
+export const WHATSAPP_ALLOW_FREE_FORM_ENV = "WHATSAPP_ALLOW_FREE_FORM";
+
 // Meta rejects a template parameter containing a newline, a tab, or more than
 // four consecutive spaces. The composed inquiry is multi-line by design, so
 // every parameter is flattened before it is sent.

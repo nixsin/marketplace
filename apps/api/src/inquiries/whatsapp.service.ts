@@ -8,6 +8,7 @@ import {
   WHATSAPP_TEMPLATE_DEFAULT_LANGUAGE,
   WHATSAPP_TEMPLATE_LANGUAGE_ENV,
   WHATSAPP_TEMPLATE_NAME_ENV,
+  WHATSAPP_ALLOW_FREE_FORM_ENV,
   WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH,
 } from '@medinstru/config';
 
@@ -75,9 +76,20 @@ export function sanitizeTemplateParam(value: string): string {
 export class WhatsappService {
   private readonly logger = new Logger(WhatsappService.name);
 
+  /**
+   * All THREE are required, template name included.
+   *
+   * Treating the template as optional meant a deployment with credentials but
+   * no template silently sent free-form text Meta rejects for this flow, and
+   * marked every inquiry FAILED. A half-configured deployment should say so,
+   * not fail one message at a time.
+   */
   isConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
     return Boolean(
-      env[WHATSAPP_ACCESS_TOKEN_ENV] && env[WHATSAPP_PHONE_NUMBER_ID_ENV],
+      env[WHATSAPP_ACCESS_TOKEN_ENV] &&
+      env[WHATSAPP_PHONE_NUMBER_ID_ENV] &&
+      (env[WHATSAPP_TEMPLATE_NAME_ENV] ||
+        env[WHATSAPP_ALLOW_FREE_FORM_ENV] === 'true'),
     );
   }
 
@@ -126,8 +138,28 @@ export class WhatsappService {
       };
     }
 
-    const url = `${WHATSAPP_API_BASE_URL}/${WHATSAPP_API_VERSION}/${phoneNumberId}/messages`;
     const templateName = env[WHATSAPP_TEMPLATE_NAME_ENV];
+    const allowFreeForm = env[WHATSAPP_ALLOW_FREE_FORM_ENV] === 'true';
+
+    if (!templateName && !allowFreeForm) {
+      // Refused BEFORE the request, not attempted and failed. This flow is
+      // always business-initiated, so Meta rejects free-form text outside a
+      // recipient-opened 24-hour window -- sending anyway would mark every
+      // inquiry FAILED and leave an operator debugging provider errors for
+      // what is a missing environment variable.
+      this.logger.warn(
+        `[NOT CONFIGURED] WhatsApp send skipped: set ${WHATSAPP_TEMPLATE_NAME_ENV} ` +
+          `to an approved template. Business-initiated messages cannot be sent as ` +
+          `free-form text; set ${WHATSAPP_ALLOW_FREE_FORM_ENV}=true only for a known ` +
+          `open service window. The inquiry is still recorded.`,
+      );
+      return {
+        ok: false,
+        reason: `not configured (${WHATSAPP_TEMPLATE_NAME_ENV})`,
+      };
+    }
+
+    const url = `${WHATSAPP_API_BASE_URL}/${WHATSAPP_API_VERSION}/${phoneNumberId}/messages`;
 
     const payload = templateName
       ? {

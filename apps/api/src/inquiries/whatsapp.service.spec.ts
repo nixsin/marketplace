@@ -9,7 +9,17 @@ import {
   sanitizeTemplateParam,
 } from './whatsapp.service';
 
+// Fully configured now means all THREE: a template name is required
+// alongside the credentials, because business-initiated messages cannot be
+// sent as free-form text.
 const CONFIGURED = {
+  [WHATSAPP_ACCESS_TOKEN_ENV]: 'test-token',
+  [WHATSAPP_PHONE_NUMBER_ID_ENV]: '123456',
+  WHATSAPP_TEMPLATE_NAME: 'marketplace_inquiry',
+} as unknown as NodeJS.ProcessEnv;
+
+/** Credentials present, template absent -- the half-configured deployment. */
+const NO_TEMPLATE = {
   [WHATSAPP_ACCESS_TOKEN_ENV]: 'test-token',
   [WHATSAPP_PHONE_NUMBER_ID_ENV]: '123456',
 } as unknown as NodeJS.ProcessEnv;
@@ -47,6 +57,8 @@ describe('WhatsappService', () => {
   describe('when credentials are absent', () => {
     it('reports itself unconfigured', () => {
       expect(service.isConfigured({})).toBe(false);
+      // Credentials alone are not enough -- a template name is required too.
+      expect(service.isConfigured(NO_TEMPLATE)).toBe(false);
       expect(service.isConfigured(CONFIGURED)).toBe(true);
     });
 
@@ -111,12 +123,8 @@ describe('WhatsappService', () => {
     expect((init.headers as Record<string, string>).Authorization).toBe(
       'Bearer test-token',
     );
-    const body = JSON.parse(init.body as string) as {
-      to: string;
-      text: { preview_url: boolean; body: string };
-    };
+    const body = JSON.parse(init.body as string) as { to: string };
     expect(body.to).toBe('+919876543210');
-    expect(body.text.preview_url).toBe(false);
   });
 
   it('treats a provider rejection as a failure, not an exception', async () => {
@@ -271,17 +279,52 @@ describe('WhatsappService template sends', () => {
     expect(body.template.components[0].parameters[0].text).not.toMatch(/\n/);
   });
 
-  it('falls back to text only when no template is configured', async () => {
+  it('REFUSES to send when no template is configured, rather than trying anyway', async () => {
+    // The previous version of this test required a silent fallback to
+    // free-form text. That was the bug: this flow is always
+    // business-initiated, so Meta rejects free-form text, and a deployment
+    // with credentials but no template would mark every inquiry FAILED while
+    // an operator debugged provider errors for a missing env var.
+    const result = await service.sendInquiry(
+      '+919876543210',
+      { summary: 'hi', buyerMessage: 'q' },
+      NO_TEMPLATE,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    expect(result.reason).toContain('WHATSAPP_TEMPLATE_NAME');
+    // Refused BEFORE the request, not attempted and failed.
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('sends free-form text only behind the explicit opt-in', async () => {
+    // For a known open service window in development -- never a fallback.
     await service.sendInquiry(
       '+919876543210',
       { summary: 'hi', buyerMessage: 'q' },
-      CONFIGURED,
+      { ...NO_TEMPLATE, WHATSAPP_ALLOW_FREE_FORM: 'true' },
     );
 
     const body = JSON.parse(
       (fetchMock.mock.calls[0][1] as RequestInit).body as string,
-    ) as { type: string };
+    ) as { type: string; text: { preview_url: boolean } };
     expect(body.type).toBe('text');
+    // Link previews off: the body already carries the canonical URL, and
+    // Meta fetching it server-side adds latency for a preview the seller
+    // does not need.
+    expect(body.text.preview_url).toBe(false);
+  });
+
+  it('accepts the free-form opt-in as configuration too', () => {
+    // The opt-in is a deliberate choice for a known open service window, so
+    // a deployment using it is configured -- just not template-based.
+    expect(
+      service.isConfigured({
+        ...NO_TEMPLATE,
+        WHATSAPP_ALLOW_FREE_FORM: 'true',
+      }),
+    ).toBe(true);
   });
 
   it('aborts a stalled provider rather than hanging the buyer', async () => {

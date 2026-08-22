@@ -57,6 +57,7 @@ export declare const WHATSAPP_PHONE_NUMBER_ID_ENV: string;
 export declare const WHATSAPP_TEMPLATE_NAME_ENV: string;
 export declare const WHATSAPP_TEMPLATE_LANGUAGE_ENV: string;
 export declare const WHATSAPP_TEMPLATE_DEFAULT_LANGUAGE: string;
+export declare const WHATSAPP_ALLOW_FREE_FORM_ENV: string;
 export declare const WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH: number;
 export declare const INQUIRY_SUMMARY_NAME_MAX_LENGTH: number;
 export declare const WHATSAPP_REQUEST_TIMEOUT_MS: number;

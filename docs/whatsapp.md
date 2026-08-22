@@ -55,8 +55,18 @@ committed value would enter git history permanently.
 |---|---|
 | `WHATSAPP_ACCESS_TOKEN` | Meta access token |
 | `WHATSAPP_PHONE_NUMBER_ID` | The sending number's id |
-| `WHATSAPP_TEMPLATE_NAME` | Approved template. **Unset ⇒ free-form text, which production rejects** |
+| `WHATSAPP_TEMPLATE_NAME` | Approved template. **Required** — unset means sends are refused, not attempted |
 | `WHATSAPP_TEMPLATE_LANGUAGE` | Template language code, default `en` |
+
+| `WHATSAPP_ALLOW_FREE_FORM` | Opt-in for free-form text. **Only for a known open service window**, never as a fallback |
+
+**The template name is required configuration, not optional.** An earlier
+version fell back to free-form text whenever it was merely absent — so a
+deployment with valid credentials but no template would send a request Meta
+is known to reject for this flow and mark *every* inquiry `FAILED`, leaving
+an operator debugging provider errors for what is a missing environment
+variable. Sends are now refused before the request, with the missing variable
+named.
 
 With the credentials absent the service logs a warning naming only the
 variables and returns a failure — the inquiry is still recorded, because
