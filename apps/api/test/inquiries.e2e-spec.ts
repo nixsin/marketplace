@@ -69,6 +69,13 @@ describe('Inquiries (e2e)', () => {
     // optional: Inquiry.productId is ON DELETE RESTRICT, and a leftover row
     // from a previous test file would also be counted by the rate limits
     // below, failing them for reasons that have nothing to do with this file.
+    //
+    // Truncating tables this suite does not own is safe here, and is what
+    // every other e2e spec in this directory already does: jest-e2e.json
+    // sets `maxWorkers: 1`, so these files run one at a time and never share
+    // the database concurrently. That setting is what makes the pattern
+    // valid -- raising it would break all four suites at once, not just
+    // this one.
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "Inquiry", "Product", "License", "User", "Organization" RESTART IDENTITY CASCADE',
     );
