@@ -623,6 +623,29 @@ a column every time this feature does.
 
 ## Known gotchas (already solved once — don't re-derive)
 
+**`beforeEach(() => mock.mockResolvedValue(x))` silently CALLS the mock after
+every test.** Vitest (and Jest) treat a function returned from `beforeEach` as
+a teardown callback, and `mockResolvedValue` returns the `MockInstance` — which
+is itself a function. The concise arrow returns it, so the runner invokes it as
+cleanup, with no arguments. Cost real time in `inquiry-form.spec.tsx`: it
+produced a trailing `mock.calls` entry whose first argument is `undefined`
+(papered over with `.filter(Boolean)` rather than understood), and then made a
+test that installs a *throwing* implementation fail with that throw **after its
+assertions had already passed** — reported with no assertion error at all,
+which reads like the code under test throwing rather than the harness calling
+the mock. Diagnosed by bisecting to a two-`describe` file: identical test,
+passing without the `beforeEach` and failing with it. Always give these hooks a
+block body:
+
+```js
+beforeEach(() => {
+  submitInquiryMock.mockResolvedValue({ ok: true });
+});
+```
+
+Grep for `beforeEach(() => [a-zA-Z_].*Mock\.` before assuming a mock-count
+assertion is wrong about the code.
+
 **`prisma migrate status` reports "Database schema is up to date!" while the
 database has columns no committed migration ever created.** It compares
 applied migration *names* against `prisma/migrations/`, not the actual schema,

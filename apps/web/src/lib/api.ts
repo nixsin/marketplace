@@ -387,9 +387,16 @@ export async function submitInquiry(
   // res.json() resolves happily and `payload.errors` would then throw a
   // TypeError past the discriminated return.
   if (payload?.errors?.length) {
+    // The message is TYPE-CHECKED, not just type-cast. `errors` comes off the
+    // wire, so `{ errors: [{ message: 42 }] }` is a perfectly possible body
+    // from a broken intermediary -- and categorizeInquiryError calls
+    // .toLowerCase() on it, which throws past this function's discriminated
+    // return into a caller that has no way to distinguish that from a
+    // rejection it expected.
+    const first = payload.errors[0]?.message;
     return {
       ok: false,
-      reason: categorizeInquiryError(payload.errors[0]?.message ?? ""),
+      reason: categorizeInquiryError(typeof first === "string" ? first : ""),
     };
   }
 

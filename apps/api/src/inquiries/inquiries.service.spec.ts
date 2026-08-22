@@ -94,8 +94,18 @@ describe('InquiriesService', () => {
     jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
   });
 
+  // Captured and RESTORED, not unconditionally deleted. Jest shares a worker
+  // process across suites, so deleting a variable this suite did not set
+  // leaves later suites running in an environment it changed -- and the
+  // resulting failure shows up in whichever file happens to run next.
+  const originalIpHashSecret = process.env.INQUIRY_IP_HASH_SECRET;
+
   afterEach(() => {
-    delete process.env.INQUIRY_IP_HASH_SECRET;
+    if (originalIpHashSecret === undefined) {
+      delete process.env.INQUIRY_IP_HASH_SECRET;
+    } else {
+      process.env.INQUIRY_IP_HASH_SECRET = originalIpHashSecret;
+    }
     jest.restoreAllMocks();
   });
 

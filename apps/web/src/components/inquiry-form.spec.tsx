@@ -11,6 +11,19 @@ vi.mock("@/lib/api", () => ({ submitInquiry: vi.fn() }));
 
 const submitInquiryMock = vi.mocked(submitInquiry);
 
+// NOTE on the beforeEach bodies below: every one uses a BLOCK, never a
+// concise arrow returning the mock.
+//
+// vitest treats a function returned from beforeEach as a teardown callback,
+// and mockResolvedValue returns the MockInstance -- which is itself a
+// function. So `beforeEach(() => mock.mockResolvedValue(x))` quietly CALLS
+// the mock after every test in that block, with no arguments. Two symptoms
+// came from this before it was understood: mock.calls carried a trailing
+// entry with an undefined first argument (worked around with filter(Boolean)
+// rather than fixed), and a test that installs a THROWING implementation
+// failed with that throw after its assertions had already passed, reported
+// with no assertion error at all.
+
 function renderForm() {
   return render(
     <LocaleProvider initialLocale="en" initialMessages={en}>
@@ -202,10 +215,31 @@ describe("InquiryForm", () => {
 });
 
 describe("InquiryForm resilience", () => {
-  beforeEach(() =>
-    submitInquiryMock.mockResolvedValue({ ok: true }),
-  );
+  beforeEach(() => {
+    submitInquiryMock.mockResolvedValue({ ok: true });
+  });
   afterEach(() => vi.clearAllMocks());
+
+  it("is never STRANDED by an unexpected throw from the API layer", async () => {
+    // submitInquiry returns a discriminated result rather than throwing, but
+    // that is a property of its code, not a guarantee this form can rely on.
+    // Before the fieldset a throw froze only the submit button; now it would
+    // freeze every control, with no way back except a reload.
+    // Thrown synchronously rather than returned as a rejected promise. The
+    // form's try/catch covers both, and this shape does not leave vitest a
+    // floating rejection to attribute to whichever test happens to be
+    // running -- the throw IS the test's subject, so it must not also be
+    // ambient noise.
+    submitInquiryMock.mockImplementation(() => {
+      throw new TypeError("toLowerCase of 42");
+    });
+    renderForm();
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.getByLabelText(/your question/i)).toBeEnabled();
+    expect(screen.getByRole("button", { name: /send inquiry/i })).toBeEnabled();
+  });
 
   it("recovers when the API layer reports a malformed response", async () => {
     // A 2xx whose body is empty or not JSON used to throw past the API
@@ -224,9 +258,9 @@ describe("InquiryForm resilience", () => {
 });
 
 describe("submission idempotency", () => {
-  beforeEach(() =>
-    submitInquiryMock.mockResolvedValue({ ok: false, reason: "network" as const }),
-  );
+  beforeEach(() => {
+    submitInquiryMock.mockResolvedValue({ ok: false, reason: "network" as const });
+  });
   afterEach(() => vi.clearAllMocks());
 
   it("REUSES the same key when the buyer retries after a failure", async () => {
@@ -250,9 +284,7 @@ describe("submission idempotency", () => {
     // than a fixed count, because how many times the form fires is an
     // implementation detail while key stability is the actual invariant.
     const keys = new Set(
-      submitInquiryMock.mock.calls
-        .map((c) => c?.[0]?.idempotencyKey)
-        .filter(Boolean),
+      submitInquiryMock.mock.calls.map((c) => c[0].idempotencyKey),
     );
     expect(keys.size).toBe(1);
   });
@@ -278,10 +310,7 @@ describe("submission idempotency", () => {
       expect(submitInquiryMock.mock.calls.length).toBeGreaterThan(1),
     );
 
-    // filter(Boolean) for the same reason the test above does it: how many
-    // times the form fires is an implementation detail, and a call recorded
-    // without arguments would otherwise throw here rather than fail.
-    const calls = submitInquiryMock.mock.calls.map((c) => c?.[0]).filter(Boolean);
+    const calls = submitInquiryMock.mock.calls.map((c) => c[0]);
     const edited = calls.find((c) => c.buyerPhone === "+919000000002");
     const original = calls.find((c) => c.buyerPhone === "+919000000001");
     expect(edited?.idempotencyKey).not.toBe(original?.idempotencyKey);

@@ -131,6 +131,24 @@ describe("submitInquiry", () => {
     });
   });
 
+  it.each([
+    ["a numeric message", 42],
+    ["a null message", null],
+    ["an object message", { nested: true }],
+    ["no message at all", undefined],
+  ])("does not throw on an error entry with %s", async (_label, message) => {
+    // `errors` comes off the wire, so a broken intermediary can put anything
+    // in it -- and categorizeInquiryError calls .toLowerCase(), which throws
+    // past this function's discriminated return. The form now catches that
+    // too, but a thrown rejection here would be indistinguishable from a
+    // failure it actually understood.
+    respond({ errors: [{ message }] });
+    await expect(submitInquiry(INPUT)).resolves.toEqual({
+      ok: false,
+      reason: "unknown",
+    });
+  });
+
   it("reports a network failure rather than throwing", async () => {
     fetchMock.mockRejectedValue(new TypeError("Failed to fetch"));
     await expect(submitInquiry(INPUT)).resolves.toEqual({

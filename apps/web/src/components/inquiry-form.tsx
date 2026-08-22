@@ -86,10 +86,25 @@ export function InquiryForm({
     }
     lastSubmitted.current = fingerprint;
 
-    const result = await submitInquiry({
-      idempotencyKey: submissionKey.current,
-      ...submission,
-    });
+    // Wrapped, so NOTHING can strand the form mid-send.
+    //
+    // submitInquiry returns a discriminated result rather than throwing, but
+    // "does not throw" is a property of its current code, not a guarantee the
+    // form can rely on -- one unhandled shape off the wire and the promise
+    // rejects instead. Before the fieldset that only froze the submit button;
+    // now it would freeze every control, with no way back except a reload.
+    // The catch costs nothing and removes the whole class.
+    let result: Awaited<ReturnType<typeof submitInquiry>>;
+    try {
+      result = await submitInquiry({
+        idempotencyKey: submissionKey.current,
+        ...submission,
+      });
+    } catch {
+      setStatus("error");
+      setError("unknown");
+      return;
+    }
 
     if (result.ok) {
       // "Recorded", and nothing more, because nothing more has happened.
