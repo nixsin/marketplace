@@ -51,7 +51,10 @@ export function sanitizeTemplateParam(value: string): string {
     // summary stays readable flattened because its own labels -- From:,
     // Product:, Ref:, Link: -- carry the structure; the separator was
     // decoration, and it was costing buyers their words.
-    .replace(/[\r\n\t]+/g, ' ')
+    // U+2028/U+2029 included: they are line and paragraph separators, not
+    // controls, so no \p{Cc}/\p{Cf} class catches them -- and Meta rejects a
+    // parameter containing a line break however it is spelled.
+    .replace(/[\r\n\t\u2028\u2029]+/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim()
     // Truncated by CODE POINT, not UTF-16 code unit. .slice() would cut
@@ -189,15 +192,20 @@ export class WhatsappService {
                 env[WHATSAPP_TEMPLATE_LANGUAGE_ENV] ??
                 WHATSAPP_TEMPLATE_DEFAULT_LANGUAGE,
             },
-            // One body parameter carrying the whole composed inquiry,
-            // flattened. The approved template must therefore be a body with
-            // a single {{1}} placeholder -- see docs/whatsapp.md. More
-            // parameters would mean more ways for the repo and the Meta
-            // account to disagree about a template nobody here can see.
             // TWO parameters: {{1}} the product/contact summary, {{2}} the
-            // buyer's own words. One combined parameter meant a near-limit
-            // question lost its ending to the metadata in front of it --
-            // silently, after the API had accepted it as valid.
+            // buyer's own words. The approved template must therefore have a
+            // body with both placeholders -- see docs/whatsapp.md for the
+            // exact contract.
+            //
+            // One combined parameter meant a near-limit question lost its
+            // ending to the metadata sitting in front of it -- silently,
+            // after the API had already accepted the message as valid.
+            // Separate parameters give the buyer's words their own budget.
+            //
+            // (An earlier version of this comment still described the
+            // one-parameter design the code had already stopped using, which
+            // is worse than no comment: the template lives in the Meta
+            // account, where nobody reading this file can check it.)
             components: [
               {
                 type: 'body',

@@ -301,7 +301,20 @@ export function sanitizeForLog(value: string, max = 200): string {
   // visually reverses the rest of a line. This function exists precisely to
   // stop provider text forging log entries, and a reordered line forges one
   // just as effectively as an injected newline.
-  const flat = value.replace(/[\r\n\t]+/g, ' ').replace(/[\p{Cc}\p{Cf}]/gu, '');
+  // Three classes, because each was missed in turn.
+  //
+  // \r \n \t are the obvious ones, and \p{Cc} covers the remaining C0/C1
+  // controls. \p{Cf} covers FORMAT characters -- U+202E RIGHT-TO-LEFT
+  // OVERRIDE among them, which visually reverses the rest of a line.
+  //
+  // U+2028 and U+2029 belong to NEITHER category: they are Zl and Zp, line
+  // and paragraph separators. JavaScript treats them as real line
+  // terminators, so provider text carrying one splits a log line exactly as
+  // \n does -- the whole thing this function exists to prevent. Matched
+  // explicitly, since no character class groups them with the controls.
+  const flat = value
+    .replace(/[\r\n\t\u2028\u2029]+/g, ' ')
+    .replace(/[\p{Cc}\p{Cf}]/gu, '');
   return flat.length > max ? `${flat.slice(0, max - 1)}\u2026` : flat;
 }
 

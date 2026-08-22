@@ -724,6 +724,18 @@ describe("a buyer's message survives sanitising intact", () => {
     expect(out.length).toBeLessThan(WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH);
   });
 
+  it.each([
+    ['U+2028 LINE SEPARATOR', 0x2028],
+    ['U+2029 PARAGRAPH SEPARATOR', 0x2029],
+  ])('flattens %s, which no control-character class catches', (_l, code) => {
+    // Meta rejects a parameter containing a line break however it is spelled,
+    // and these are Zl/Zp -- neither \p{Cc} nor \p{Cf}. Built by code point,
+    // because pasting them into a literal lets an editor or a shell normalise
+    // them away and the test then proves nothing.
+    const ch = String.fromCharCode(code);
+    expect(sanitizeTemplateParam(`a${ch}b`)).toBe('a b');
+  });
+
   it('never expands, so the cap relationship actually holds', () => {
     // The invariant the constant comparison was standing in for. Flattening
     // may CONTRACT a run of whitespace; it must never grow the string, or the

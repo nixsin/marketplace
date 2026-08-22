@@ -13,6 +13,7 @@ import {
   buildInquirySummary,
   hashIp,
   publicSiteUrl,
+  sanitizeForLog,
 } from './inquiries.service';
 import { WhatsappService, sanitizeTemplateParam } from './whatsapp.service';
 import { randomBytes } from 'node:crypto';
@@ -153,6 +154,38 @@ describe('buildInquiryMessage', () => {
   it('includes how to reach the buyer back', () => {
     expect(message).toContain('Asha Rao');
     expect(message).toContain('+919000000001');
+  });
+});
+
+describe('sanitizeForLog', () => {
+  // Provider text is external input, and this function exists so it cannot
+  // forge a log entry. Three classes had to be covered, and each was missed
+  // in turn -- so they are asserted by CODE POINT here rather than by pasting
+  // characters into a string literal, where a shell or an editor can silently
+  // normalise them (which it did, hiding an earlier fix that had not applied
+  // at all).
+  it.each([
+    ['U+2028 LINE SEPARATOR', 0x2028],
+    ['U+2029 PARAGRAPH SEPARATOR', 0x2029],
+    ['U+000A LINE FEED', 0x000a],
+    ['U+0009 TAB', 0x0009],
+    ['U+202E RIGHT-TO-LEFT OVERRIDE', 0x202e],
+    ['U+0000 NUL', 0x0000],
+  ])('removes %s', (_label, code) => {
+    const ch = String.fromCharCode(code);
+    expect(sanitizeForLog(`before${ch}after`)).not.toContain(ch);
+  });
+
+  it('leaves ordinary text alone', () => {
+    expect(sanitizeForLog('provider 400: invalid recipient')).toBe(
+      'provider 400: invalid recipient',
+    );
+  });
+
+  it('bounds the length, ellipsising rather than cutting silently', () => {
+    const out = sanitizeForLog('x'.repeat(500), 200);
+    expect(out).toHaveLength(200);
+    expect(out.endsWith('\u2026')).toBe(true);
   });
 });
 
