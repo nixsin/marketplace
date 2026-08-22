@@ -10,6 +10,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { ProductsModule } from './products/products.module';
+import { InquiriesModule } from './inquiries/inquiries.module';
 import { StorageModule } from './storage/storage.module';
 
 @Module({
@@ -27,6 +28,7 @@ import { StorageModule } from './storage/storage.module';
     AuthModule,
     OrganizationsModule,
     ProductsModule,
+    InquiriesModule,
   ],
   controllers: [AppController],
   providers: [AppService],
