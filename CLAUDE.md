@@ -712,6 +712,16 @@ class of reason: re-reading it afterwards to find the seller's number would
 reopen the reassignment gap, which once delivery exists means handing a
 buyer's name and phone to an unrelated organisation.
 
+**Two parked cases live in [#151](https://github.com/nixsin/marketplace/issues/151)**,
+each with a `FIX(#151)` comment at the exact line. A crash between the commit
+and the send strands a row no retry will ever deliver — every retry matches
+the idempotency key and returns without sending, correct for a duplicate and
+wrong for one never attempted; it needs the same PENDING sweep the ambiguous
+case does, which `providerMessageId` can already distinguish. And the web
+form remembers one key and one fingerprint, so reverting to earlier content
+mints a third key. Both are unreachable or near-unreachable today; neither is
+fine.
+
 **`sanitizeForLog` bounds provider text before it is logged**, not after.
 Meta's `error.message` is external input: newlines let it forge log entries
 that look like ours. The 500-character column truncation happens after the log

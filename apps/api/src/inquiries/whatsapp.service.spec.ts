@@ -27,6 +27,16 @@ const NO_TEMPLATE = {
 // Saint Helena (+290 8123) and the Cook Islands (+682 1234) are seven digits
 // end to end. A duplicated test of a shared function is how a fixed bug gets
 // re-certified as correct somewhere else.
+/**
+ * global.fetch is saved and RESTORED by hand.
+ *
+ * jest.restoreAllMocks() only undoes spies it installed; a plain assignment to
+ * a global is invisible to it, so the last mock installed here leaked into
+ * whatever suite shared the worker next -- and a suite that makes no network
+ * call at all is exactly the one that would not notice.
+ */
+const REAL_FETCH = global.fetch;
+
 describe('WhatsappService', () => {
   let service: WhatsappService;
   let fetchMock: jest.Mock;
@@ -39,7 +49,10 @@ describe('WhatsappService', () => {
     jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
   });
 
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    global.fetch = REAL_FETCH;
+    jest.restoreAllMocks();
+  });
 
   describe('when credentials are absent', () => {
     it('reports itself unconfigured', () => {
@@ -243,7 +256,10 @@ describe('WhatsappService template sends', () => {
     global.fetch = fetchMock;
     jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
   });
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    global.fetch = REAL_FETCH;
+    jest.restoreAllMocks();
+  });
 
   it('sends a TEMPLATE, not free-form text, when one is configured', async () => {
     // Business-initiated WhatsApp messages require an approved template.
@@ -382,6 +398,10 @@ describe('template parameter budgets', () => {
     // Intact: the whole question survives, metadata notwithstanding.
     expect(params[1].text).toHaveLength(1000);
     expect(params[1].text.endsWith('q')).toBe(true);
+  });
+
+  afterEach(() => {
+    global.fetch = REAL_FETCH;
     jest.restoreAllMocks();
   });
 });
@@ -407,6 +427,10 @@ describe('an accepted send whose body will not parse', () => {
     );
 
     expect(result).toEqual({ ok: true, providerMessageId: null });
+  });
+
+  afterEach(() => {
+    global.fetch = REAL_FETCH;
     jest.restoreAllMocks();
   });
 });

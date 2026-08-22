@@ -367,6 +367,24 @@ export class InquiriesService {
     // matched the idempotency key returns the stored row untouched -- the
     // request that created it is what sends, and sending again would put the
     // same inquiry on the seller's phone twice.
+    //
+    // FIX(#151): a crash in the gap between that commit and this send strands
+    // the row forever. The transaction has committed by the time we get here,
+    // so a process restart, a deploy, or a cancelled request leaves a PENDING
+    // row that no later retry will deliver -- every retry matches the
+    // idempotency key and returns without sending, which is correct for a
+    // duplicate and wrong for one that was never attempted.
+    //
+    // FREQUENCY: a window of milliseconds, and only while the provider is
+    // configured at all -- unconfigured, delivery resolves synchronously to
+    // FAILED before anything can interrupt it. Zero occurrences are possible
+    // today.
+    //
+    // FIX WHEN TOUCHED: the same recovery mechanism the ambiguous-outcome
+    // case needs -- a sweep of PENDING rows -- distinguishing
+    // never-attempted from attempted-ambiguous, which providerMessageId
+    // already does. An outbox written in the same transaction is the fuller
+    // answer.
     return created.inserted
       ? this.deliver(created, submission)
       : created.inquiry;

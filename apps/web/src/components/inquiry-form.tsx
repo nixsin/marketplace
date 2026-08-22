@@ -90,6 +90,19 @@ export function InquiryForm({
     // inquiry, and would send a second message once delivery ships. Falls
     // back to the raw value when it cannot be canonicalised, so an
     // unsubmittable number still fingerprints deterministically.
+    //
+    // FIX(#151): only the LAST submission is remembered, so a round trip back
+    // to earlier content mints a third key. Submit A ambiguously, edit to B
+    // and fail, then revert to A: the fingerprint differs from B, so A goes
+    // out under a new key and can become a second inquiry -- and a second
+    // message to the seller.
+    //
+    // FREQUENCY: needs an unresolved submission, an edit, another failure,
+    // and then a revert to the byte-identical original. Every step but the
+    // last is already unusual.
+    //
+    // FIX WHEN TOUCHED: a Map from fingerprint to key for unresolved
+    // submissions, rather than one key and one remembered fingerprint.
     const fingerprint = JSON.stringify({
       ...submission,
       buyerPhone: normalizeE164(submission.buyerPhone) ?? submission.buyerPhone,
