@@ -262,4 +262,168 @@ export async function fetchProductsPaged(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Product inquiries (#91)
+// ---------------------------------------------------------------------------
 
+const CREATE_INQUIRY_MUTATION = minifyGql(`
+  mutation CreateInquiry($input: CreateInquiryInput!) {
+    createInquiry(input: $input) { id status }
+  }
+`);
+
+export interface InquiryInput {
+  /**
+   * Stable per-SUBMISSION key. Generated once when the buyer submits and
+   * REUSED on every retry -- a fresh one per attempt would defeat the whole
+   * mechanism, since the server deduplicates on this exact value.
+   */
+  idempotencyKey: string;
+  productId: string;
+  buyerName: string;
+  buyerPhone: string;
+  message: string;
+}
+
+/**
+ * A CATEGORY, not raw server text.
+ *
+ * One fixed error message is wrong for a network failure and actively
+ * misleading for a rate limit, where retrying immediately cannot succeed and
+ * only adds traffic. Categories let the UI say something actionable without
+ * echoing internal error strings back to a buyer.
+ */
+export type InquiryFailure =
+  | "network"
+  | "rate-limited"
+  | "invalid"
+  | "conflict"
+  | "unknown";
+
+export type InquiryResult =
+  | { ok: true }
+  | { ok: false; reason: InquiryFailure };
+
+/**
+ * Maps a server error to a category the UI can act on.
+ *
+ * Matched against the messages the API actually produces, defaulting to
+ * "unknown" rather than guessing -- a wrong category is worse than a generic
+ * one, because it tells the buyer to do something that cannot help.
+ */
+export function categorizeInquiryError(message: string): InquiryFailure {
+  const text = message.toLowerCase();
+  // "already used", checked BEFORE the rate-limit branch and matched on its
+  // own phrase. The idempotency-conflict message once read "already sent
+  // with different details", which the rate-limit branch below swallowed --
+  // telling a buyer with a key conflict that they had sent too many
+  // inquiries recently. Wrong, and it points them at a wait that cannot
+  // help.
+  if (text.includes("already used")) return "conflict";
+  // Matched on "already sent inquiries", not a bare "already sent", so a
+  // future message merely containing those two words does not land here.
+  if (text.includes("too many") || text.includes("already sent inquiries")) {
+    return "rate-limited";
+  }
+  if (text.includes("phone number") || text.includes("enter your name")) {
+    return "invalid";
+  }
+  return "unknown";
+}
+
+/**
+ * A POST, unlike every other call in this file.
+ *
+ * The GraphQL-over-GET pattern the reads use exists so a CDN can cache them. A
+ * mutation must never be cacheable, and POST is what guarantees that at every
+ * layer -- the Cloudflare rules bypass non-GET outright, so this cannot be
+ * edge-cached even by accident.
+ *
+ * credentials "omit" for the same reason as the reads: these requests are
+ * anonymous by design (#91 story 3 -- a shared link must work on a cold visit
+ * with no login), and sending credentials would both break CORS and quietly
+ * make the endpoint authenticated.
+ *
+ * Returns a discriminated result rather than throwing, because every failure
+ * here is something the buyer must be shown in the form they are looking at.
+ * None of them should reach an error boundary and blank the page they were
+ * filling in.
+ */
+export async function submitInquiry(
+  input: InquiryInput,
+): Promise<InquiryResult> {
+  const clientRequestId = newClientRequestId();
+
+  let res: Response;
+  try {
+    res = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...correlationHeaders(clientRequestId),
+      },
+      credentials: "omit",
+      body: JSON.stringify({
+        query: CREATE_INQUIRY_MUTATION,
+        variables: { input },
+      }),
+    });
+  } catch (error) {
+    reportApiFailure("submitInquiry", clientRequestId, error);
+    return { ok: false, reason: "network" };
+  }
+
+  if (!res.ok) {
+    const error = new Error(`Failed to submit inquiry (${res.status})`);
+    reportApiFailure("submitInquiry", clientRequestId, error, res);
+    return { ok: false, reason: "network" };
+  }
+
+  // Parsed inside a try. A 2xx whose body is empty, truncated or not JSON --
+  // a proxy error page, a cut connection -- would otherwise throw past this
+  // function's discriminated return, and the form has no catch, so it would
+  // sit disabled in "sending" forever on an unhandled rejection.
+  let payload: {
+    data?: { createInquiry?: { id?: unknown } | null };
+    errors?: { message?: string }[];
+  } | null;
+  try {
+    payload = (await res.json()) as typeof payload;
+  } catch (error) {
+    reportApiFailure("submitInquiry", clientRequestId, error, res);
+    return { ok: false, reason: "network" };
+  }
+
+  // GraphQL reports resolver failures as HTTP 200 with an errors array, so
+  // res.ok above proves nothing about whether this worked.
+  //
+  // Optional-chained from `payload` itself: `null` is VALID JSON, so
+  // res.json() resolves happily and `payload.errors` would then throw a
+  // TypeError past the discriminated return.
+  if (payload?.errors?.length) {
+    // The message is TYPE-CHECKED, not just type-cast. `errors` comes off the
+    // wire, so `{ errors: [{ message: 42 }] }` is a perfectly possible body
+    // from a broken intermediary -- and categorizeInquiryError calls
+    // .toLowerCase() on it, which throws past this function's discriminated
+    // return into a caller that has no way to distinguish that from a
+    // rejection it expected.
+    const first = payload.errors[0]?.message;
+    return {
+      ok: false,
+      reason: categorizeInquiryError(typeof first === "string" ? first : ""),
+    };
+  }
+
+  // The ID is checked, not merely the object's presence.
+  //
+  // `{ data: { createInquiry: {} } }` is truthy, and a bare truthiness test
+  // reported it as a recorded inquiry -- the same defect as confirmation copy
+  // claiming an outcome nothing produced, one layer lower. Nothing that lands
+  // here should be shaped that way, but "should" is what makes it worth
+  // checking: a schema drift or an intermediary rewriting the body is exactly
+  // the case where the buyer must not be told it worked.
+  const id = payload?.data?.createInquiry?.id;
+  return typeof id === "string" && id.length > 0
+    ? { ok: true }
+    : { ok: false, reason: "unknown" };
+}
