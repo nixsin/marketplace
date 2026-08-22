@@ -1,10 +1,16 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
+  INQUIRY_RATE_LIMIT_PER_IP,
   INQUIRY_RATE_LIMIT_PER_SELLER,
   INQUIRY_RATE_LIMIT_PER_PHONE,
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
 } from '@medinstru/config';
-import { InquiriesService, buildInquiryMessage } from './inquiries.service';
+import {
+  InquiriesService,
+  buildInquiryMessage,
+  hashIp,
+} from './inquiries.service';
+import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsappService } from './whatsapp.service';
 
@@ -106,6 +112,40 @@ describe('InquiriesService', () => {
   });
 
   afterEach(() => jest.restoreAllMocks());
+
+  it('canonicalises a spaced number to E.164 before storing it', async () => {
+    // The form advertises "+91 98765 43210" because that is how people write
+    // numbers, and IsPhoneNumber accepts it -- but the sender rejects any
+    // space, so the inquiry was stored and then failed at send time, which a
+    // buyer only discovers by never getting a reply.
+    await service.create({ ...ARGS, buyerPhone: '+91 98765 43210' });
+
+    const written = prisma.inquiry.create.mock.calls[0][0] as {
+      data: { buyerPhone: string };
+    };
+    expect(written.data.buyerPhone).toBe('+919876543210');
+  });
+
+  it('rejects a number that cannot be made valid', async () => {
+    await expect(
+      service.create({ ...ARGS, buyerPhone: 'not-a-number' }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.inquiry.create).not.toHaveBeenCalled();
+  });
+
+  it('rate-limits on the CANONICAL number, not the typed one', async () => {
+    // Otherwise the same number written three ways is three buckets, and the
+    // per-phone limit is trivially sidestepped with spaces.
+    await service.create({ ...ARGS, buyerPhone: '+91 98765 43210' });
+
+    const buckets = prisma.inquiry.count.mock.calls
+      .map(
+        (call) =>
+          (call[0] as { where: { buyerPhone?: string } }).where.buyerPhone,
+      )
+      .filter(Boolean);
+    expect(buckets.every((b) => b === '+919876543210')).toBe(true);
+  });
 
   it('rejects an inquiry about a product that does not exist', async () => {
     prisma.product.findUnique.mockResolvedValue(null);
@@ -252,8 +292,46 @@ describe('InquiriesService', () => {
       const written = prisma.inquiry.create.mock.calls[0][0] as {
         data: { ipHash: string };
       };
-      expect(written.data.ipHash).toMatch(/^[0-9a-f]{64}$/);
       expect(written.data.ipHash).not.toContain('203.0.113.7');
+      expect(written.data.ipHash).toMatch(/[0-9a-f]{64}$/);
+    });
+
+    it('keys the hash when a secret is configured', () => {
+      // An UNKEYED SHA-256 of an IPv4 address is not the protection it looks
+      // like: 2^32 is small enough to enumerate, so anyone holding the table
+      // can recover the address by hashing guesses. The key makes that
+      // impossible without also holding the secret.
+      const keyed = hashIp('203.0.113.7', { INQUIRY_IP_HASH_SECRET: 's3cret' });
+      const unkeyed = hashIp('203.0.113.7', {});
+
+      expect(keyed).toMatch(/^[0-9a-f]{64}$/);
+      expect(keyed).not.toBe(unkeyed);
+      // Deterministic, or it could not group repeats.
+      expect(hashIp('203.0.113.7', { INQUIRY_IP_HASH_SECRET: 's3cret' })).toBe(
+        keyed,
+      );
+    });
+
+    it('marks the weaker unkeyed form in the data rather than hiding it', () => {
+      // Visible in the column, so the weaker variant is distinguishable from
+      // the keyed one rather than silently indistinguishable.
+      expect(hashIp('203.0.113.7', {})).toMatch(/^unkeyed:/);
+      expect(
+        hashIp('203.0.113.7', { INQUIRY_IP_HASH_SECRET: 's' }),
+      ).not.toMatch(/^unkeyed:/);
+    });
+
+    it('rejects once the per-IP limit is reached', async () => {
+      // Asserted directly, not merely that the count happens -- the review
+      // pointed out the old test proved the query ran and nothing more.
+      prisma.inquiry.count.mockImplementation(
+        ({ where }: { where: { ipHash?: string } }) =>
+          Promise.resolve(where.ipHash ? INQUIRY_RATE_LIMIT_PER_IP : 0),
+      );
+
+      await expect(
+        service.create({ ...ARGS, callerIp: '203.0.113.7' }),
+      ).rejects.toThrow(/from this network/);
     });
 
     it("caps a seller's total exposure whatever the source", async () => {
@@ -281,6 +359,52 @@ describe('InquiriesService', () => {
       await expect(service.create(ARGS)).rejects.toThrow(
         /Too many inquiries right now/,
       );
+    });
+
+    it('retries a serialization conflict instead of surfacing a 500', async () => {
+      // Serializable isolation does not queue conflicting transactions, it
+      // ABORTS one -- Prisma reports P2034. Without a retry, two buyers
+      // submitting at the same instant meant one received an internal error
+      // rather than succeeding or being told about the rate limit.
+      const conflict = new Prisma.PrismaClientKnownRequestError(
+        'write conflict',
+        { code: 'P2034', clientVersion: 'test' },
+      );
+      let attempts = 0;
+      prisma.$transaction.mockImplementation((fn: (tx: unknown) => unknown) => {
+        attempts += 1;
+        if (attempts === 1) return Promise.reject(conflict);
+        return Promise.resolve(fn(prisma));
+      });
+
+      await expect(service.create(ARGS)).resolves.toBeDefined();
+      expect(attempts).toBe(2);
+    });
+
+    it('does NOT retry a rate-limit rejection', async () => {
+      // Retrying a deliberate refusal would turn one rejection into three.
+      let attempts = 0;
+      prisma.$transaction.mockImplementation((fn: (tx: unknown) => unknown) => {
+        attempts += 1;
+        return Promise.resolve(fn(prisma));
+      });
+      prisma.inquiry.count.mockResolvedValue(INQUIRY_RATE_LIMIT_PER_PHONE);
+
+      await expect(service.create(ARGS)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(attempts).toBe(1);
+    });
+
+    it('gives up after a bounded number of conflicts', async () => {
+      const conflict = new Prisma.PrismaClientKnownRequestError('conflict', {
+        code: 'P2034',
+        clientVersion: 'test',
+      });
+      prisma.$transaction.mockRejectedValue(conflict);
+
+      await expect(service.create(ARGS)).rejects.toBe(conflict);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(3);
     });
 
     it('runs the check and the insert in one serializable transaction', async () => {

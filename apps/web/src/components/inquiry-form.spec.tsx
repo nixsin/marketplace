@@ -91,20 +91,34 @@ describe("InquiryForm", () => {
     expect(screen.queryByLabelText(/your question/i)).not.toBeInTheDocument();
   });
 
-  it("does not claim the seller has the message when delivery failed", async () => {
-    // The earlier copy said "The seller has your question and your number"
-    // and was shown even when delivered was false -- a flat false claim, and
-    // the old test only checked for the literal word "delivered", which
-    // missed the semantic one entirely.
+  it("claims the seller has it ONLY when delivery actually succeeded", async () => {
+    // Two earlier versions asserted more than the API knew -- first "the
+    // seller has your question and your number", then "passed it to this
+    // seller" -- and both were shown verbatim when delivered was false. A
+    // buyer told their message reached a seller who never received it waits
+    // for a reply that cannot come, and does not retry.
+    submitInquiryMock.mockResolvedValue({ ok: true, delivered: true });
+    renderForm();
+    await fillAndSubmit();
+
+    expect((await screen.findByRole("status")).textContent ?? "").toMatch(
+      /this seller has your question/i,
+    );
+  });
+
+  it("says only that it was recorded when delivery failed", async () => {
     submitInquiryMock.mockResolvedValue({ ok: true, delivered: false });
     renderForm();
     await fillAndSubmit();
 
     const text = (await screen.findByRole("status")).textContent ?? "";
-    expect(text).not.toMatch(/delivered/i);
-    expect(text).not.toMatch(/the seller has/i);
-    // What we actually know: it is recorded.
     expect(text).toMatch(/recorded/i);
+    // No claim of receipt, transfer, or delivery in any wording.
+    expect(text).not.toMatch(/seller has your/i);
+    expect(text).not.toMatch(/passed it to/i);
+    expect(text).not.toMatch(/delivered/i);
+    // And it tells them what to do about it.
+    expect(text).toMatch(/another way/i);
   });
 
   it("still confirms receipt when delivery failed", async () => {

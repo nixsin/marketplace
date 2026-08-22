@@ -21,16 +21,22 @@ and for the case where a reply window genuinely exists.
 
 ## The template contract
 
-The approved template must have a **body with exactly one `{{1}}`
-placeholder**. The whole composed inquiry is passed as that single parameter.
-
-More parameters would mean more ways for this repository and a Meta account
-nobody here can read to disagree about a template's shape — a disagreement
-that surfaces only as rejected sends in production.
+The approved template must have a **body with exactly two placeholders**:
 
 ```
-Body:  New inquiry from the marketplace: {{1}}
+Body:  New inquiry from the marketplace.
+       {{1}}
+
+       {{2}}
 ```
+
+- `{{1}}` — product and contact summary
+- `{{2}}` — the buyer's own message
+
+**Two, not one, and the reason matters.** A single combined parameter meant a
+near-limit question lost its ending to the product metadata in front of it —
+silently, after the API had already accepted the message as valid. Separate
+parameters give the buyer's words their own budget.
 
 **Parameters are flattened before sending.** Meta rejects a parameter
 containing a newline, a tab, or more than four consecutive spaces — and

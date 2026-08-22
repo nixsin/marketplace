@@ -53,16 +53,22 @@ describe('WhatsappService', () => {
     it('fails without throwing, and never calls the provider', async () => {
       // Throwing here would lose a real lead over a configuration gap: the
       // caller has already persisted the inquiry by this point.
-      const result = await service.sendInquiry('+919876543210', 'hello', {});
+      const result = await service.sendInquiry(
+        '+919876543210',
+        { summary: 'hello', buyerMessage: 'q' },
+        {},
+      );
 
       expect(result.ok).toBe(false);
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('names the missing variables but never a value', async () => {
-      const result = await service.sendInquiry('+919876543210', 'hello', {
-        [WHATSAPP_ACCESS_TOKEN_ENV]: 'a-real-looking-secret',
-      });
+      const result = await service.sendInquiry(
+        '+919876543210',
+        { summary: 'hello', buyerMessage: 'q' },
+        { [WHATSAPP_ACCESS_TOKEN_ENV]: 'a-real-looking-secret' },
+      );
 
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error('unreachable');
@@ -90,7 +96,11 @@ describe('WhatsappService', () => {
       json: () => Promise.resolve({ messages: [{ id: 'wamid.ABC' }] }),
     });
 
-    const result = await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
+    const result = await service.sendInquiry(
+      '+919876543210',
+      { summary: 'hi', buyerMessage: 'q' },
+      CONFIGURED,
+    );
 
     expect(result).toEqual({ ok: true, providerMessageId: 'wamid.ABC' });
 
@@ -117,7 +127,11 @@ describe('WhatsappService', () => {
       json: () => Promise.resolve({ error: { message: 'Invalid recipient' } }),
     });
 
-    const result = await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
+    const result = await service.sendInquiry(
+      '+919876543210',
+      { summary: 'hi', buyerMessage: 'q' },
+      CONFIGURED,
+    );
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
@@ -135,7 +149,11 @@ describe('WhatsappService', () => {
       json: () => Promise.reject(new Error('not json')),
     });
 
-    const result = await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
+    const result = await service.sendInquiry(
+      '+919876543210',
+      { summary: 'hi', buyerMessage: 'q' },
+      CONFIGURED,
+    );
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
@@ -145,7 +163,11 @@ describe('WhatsappService', () => {
   it('turns a network failure into a failure result, not a throw', async () => {
     fetchMock.mockRejectedValue(new Error('ECONNRESET'));
 
-    const result = await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
+    const result = await service.sendInquiry(
+      '+919876543210',
+      { summary: 'hi', buyerMessage: 'q' },
+      CONFIGURED,
+    );
 
     expect(result).toEqual({ ok: false, reason: 'ECONNRESET' });
   });
@@ -167,7 +189,7 @@ describe('WhatsappService', () => {
 
       const result = await service.sendInquiry(
         '+919876543210',
-        'hi',
+        { summary: 'hi', buyerMessage: 'q' },
         CONFIGURED,
       );
 
@@ -195,7 +217,7 @@ describe('sanitizeTemplateParam', () => {
 
   it('bounds the length', () => {
     expect(sanitizeTemplateParam('x'.repeat(5000)).length).toBeLessThanOrEqual(
-      900,
+      1024,
     );
   });
 });
@@ -230,7 +252,7 @@ describe('WhatsappService template sends', () => {
     // test.
     await service.sendInquiry(
       '+919876543210',
-      'Product: X\nFrom: Asha',
+      { summary: 'Product: X\nFrom: Asha', buyerMessage: 'Is it available?' },
       WITH_TEMPLATE,
     );
 
@@ -250,7 +272,11 @@ describe('WhatsappService template sends', () => {
   });
 
   it('falls back to text only when no template is configured', async () => {
-    await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
+    await service.sendInquiry(
+      '+919876543210',
+      { summary: 'hi', buyerMessage: 'q' },
+      CONFIGURED,
+    );
 
     const body = JSON.parse(
       (fetchMock.mock.calls[0][1] as RequestInit).body as string,
@@ -266,7 +292,11 @@ describe('WhatsappService template sends', () => {
     });
     fetchMock.mockRejectedValue(timeout);
 
-    const result = await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
+    const result = await service.sendInquiry(
+      '+919876543210',
+      { summary: 'hi', buyerMessage: 'q' },
+      CONFIGURED,
+    );
 
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('unreachable');
@@ -274,8 +304,47 @@ describe('WhatsappService template sends', () => {
   });
 
   it('passes an abort signal on every request', async () => {
-    await service.sendInquiry('+919876543210', 'hi', CONFIGURED);
+    await service.sendInquiry(
+      '+919876543210',
+      { summary: 'hi', buyerMessage: 'q' },
+      CONFIGURED,
+    );
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(init.signal).toBeDefined();
+  });
+});
+
+describe('template parameter budgets', () => {
+  it("gives the buyer's message its own budget", async () => {
+    // A 1000-character question used to lose its ending to the product
+    // metadata in front of it -- silently, after the API had accepted it as
+    // valid -- because both shared one parameter's budget.
+    const service = new WhatsappService();
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ messages: [{ id: 'w' }] }),
+    });
+    global.fetch = fetchMock;
+
+    const longMessage = 'q'.repeat(1000);
+    await service.sendInquiry(
+      '+919876543210',
+      { summary: 'Product: X\nRef: p1\nFrom: Asha', buyerMessage: longMessage },
+      {
+        [WHATSAPP_ACCESS_TOKEN_ENV]: 't',
+        [WHATSAPP_PHONE_NUMBER_ID_ENV]: '1',
+        WHATSAPP_TEMPLATE_NAME: 'marketplace_inquiry',
+      },
+    );
+
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0][1] as RequestInit).body as string,
+    ) as { template: { components: { parameters: { text: string }[] }[] } };
+    const params = body.template.components[0].parameters;
+
+    // Intact: the whole question survives, metadata notwithstanding.
+    expect(params[1].text).toHaveLength(1000);
+    expect(params[1].text.endsWith('q')).toBe(true);
+    jest.restoreAllMocks();
   });
 });

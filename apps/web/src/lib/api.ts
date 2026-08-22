@@ -342,11 +342,16 @@ export async function submitInquiry(input: InquiryInput): Promise<InquiryResult>
   // GraphQL reports resolver failures as HTTP 200 with an errors array, so
   // res.ok above proves nothing about whether this worked -- the same trap
   // the API's own cache middleware exists to handle.
-  if (payload.errors?.length) {
+  //
+  // Optional-chained from `payload` itself, not just its properties: `null`
+  // is VALID JSON, so res.json() resolves happily and `payload.errors` then
+  // throws a TypeError past this function's discriminated return. Found by a
+  // test written for the malformed-body case, not by reading the code.
+  if (payload?.errors?.length) {
     return { ok: false, message: payload.errors[0]?.message ?? "unknown" };
   }
 
-  const created = payload.data?.createInquiry;
+  const created = payload?.data?.createInquiry;
   if (!created) return { ok: false, message: "unknown" };
 
   return { ok: true, delivered: Boolean(created.delivered) };

@@ -23,6 +23,24 @@ export function isE164(value: string): boolean {
 }
 
 /**
+ * Canonicalises a submitted number to E.164.
+ *
+ * The form advertised `+91 98765 43210` while the sender rejected anything
+ * containing a space, and class-validator's IsPhoneNumber happily accepts the
+ * spaced form -- so a perfectly reasonable entry was stored and then failed at
+ * the point of sending, which the buyer only learns about by never getting a
+ * reply. Normalising here means the format a person naturally types is the
+ * format that actually sends.
+ *
+ * Returns null when the value cannot be made valid, so the caller rejects it
+ * at the boundary rather than storing something undeliverable.
+ */
+export function normalizeE164(value: string): string | null {
+  const stripped = value.replace(/[\s\u00a0().-]/g, '');
+  return isE164(stripped) ? stripped : null;
+}
+
+/**
  * Makes a value safe to pass as a WhatsApp template parameter.
  *
  * Meta rejects a parameter containing a newline, a tab, or more than four
@@ -80,9 +98,10 @@ export class WhatsappService {
    */
   async sendInquiry(
     toE164: string,
-    body: string,
+    parts: { summary: string; buyerMessage: string },
     env: NodeJS.ProcessEnv = process.env,
   ): Promise<WhatsappSendResult> {
+    const body = `${parts.summary}\n\n${parts.buyerMessage}`;
     // Validated here as well as at the DTO boundary. This is the last point
     // before an outbound request leaves the system, and a malformed number
     // reaching Meta is a rejected send that costs a round trip to learn.
@@ -128,11 +147,19 @@ export class WhatsappService {
             // a single {{1}} placeholder -- see docs/whatsapp.md. More
             // parameters would mean more ways for the repo and the Meta
             // account to disagree about a template nobody here can see.
+            // TWO parameters: {{1}} the product/contact summary, {{2}} the
+            // buyer's own words. One combined parameter meant a near-limit
+            // question lost its ending to the metadata in front of it --
+            // silently, after the API had accepted it as valid.
             components: [
               {
                 type: 'body',
                 parameters: [
-                  { type: 'text', text: sanitizeTemplateParam(body) },
+                  { type: 'text', text: sanitizeTemplateParam(parts.summary) },
+                  {
+                    type: 'text',
+                    text: sanitizeTemplateParam(parts.buyerMessage),
+                  },
                 ],
               },
             ],

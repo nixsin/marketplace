@@ -40,6 +40,7 @@ export function InquiryForm({
   const t = useTranslations("productDetails");
   const formId = useId();
   const [status, setStatus] = useState<Status>("idle");
+  const [delivered, setDelivered] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
@@ -56,10 +57,14 @@ export function InquiryForm({
     });
 
     if (result.ok) {
-      // Deliberately "received", not "delivered". The buyer is told the truth
-      // about what we know: their inquiry is recorded. Whether the provider
-      // accepted it is a seller-side concern they cannot act on, and telling
-      // them delivery failed would invite them to resend into the same wall.
+      // The confirmation is BRANCHED on delivery, not fixed.
+      //
+      // Two earlier versions claimed more than the API knew -- first "the
+      // seller has your question and your number", then "passed it to this
+      // seller" -- and both were shown verbatim when delivery had failed.
+      // A buyer told their message reached a seller who never received it
+      // waits for a reply that cannot come, and does not retry.
+      setDelivered(result.delivered);
       setStatus("sent");
       return;
     }
@@ -76,7 +81,9 @@ export function InquiryForm({
         className="rounded-lg border border-border bg-muted/40 p-4 text-sm"
       >
         <p className="font-medium text-foreground">{t("inquirySentTitle")}</p>
-        <p className="mt-1 text-muted-foreground">{t("inquirySentMessage")}</p>
+        <p className="mt-1 text-muted-foreground">
+          {delivered ? t("inquirySentDelivered") : t("inquirySentRecorded")}
+        </p>
       </div>
     );
   }

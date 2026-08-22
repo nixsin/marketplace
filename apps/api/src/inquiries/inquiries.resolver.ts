@@ -1,4 +1,5 @@
 import { Args, Context, Mutation, Resolver } from '@nestjs/graphql';
+import { INQUIRY_TRUST_PROXY_HEADERS_ENV } from '@medinstru/config';
 import { InquiryStatus } from '../../generated/prisma/enums';
 import { CreateInquiryInput } from './dto/create-inquiry.input';
 import { InquiriesService } from './inquiries.service';
@@ -13,28 +14,42 @@ interface RequestLike {
 /**
  * The caller's address, for the one rate-limit dimension they cannot type.
  *
- * cf-connecting-ip FIRST, because the API sits behind Cloudflare and it is
- * the only one of these a client cannot forge -- Cloudflare overwrites it at
- * the edge. x-forwarded-for is client-settable on a direct request, so it is
- * a fallback rather than the primary, and only its first entry is read.
+ * PROXY HEADERS ARE NOT TRUSTED BY DEFAULT, and that is the whole point of
+ * this function. An earlier version read cf-connecting-ip unconditionally,
+ * with a comment claiming a client could not forge it because Cloudflare
+ * overwrites it at the edge. That is only true when every route to the origin
+ * goes through Cloudflare -- and this origin answers directly on its
+ * .onrender.com hostname, confirmed by curl. A caller who skips the edge could
+ * set a fresh cf-connecting-ip on every request, making the per-IP limit
+ * forgeable in precisely the way the phone limit already was.
+ *
+ * So the socket address is used unless INQUIRY_TRUST_PROXY_HEADERS is
+ * explicitly enabled, which an operator should do only once the origin
+ * refuses traffic that did not arrive through the proxy.
  *
  * Returns null rather than a placeholder when nothing resolves: the limiter
  * skips a null bucket, because collapsing every unresolvable caller into one
  * shared bucket would let a single one of them lock out all the others.
  */
-export function resolveCallerIp(req?: RequestLike): string | null {
+export function resolveCallerIp(
+  req?: RequestLike,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
   if (!req) return null;
+
+  const socketAddress = req.ip ?? req.socket?.remoteAddress ?? null;
+  if (env[INQUIRY_TRUST_PROXY_HEADERS_ENV] !== 'true') return socketAddress;
+
   const header = (name: string): string | null => {
     const value = req.headers?.[name];
     const raw = Array.isArray(value) ? value[0] : value;
+    // Only the first entry of x-forwarded-for: the rest are appended by
+    // intermediaries and the left-most is the originating client.
     return raw ? raw.split(',')[0].trim() || null : null;
   };
+
   return (
-    header('cf-connecting-ip') ??
-    header('x-forwarded-for') ??
-    req.ip ??
-    req.socket?.remoteAddress ??
-    null
+    header('cf-connecting-ip') ?? header('x-forwarded-for') ?? socketAddress
   );
 }
 

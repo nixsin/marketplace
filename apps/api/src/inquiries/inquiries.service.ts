@@ -6,8 +6,9 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
 import { InquiryStatus } from '../../generated/prisma/enums';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import {
+  INQUIRY_IP_HASH_SECRET_ENV,
   INQUIRY_RATE_LIMIT_PER_IP,
   INQUIRY_RATE_LIMIT_PER_PHONE,
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
@@ -16,7 +17,7 @@ import {
   SITE_URL,
 } from '@medinstru/config';
 import { PrismaService } from '../prisma/prisma.service';
-import { WhatsappService } from './whatsapp.service';
+import { WhatsappService, normalizeE164 } from './whatsapp.service';
 
 export interface CreateInquiryArgs {
   productId: string;
@@ -32,9 +33,26 @@ export interface CreateInquiryArgs {
  * table operators read to triage leads, and a hash still counts repeats --
  * which is all the limiter needs it for.
  */
-export function hashIp(ip: string | null | undefined): string | null {
+export function hashIp(
+  ip: string | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
   if (!ip) return null;
-  return createHash('sha256').update(ip).digest('hex');
+
+  // HMAC with a server-side secret, not a bare digest.
+  //
+  // An unkeyed SHA-256 of an IPv4 address is not the protection it looks
+  // like: the input space is 2^32, small enough to enumerate outright, so
+  // anyone holding this table can recover the original address by hashing
+  // guesses. The key makes that impossible without also holding the secret,
+  // while keeping the value deterministic, which is all the limiter needs.
+  const secret = env[INQUIRY_IP_HASH_SECRET_ENV];
+  if (secret) return createHmac('sha256', secret).update(ip).digest('hex');
+
+  // No secret configured: still hashed rather than stored raw, and marked so
+  // the weaker form is visible in the data rather than indistinguishable from
+  // the keyed one.
+  return `unkeyed:${createHash('sha256').update(ip).digest('hex')}`;
 }
 
 /**
@@ -50,12 +68,11 @@ export function hashIp(ip: string | null | undefined): string | null {
  * legitimate content; the protection that matters is the length cap enforced
  * at the DTO boundary.
  */
-export function buildInquiryMessage(input: {
+export function buildInquirySummary(input: {
   productName: string;
   productId: string;
   buyerName: string;
   buyerPhone: string;
-  message: string;
   siteUrl?: string;
 }): string {
   const base = (input.siteUrl ?? SITE_URL).replace(/\/+$/, '');
@@ -67,9 +84,26 @@ export function buildInquiryMessage(input: {
     `Link: ${base}/en/products/${input.productId}`,
     ``,
     `From: ${input.buyerName} (${input.buyerPhone})`,
-    ``,
-    input.message,
   ].join('\n');
+}
+
+/**
+ * The whole message as one string, for the non-template text path.
+ *
+ * The two halves stay separate for the TEMPLATE path, where each is its own
+ * parameter: combining them meant a near-limit question lost its ending to
+ * the product metadata sitting in front of it -- silently, after the API had
+ * already accepted the message as valid.
+ */
+export function buildInquiryMessage(input: {
+  productName: string;
+  productId: string;
+  buyerName: string;
+  buyerPhone: string;
+  message: string;
+  siteUrl?: string;
+}): string {
+  return `${buildInquirySummary(input)}\n\n${input.message}`;
 }
 
 @Injectable()
@@ -99,6 +133,16 @@ export class InquiriesService {
       throw new NotFoundException(`Product ${args.productId} not found`);
     }
 
+    // Canonicalised before anything is stored, so the value written is the
+    // value that can actually be sent. The form shows a spaced example
+    // because that is how people write numbers; the sender needs E.164.
+    const buyerPhone = normalizeE164(args.buyerPhone);
+    if (!buyerPhone) {
+      throw new BadRequestException(
+        'Enter a valid phone number including the country code.',
+      );
+    }
+
     const ipHash = hashIp(args.callerIp);
 
     // The limit check and the insert run in ONE serializable transaction.
@@ -107,30 +151,32 @@ export class InquiriesService {
     // proceed, which on an unauthenticated outbound-message endpoint is
     // exactly the path worth hardening. Serializable makes the database
     // reject the loser rather than trusting application-level ordering.
-    const inquiry = await this.prisma.$transaction(
-      async (tx) => {
-        await this.assertWithinRateLimit(tx, {
-          buyerPhone: args.buyerPhone,
-          productId: args.productId,
-          sellerId: product.sellerId,
-          ipHash,
-        });
-
-        return tx.inquiry.create({
-          data: {
-            productId: product.id,
-            // Denormalized at inquiry time: which seller received this is a
-            // historical fact and must not follow a later reassignment.
+    const inquiry = await this.withSerializationRetry(() =>
+      this.prisma.$transaction(
+        async (tx) => {
+          await this.assertWithinRateLimit(tx, {
+            buyerPhone,
+            productId: args.productId,
             sellerId: product.sellerId,
-            buyerName: args.buyerName,
-            buyerPhone: args.buyerPhone,
-            message: args.message,
             ipHash,
-            status: InquiryStatus.PENDING,
-          },
-        });
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+          });
+
+          return tx.inquiry.create({
+            data: {
+              productId: product.id,
+              // Denormalized at inquiry time: which seller received this is a
+              // historical fact and must not follow a later reassignment.
+              sellerId: product.sellerId,
+              buyerName: args.buyerName,
+              buyerPhone,
+              message: args.message,
+              ipHash,
+              status: InquiryStatus.PENDING,
+            },
+          });
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
     );
 
     const sellerNumber = product.seller.whatsappNumber;
@@ -141,16 +187,17 @@ export class InquiriesService {
       return this.markFailed(inquiry.id, 'seller has no WhatsApp number');
     }
 
-    const result = await this.whatsapp.sendInquiry(
-      sellerNumber,
-      buildInquiryMessage({
+    const result = await this.whatsapp.sendInquiry(sellerNumber, {
+      summary: buildInquirySummary({
         productName: product.name,
         productId: product.id,
         buyerName: args.buyerName,
-        buyerPhone: args.buyerPhone,
-        message: args.message,
+        buyerPhone,
       }),
-    );
+      // The buyer's own words, kept as their own template parameter so they
+      // are never truncated by metadata in front of them.
+      buyerMessage: args.message,
+    });
 
     if (!result.ok) {
       this.logger.warn(
@@ -193,6 +240,39 @@ export class InquiriesService {
    * defeated by a restart or by horizontal scaling. Both index reads are
    * covered by (buyerPhone, createdAt) and (productId, createdAt).
    */
+  /**
+   * Retries a transaction the database aborted for serialization reasons.
+   *
+   * Serializable isolation does not queue conflicting transactions, it aborts
+   * one of them -- Prisma surfaces that as P2034. Without this, two buyers
+   * submitting at the same instant meant one of them received an internal
+   * error instead of either succeeding or being told about the rate limit.
+   * The conflict is the database doing its job; the caller should never see
+   * it.
+   *
+   * Only P2034 is retried. Any other failure, including the rate-limit
+   * rejection itself, propagates immediately -- retrying a BadRequest would
+   * turn a deliberate refusal into three of them.
+   */
+  private async withSerializationRetry<T>(
+    run: () => Promise<T>,
+    attempts = 3,
+  ): Promise<T> {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await run();
+      } catch (error) {
+        const isConflict =
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2034';
+        if (!isConflict || attempt >= attempts) throw error;
+        this.logger.warn(
+          `Serialization conflict on inquiry write, retrying (${attempt}/${attempts - 1})`,
+        );
+      }
+    }
+  }
+
   /**
    * Four limits, because they fail in different ways.
    *

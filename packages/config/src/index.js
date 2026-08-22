@@ -419,7 +419,12 @@ export const WHATSAPP_TEMPLATE_DEFAULT_LANGUAGE = "en";
 // Meta rejects a template parameter containing a newline, a tab, or more than
 // four consecutive spaces. The composed inquiry is multi-line by design, so
 // every parameter is flattened before it is sent.
-export const WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH = 900;
+// Meta's per-parameter ceiling is 1024. Two parameters rather than one, so a
+// buyer's message never competes for budget with the product metadata in
+// front of it -- a 1000-character question used to lose its ending to a
+// single 900-character composed body, silently, after the API had accepted it
+// as valid.
+export const WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH = 1024;
 
 // A stalled provider connection must not hold a buyer's request open. Meta
 // accepting the socket and then never answering is the case a plain fetch
@@ -450,6 +455,27 @@ export const INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT = 2;
 // protective. Higher than the per-phone cap because one office NATs many
 // genuine buyers behind one address.
 export const INQUIRY_RATE_LIMIT_PER_IP = 15;
+
+// Whether cf-connecting-ip / x-forwarded-for may be believed.
+//
+// DEFAULTS TO OFF, and that default is the point. Those headers are only
+// trustworthy when every route to the origin passes through the proxy that
+// sets them -- and this origin is directly reachable on its .onrender.com
+// hostname, verified by curl. A caller who skips the edge can set
+// cf-connecting-ip to a fresh value on every request, which made the per-IP
+// limit forgeable in exactly the way the phone limit was.
+//
+// Turn it on only after the origin refuses traffic that did not come through
+// Cloudflare. Until then the socket address is used, which is real but may be
+// a shared load-balancer address -- hence the per-seller cap being the limit
+// that actually bounds a seller's exposure.
+export const INQUIRY_TRUST_PROXY_HEADERS_ENV = "INQUIRY_TRUST_PROXY_HEADERS";
+
+// Name only, never a value. Keying the IP hash defeats the offline dictionary
+// attack an unkeyed digest allows: IPv4 is 2^32, small enough to enumerate,
+// so a plain SHA-256 of an address is recoverable by anyone holding the table
+// and is therefore not the protection it looks like.
+export const INQUIRY_IP_HASH_SECRET_ENV = "INQUIRY_IP_HASH_SECRET";
 
 // The seller's absolute exposure, whatever the source. This is the only limit
 // that still holds when an attacker rotates BOTH phone numbers and addresses,
