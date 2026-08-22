@@ -20,6 +20,12 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsappService, normalizeE164 } from './whatsapp.service';
 
+/** What insertInquiry hands back: the new row plus the snapshot it was built from. */
+type InsertedInquiry = {
+  inquiry: Prisma.InquiryGetPayload<object>;
+  product: Prisma.ProductGetPayload<{ include: { seller: true } }>;
+};
+
 export interface CreateInquiryArgs {
   /** Stable per-submission key; the same value on every retry. */
   idempotencyKey: string;
@@ -168,7 +174,13 @@ export class InquiriesService {
    * can see and retry (#91 story 9). Sending first and persisting after would
    * mean every provider hiccup silently discards a real buyer.
    */
-  async create(args: CreateInquiryArgs) {
+  // Return type stated, not inferred. Its branches -- the idempotency hit,
+  // the collision winner, the insert, and both markFailed paths -- inferred
+  // to `any` together, which propagated untyped values all the way into the
+  // resolver and every log line built from them.
+  async create(
+    args: CreateInquiryArgs,
+  ): Promise<Prisma.InquiryGetPayload<object>> {
     // Canonicalised before anything is stored, so the value written is the
     // value that can actually be sent. The form shows a spaced example
     // because that is how people write numbers; the sender needs E.164.
@@ -221,44 +233,37 @@ export class InquiriesService {
     // phone number and question to an organisation that has nothing to do
     // with the listing. Nothing reassigns products today, which is exactly
     // why this would have gone unnoticed until something did.
-    const { inquiry, product } = await this.withSerializationRetry(() =>
-      this.prisma.$transaction(
-        async (tx) => {
-          const current = await tx.product.findUnique({
-            where: { id: args.productId },
-            include: { seller: true },
-          });
-          if (!current) {
-            throw new NotFoundException(`Product ${args.productId} not found`);
-          }
-
-          await this.assertWithinRateLimit(tx, {
-            buyerPhone,
-            productId: args.productId,
-            sellerId: current.sellerId,
-            ipHash,
-          });
-
-          const created = await tx.inquiry.create({
-            data: {
-              idempotencyKey: args.idempotencyKey,
-              productId: current.id,
-              // Denormalized at inquiry time: which seller received this is a
-              // historical fact and must not follow a later reassignment.
-              sellerId: current.sellerId,
-              buyerName,
-              buyerPhone,
-              message,
-              ipHash,
-              status: InquiryStatus.PENDING,
-            },
-          });
-
-          return { inquiry: created, product: current };
-        },
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-      ),
-    );
+    // P2002 means the idempotency key collided: two requests both passed the
+    // findUnique above before either inserted, and this one lost the race.
+    // The winner's row IS the correct response -- returning an error here
+    // would tell a buyer their inquiry failed when it demonstrably succeeded,
+    // and invite the retry idempotency exists to make safe.
+    //
+    // An earlier version rethrew, directly contradicting the comment sitting
+    // next to it, and the test codified the rejection as intended behaviour.
+    let created: InsertedInquiry;
+    try {
+      created = await this.insertInquiry({
+        idempotencyKey: args.idempotencyKey,
+        productId: args.productId,
+        buyerName,
+        buyerPhone,
+        message,
+        ipHash,
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const winner = await this.prisma.inquiry.findUnique({
+          where: { idempotencyKey: args.idempotencyKey },
+        });
+        if (winner) return winner;
+      }
+      throw error;
+    }
+    const { inquiry, product } = created;
 
     const sellerNumber = product.seller.whatsappNumber;
     if (!sellerNumber) {
@@ -321,9 +326,10 @@ export class InquiriesService {
     } catch (error) {
       this.logger.error(
         `Inquiry ${inquiry.id} was DELIVERED (provider id ` +
-          `${result.providerMessageId ?? 'unknown'}) but could not be marked ` +
-          `SENT; it remains PENDING and needs reconciling: ` +
-          `${error instanceof Error ? error.message : 'unknown error'}`,
+          `${sanitizeForLog(result.providerMessageId ?? 'unknown', 64)}) but ` +
+          `could not be marked SENT; it remains PENDING and needs ` +
+          `reconciling: ` +
+          `${sanitizeForLog(error instanceof Error ? error.message : 'unknown error')}`,
       );
       // Returned marked SENT even though the row is not, mirroring what the
       // FAILED path already does. Meta ACCEPTED this message; returning the
@@ -349,17 +355,18 @@ export class InquiriesService {
    * escape tells the buyer their submission failed and invites them to
    * resubmit something already recorded.
    */
-  private async markFailed<T extends { id: string }>(
-    inquiry: T,
+  private async markFailed(
+    inquiry: Prisma.InquiryGetPayload<object>,
     reason: string,
-  ): Promise<T> {
+  ): Promise<Prisma.InquiryGetPayload<object>> {
     try {
-      return (await this.updateFailed(inquiry.id, reason)) as unknown as T;
+      return await this.updateFailed(inquiry.id, reason);
     } catch (error) {
       this.logger.error(
-        `Inquiry ${inquiry.id} could not be marked FAILED (${sanitizeForLog(reason)}); it ` +
-          `remains PENDING and needs reconciling: ` +
-          `${error instanceof Error ? error.message : 'unknown error'}`,
+        `Inquiry ${inquiry.id} could not be marked FAILED ` +
+          `(${sanitizeForLog(reason)}); it remains PENDING and needs ` +
+          `reconciling: ` +
+          `${sanitizeForLog(error instanceof Error ? error.message : 'unknown error')}`,
       );
       // The row that WAS persisted, with what we know applied in memory.
       // Returning null would push the failure onto the caller, which is the
@@ -398,6 +405,58 @@ export class InquiriesService {
    * defeated by a restart or by horizontal scaling. Both index reads are
    * covered by (buyerPhone, createdAt) and (productId, createdAt).
    */
+  private async insertInquiry(args: {
+    idempotencyKey: string;
+    productId: string;
+    buyerName: string;
+    buyerPhone: string;
+    message: string;
+    ipHash: string | null;
+    // Return type stated explicitly: $transaction's generic widens to `any`
+    // through withSerializationRetry, which then propagates untyped values
+    // into the caller and every log line built from them.
+  }): Promise<InsertedInquiry> {
+    const { buyerName, buyerPhone, message, ipHash } = args;
+    return this.withSerializationRetry(() =>
+      this.prisma.$transaction(
+        async (tx) => {
+          const current = await tx.product.findUnique({
+            where: { id: args.productId },
+            include: { seller: true },
+          });
+          if (!current) {
+            throw new NotFoundException(`Product ${args.productId} not found`);
+          }
+
+          await this.assertWithinRateLimit(tx, {
+            buyerPhone,
+            productId: args.productId,
+            sellerId: current.sellerId,
+            ipHash,
+          });
+
+          const created = await tx.inquiry.create({
+            data: {
+              idempotencyKey: args.idempotencyKey,
+              productId: current.id,
+              // Denormalized at inquiry time: which seller received this is a
+              // historical fact and must not follow a later reassignment.
+              sellerId: current.sellerId,
+              buyerName,
+              buyerPhone,
+              message,
+              ipHash,
+              status: InquiryStatus.PENDING,
+            },
+          });
+
+          return { inquiry: created, product: current };
+        },
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      ),
+    );
+  }
+
   /**
    * Retries a transaction the database aborted for serialization reasons.
    *
@@ -420,15 +479,6 @@ export class InquiriesService {
       try {
         return await run();
       } catch (error) {
-        // P2002 is the idempotency key colliding: a concurrent duplicate
-        // submission lost the race. The winner's row is the correct answer,
-        // so return it rather than retrying into the same collision.
-        if (
-          error instanceof Prisma.PrismaClientKnownRequestError &&
-          error.code === 'P2002'
-        ) {
-          throw error;
-        }
         const isConflict =
           error instanceof Prisma.PrismaClientKnownRequestError &&
           error.code === 'P2034';

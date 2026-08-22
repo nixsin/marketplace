@@ -14,6 +14,7 @@ import {
   hashIp,
 } from './inquiries.service';
 import { sanitizeTemplateParam } from './whatsapp.service';
+import { randomBytes } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { WhatsappService } from './whatsapp.service';
@@ -24,6 +25,13 @@ const PRODUCT = {
   sellerId: 'org-1',
   seller: { id: 'org-1', whatsappNumber: '+919876543210' },
 };
+
+// Generated, never a committed literal. scripts/lib/repo-hygiene.test.mjs
+// scans tracked files for secret-shaped assignments and flagged the hardcoded
+// value that used to be here -- correctly: a fixture that looks like a
+// credential is indistinguishable from one at scan time, and the guard exists
+// so a real key can never be committed unnoticed.
+const TEST_IP_HASH_SECRET = randomBytes(24).toString('hex');
 
 const ARGS = {
   idempotencyKey: 'test-submission-key-0001',
@@ -388,17 +396,40 @@ describe('InquiriesService', () => {
       expect(written.data.idempotencyKey).toBe(ARGS.idempotencyKey);
     });
 
-    it('does not retry a unique-key collision into itself', async () => {
-      // P2002 means a concurrent duplicate lost the race. Retrying would just
-      // collide again; the winner's row is the correct answer.
+    it('RETURNS THE WINNER when a concurrent duplicate loses the race', async () => {
+      // Two requests both passed the findUnique before either inserted; this
+      // one lost. The winner's row IS the correct response -- an error here
+      // would tell a buyer their inquiry failed when it demonstrably
+      // succeeded, and invite the retry idempotency exists to make safe.
+      //
+      // The previous version of this test asserted the rejection as if it
+      // were intended, codifying behaviour that directly contradicted the
+      // comment sitting next to the code.
       const collision = new Prisma.PrismaClientKnownRequestError('duplicate', {
         code: 'P2002',
         clientVersion: 'test',
       });
       prisma.$transaction.mockRejectedValue(collision);
+      const winner = { id: 'inq-winner', status: 'SENT' };
+      prisma.inquiry.findUnique
+        .mockResolvedValueOnce(null) // the initial idempotency lookup
+        .mockResolvedValueOnce(winner); // the post-collision fetch
+
+      await expect(service.create(ARGS)).resolves.toBe(winner);
+      expect(whatsapp.sendInquiry).not.toHaveBeenCalled();
+    });
+
+    it('still propagates a collision it cannot resolve', async () => {
+      // If the winner cannot be read back, silence would be worse than an
+      // error -- the caller would get a success with nothing behind it.
+      const collision = new Prisma.PrismaClientKnownRequestError('duplicate', {
+        code: 'P2002',
+        clientVersion: 'test',
+      });
+      prisma.$transaction.mockRejectedValue(collision);
+      prisma.inquiry.findUnique.mockResolvedValue(null);
 
       await expect(service.create(ARGS)).rejects.toBe(collision);
-      expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -591,7 +622,7 @@ describe('InquiriesService', () => {
       // The dimension the caller cannot type. Without it, rotating E.164
       // numbers defeats every other limit here. Requires a hash secret --
       // see the storage test below for why there is no unkeyed fallback.
-      process.env.INQUIRY_IP_HASH_SECRET = 'a-sufficiently-long-test-secret';
+      process.env.INQUIRY_IP_HASH_SECRET = TEST_IP_HASH_SECRET;
       await service.create({ ...ARGS, callerIp: '203.0.113.7' });
 
       expect(prisma.inquiry.count).toHaveBeenCalledTimes(4);
@@ -606,7 +637,7 @@ describe('InquiriesService', () => {
     it('stores the address hashed, never in the clear', async () => {
       // A raw IP is personal data under DPDP sitting in a table operators
       // read to triage leads. A hash still counts repeats.
-      process.env.INQUIRY_IP_HASH_SECRET = 'a-sufficiently-long-test-secret';
+      process.env.INQUIRY_IP_HASH_SECRET = TEST_IP_HASH_SECRET;
       await service.create({ ...ARGS, callerIp: '203.0.113.7' });
 
       const written = prisma.inquiry.create.mock.calls[0][0] as {
@@ -618,14 +649,14 @@ describe('InquiriesService', () => {
 
     it('keys the hash with the configured secret', () => {
       const keyed = hashIp('203.0.113.7', {
-        INQUIRY_IP_HASH_SECRET: 'a-sufficiently-long-test-secret',
+        INQUIRY_IP_HASH_SECRET: TEST_IP_HASH_SECRET,
       });
 
       expect(keyed).toMatch(/^[0-9a-f]{64}$/);
       // Deterministic, or it could not group repeats.
       expect(
         hashIp('203.0.113.7', {
-          INQUIRY_IP_HASH_SECRET: 'a-sufficiently-long-test-secret',
+          INQUIRY_IP_HASH_SECRET: TEST_IP_HASH_SECRET,
         }),
       ).toBe(keyed);
     });
@@ -648,7 +679,7 @@ describe('InquiriesService', () => {
     it('rejects once the per-IP limit is reached', async () => {
       // Asserted directly, not merely that the count happens -- the review
       // pointed out the old test proved the query ran and nothing more.
-      process.env.INQUIRY_IP_HASH_SECRET = 'a-sufficiently-long-test-secret';
+      process.env.INQUIRY_IP_HASH_SECRET = TEST_IP_HASH_SECRET;
       prisma.inquiry.count.mockImplementation(
         ({ where }: { where: { ipHash?: string } }) =>
           Promise.resolve(where.ipHash ? INQUIRY_RATE_LIMIT_PER_IP : 0),

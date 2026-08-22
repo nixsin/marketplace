@@ -16,6 +16,7 @@ input CompleteOnboardingInput {
 input CreateInquiryInput {
   buyerName: String!
   buyerPhone: String!
+  idempotencyKey: String!
   message: String!
   productId: ID!
 }
