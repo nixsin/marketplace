@@ -69,7 +69,7 @@ const PRODUCT_QUERY = minifyGql(`
   query Product($id: ID!) {
     product(id: $id) {
       id name brand category deviceClass certifications location
-      description imageUrl details updatedAt
+      description imageUrl details updatedAt canReceiveInquiries
       seller { name gstin kycStatus }
     }
   }
@@ -78,6 +78,7 @@ const PRODUCT_QUERY = minifyGql(`
 interface ProductResponse {
   data: {
     product: {
+      canReceiveInquiries: boolean;
       id: string;
       name: string;
       brand: string;
@@ -166,6 +167,11 @@ export async function fetchProduct(id: string): Promise<ProductDetail | null> {
     brand: p.brand,
     category: p.category,
     deviceClass: p.deviceClass ?? undefined,
+    // Coerced rather than passed through: an older API that does not yet
+    // return this field would otherwise make it undefined, and `undefined &&`
+    // renders nothing -- the form would silently vanish instead of failing
+    // loudly. Absent means "cannot receive", which is the safe reading.
+    canReceiveInquiries: Boolean(p.canReceiveInquiries),
     certifications: p.certifications,
     location: p.location,
     description: p.description,
@@ -247,4 +253,91 @@ export async function fetchProductsPaged(
       seller: p.seller.name,
     })),
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Product inquiries (#91)
+// ---------------------------------------------------------------------------
+
+const CREATE_INQUIRY_MUTATION = minifyGql(`
+  mutation CreateInquiry($input: CreateInquiryInput!) {
+    createInquiry(input: $input) { id status delivered }
+  }
+`);
+
+export interface InquiryInput {
+  productId: string;
+  buyerName: string;
+  buyerPhone: string;
+  message: string;
+}
+
+export type InquiryResult =
+  | { ok: true; delivered: boolean }
+  | { ok: false; message: string };
+
+/**
+ * A POST, unlike every other call in this file.
+ *
+ * The GraphQL-over-GET pattern the reads use exists so a CDN can cache them.
+ * A mutation must never be cacheable, and POST is what guarantees that at
+ * every layer -- the Cloudflare rules bypass non-GET outright, so this cannot
+ * be edge-cached even by accident.
+ *
+ * credentials: "omit" for the same reason as the reads: these requests are
+ * anonymous by design (#91 story 3 -- a WhatsApp-shared link must work on a
+ * cold visit with no login), and sending credentials would both break CORS
+ * and quietly make the endpoint authenticated.
+ *
+ * Returns a discriminated result rather than throwing, because every failure
+ * here is something a buyer has to be shown in the form they are looking at:
+ * a validation error, a rate limit, or "we could not reach the server". None
+ * of those should reach an error boundary and blank the page they were
+ * filling in.
+ */
+export async function submitInquiry(input: InquiryInput): Promise<InquiryResult> {
+  const clientRequestId = newClientRequestId();
+
+  let res: Response;
+  try {
+    res = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...correlationHeaders(clientRequestId),
+      },
+      credentials: "omit",
+      body: JSON.stringify({
+        query: CREATE_INQUIRY_MUTATION,
+        variables: { input },
+      }),
+    });
+  } catch (error) {
+    reportApiFailure("submitInquiry", clientRequestId, error);
+    return { ok: false, message: "network" };
+  }
+
+  if (!res.ok) {
+    const error = new Error(`Failed to submit inquiry (${res.status})`);
+    reportApiFailure("submitInquiry", clientRequestId, error, res);
+    return { ok: false, message: "network" };
+  }
+
+  const payload = (await res.json()) as {
+    data?: { createInquiry?: { delivered?: boolean } | null };
+    errors?: { message?: string }[];
+  };
+
+  // GraphQL reports resolver failures as HTTP 200 with an errors array, so
+  // res.ok above proves nothing about whether this worked -- the same trap
+  // the API's own cache middleware exists to handle.
+  if (payload.errors?.length) {
+    return { ok: false, message: payload.errors[0]?.message ?? "unknown" };
+  }
+
+  const created = payload.data?.createInquiry;
+  if (!created) return { ok: false, message: "unknown" };
+
+  return { ok: true, delivered: Boolean(created.delivered) };
 }

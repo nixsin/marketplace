@@ -45,6 +45,19 @@ export class Product {
   @Field(() => Organization)
   seller: Organization;
 
+  /**
+   * Whether an inquiry can actually reach this seller (#91). Exposes only the
+   * BOOLEAN, never the number itself -- the send happens server-side, so a
+   * scraper cannot harvest seller WhatsApp numbers from the API. Story 6 is
+   * explicit that sellers must not have staff exposed to unsolicited contact,
+   * and publishing the number through a public query would do exactly that.
+   *
+   * Resolved from the already-loaded seller relation (both findById and
+   * findPage include it), so this costs no additional query.
+   */
+  @Field()
+  canReceiveInquiries: boolean;
+
   @Field()
   createdAt: Date;
 

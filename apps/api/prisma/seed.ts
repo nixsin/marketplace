@@ -297,26 +297,33 @@ async function main() {
   // reseeding is idempotent.
   const approved = await prisma.organization.upsert({
     where: { gstin: '33AAACM1234A1Z5' },
-    update: {},
+    // Set in BOTH branches on purpose: `update: {}` means an already-seeded
+    // row would never gain a newly added column, so a reseed on an existing
+    // database would silently leave this seller unable to receive inquiries.
+    update: { whatsappNumber: '+919876500001' },
     create: {
       name: 'MedTech Systems Pvt Ltd',
       gstin: '33AAACM1234A1Z5',
       type: 'SELLER',
       kycStatus: 'APPROVED',
+      whatsappNumber: '+919876500001',
     },
   });
   const pending = await prisma.organization.upsert({
     where: { gstin: '32AABCC5678D1Z9' },
-    update: {},
+    update: { whatsappNumber: '+919876500002' },
     create: {
       name: 'Coastal Medical Devices',
       gstin: '32AABCC5678D1Z9',
       type: 'SELLER',
       kycStatus: 'PENDING',
+      whatsappNumber: '+919876500002',
     },
   });
   // No GSTIN: the detail page must omit that line entirely rather than
-  // render an empty one.
+  // render an empty one. Also deliberately has NO whatsappNumber, so the
+  // fixture exercises canReceiveInquiries === false -- the inquiry form must
+  // be absent entirely rather than present and always failing (#91).
   const unverified = await prisma.organization.upsert({
     where: { gstin: '03ZZZZZ0000Z1Z0' },
     update: {},

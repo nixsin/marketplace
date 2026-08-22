@@ -360,6 +360,37 @@ export const SESSION_TOKEN_TTL = "7d";
 export const ONBOARDING_TOKEN_TTL = "15m";
 
 /** How long a requested OTP stays valid. */
+// ---------------------------------------------------------------------------
+// Product inquiries over WhatsApp (#91)
+// ---------------------------------------------------------------------------
+
+// NAMES of the environment variables holding Meta credentials -- never the
+// values. This package is committed, so a value here would enter git history
+// permanently and be readable by every CI job. Same rule as the AI roles'
+// apiKeyEnv above.
+export const WHATSAPP_ACCESS_TOKEN_ENV = "WHATSAPP_ACCESS_TOKEN";
+export const WHATSAPP_PHONE_NUMBER_ID_ENV = "WHATSAPP_PHONE_NUMBER_ID";
+
+// Pinned rather than "latest". Meta's Graph API is versioned and dated; an
+// unpinned call silently changes behaviour when they roll a version, which
+// for an outbound-message path means discovering it from failed deliveries.
+export const WHATSAPP_API_VERSION = "v21.0";
+export const WHATSAPP_API_BASE_URL = "https://graph.facebook.com";
+
+// Bounds on what a buyer can submit. Not cosmetic: message is interpolated
+// into an outbound message body, and an unbounded field is both an abuse
+// vector and a way to exceed the provider's own payload limits.
+export const INQUIRY_NAME_MAX_LENGTH = 80;
+export const INQUIRY_MESSAGE_MAX_LENGTH = 1000;
+
+// Anonymous callers can trigger outbound WhatsApp messages to real sellers,
+// so this mutation is a spam vector by construction. The API has no
+// throttling of any kind today -- not even on OTP -- so the limit lives in
+// the inquiry path itself rather than assuming a global one exists.
+export const INQUIRY_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+export const INQUIRY_RATE_LIMIT_PER_PHONE = 5;
+export const INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT = 2;
+
 export const OTP_TTL_MS = 5 * 60 * 1000;
 
 /** Idle window after which a browser session id is regenerated. */

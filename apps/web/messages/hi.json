@@ -47,7 +47,20 @@
     "errorMessage": "हम इस उत्पाद को लोड नहीं कर सके। कृपया पुनः प्रयास करें।",
     "retry": "पुनः प्रयास करें",
     "shareOnWhatsApp": "WhatsApp पर साझा करें",
-    "shareAbout": "{productName} को WhatsApp पर साझा करें"
+    "shareAbout": "{productName} को WhatsApp पर साझा करें",
+    "inquiryTitle": "इस विक्रेता से पूछें",
+    "inquiryAbout": "{productName} के बारे में पूछताछ भेजें",
+    "inquiryRecipientNote": "आपका नाम, फ़ोन नंबर और संदेश इस विक्रेता को WhatsApp पर जाएगा।",
+    "inquiryName": "आपका नाम",
+    "inquiryPhone": "आपका फ़ोन नंबर",
+    "inquiryPhoneHint": "अपना देश कोड शामिल करें, जैसे भारत के लिए +91।",
+    "inquiryMessage": "आपका प्रश्न",
+    "inquirySubmit": "पूछताछ भेजें",
+    "inquirySending": "भेजा जा रहा है…",
+    "inquirySentTitle": "पूछताछ मिल गई",
+    "inquirySentMessage": "विक्रेता के पास आपका प्रश्न और नंबर पहुँच गया है। वे आपको सीधे WhatsApp पर उत्तर देंगे।",
+    "inquiryError": "हम इसे भेज नहीं सके। कृपया अपना फ़ोन नंबर जाँचें और दोबारा प्रयास करें।",
+    "inquiryPrivacyNote": "ये विवरण हम केवल इसी विक्रेता के साथ साझा करते हैं, ताकि वे आपको उत्तर दे सकें। पूछताछ भेजने से आप मार्केटिंग संदेशों के लिए साइन अप नहीं होते।"
   },
   "languageSwitcher": {
     "label": "भाषा"
