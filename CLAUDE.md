@@ -518,7 +518,89 @@ CommonJS test run and fails with `Unexpected token 'export'` — which looks
 exactly like a file that was never transformed.
 
 
+## WhatsApp product inquiries (#91)
+
+A buyer submits an inquiry on a product page; the API records it and then
+sends it to the seller's verified WhatsApp business number through Meta's
+Cloud API. Two decisions shaped everything else, and both were the repo
+owner's, not defaults: **Cloud API rather than a `wa.me` deep link**, and
+**the seller's own business number rather than a marketplace-managed one**.
+
+**The seller's number is never sent to the browser.** The send happens
+server-side, and GraphQL exposes only `Product.canReceiveInquiries`, a
+boolean. A `wa.me` link would have put every seller's number in the page
+source, turning product pages into a scraping target — #91 story 6 is
+explicit that sellers must not have staff exposed to unsolicited contact.
+A test asserts `whatsappNumber` never appears in `schema.gql`.
+
+**Record first, send second.** `InquiriesService.create` persists the
+inquiry before calling the provider, so a bad token, a Meta outage or a
+rejected number leaves a `FAILED` row an operator can retry from rather
+than a silently discarded buyer. A seller with no number on file is the
+same path: the lead is captured for whenever they are onboarded. The
+form is hidden entirely in that case rather than shown-and-failing.
+
+**The mutation is unauthenticated on purpose** (#91 story 3: a
+WhatsApp-shared link must work on a cold visit), which makes it an
+outbound-message spam vector by construction. The API had **no rate
+limiting of any kind** before this — not even on OTP — so the limits live
+in the inquiry path: per-phone and per-phone-per-product, counted from the
+`Inquiry` table rather than an in-process counter, which would reset on
+deploy and be per-instance. When login ships this must NOT quietly become
+authenticated; record the session alongside the inquiry and keep anonymous
+submission working.
+
+**Business-initiated sends need an APPROVED TEMPLATE, not free-form text** --
+see [docs/whatsapp.md](./docs/whatsapp.md). The first implementation sent
+`type: "text"`, which WhatsApp only permits inside a 24-hour window the
+*recipient* opens by messaging first. This flow always speaks first, so every
+production send would have been rejected while every test passed. Template
+parameters are flattened before sending: Meta rejects a parameter containing a
+newline, and rejects the whole message with it.
+
+**The phone-keyed rate limits were decorative on their own** -- keyed on a
+value the caller types, so rotating E.164 numbers defeated them completely on
+an unauthenticated endpoint that emits outbound messages. There are now four:
+per phone, per phone+product, per hashed IP, and an absolute per-seller cap
+that is the only one still standing when a caller rotates both. Check and
+insert run in one `Serializable` transaction, because counting then inserting
+is a time-of-check/time-of-use race. IPs are hashed -- DPDP, and a hash counts
+repeats just as well.
+
+**Credentials are read by name at call time**, never imported as values,
+matching the `resolveApiKey` precedent. The not-configured path logs a
+warning naming only `WHATSAPP_ACCESS_TOKEN` and `WHATSAPP_PHONE_NUMBER_ID`,
+so a misconfiguration cannot leak a partial token into a public log. The
+Graph API version is pinned rather than "latest": an unpinned call changes
+behaviour when Meta rolls a version, and for an outbound path you learn
+about that from failed deliveries.
+
+**Not yet done, and blocking a real launch**: the Meta Business account,
+number verification and template approval are all account setup that
+cannot be done from this repo, so the send degrades to a logged no-op until
+those exist. #91 also flags DPDP and CDSCO review as real prerequisites
+before this goes live; neither has been checked against current law.
+
 ## Known gotchas (already solved once — don't re-derive)
+
+**On this machine `localhost:5432` is Homebrew Postgres, NOT the Docker
+container** — and both are listening. `lsof -nP -iTCP:5432 -sTCP:LISTEN`
+shows Homebrew's `postgres` bound to `127.0.0.1:5432` and `[::1]:5432`,
+and Colima's SSH forward (how Docker publishes ports on macOS) bound to
+`*:5432`. A specific-interface bind wins over the wildcard, so anything
+connecting to `localhost:5432` reaches **Homebrew**, while
+`docker compose exec postgres psql` reaches the **container**. They are
+different databases with the same name.
+
+Cost real confusion while building #91: `prisma migrate dev` and the seed
+both applied to Homebrew, the API wrote rows there happily, and
+`docker compose exec -T postgres psql -d medinstru -c 'SELECT ... FROM
+"Inquiry"'` answered `relation "Inquiry" does not exist` — which reads
+exactly like a failed migration rather than a query against the wrong
+server. Diagnose with the `lsof` above, and reach the real one explicitly:
+`/opt/homebrew/opt/postgresql@16/bin/psql
+"postgresql://postgres:postgres@127.0.0.1:5432/medinstru"`. Note that
+`apps/api/.env` points at **5433**, which matches neither.
 
 **Never run `apps/api`'s e2e suite via `docker compose exec api ...`
 against this repo's persistent dev container — it silently runs against

@@ -393,6 +393,114 @@ export const SESSION_TOKEN_TTL = "7d";
 export const ONBOARDING_TOKEN_TTL = "15m";
 
 /** How long a requested OTP stays valid. */
+// ---------------------------------------------------------------------------
+// Product inquiries over WhatsApp (#91)
+// ---------------------------------------------------------------------------
+
+// NAMES of the environment variables holding Meta credentials -- never the
+// values. This package is committed, so a value here would enter git history
+// permanently and be readable by every CI job. Same rule as the AI roles'
+// apiKeyEnv above.
+export const WHATSAPP_ACCESS_TOKEN_ENV = "WHATSAPP_ACCESS_TOKEN";
+export const WHATSAPP_PHONE_NUMBER_ID_ENV = "WHATSAPP_PHONE_NUMBER_ID";
+
+// Pinned rather than "latest". Meta's Graph API is versioned and dated; an
+// unpinned call silently changes behaviour when they roll a version, which
+// for an outbound-message path means discovering it from failed deliveries.
+// Business-initiated WhatsApp messages require a PRE-APPROVED TEMPLATE.
+// Free-form text is only deliverable inside a 24-hour customer-service window
+// that a seller opens by messaging us first -- which never happens here,
+// because the marketplace always speaks first. The name is a variable because
+// the approved template lives in the Meta account, not in this repo.
+export const WHATSAPP_TEMPLATE_NAME_ENV = "WHATSAPP_TEMPLATE_NAME";
+export const WHATSAPP_TEMPLATE_LANGUAGE_ENV = "WHATSAPP_TEMPLATE_LANGUAGE";
+export const WHATSAPP_TEMPLATE_DEFAULT_LANGUAGE = "en";
+
+// Free-form text is a DELIBERATE OPT-IN, not a fallback.
+//
+// Falling back to it whenever the template name was merely absent meant a
+// deployment with credentials but no template would send a request Meta is
+// known to reject for this flow, and mark every inquiry FAILED -- a
+// half-configured deployment failing silently rather than saying so. The
+// template name is required configuration alongside the token and phone id;
+// this flag exists only for a known-open service window in development.
+export const WHATSAPP_ALLOW_FREE_FORM_ENV = "WHATSAPP_ALLOW_FREE_FORM";
+
+// Meta rejects a template parameter containing a newline, a tab, or more than
+// four consecutive spaces. The composed inquiry is multi-line by design, so
+// every parameter is flattened before it is sent.
+// Meta's per-parameter ceiling is 1024. Two parameters rather than one, so a
+// buyer's message never competes for budget with the product metadata in
+// front of it -- a 1000-character question used to lose its ending to a
+// single 900-character composed body, silently, after the API had accepted it
+// as valid.
+export const WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH = 1024;
+
+// Product names are unbounded `String` in the schema, and the seeded catalogue
+// already contains a deliberately absurd one. Bounding the name inside the
+// summary is what guarantees the whole summary fits its parameter, so nothing
+// after it can be truncated away.
+export const INQUIRY_SUMMARY_NAME_MAX_LENGTH = 200;
+
+// A stalled provider connection must not hold a buyer's request open. Meta
+// accepting the socket and then never answering is the case a plain fetch
+// waits on indefinitely.
+export const WHATSAPP_REQUEST_TIMEOUT_MS = 10_000;
+
+export const WHATSAPP_API_VERSION = "v21.0";
+export const WHATSAPP_API_BASE_URL = "https://graph.facebook.com";
+
+// Bounds on what a buyer can submit. Not cosmetic: message is interpolated
+// into an outbound message body, and an unbounded field is both an abuse
+// vector and a way to exceed the provider's own payload limits.
+export const INQUIRY_NAME_MAX_LENGTH = 80;
+export const INQUIRY_MESSAGE_MAX_LENGTH = 1000;
+
+// Anonymous callers can trigger outbound WhatsApp messages to real sellers,
+// so this mutation is a spam vector by construction. The API has no
+// throttling of any kind today -- not even on OTP -- so the limit lives in
+// the inquiry path itself rather than assuming a global one exists.
+export const INQUIRY_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+export const INQUIRY_RATE_LIMIT_PER_PHONE = 5;
+export const INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT = 2;
+
+// Keyed on the CALLER'S NETWORK, not on anything they type. The per-phone
+// limits above are keyed on a submitted field, so rotating E.164 numbers
+// defeats them completely -- on an unauthenticated endpoint that emits
+// outbound WhatsApp messages that made the limits decorative rather than
+// protective. Higher than the per-phone cap because one office NATs many
+// genuine buyers behind one address.
+export const INQUIRY_RATE_LIMIT_PER_IP = 15;
+
+// Whether cf-connecting-ip / x-forwarded-for may be believed.
+//
+// DEFAULTS TO OFF, and that default is the point. Those headers are only
+// trustworthy when every route to the origin passes through the proxy that
+// sets them -- and this origin is directly reachable on its .onrender.com
+// hostname, verified by curl. A caller who skips the edge can set
+// cf-connecting-ip to a fresh value on every request, which made the per-IP
+// limit forgeable in exactly the way the phone limit was.
+//
+// Turn it on only after the origin refuses traffic that did not come through
+// Cloudflare. UNTIL THEN THE PER-IP LIMIT IS SKIPPED ENTIRELY -- there is no
+// per-client address available, and the socket address is the load balancer,
+// identical for every buyer, so using it collapsed everyone into one bucket
+// and locked out the whole feature after fifteen inquiries. The per-seller
+// cap is what actually bounds a seller's exposure by default.
+export const INQUIRY_TRUST_PROXY_HEADERS_ENV = "INQUIRY_TRUST_PROXY_HEADERS";
+
+// Name only, never a value. Keying the IP hash defeats the offline dictionary
+// attack an unkeyed digest allows: IPv4 is 2^32, small enough to enumerate,
+// so a plain SHA-256 of an address is recoverable by anyone holding the table
+// and is therefore not the protection it looks like.
+export const INQUIRY_IP_HASH_SECRET_ENV = "INQUIRY_IP_HASH_SECRET";
+
+// The seller's absolute exposure, whatever the source. This is the only limit
+// that still holds when an attacker rotates BOTH phone numbers and addresses,
+// so it is the one that actually bounds how much spam a seller can be made to
+// receive. Deliberately generous enough that real demand never reaches it.
+export const INQUIRY_RATE_LIMIT_PER_SELLER = 60;
+
 export const OTP_TTL_MS = 5 * 60 * 1000;
 
 /** Idle window after which a browser session id is regenerated. */

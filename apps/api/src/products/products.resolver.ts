@@ -1,10 +1,23 @@
-import { Args, ID, Int, Query, Resolver } from '@nestjs/graphql';
+import {
+  Args,
+  ID,
+  Int,
+  Parent,
+  Query,
+  ResolveField,
+  Resolver,
+} from '@nestjs/graphql';
 import { ProductsService } from './products.service';
 import { Product } from './models/product.model';
+import { isE164 } from '../inquiries/whatsapp.service';
 import { ProductPage } from './models/product-page.model';
 import { ProductsPaged } from './models/products-paged.model';
 
-@Resolver()
+// Explicit parent type, required for the canReceiveInquiries field resolver
+// below. A bare @Resolver() cannot host @ResolveField -- Nest raises
+// UndefinedResolverTypeError at boot, not at build, so this fails as a
+// container crash rather than a compile error.
+@Resolver(() => Product)
 export class ProductsResolver {
   constructor(private readonly productsService: ProductsService) {}
 
@@ -39,5 +52,23 @@ export class ProductsResolver {
       page ?? undefined,
       pageSize ?? undefined,
     );
+  }
+
+  /**
+   * True when the seller has a verified WhatsApp business number on file.
+   * The number itself is deliberately never exposed -- see the field's own
+   * comment on the Product model.
+   */
+  @ResolveField(() => Boolean)
+  canReceiveInquiries(
+    @Parent() product: { seller?: { whatsappNumber?: string | null } },
+  ): boolean {
+    // The SAME E.164 rule the send applies, not merely "is it non-empty".
+    // The column is free text, so a malformed number would otherwise advertise
+    // that the product can receive inquiries and render the form, while every
+    // send fails validation before it leaves the process -- a buyer typing a
+    // real question into a form that could never work.
+    const number = product.seller?.whatsappNumber;
+    return typeof number === 'string' && isE164(number);
   }
 }

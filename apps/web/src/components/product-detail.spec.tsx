@@ -19,6 +19,7 @@ const fullProduct: ProductDetail = {
   imageUrl: "https://example.com/ultrasound.jpg",
   details: { probeType: "Convex", displaySize: "7in" },
   updatedAt: "2026-08-18T23:37:48.872Z",
+  canReceiveInquiries: false,
   seller: {
     name: "MedTech Systems Pvt Ltd",
     gstin: "33AAACM1234A1Z5",
@@ -35,6 +36,7 @@ const minimalProduct: ProductDetail = {
   location: "Pune, India",
   description: "Stainless steel, autoclavable forceps set.",
   updatedAt: "2026-08-18T23:37:48.872Z",
+  canReceiveInquiries: false,
   seller: {
     name: "SteelCraft Direct",
     kycStatus: "PENDING",
@@ -268,5 +270,29 @@ describe("share link origin (server render vs. hydrated browser)", () => {
       link.getAttribute("href")!.replace("https://wa.me/?text=", ""),
     );
     expect(message.split("\n")[0]).toBe(fullProduct.name);
+  });
+});
+
+describe("inquiry form visibility (#91)", () => {
+  // Verified by hand against the running app first, then pinned here: the
+  // manual check initially "failed" because next-intl serializes the whole
+  // message bundle into the page, so the form's LABELS appear in the HTML
+  // whether or not the form renders. Assert on a form control, never on
+  // label text, or this test passes for a page that shows no form at all.
+  it("offers the form when the seller can receive inquiries", () => {
+    renderDetail({ ...fullProduct, canReceiveInquiries: true });
+    expect(
+      screen.getByRole("textbox", { name: /your phone number/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides it entirely when the seller has no number on file", () => {
+    // Hidden, not shown-and-failing. A form that always errors is worse than
+    // no form, and the API records the lead either way for a seller who gets
+    // onboarded later.
+    renderDetail({ ...fullProduct, canReceiveInquiries: false });
+    expect(
+      screen.queryByRole("textbox", { name: /your phone number/i }),
+    ).not.toBeInTheDocument();
   });
 });

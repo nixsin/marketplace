@@ -5,6 +5,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { ShieldCheck } from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { WhatsAppIcon } from "@/components/icons/whatsapp-icon";
+import { InquiryForm } from "@/components/inquiry-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -30,6 +31,14 @@ export interface ProductDetail {
   // TECHNICAL_PLAN.md §6, deliberately deferred.
   details?: Record<string, unknown>;
   updatedAt: string;
+  /**
+   * Whether an inquiry can actually reach this seller (#91). The seller's
+   * WhatsApp number itself is never sent to the browser -- the send happens
+   * server-side -- so a scraper cannot harvest seller numbers by loading
+   * product pages. Story 6 is explicit about not exposing seller staff to
+   * unsolicited contact.
+   */
+  canReceiveInquiries: boolean;
   seller: {
     name: string;
     gstin?: string;
@@ -230,6 +239,19 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
           </div>
         </div>
       </section>
+
+      {/* Sits after the seller block on purpose: #91 story 11 says trust
+          matters more than a nice preview card for medical devices, so the
+          buyer should see who they are contacting -- name, GSTIN, KYC
+          status -- before the form asking for their number.
+
+          Hidden entirely when the seller has no number on file, rather than
+          shown-and-failing: a form that always errors is worse than no form,
+          and the API records the lead either way for a seller who is
+          onboarded later. */}
+      {product.canReceiveInquiries && (
+        <InquiryForm productId={product.id} productName={product.name} />
+      )}
 
       <p className="text-xs text-muted-foreground">
         {t("lastUpdated", {
