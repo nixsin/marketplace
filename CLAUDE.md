@@ -696,6 +696,16 @@ point**: `.slice()` counts UTF-16 code units and splits surrogate pairs, which
 matters most for the product name, where a 200-character cap is ordinary and
 device names carry CJK and symbols routinely.
 
+**The recipient's number keeps its leading `+`.** Meta's send-messages guide
+recommends it explicitly — "If the plus sign is omitted, your business phone
+number's country calling code is prepended to the customer's phone number" —
+and their canonical example sends `"to": "+16505551234"`. Stripping it would
+risk misdelivery for every buyer whose country differs from the business
+number's, which for an India-and-US marketplace is most of them. Raised once
+as a High-severity finding claiming the opposite; checked against the
+documentation rather than acted on, and recorded at the call site so it is not
+"cleaned up" later.
+
 **Two template parameters, not one.** `{{1}}` is the product/contact summary,
 `{{2}}` the buyer's own words. A single combined parameter meant a near-limit
 question lost its ending to the metadata in front of it — silently, after Meta

@@ -134,6 +134,18 @@ export class WhatsappService {
     // Unreachable today because nothing but the seed writes this column, and
     // it writes canonical values. It stops being unreachable the moment
     // seller onboarding ships, which is why it is worth an extra call now.
+    // The leading + is KEPT, deliberately, and this is not a detail to
+    // "clean up". Meta's own send-messages guide: "We highly recommend that
+    // you include both the plus sign and country calling code when sending a
+    // message to a customer. If the plus sign is omitted, your business phone
+    // number's country calling code is prepended to the customer's phone
+    // number." Their canonical example sends `"to": "+16505551234"`.
+    //
+    // So stripping it would not be cosmetic -- it would risk misdelivery for
+    // every buyer whose country differs from the business number's, which for
+    // an India-and-US marketplace is a large fraction of them. Raised once as
+    // a High-severity finding claiming the opposite; checked against the
+    // documentation rather than acted on.
     const recipient = normalizeE164(toE164);
     if (!recipient) {
       return { ok: false, reason: 'seller number is not valid E.164' };

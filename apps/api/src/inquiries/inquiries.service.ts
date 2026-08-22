@@ -315,7 +315,14 @@ export function sanitizeForLog(value: string, max = 200): string {
   const flat = value
     .replace(/[\r\n\t\u2028\u2029]+/g, ' ')
     .replace(/[\p{Cc}\p{Cf}]/gu, '');
-  return flat.length > max ? `${flat.slice(0, max - 1)}\u2026` : flat;
+  // Truncated by CODE POINT, like the other two truncations in this feature.
+  // This one was missed when they were fixed -- the class was "cuts that
+  // split a surrogate pair", and fixing the two cited instances left the
+  // third. Provider error text is the most likely of the three to carry a
+  // non-BMP character, since it can echo arbitrary input back.
+  return [...flat].length > max
+    ? `${truncateByCodePoint(flat, max - 1)}\u2026`
+    : flat;
 }
 
 @Injectable()

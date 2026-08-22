@@ -21,6 +21,14 @@ and for the case where a reply window genuinely exists.
 
 ## The template contract
 
+**A single space, not a visible separator.** The flattener used ` · ` — three
+characters replacing one — which expanded a message *between* the DTO's
+1000-character limit and Meta's 1024, so a fourteen-line spec list at the cap
+lost its ending silently. Flattening may now only contract. The summary stays
+readable because its own labels (`From:`, `Product:`, `Ref:`, `Link:`) carry
+the structure.
+
+
 The approved template must have a **body with exactly two placeholders**:
 
 ```
@@ -41,9 +49,30 @@ parameters give the buyer's words their own budget.
 **Parameters are flattened before sending.** Meta rejects a parameter
 containing a newline, a tab, or more than four consecutive spaces — and
 rejects the *whole message*, not just the parameter. The composed inquiry is
-deliberately multi-line, so `sanitizeTemplateParam` replaces newlines with
-` · `, collapses whitespace runs, and truncates. Without it every send fails
+deliberately multi-line, so `sanitizeTemplateParam` replaces newline runs
+with a **single space**, collapses whitespace runs, and truncates by code
+point. Without it every send fails
 validation.
+
+## The recipient's number keeps its leading `+`
+
+`sendInquiry` sends the canonical E.164 form, plus sign included. That is what
+Meta recommends, not merely what they tolerate — from their send-messages
+guide:
+
+> We highly recommend that you include both the plus sign and country calling
+> code when sending a message to a customer. If the plus sign is omitted, your
+> business phone number's country calling code is prepended to the customer's
+> phone number.
+
+Their canonical example sends `"to": "+16505551234"`.
+
+**Stripping the `+` would risk misdelivery**, not tidy the payload: any buyer
+whose country differs from the business number's would have the wrong calling
+code prepended. For a marketplace spanning India and the US that is a large
+fraction of them. Meta also accepts hyphens, parentheses and spaces here, but
+the canonical form is what this code stores and sends, so there is nothing to
+gain from the looser spellings.
 
 ## Environment variables
 

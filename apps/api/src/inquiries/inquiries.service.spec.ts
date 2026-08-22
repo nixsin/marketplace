@@ -187,6 +187,18 @@ describe('sanitizeForLog', () => {
     expect(out).toHaveLength(200);
     expect(out.endsWith('\u2026')).toBe(true);
   });
+
+  it('does not split a surrogate pair when it truncates', () => {
+    // The THIRD instance of this class. The template parameter and the
+    // product name were fixed together; this one was missed, which is what
+    // "fix the class, not the cited instance" is supposed to prevent.
+    // Provider error text is the likeliest of the three to carry a non-BMP
+    // character, since it can echo arbitrary input back.
+    const out = sanitizeForLog('x'.repeat(199) + '\u{1F600}'.repeat(10), 200);
+    const unpaired =
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    expect(unpaired.test(out)).toBe(false);
+  });
 });
 
 describe('publicSiteUrl', () => {
