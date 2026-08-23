@@ -185,6 +185,41 @@ const FAILURE_REASON_MAX_LENGTH = 500;
  * they need to reply; a seller who clicks a localhost link concludes the
  * marketplace is broken.
  */
+/**
+ * Loopback or the unspecified address, in any spelling.
+ *
+ * A list of exact strings kept missing spellings of the same thing: `[::1]`
+ * because URL.hostname keeps the brackets, then `localhost.` with the root
+ * dot, `127.0.0.2` (the whole 127/8 is loopback), and `::ffff:127.0.0.1`,
+ * which URL normalises to the hex form `::ffff:7f00:1`. Each was a different
+ * way of writing "this machine" that the previous check let through into a
+ * seller's message as a link nobody can open.
+ *
+ * PRIVATE and LINK-LOCAL addresses are deliberately NOT rejected. Loopback
+ * means "unconfigured" -- it is the fallback this whole function exists to
+ * catch. A 10.x or 192.168.x origin is the opposite: someone typed it, and an
+ * internal or staging deployment where that address is exactly right would
+ * have its links silently dropped if this refused them.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  // Brackets around an IPv6 literal, and the root dot, are spelling rather
+  // than identity.
+  const host = hostname
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '')
+    .toLowerCase();
+
+  if (host === 'localhost' || host === '0.0.0.0' || host === '::') return true;
+  if (host === '::1') return true;
+  // All of 127.0.0.0/8, not just .1.
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  // IPv4-mapped IPv6, in either the dotted or the normalised hex form.
+  if (/^::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(host)) return true;
+
+  return false;
+}
+
 export function publicSiteUrl(siteUrl: string = SITE_URL): string | null {
   if (!siteUrl) return null;
 
@@ -201,12 +236,7 @@ export function publicSiteUrl(siteUrl: string = SITE_URL): string | null {
   // outbound message.
   if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
 
-  // Loopback in any spelling, plus the unspecified address a container binds.
-  // URL.hostname keeps the brackets around an IPv6 literal, so '::1' arrives
-  // as '[::1]' and a bare comparison missed it -- caught by the test rather
-  // than by reading.
-  const local = ['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0'];
-  if (local.includes(url.hostname)) return null;
+  if (isLoopbackHost(url.hostname)) return null;
 
   // ORIGIN, not the string as given. The previous version returned the input
   // with a trailing slash trimmed, so a query, a path or embedded credentials
@@ -229,9 +259,14 @@ export function publicSiteUrl(siteUrl: string = SITE_URL): string | null {
  * no way to reply to it, which is worse than receiving nothing: it looks
  * answerable and is not.
  *
- * Ordering alone would protect the contact line, but the name is bounded too
- * so the whole summary fits deterministically rather than relying on nothing
- * after it mattering.
+ * Ordering alone would protect the contact line; bounding the name as well
+ * keeps the whole summary comfortably inside the parameter budget. NOT a
+ * guarantee, and the earlier wording claiming one was wrong: productId is
+ * interpolated twice and the configured origin is unbounded, so nothing here
+ * proves a ceiling. What holds is measured rather than asserted -- the worst
+ * realistic summary is 443 of 1024 characters, and a test pins that -- and
+ * the ordering is what makes the remaining risk survivable, since truncation
+ * eats the link before it reaches the contact line.
  *
  * Buyer-supplied values are labelled and NOT escaped: WhatsApp text bodies are
  * not markup, so escaping would corrupt legitimate content. The protection

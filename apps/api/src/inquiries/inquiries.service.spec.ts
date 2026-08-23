@@ -224,6 +224,30 @@ describe('publicSiteUrl', () => {
   });
 
   it.each([
+    ['http://localhost.', 'localhost with the root dot'],
+    ['http://127.0.0.2', 'the rest of 127/8, not just .1'],
+    ['http://[::ffff:127.0.0.1]', 'IPv4-mapped loopback'],
+    ['http://[::1]', 'IPv6 loopback in brackets'],
+    ['http://0.0.0.0', 'the unspecified address'],
+  ])('rejects %s (%s)', (value) => {
+    // Each is a different SPELLING of "this machine". A list of exact strings
+    // kept missing one, which is why the check is now a predicate.
+    expect(publicSiteUrl(value)).toBeNull();
+  });
+
+  it.each([
+    ['http://10.0.0.1', 'RFC1918 private'],
+    ['http://169.254.1.1', 'link-local'],
+  ])('ACCEPTS %s (%s), deliberately', (value) => {
+    // Loopback means "unconfigured" -- it is the fallback this function
+    // exists to catch. A private address is the opposite: someone typed it,
+    // and an internal or staging deployment where it is exactly right would
+    // have its links silently dropped if this refused them. Raised as a
+    // finding; declined with this reasoning rather than complied with.
+    expect(publicSiteUrl(value)).toBe(value);
+  });
+
+  it.each([
     ['https://example.com?x=1', 'a query string'],
     ['https://user:pass@example.com', 'embedded credentials'],
     ['https://example.com/base/', 'a path'],
@@ -247,6 +271,53 @@ describe('publicSiteUrl', () => {
 
   it('accepts a real public origin, without a trailing slash', () => {
     expect(publicSiteUrl('https://laxair.shop/')).toBe('https://laxair.shop');
+  });
+});
+
+describe('the outbound summary fits its parameter budget', () => {
+  // The comment above buildInquirySummary used to claim the summary "fits
+  // deterministically". It does not: productId is interpolated twice and the
+  // configured origin is unbounded, so only productName is actually capped.
+  // The margin is large, but a claim nothing checks is how the message-length
+  // bug in this same feature stayed hidden -- so it is measured here.
+  it('survives the worst realistic inputs with room to spare', () => {
+    const summary = buildInquirySummary({
+      // Far past the 200-char cap, to prove the cap does the work.
+      productName: 'X'.repeat(400),
+      // A cuid, which is what this column actually holds.
+      productId: 'c'.repeat(25),
+      buyerName: 'N'.repeat(80),
+      buyerPhone: `+${'9'.repeat(14)}`,
+      siteUrl: 'https://laxair.shop',
+    });
+
+    // Asserts NOT TRUNCATED, which is the property. An earlier version of
+    // this assertion demanded the sanitised length equal the raw one, and
+    // failed at 441 vs 443 -- the summary contains blank lines, so flattening
+    // legitimately contracts it. That is the rule working, not breaking.
+    const sent = sanitizeTemplateParam(summary);
+    expect(sent.length).toBeLessThan(WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH);
+    expect(sent.length).toBeLessThanOrEqual(summary.length);
+    // The link is the last line, so its survival proves nothing was cut.
+    expect(sent).toContain('/en/products/');
+  });
+
+  it('keeps the contact line when something does overflow', () => {
+    // The ordering is what makes the remaining risk survivable: truncation
+    // eats from the end, so it reaches the link before the phone number.
+    const summary = buildInquirySummary({
+      productName: 'X'.repeat(400),
+      productId: 'c'.repeat(25),
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+      // An absurd but structurally valid origin, standing in for the
+      // unbounded input nothing caps.
+      siteUrl: `https://${'sub.'.repeat(200)}example.com`,
+    });
+    const sent = sanitizeTemplateParam(summary);
+
+    expect(sent).toContain('Asha Rao');
+    expect(sent).toContain('+919000000001');
   });
 });
 
