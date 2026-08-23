@@ -180,7 +180,17 @@ export type InsertedInquiry =
  * database problem. Those surface on the first attempt now.
  */
 function isRetryableWriteError(error: unknown): boolean {
-  // Raw connection failures and unknown-shape errors land here.
+  // A VALIDATION error is a programming mistake -- a malformed update payload
+  // -- and it is not a PrismaClientKnownRequestError, so the fallthrough below
+  // was retrying it three times and then swallowing it. That is precisely the
+  // case this function was added to stop, and it was slipping past the check
+  // meant to catch it.
+  if (error instanceof Prisma.PrismaClientValidationError) return false;
+  // An engine panic leaves the client unusable; retrying cannot help.
+  if (error instanceof Prisma.PrismaClientRustPanicError) return false;
+
+  // Raw connection failures, initialisation errors and unknown-shape errors
+  // land here, and all of them can plausibly succeed on a second attempt.
   if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return true;
 
   // P2025 not found, P2002 unique violation, P2003 FK violation and friends
@@ -193,6 +203,7 @@ function isRetryableWriteError(error: unknown): boolean {
     'P1017', // server closed the connection
     'P2024', // timed out fetching a connection from the pool
     'P2034', // write conflict / deadlock
+    'P2037', // too many database connections -- transient under load
   ]).has(error.code);
 }
 

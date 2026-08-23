@@ -976,9 +976,31 @@ describe('InquiriesService', () => {
       expect(result.status).toBe(InquiryStatus.SENT);
     });
 
+    it('does NOT retry a Prisma VALIDATION error', async () => {
+      // The case the discrimination was added for, slipping past it: a
+      // malformed update payload raises PrismaClientValidationError, which is
+      // NOT a PrismaClientKnownRequestError -- so it fell through to the
+      // "retry anything unrecognised" branch, was retried three times and
+      // then swallowed, presenting as a flaky database.
+      prisma.inquiry.update.mockRejectedValue(
+        new Prisma.PrismaClientValidationError('bad payload', {
+          clientVersion: 'test',
+        }),
+      );
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.1',
+      });
+
+      await service.create(ARGS);
+
+      expect(prisma.inquiry.update).toHaveBeenCalledTimes(1);
+    });
+
     it.each([
       ['P1017', 'server closed the connection'],
       ['P2024', 'pool timeout'],
+      ['P2037', 'too many database connections'],
     ])('DOES retry %s (%s)', async (code) => {
       const transient = new Prisma.PrismaClientKnownRequestError('boom', {
         code,
