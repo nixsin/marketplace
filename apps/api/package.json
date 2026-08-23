@@ -22,7 +22,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:e2e:migrate": "dotenv -e .env.test -- node scripts/ensure-test-db.mjs && dotenv -e .env.test -- prisma migrate deploy",
     "test:load": "node scripts/load-test.mjs",
-    "seed": "tsx prisma/seed.ts"
+    "seed": "tsx prisma/seed.ts",
+    "seller:whatsapp": "tsx scripts/set-seller-whatsapp.ts"
   },
   "dependencies": {
     "@apollo/server": "^5.5.1",

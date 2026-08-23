@@ -201,6 +201,31 @@ This was originally deferred as a launch prerequisite, on the grounds that the
 send is a no-op without credentials. That reasoning was too weak — enabling
 the hazard takes one environment variable and no code change.
 
+## Sellers need a number before any of this does anything
+
+`Organization.whatsappNumber` is **read** by `Product.hasInquiryContact` and by
+the delivery path, and **written by nothing** — there is no seller onboarding,
+no admin UI, no mutation. The seed writes `+999…`, an ITU-reserved range
+assigned to no operator, deliberately, so a test run can never message a
+stranger.
+
+So with credentials perfectly configured, every send still goes to a number
+that cannot receive it. Until onboarding exists, use the script:
+
+```bash
+pnpm --filter api seller:whatsapp --seller "Northline Traders" --number "+91 98765 43210"
+```
+
+It prints what it would change and writes nothing without `--yes`, because the
+failure mode is messaging a person who never agreed to it. The number is
+canonicalised with the same `normalizeE164` the delivery path uses — stored in
+any other shape, the seller reads as uncontactable, which is a silent failure
+this feature has already had once.
+
+A mutation would need authentication and an authorisation model, neither of
+which exists; a script run by someone who already holds database credentials
+adds no new exposure and is the same trust level as the seed.
+
 ## Still required before going live
 
 - Meta Business account, a verified sending number, and an **approved

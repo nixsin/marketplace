@@ -613,6 +613,16 @@ opens — a real reduction, not a fix. Only a request-level control at the edge
 bounds requests, which is why it is the first thing to do in #152 rather than
 merely the cheapest.
 
+**No seller can receive an inquiry until someone writes their number, and
+nothing in the app writes it.** `Organization.whatsappNumber` is read by
+`Product.hasInquiryContact` and by the delivery path; the only writer is the
+seed, which deliberately writes unroutable `+999…`. So a perfectly configured
+provider still sends every message to a number that cannot receive it. Until
+seller onboarding exists, `pnpm --filter api seller:whatsapp` sets one — it
+requires `--yes`, prints the blast radius first, and canonicalises through the
+shared `normalizeE164`, because a number stored in any other shape makes the
+seller read as uncontactable.
+
 **Two env vars, documented in `apps/api/.env.example` by name only.**
 `INQUIRY_IP_HASH_SECRET` keys the HMAC that stores a submitter's address as a
 hash; **without it nothing breaks and the per-IP limit simply does not run.**
