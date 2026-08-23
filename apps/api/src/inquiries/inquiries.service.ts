@@ -165,6 +165,16 @@ export type InsertedInquiry =
    */
   | { inserted: false; inquiry: Prisma.InquiryGetPayload<object> };
 
+/**
+ * How many times an outcome write is attempted before giving up.
+ *
+ * Three, with a short pause between: a failing write here is almost always
+ * transient -- a connection recycled, a brief pool exhaustion -- and one
+ * attempt turned that into a permanently wrong row.
+ */
+const OUTCOME_WRITE_ATTEMPTS = 3;
+const OUTCOME_WRITE_RETRY_MS = 50;
+
 /** Provider text on a column an operator reads, not an unbounded sink. */
 const FAILURE_REASON_MAX_LENGTH = 500;
 
@@ -658,34 +668,91 @@ export class InquiriesService {
     // FREQUENCY: requires a database failure inside the window between an
     // accepted send and its status write -- milliseconds, and only while the
     // provider is configured at all.
-    try {
-      return await this.prisma.inquiry.update({
-        where: { id: inquiry.id },
-        data: {
-          status: InquiryStatus.SENT,
-          providerMessageId: result.providerMessageId,
-        },
-      });
-    } catch (error) {
-      this.logger.error(
-        `Inquiry ${inquiry.id} was DELIVERED (provider id ` +
-          `${sanitizeForLog(result.providerMessageId ?? 'unknown', 64)}) but ` +
-          `could not be marked SENT; it remains PENDING and needs ` +
-          `reconciling: ` +
-          `${sanitizeForLog(error instanceof Error ? error.message : 'unknown error')}`,
-      );
-      // Returned as SENT even though the row is not. Meta ACCEPTED this
-      // message; returning the untouched PENDING row made the resolver report
-      // delivered:false and show the buyer "we could not reach the seller"
-      // for a message that had in fact arrived. The database inconsistency is
-      // real and logged for reconciliation, but the buyer should be told what
-      // actually happened, not what the failed write recorded.
-      return {
-        ...inquiry,
+    const written = await this.writeOutcome(
+      inquiry,
+      {
         status: InquiryStatus.SENT,
         providerMessageId: result.providerMessageId,
-      };
+      },
+      'an accepted send',
+    );
+    if (written) return written;
+
+    // The write ultimately failed, and the provider has ALREADY accepted the
+    // message. Returned as SENT even though the row is not: reporting
+    // otherwise would tell the buyer we could not reach the seller for a
+    // message that had in fact arrived, and invite a retry that duplicates.
+    //
+    // The row now says PENDING with nothing else set, which the #151 sweeper
+    // reads as "never attempted" -- so it would re-send this. The log line
+    // above carries the provider message id precisely so a human can tell
+    // these apart until that sweeper knows how to.
+    this.logger.error(
+      `Inquiry ${inquiry.id} was DELIVERED (provider id ` +
+        `${sanitizeForLog(result.providerMessageId ?? 'unknown', 64)}) but ` +
+        `remains PENDING; do NOT re-send it.`,
+    );
+    return {
+      ...inquiry,
+      status: InquiryStatus.SENT,
+      providerMessageId: result.providerMessageId,
+    };
+  }
+
+  /**
+   * Writes a delivery outcome onto the row, retrying a transient failure.
+   *
+   * WHY RETRY AT ALL, when the caller already degrades gracefully: because
+   * the fallback leaves the row LYING about what happened, and the lie is the
+   * dangerous kind. A send Meta accepted whose status write failed leaves
+   * `status: PENDING`, `providerMessageId: null`, `failureReason: null` --
+   * which is byte-identical to a row that was never attempted. The recovery
+   * sweep in #151 reads exactly those columns, so it would classify an
+   * already-delivered inquiry as safe to send and put it on the seller's
+   * phone a second time. That is the one outcome this whole feature is built
+   * to avoid.
+   *
+   * A failing write here is almost always transient -- a recycled connection,
+   * a moment of pool exhaustion -- so retrying converts most of these into
+   * rows that tell the truth. It cannot close the window entirely: if the
+   * database is genuinely gone, nothing can be written, and the log line is
+   * the only record. That residual is recorded in #151 as something the
+   * sweeper must handle, not something a retry makes go away.
+   */
+  private async writeOutcome(
+    inquiry: Prisma.InquiryGetPayload<object>,
+    data: Prisma.InquiryUpdateInput,
+    describe: string,
+  ): Promise<Prisma.InquiryGetPayload<object> | null> {
+    for (let attempt = 1; attempt <= OUTCOME_WRITE_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.prisma.inquiry.update({
+          where: { id: inquiry.id },
+          data,
+        });
+      } catch (error) {
+        const last = attempt === OUTCOME_WRITE_ATTEMPTS;
+        const detail = sanitizeForLog(
+          error instanceof Error ? error.message : 'unknown error',
+        );
+        if (last) {
+          this.logger.error(
+            `Inquiry ${inquiry.id}: ${describe} could not be recorded after ` +
+              `${OUTCOME_WRITE_ATTEMPTS} attempts; the row does not reflect ` +
+              `what happened and needs reconciling: ${detail}`,
+          );
+          return null;
+        }
+        this.logger.warn(
+          `Inquiry ${inquiry.id}: ${describe} write failed, retrying ` +
+            `(${attempt}/${OUTCOME_WRITE_ATTEMPTS - 1}): ${detail}`,
+        );
+        await new Promise((resolve) =>
+          setTimeout(resolve, OUTCOME_WRITE_RETRY_MS),
+        );
+      }
     }
+    return null;
   }
 
   /**
@@ -700,21 +767,18 @@ export class InquiriesService {
     reason: string,
   ): Promise<Prisma.InquiryGetPayload<object>> {
     const failureReason = sanitizeForLog(reason, FAILURE_REASON_MAX_LENGTH);
-    try {
-      return await this.prisma.inquiry.update({
-        where: { id: inquiry.id },
-        data: { failureReason },
-      });
-    } catch (error) {
-      // Same contract as markFailed: the lead is already saved, so this must
-      // not become the buyer's problem.
-      this.logger.error(
-        `Inquiry ${inquiry.id} had an ambiguous outcome that could not be ` +
-          `recorded: ` +
-          `${sanitizeForLog(error instanceof Error ? error.message : 'unknown error')}`,
-      );
-      return { ...inquiry, failureReason };
-    }
+
+    // Status deliberately untouched: PENDING is what is true. Only the reason
+    // is stored, so a later sweep can tell an attempted-but-unknown row from
+    // one that was never attempted at all.
+    const written = await this.writeOutcome(
+      inquiry,
+      { failureReason },
+      'an ambiguous outcome',
+    );
+    if (written) return written;
+
+    return { ...inquiry, failureReason };
   }
 
   /**
@@ -728,37 +792,24 @@ export class InquiriesService {
     inquiry: Prisma.InquiryGetPayload<object>,
     reason: string,
   ): Promise<Prisma.InquiryGetPayload<object>> {
-    try {
-      return await this.prisma.inquiry.update({
-        where: { id: inquiry.id },
-        // Truncated because this is provider-supplied text on a column an
-        // operator reads, not a place to accumulate arbitrary length.
-        data: {
-          status: InquiryStatus.FAILED,
-          // Flattened before STORAGE, not only before logging. This is
-          // provider-supplied text on a column an operator reads and may
-          // paste elsewhere; newlines and control characters in it are the
-          // same hazard one step removed.
-          failureReason: sanitizeForLog(reason, FAILURE_REASON_MAX_LENGTH),
-        },
-      });
-    } catch (error) {
-      this.logger.error(
-        `Inquiry ${inquiry.id} could not be marked FAILED ` +
-          `(${sanitizeForLog(reason)}); it remains PENDING and needs ` +
-          `reconciling: ` +
-          `${sanitizeForLog(error instanceof Error ? error.message : 'unknown error')}`,
-      );
-      // The row that WAS persisted, with what we know applied in memory.
-      // Re-reading from the database that just failed is no more likely to
-      // work, and pushing the error to the caller is the very thing this
-      // catch exists to prevent.
-      return {
-        ...inquiry,
-        status: InquiryStatus.FAILED,
-        failureReason: sanitizeForLog(reason, FAILURE_REASON_MAX_LENGTH),
-      };
-    }
+    // Flattened before STORAGE, not only before logging: this is
+    // provider-supplied text on a column an operator reads and may paste
+    // elsewhere.
+    const failureReason = sanitizeForLog(reason, FAILURE_REASON_MAX_LENGTH);
+
+    const written = await this.writeOutcome(
+      inquiry,
+      { status: InquiryStatus.FAILED, failureReason },
+      'a delivery failure',
+    );
+    if (written) return written;
+
+    // The row that WAS persisted, with what we know applied in memory.
+    // Re-reading from the database that just failed is no more likely to
+    // work, and pushing the error to the caller is the very thing this exists
+    // to prevent -- the inquiry is already saved, so telling the buyer it
+    // failed would invite them to resubmit something recorded.
+    return { ...inquiry, status: InquiryStatus.FAILED, failureReason };
   }
 
   private async insertInquiry(args: {

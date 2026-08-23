@@ -715,6 +715,17 @@ the end and product names are unbounded `String` in the schema: a long enough
 name pushed the buyer's phone number off entirely, so the seller received an
 inquiry that looked answerable and was not.
 
+**An outcome write is RETRIED, because the fallback leaves the row lying.**
+When a send Meta accepted fails to be marked `SENT`, the row keeps
+`status: PENDING` with no `providerMessageId` and no `failureReason` — which
+is byte-identical to a row that was never attempted. The #151 sweep reads
+exactly those columns, so it would re-send an already-delivered inquiry and
+put it on the seller's phone twice, which is the one outcome this feature is
+built to avoid. Such a write almost always fails transiently, so three
+attempts convert most of them into rows that tell the truth. It cannot close
+the window entirely — a genuinely dead database can record nothing — and that
+residual is a requirement on the sweep rather than something a retry removes.
+
 **Record first, then deliver, and delivery can never fail the mutation.** By
 the time any delivery code runs the lead is saved, so every branch either
 updates the row or logs and returns what it knows. Two paths are deliberately

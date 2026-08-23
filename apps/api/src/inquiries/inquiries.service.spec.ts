@@ -922,6 +922,53 @@ describe('InquiriesService', () => {
       expect(written.data.failureReason).not.toContain('\t');
     });
 
+    it('RETRIES a failing outcome write before giving up', async () => {
+      // The fallback leaves the row LYING about what happened, and it is the
+      // dangerous kind of lie: a send Meta accepted whose status write failed
+      // leaves PENDING with no providerMessageId and no failureReason --
+      // byte-identical to a row that was never attempted. The #151 sweep
+      // reads exactly those columns, so it would re-send an already-delivered
+      // inquiry and put it on the seller's phone twice.
+      //
+      // A failing write here is almost always transient, so retrying converts
+      // most of these into rows that tell the truth.
+      let attempts = 0;
+      prisma.inquiry.update.mockImplementation(({ data }: { data: object }) => {
+        attempts += 1;
+        if (attempts < 3) return Promise.reject(new Error('connection reset'));
+        return Promise.resolve({ ...storedRowFor('inq-1'), ...data });
+      });
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.retried',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(attempts).toBe(3);
+      expect(result.status).toBe(InquiryStatus.SENT);
+      // The ROW carries it, not just the response.
+      expect(result.providerMessageId).toBe('wamid.retried');
+    });
+
+    it('gives up after a bounded number of write attempts', async () => {
+      // It cannot close the window entirely: if the database is genuinely
+      // gone, nothing can be written. Bounded so a dead database does not
+      // hold the buyer's request open.
+      prisma.inquiry.update.mockRejectedValue(new Error('db down'));
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.1',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(prisma.inquiry.update).toHaveBeenCalledTimes(3);
+      // Still reported SENT: Meta accepted it, and saying otherwise would
+      // invite a retry that duplicates.
+      expect(result.status).toBe(InquiryStatus.SENT);
+    });
+
     it('does not report failure when marking a FAILED inquiry fails', async () => {
       // The inquiry is already persisted, so a transient write error must not
       // escape and tell the buyer their submission failed -- inviting them to
