@@ -166,6 +166,37 @@ export type InsertedInquiry =
   | { inserted: false; inquiry: Prisma.InquiryGetPayload<object> };
 
 /**
+ * Whether retrying a failed write could plausibly succeed.
+ *
+ * Fails fast ONLY on errors we know a retry cannot fix. That polarity is
+ * deliberate: an unrecognised error is far more likely to be a transient
+ * connection problem than a permanent one, the cost of a needless retry is
+ * 50ms, and the cost of not retrying a transient failure is a row that lies
+ * about what happened.
+ *
+ * The point of discriminating at all is debuggability. Retrying everything
+ * meant a malformed update payload -- a programming error -- burned three
+ * attempts, logged three times and was then swallowed, presenting as a
+ * database problem. Those surface on the first attempt now.
+ */
+function isRetryableWriteError(error: unknown): boolean {
+  // Raw connection failures and unknown-shape errors land here.
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return true;
+
+  // P2025 not found, P2002 unique violation, P2003 FK violation and friends
+  // are decisions the database has already made; it will make the same one
+  // again.
+  return new Set([
+    'P1001', // cannot reach the database
+    'P1002', // database timed out
+    'P1008', // operation timed out
+    'P1017', // server closed the connection
+    'P2024', // timed out fetching a connection from the pool
+    'P2034', // write conflict / deadlock
+  ]).has(error.code);
+}
+
+/**
  * How many times an outcome write is attempted before giving up.
  *
  * Three, with a short pause between: a failing write here is almost always
@@ -722,7 +753,7 @@ export class InquiriesService {
   private async writeOutcome(
     inquiry: Prisma.InquiryGetPayload<object>,
     data: Prisma.InquiryUpdateInput,
-    describe: string,
+    what: string,
   ): Promise<Prisma.InquiryGetPayload<object> | null> {
     for (let attempt = 1; attempt <= OUTCOME_WRITE_ATTEMPTS; attempt += 1) {
       try {
@@ -731,20 +762,26 @@ export class InquiriesService {
           data,
         });
       } catch (error) {
-        const last = attempt === OUTCOME_WRITE_ATTEMPTS;
+        // Stop early on an error a retry cannot fix, so a programming mistake
+        // surfaces on the first attempt rather than looking like a flaky
+        // database three log lines later.
+        const done =
+          attempt === OUTCOME_WRITE_ATTEMPTS || !isRetryableWriteError(error);
         const detail = sanitizeForLog(
           error instanceof Error ? error.message : 'unknown error',
         );
-        if (last) {
+
+        if (done) {
           this.logger.error(
-            `Inquiry ${inquiry.id}: ${describe} could not be recorded after ` +
-              `${OUTCOME_WRITE_ATTEMPTS} attempts; the row does not reflect ` +
-              `what happened and needs reconciling: ${detail}`,
+            `Inquiry ${inquiry.id}: ${what} could not be recorded after ` +
+              `${attempt} attempt(s); the row does not reflect what happened ` +
+              `and needs reconciling: ${detail}`,
           );
           return null;
         }
+
         this.logger.warn(
-          `Inquiry ${inquiry.id}: ${describe} write failed, retrying ` +
+          `Inquiry ${inquiry.id}: ${what} write failed, retrying ` +
             `(${attempt}/${OUTCOME_WRITE_ATTEMPTS - 1}): ${detail}`,
         );
         await new Promise((resolve) =>
@@ -752,6 +789,8 @@ export class InquiriesService {
         );
       }
     }
+    // Unreachable: the loop either returns a row or returns null on its last
+    // attempt. Present because TypeScript cannot see that.
     return null;
   }
 

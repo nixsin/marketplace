@@ -951,6 +951,50 @@ describe('InquiriesService', () => {
       expect(result.providerMessageId).toBe('wamid.retried');
     });
 
+    it('does NOT retry an error a retry cannot fix', async () => {
+      // Retrying everything meant a malformed update payload -- a programming
+      // error -- burned three attempts, logged three times and was then
+      // swallowed, presenting as a flaky database. P2025 is the database
+      // having already decided; it will decide the same way again.
+      const permanent = new Prisma.PrismaClientKnownRequestError(
+        'no such row',
+        {
+          code: 'P2025',
+          clientVersion: 'test',
+        },
+      );
+      prisma.inquiry.update.mockRejectedValue(permanent);
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.1',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(prisma.inquiry.update).toHaveBeenCalledTimes(1);
+      // Still SENT: Meta accepted it, whatever the row says.
+      expect(result.status).toBe(InquiryStatus.SENT);
+    });
+
+    it.each([
+      ['P1017', 'server closed the connection'],
+      ['P2024', 'pool timeout'],
+    ])('DOES retry %s (%s)', async (code) => {
+      const transient = new Prisma.PrismaClientKnownRequestError('boom', {
+        code,
+        clientVersion: 'test',
+      });
+      prisma.inquiry.update.mockRejectedValue(transient);
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.1',
+      });
+
+      await service.create(ARGS);
+
+      expect(prisma.inquiry.update).toHaveBeenCalledTimes(3);
+    });
+
     it('gives up after a bounded number of write attempts', async () => {
       // It cannot close the window entirely: if the database is genuinely
       // gone, nothing can be written. Bounded so a dead database does not
