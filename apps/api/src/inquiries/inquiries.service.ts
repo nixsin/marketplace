@@ -312,8 +312,18 @@ export function sanitizeForLog(value: string, max = 200): string {
   // terminators, so provider text carrying one splits a log line exactly as
   // \n does -- the whole thing this function exists to prevent. Matched
   // explicitly, since no character class groups them with the controls.
+  // Whitespace collapsed with the SAME rule its sibling in whatsapp.service
+  // uses, so the two cannot disagree about what counts. `\s` covers vertical
+  // whitespace, U+00A0 and U+FEFF; U+0085 NEXT LINE is added explicitly
+  // because JS `\s` does not match it.
+  //
+  // Then \p{Cc} for the remaining C0/C1 controls and \p{Cf} for FORMAT
+  // characters -- U+202E RIGHT-TO-LEFT OVERRIDE among them, which visually
+  // reverses the rest of a line and forges an entry as effectively as an
+  // injected newline. U+2028/U+2029 are Zl/Zp and belong to neither category,
+  // which is why the whitespace rule has to run first.
   const flat = value
-    .replace(/[\r\n\t\u2028\u2029]+/g, ' ')
+    .replace(/[\s\u0085]+/g, ' ')
     .replace(/[\p{Cc}\p{Cf}]/gu, '');
   // Truncated by CODE POINT, like the other two truncations in this feature.
   // This one was missed when they were fixed -- the class was "cuts that

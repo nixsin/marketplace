@@ -38,32 +38,32 @@ export type WhatsappSendResult =
  * rather than cosmetic: without it every production send fails validation.
  */
 export function sanitizeTemplateParam(value: string): string {
-  const flat = value
-    // A SINGLE SPACE, not " · ". The separator used to be three characters
-    // replacing one, which expanded the string before the cap was applied
-    // -- and the DTO permits 1000 characters against a 1024 limit, so it
-    // took only twelve line breaks to start truncating what the buyer
-    // typed. That is not a pathological input: a fourteen-line spec list is
-    // an ordinary B2B inquiry, and it lost its ending silently, after the
-    // API had accepted the message as valid.
-    //
-    // Contracting (a run becomes one space) is safe; expanding is not. The
-    // summary stays readable flattened because its own labels -- From:,
-    // Product:, Ref:, Link: -- carry the structure; the separator was
-    // decoration, and it was costing buyers their words.
-    // U+2028/U+2029 included: they are line and paragraph separators, not
-    // controls, so no \p{Cc}/\p{Cf} class catches them -- and Meta rejects a
-    // parameter containing a line break however it is spelled.
-    .replace(/[\r\n\t\u2028\u2029]+/g, ' ')
-    .replace(/\s{2,}/g, ' ')
-    .trim()
-    // Truncated by CODE POINT, not UTF-16 code unit. .slice() would cut
-    // inside a surrogate pair and leave an unpaired surrogate in an
-    // outbound parameter. This was parked as unreachable on the grounds
-    // that the cap could never be hit -- which the separator expansion
-    // above had quietly made false, so the parked case was live. Fixed
-    // rather than re-parked: it is two characters of code.
-    .trim();
+  // ONE rule: every run of whitespace becomes a single space.
+  //
+  // This replaces two rules that between them left a hole. An explicit class
+  // handled \r \n \t U+2028 U+2029, and a separate `\s{2,}` collapsed runs --
+  // so a LONE U+000B vertical tab, U+000C form feed, non-breaking space or
+  // BOM matched neither and survived into the outbound parameter. It went
+  // unnoticed through a QA pass here because the probe fed two such
+  // characters ADJACENTLY, which hits the run collapse and looks clean; a
+  // single one does not.
+  //
+  // `\s` covers every case the explicit class listed, plus the vertical
+  // whitespace it missed, plus U+00A0 and U+FEFF. `+` rather than `{2,}` so a
+  // single occurrence is normalised too.
+  //
+  // It can only CONTRACT, which is the property the parameter budget depends
+  // on: the DTO permits 1000 characters against Meta's 1024, and an earlier
+  // separator that replaced one character with three quietly broke that --
+  // a fourteen-line spec list lost its ending, silently, after Meta had
+  // accepted the message as valid.
+  // U+0085 NEXT LINE is added explicitly: it is a C1 control that terminates
+  // a line in several encodings, and JS `\s` does NOT match it -- verified,
+  // not assumed. Everything else vertical is already covered by `\s`.
+  const flat = value.replace(/[\s\u0085]+/g, ' ').trim();
+
+  // Truncated by CODE POINT, not UTF-16 code unit: a cut landing inside a
+  // surrogate pair would leave an unpaired half in an outbound parameter.
   return truncateByCodePoint(flat, WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH);
 }
 

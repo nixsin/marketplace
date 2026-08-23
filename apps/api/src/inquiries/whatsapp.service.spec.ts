@@ -725,6 +725,31 @@ describe("a buyer's message survives sanitising intact", () => {
   });
 
   it.each([
+    ['U+000A LINE FEED', 0x000a],
+    ['U+000D CARRIAGE RETURN', 0x000d],
+    ['U+0009 TAB', 0x0009],
+    ['U+000B VERTICAL TAB', 0x000b],
+    ['U+000C FORM FEED', 0x000c],
+    ['U+0085 NEXT LINE', 0x0085],
+    ['U+00A0 NO-BREAK SPACE', 0x00a0],
+    ['U+2028 LINE SEPARATOR', 0x2028],
+    ['U+2029 PARAGRAPH SEPARATOR', 0x2029],
+    ['U+FEFF ZERO WIDTH NO-BREAK SPACE', 0xfeff],
+  ])('flattens a LONE %s', (_l, code) => {
+    // "Lone" is the whole point. An earlier version paired an explicit class
+    // for \r \n \t U+2028 U+2029 with a separate `\s{2,}` run collapse, so a
+    // single vertical tab, form feed, no-break space or BOM matched neither
+    // and survived. A QA probe here missed it by feeding two such characters
+    // ADJACENTLY, which hits the run collapse and looks clean.
+    //
+    // Built from code points rather than pasted literals: the shell and the
+    // editor both normalise these, and a literal turns the assertion into a
+    // test of plain spaces that passes regardless.
+    const ch = String.fromCharCode(code);
+    expect(sanitizeTemplateParam(`a${ch}b`)).toBe('a b');
+  });
+
+  it.each([
     ['U+2028 LINE SEPARATOR', 0x2028],
     ['U+2029 PARAGRAPH SEPARATOR', 0x2029],
   ])('flattens %s, which no control-character class catches', (_l, code) => {

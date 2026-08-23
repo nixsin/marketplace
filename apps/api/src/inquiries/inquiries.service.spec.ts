@@ -171,6 +171,11 @@ describe('sanitizeForLog', () => {
     ['U+0009 TAB', 0x0009],
     ['U+202E RIGHT-TO-LEFT OVERRIDE', 0x202e],
     ['U+0000 NUL', 0x0000],
+    ['U+000B VERTICAL TAB', 0x000b],
+    ['U+000C FORM FEED', 0x000c],
+    ['U+0085 NEXT LINE', 0x0085],
+    ['U+00A0 NO-BREAK SPACE', 0x00a0],
+    ['U+FEFF ZERO WIDTH NO-BREAK SPACE', 0xfeff],
   ])('removes %s', (_label, code) => {
     const ch = String.fromCharCode(code);
     expect(sanitizeForLog(`before${ch}after`)).not.toContain(ch);
