@@ -922,6 +922,119 @@ describe('InquiriesService', () => {
       expect(written.data.failureReason).not.toContain('\t');
     });
 
+    it('RETRIES a failing outcome write before giving up', async () => {
+      // The fallback leaves the row LYING about what happened, and it is the
+      // dangerous kind of lie: a send Meta accepted whose status write failed
+      // leaves PENDING with no providerMessageId and no failureReason --
+      // byte-identical to a row that was never attempted. The #151 sweep
+      // reads exactly those columns, so it would re-send an already-delivered
+      // inquiry and put it on the seller's phone twice.
+      //
+      // A failing write here is almost always transient, so retrying converts
+      // most of these into rows that tell the truth.
+      let attempts = 0;
+      prisma.inquiry.update.mockImplementation(({ data }: { data: object }) => {
+        attempts += 1;
+        if (attempts < 3) return Promise.reject(new Error('connection reset'));
+        return Promise.resolve({ ...storedRowFor('inq-1'), ...data });
+      });
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.retried',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(attempts).toBe(3);
+      expect(result.status).toBe(InquiryStatus.SENT);
+      // The ROW carries it, not just the response.
+      expect(result.providerMessageId).toBe('wamid.retried');
+    });
+
+    it('does NOT retry an error a retry cannot fix', async () => {
+      // Retrying everything meant a malformed update payload -- a programming
+      // error -- burned three attempts, logged three times and was then
+      // swallowed, presenting as a flaky database. P2025 is the database
+      // having already decided; it will decide the same way again.
+      const permanent = new Prisma.PrismaClientKnownRequestError(
+        'no such row',
+        {
+          code: 'P2025',
+          clientVersion: 'test',
+        },
+      );
+      prisma.inquiry.update.mockRejectedValue(permanent);
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.1',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(prisma.inquiry.update).toHaveBeenCalledTimes(1);
+      // Still SENT: Meta accepted it, whatever the row says.
+      expect(result.status).toBe(InquiryStatus.SENT);
+    });
+
+    it('does NOT retry a Prisma VALIDATION error', async () => {
+      // The case the discrimination was added for, slipping past it: a
+      // malformed update payload raises PrismaClientValidationError, which is
+      // NOT a PrismaClientKnownRequestError -- so it fell through to the
+      // "retry anything unrecognised" branch, was retried three times and
+      // then swallowed, presenting as a flaky database.
+      prisma.inquiry.update.mockRejectedValue(
+        new Prisma.PrismaClientValidationError('bad payload', {
+          clientVersion: 'test',
+        }),
+      );
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.1',
+      });
+
+      await service.create(ARGS);
+
+      expect(prisma.inquiry.update).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['P1017', 'server closed the connection'],
+      ['P2024', 'pool timeout'],
+      ['P2037', 'too many database connections'],
+    ])('DOES retry %s (%s)', async (code) => {
+      const transient = new Prisma.PrismaClientKnownRequestError('boom', {
+        code,
+        clientVersion: 'test',
+      });
+      prisma.inquiry.update.mockRejectedValue(transient);
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.1',
+      });
+
+      await service.create(ARGS);
+
+      expect(prisma.inquiry.update).toHaveBeenCalledTimes(3);
+    });
+
+    it('gives up after a bounded number of write attempts', async () => {
+      // It cannot close the window entirely: if the database is genuinely
+      // gone, nothing can be written. Bounded so a dead database does not
+      // hold the buyer's request open.
+      prisma.inquiry.update.mockRejectedValue(new Error('db down'));
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.1',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(prisma.inquiry.update).toHaveBeenCalledTimes(3);
+      // Still reported SENT: Meta accepted it, and saying otherwise would
+      // invite a retry that duplicates.
+      expect(result.status).toBe(InquiryStatus.SENT);
+    });
+
     it('does not report failure when marking a FAILED inquiry fails', async () => {
       // The inquiry is already persisted, so a transient write error must not
       // escape and tell the buyer their submission failed -- inviting them to
