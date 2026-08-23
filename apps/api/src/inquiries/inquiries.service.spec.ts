@@ -229,6 +229,8 @@ describe('publicSiteUrl', () => {
     ['http://[::ffff:127.0.0.1]', 'IPv4-mapped loopback'],
     ['http://[::1]', 'IPv6 loopback in brackets'],
     ['http://0.0.0.0', 'the unspecified address'],
+    ['http://[::ffff:0.0.0.0]', 'the MAPPED unspecified address'],
+    ['http://[::]', 'the unspecified address in IPv6'],
   ])('rejects %s (%s)', (value) => {
     // Each is a different SPELLING of "this machine". A list of exact strings
     // kept missing one, which is why the check is now a predicate.

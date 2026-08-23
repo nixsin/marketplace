@@ -216,6 +216,11 @@ function isLoopbackHost(hostname: string): boolean {
   // IPv4-mapped IPv6, in either the dotted or the normalised hex form.
   if (/^::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
   if (/^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(host)) return true;
+  // The mapped UNSPECIFIED address too: `::ffff:0.0.0.0` normalises to
+  // `::ffff:0:0`, which the 127/8 patterns above do not match, so it slipped
+  // through while plain `0.0.0.0` and `::` were rejected. Same class, one
+  // spelling further out.
+  if (host === '::ffff:0:0' || host === '::ffff:0.0.0.0') return true;
 
   return false;
 }
