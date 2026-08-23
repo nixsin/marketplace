@@ -485,6 +485,61 @@ export const INQUIRY_IP_HASH_SECRET_ENV = "INQUIRY_IP_HASH_SECRET";
 // receive. Deliberately generous enough that real demand never reaches it.
 export const INQUIRY_RATE_LIMIT_PER_SELLER = 60;
 
+// ---------------------------------------------------------------------------
+// Product inquiries over WhatsApp (#91, delivery)
+// ---------------------------------------------------------------------------
+
+// NAMES of the environment variables holding Meta credentials -- never the
+// values. This package is committed, so a value here would enter git history
+// permanently and be readable by every CI job. Same rule as the AI roles'
+// apiKeyEnv above.
+export const WHATSAPP_ACCESS_TOKEN_ENV = "WHATSAPP_ACCESS_TOKEN";
+export const WHATSAPP_PHONE_NUMBER_ID_ENV = "WHATSAPP_PHONE_NUMBER_ID";
+
+// Business-initiated WhatsApp messages require a PRE-APPROVED TEMPLATE.
+// Free-form text is only deliverable inside a 24-hour customer-service window
+// that a seller opens by messaging us first -- which never happens here,
+// because the marketplace always speaks first. The name is a variable because
+// the approved template lives in the Meta account, not in this repo.
+export const WHATSAPP_TEMPLATE_NAME_ENV = "WHATSAPP_TEMPLATE_NAME";
+export const WHATSAPP_TEMPLATE_LANGUAGE_ENV = "WHATSAPP_TEMPLATE_LANGUAGE";
+export const WHATSAPP_TEMPLATE_DEFAULT_LANGUAGE = "en";
+
+// Free-form text is a DELIBERATE OPT-IN, not a fallback.
+//
+// Falling back to it whenever the template name was merely absent meant a
+// deployment with credentials but no template would send a request Meta is
+// known to reject for this flow, and mark every inquiry FAILED -- a
+// half-configured deployment failing silently rather than saying so. The
+// template name is required configuration alongside the token and phone id;
+// this flag exists only for a known-open service window in development.
+export const WHATSAPP_ALLOW_FREE_FORM_ENV = "WHATSAPP_ALLOW_FREE_FORM";
+
+// Meta rejects a template parameter containing a newline, a tab, or more than
+// four consecutive spaces, and caps each at 1024 characters. TWO parameters
+// rather than one, so a buyer's message never competes for budget with the
+// product metadata in front of it -- a 1000-character question used to lose
+// its ending to a single composed body, silently, after the API had already
+// accepted the message as valid.
+export const WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH = 1024;
+
+// Product names are unbounded `String` in the schema, and the seeded catalogue
+// already contains a deliberately absurd one. Bounding the name inside the
+// summary is what guarantees the whole summary fits its parameter, so nothing
+// after it can be truncated away.
+export const INQUIRY_SUMMARY_NAME_MAX_LENGTH = 200;
+
+// A stalled provider connection must not hold a buyer's request open. Meta
+// accepting the socket and then never answering is the case a plain fetch
+// waits on indefinitely.
+export const WHATSAPP_REQUEST_TIMEOUT_MS = 10_000;
+
+// Pinned rather than "latest". Meta's Graph API is versioned and dated; an
+// unpinned call silently changes behaviour when they roll a version, which for
+// an outbound-message path means discovering it from failed deliveries.
+export const WHATSAPP_API_VERSION = "v21.0";
+export const WHATSAPP_API_BASE_URL = "https://graph.facebook.com";
+
 export const OTP_TTL_MS = 5 * 60 * 1000;
 
 /** Idle window after which a browser session id is regenerated. */

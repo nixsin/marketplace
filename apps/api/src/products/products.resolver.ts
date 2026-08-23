@@ -9,7 +9,7 @@ import {
 } from '@nestjs/graphql';
 import { ProductsService } from './products.service';
 import { Product } from './models/product.model';
-import { isE164 } from '../inquiries/phone';
+import { normalizeE164 } from '../inquiries/phone';
 import { ProductPage } from './models/product-page.model';
 import { ProductsPaged } from './models/products-paged.model';
 
@@ -69,6 +69,11 @@ export class ProductsResolver {
     // send fails validation before it leaves the process -- a buyer typing a
     // real question into a form that could never work.
     const number = product.seller?.whatsappNumber;
-    return typeof number === 'string' && isE164(number);
+    // normalizeE164, not isE164: a number stored as "+91 98765 43210" is a
+    // perfectly good number written the way people write them, and reporting
+    // it uncontactable hides the form so the seller never hears from anyone.
+    // The delivery path normalises the same way, so the two agree on what
+    // "reachable" means.
+    return typeof number === 'string' && normalizeE164(number) !== null;
   }
 }

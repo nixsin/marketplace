@@ -49,7 +49,10 @@ describe('InquiriesResolver', () => {
       {},
     );
 
-    expect(Object.keys(result).sort()).toEqual(['createdAt', 'id', 'status']);
+    // `status` is gone, and that is the point rather than an omission: it
+    // was a real delivery outcome handed to an unauthenticated caller, so
+    // anyone could probe whether a seller is currently reachable.
+    expect(Object.keys(result).sort()).toEqual(['createdAt', 'id']);
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain(input.message);
     expect(serialized).not.toContain(input.buyerPhone);

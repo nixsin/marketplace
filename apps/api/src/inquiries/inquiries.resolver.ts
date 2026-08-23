@@ -87,9 +87,15 @@ export class InquiriesResolver {
       ...input,
       callerIp: resolveCallerIp(context.req),
     });
+    // Deliberately narrow, and narrower than before: `status` used to be
+    // here. It was harmless in the capture change because every row was
+    // PENDING, and delivery turned it into a real outcome still handed to an
+    // unauthenticated caller -- so anyone could probe whether a given seller
+    // is currently reachable, which is more than Product.hasInquiryContact
+    // already discloses. The buyer never needed it; part 4 adds `delivered`
+    // instead, meaning "the provider accepted it" and nothing more.
     return {
       id: inquiry.id,
-      status: inquiry.status,
       createdAt: inquiry.createdAt,
     };
   }

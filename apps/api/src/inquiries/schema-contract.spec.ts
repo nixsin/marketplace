@@ -41,7 +41,6 @@ describe('committed GraphQL schema', () => {
     ['CreateInquiryInput', 'idempotencyKey: String!'],
     ['CreateInquiryInput', 'buyerPhone: String!'],
     ['CreateInquiryInput', 'productId: ID!'],
-    ['Inquiry', 'status: InquiryStatus!'],
     ['Product', 'hasInquiryContact: Boolean!'],
     ['Mutation', 'createInquiry(input: CreateInquiryInput!): Inquiry!'],
   ])('%s exposes %s', (type, field) => {
@@ -59,15 +58,25 @@ describe('committed GraphQL schema', () => {
     expect(schema.toLowerCase()).not.toContain('whatsappnumber');
   });
 
-  it('claims no delivery, because nothing delivers yet', () => {
-    // A `delivered` boolean here would be hardwired false. The web
-    // confirmation reads off what the API actually knows, so an always-false
-    // field is worse than an absent one: it invites copy that pretends to
-    // report an outcome nothing produced.
+  it('does not publish the delivery state machine at all', () => {
+    // Registering InquiryStatus as a GraphQL enum published PENDING/SENT/
+    // FAILED through introspection for a field that reported a real delivery
+    // outcome to an anonymous caller. Both are gone.
+    expect(schema).not.toContain('enum InquiryStatus');
+    expect(schema).not.toContain('status: InquiryStatus');
+  });
+
+  it('still claims no delivery to the BUYER, though delivery now happens', () => {
+    // Rows reach SENT and FAILED as of this change, and a seller's phone
+    // actually rings -- but none of that is exposed yet. Reporting the
+    // outcome is its own change, because the confirmation copy is where three
+    // separate review rounds on the unsplit version went wrong. Until then
+    // the buyer is told their inquiry was recorded, which stays true either
+    // way.
     expect(schema).not.toContain('delivered');
   });
 
-  it('returns nothing from the mutation but id, status and time', () => {
+  it('returns nothing from the mutation but an id and a time', () => {
     // The mutation is unauthenticated, so every field on Inquiry is readable
     // by whoever called it. Asserted on the full field list rather than by
     // naming forbidden ones, because the risk is a field nobody thought of.
@@ -76,6 +85,6 @@ describe('committed GraphQL schema', () => {
         .split('\n')
         .map((line) => line.trim())
         .filter(Boolean),
-    ).toEqual(['createdAt: DateTime!', 'id: ID!', 'status: InquiryStatus!']);
+    ).toEqual(['createdAt: DateTime!', 'id: ID!']);
   });
 });

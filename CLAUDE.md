@@ -655,6 +655,170 @@ Both sides are now specific (`"already used"` vs `"already sent inquiries"`),
 and a test asserts the conflict message contains neither of the rate-limit
 phrases.
 
+## Buyer inquiry delivery (#91, part 3)
+
+Part 3 of three. Part 1 (#150) added the schema and phone validation, part 2
+(#153) the capture path. This one hands a recorded inquiry to WhatsApp's Cloud
+API and records what came back. **It does not tell the buyer**: the GraphQL
+`Inquiry` still exposes no delivery field and the confirmation still says only
+"recorded", which stays true either way. Surfacing the outcome is part 4,
+alone, because the confirmation copy is the highest-risk part of this feature
+by review history — three separate rounds on the unsplit version were copy
+claiming more than the API knew.
+
+**Business-initiated messages need a PRE-APPROVED TEMPLATE.** Free-form text
+is only deliverable inside a 24-hour window the *recipient* opens by messaging
+the business first, which never happens here because the marketplace always
+speaks first. The first implementation sent `type: 'text'` and would have
+failed every production send while passing every test. So
+`WHATSAPP_TEMPLATE_NAME` is **required configuration**, not optional: unset
+means sends are refused before the request, with the missing variable named,
+rather than attempted and rejected one message at a time.
+`WHATSAPP_ALLOW_FREE_FORM` is a deliberate opt-in for a known-open window, not
+a fallback. Full template contract in [docs/whatsapp.md](./docs/whatsapp.md).
+
+**The template-parameter flattener must never EXPAND the string.** It replaced
+each newline run with `" · "` — three characters for one — so the DTO's
+1000-character message could reach 1024 and be cut. Twelve line breaks was
+enough, which makes a fourteen-line spec list an ordinary casualty rather than
+a pathological one: the buyer's question lost its ending silently, after Meta
+had accepted the message as valid. The separator is now a single space, and
+the summary stays readable flattened because its own labels (`From:`,
+`Product:`, `Ref:`, `Link:`) carry the structure.
+
+The guard that was supposed to prevent this compared
+`INQUIRY_MESSAGE_MAX_LENGTH` against `WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH` and
+found them correctly ordered — while the expansion happened *between* them,
+where a comparison of two constants cannot see it. It now runs real input
+through the real function and asserts nothing was cut, which is the property
+rather than a proxy for it. Truncation, where it still happens, is by **code
+point**: `.slice()` counts UTF-16 code units and splits surrogate pairs, which
+matters most for the product name, where a 200-character cap is ordinary and
+device names carry CJK and symbols routinely.
+
+**The recipient's number keeps its leading `+`.** Meta's send-messages guide
+recommends it explicitly — "If the plus sign is omitted, your business phone
+number's country calling code is prepended to the customer's phone number" —
+and their canonical example sends `"to": "+16505551234"`. Stripping it would
+risk misdelivery for every buyer whose country differs from the business
+number's, which for an India-and-US marketplace is most of them. Raised once
+as a High-severity finding claiming the opposite; checked against the
+documentation rather than acted on, and recorded at the call site so it is not
+"cleaned up" later.
+
+**Two template parameters, not one.** `{{1}}` is the product/contact summary,
+`{{2}}` the buyer's own words. A single combined parameter meant a near-limit
+question lost its ending to the metadata in front of it — silently, after Meta
+had accepted the message as valid. Within the summary the contact line comes
+**first** and the product name is bounded, because parameters truncate from
+the end and product names are unbounded `String` in the schema: a long enough
+name pushed the buyer's phone number off entirely, so the seller received an
+inquiry that looked answerable and was not.
+
+**Record first, then deliver, and delivery can never fail the mutation.** By
+the time any delivery code runs the lead is saved, so every branch either
+updates the row or logs and returns what it knows. Two paths are deliberately
+asymmetric with what the database says: an accepted send whose status write
+fails still returns SENT (Meta *did* accept it, and reporting otherwise invites
+a retry that double-messages the seller), and a failed `markFailed` still
+returns FAILED. Both log loudly for reconciliation — a stuck row is visible and
+fixable, a duplicate message to a real person is not.
+
+**The buyer-facing response exposes NO delivery state — `status` is gone.**
+It shipped in the capture change, where it was harmless because every row was
+`PENDING` and the field said nothing. Delivery turned it into a real outcome
+still handed to an unauthenticated caller, so the API reported delivery while
+this change claimed not to, and anyone could probe whether a given seller is
+currently reachable — more than `Product.hasInquiryContact` already discloses.
+`InquiryStatus` is no longer registered as a GraphQL enum either, so the state
+machine is not published through introspection. Part 4 adds `delivered`: one
+deliberate field meaning "the provider accepted it", not the internal states.
+
+**An ambiguous outcome WRITES `failureReason` while leaving `status` PENDING.**
+It previously wrote nothing, which made a row left pending by an ambiguous
+send byte-identical to one left pending by a crash before the send — and the
+recovery sweep both cases are parked for cannot function without telling them
+apart. `providerMessageId` does not distinguish them, because an ambiguous
+send never returns one; that was an error in this file's own earlier notes.
+The three states a sweeper keys off are: `FAILED` (definite, safe to re-send),
+`PENDING` with a `failureReason` (attempted, unknown — check the provider
+first), `PENDING` with neither (never attempted).
+
+**A 5xx from the provider is AMBIGUOUS too, not just a transport timeout.**
+The asymmetry was stark before it was fixed: our own `AbortSignal` firing at
+10s recorded "we do not know", while Meta's gateway timing out at 9s and
+answering `504` recorded "definitely not sent" — the same physical situation,
+opposite conclusion, and the FAILED one invites a retry that double-messages
+the seller. 4xx stays definite, `429` included: those are Meta rejecting the
+request outright, which is a real answer rather than an absence of one.
+
+**Success is a property of the BODY, not the status line — outbound as well
+as inbound.** A `200` carrying an `error` key is refused rather than recorded
+`SENT`, the same discipline the edge-caching section above applies to this
+API's own responses. Marking an inquiry `SENT` that was never accepted is the
+highest-stakes error in this feature: once the buyer is told about delivery,
+it becomes a person waiting for a reply that is not coming.
+
+**An AMBIGUOUS outcome stays PENDING, never FAILED.** A timeout or dropped
+connection means the request may have reached Meta and been accepted before the
+response was lost. FAILED invites a retry that double-messages the seller;
+PENDING says what is true — we do not know. Nothing resolves one today; that
+needs Meta's delivery webhook keyed on `providerMessageId`, which is stored for
+exactly that purpose (TODO in the code, tracked in
+[#151](https://github.com/nixsin/marketplace/issues/151)).
+
+**Delivery is gated on `InsertedInquiry.inserted`.** An idempotent retry
+returns the stored row *without* sending. Without that flag the database
+deduplicates perfectly and the seller is messaged twice anyway — the exact
+failure idempotency exists to prevent, arriving through the back door. The
+product snapshot travels back from the transaction with the row for the same
+class of reason: re-reading it afterwards to find the seller's number would
+reopen the reassignment gap, which once delivery exists means handing a
+buyer's name and phone to an unrelated organisation.
+
+**A `FAILED` row is never delivered by any later request**, even after the
+cause is repaired, because `create()` returns an existing row without
+delivering. Those are definite non-deliveries and safe to re-send by
+construction — but doing it in the request path hands an attacker an
+amplifier, since a duplicate deliberately consumes no rate-limit budget. It
+belongs to the sweeper in #151, which we trigger and pace. That issue now
+carries the state table the sweeper needs, which is the reason the
+ambiguous/definite split was worth shipping here rather than deferring with
+it.
+
+**Three parked cases live in [#151](https://github.com/nixsin/marketplace/issues/151)**,
+each with a `FIX(#151)` comment at the exact line. A crash between the commit
+and the send strands a row no retry will ever deliver — every retry matches
+the idempotency key and returns without sending, correct for a duplicate and
+wrong for one never attempted; it needs the same PENDING sweep the ambiguous
+case does, which `providerMessageId` can already distinguish. And the web
+form remembers one key and one fingerprint, so reverting to earlier content
+mints a third key. None are reachable, or barely so, today; none are fine.
+
+**The seller's number is NORMALISED, not merely validated** — and the two
+sides must stay symmetric. The buyer's number has been canonicalised since
+part 2; the seller's was only checked with `isE164`, so a number stored as
+`+91 98765 43210` — the exact format the buyer form advertises as an example
+— made `Product.hasInquiryContact` report the seller uncontactable, hiding the
+form, *and* failed the send if a direct caller submitted anyway. Silently: no
+error to the seller, no error to anyone, they simply never hear from a buyer.
+Both call sites now use `normalizeE164`, so "reachable" means the same thing
+in both. Unreachable while the seed is the only writer of that column; it
+becomes reachable the day seller onboarding ships.
+
+**`sanitizeForLog` strips `\p{Cf}` as well as `\p{Cc}`.** Stripping only
+control characters let FORMAT characters through — U+202E RIGHT-TO-LEFT
+OVERRIDE among them, which visually reverses the rest of a line. The function
+exists to stop provider text forging log entries, and a reordered line forges
+one as effectively as an injected newline. Note the buyer's own text still
+reaches the seller's WhatsApp with such characters intact; that is a separate,
+undecided question.
+
+**`sanitizeForLog` bounds provider text before it is logged**, not after.
+Meta's `error.message` is external input: newlines let it forge log entries
+that look like ours. The 500-character column truncation happens after the log
+call, so it protects the wrong thing.
+
 ## Known gotchas (already solved once — don't re-derive)
 
 **`beforeEach(() => mock.mockResolvedValue(x))` silently CALLS the mock after

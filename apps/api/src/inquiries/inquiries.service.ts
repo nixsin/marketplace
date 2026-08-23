@@ -12,11 +12,14 @@ import {
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
   INQUIRY_RATE_LIMIT_PER_SELLER,
   INQUIRY_RATE_LIMIT_WINDOW_MS,
+  INQUIRY_SUMMARY_NAME_MAX_LENGTH,
+  SITE_URL,
 } from '@medinstru/config';
 import { Prisma } from '../../generated/prisma/client';
 import { InquiryStatus } from '../../generated/prisma/enums';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizeE164 } from './phone';
+import { WhatsappService, truncateByCodePoint } from './whatsapp.service';
 
 export interface CreateInquiryArgs {
   /** Stable per-submission key; the same value on every retry. */
@@ -130,19 +133,270 @@ export function assertSameSubmission<T extends SubmissionIdentity>(
   return existing;
 }
 
+/**
+ * What insertInquiry hands back: the row AND the product snapshot the
+ * transaction actually read.
+ *
+ * The product travels with the row deliberately. Re-reading it after the
+ * transaction to find the seller's number would reintroduce exactly the gap
+ * the in-transaction read closes -- a reassignment between the two reads
+ * would deliver a buyer's name and phone number to an organisation with
+ * nothing to do with the listing.
+ */
+export type InsertedInquiry =
+  /**
+   * This call wrote the row, and carries the product snapshot the
+   * transaction read. Delivery happens only on this shape.
+   */
+  | {
+      inserted: true;
+      inquiry: Prisma.InquiryGetPayload<object>;
+      product: {
+        id: string;
+        name: string;
+        sellerId: string;
+        seller: { whatsappNumber: string | null };
+      };
+    }
+  /**
+   * The idempotency key already existed. NO product, deliberately: the caller
+   * must not deliver, so it has no business reading one -- and the type is
+   * what enforces that rather than a convention someone can forget.
+   */
+  | { inserted: false; inquiry: Prisma.InquiryGetPayload<object> };
+
+/** Provider text on a column an operator reads, not an unbounded sink. */
+const FAILURE_REASON_MAX_LENGTH = 500;
+
+/**
+ * The public site origin, or null when what we have is not one.
+ *
+ * SITE_URL falls back to `http://localhost:3000`, and `render.yaml` declares
+ * NEXT_PUBLIC_SITE_URL only for the WEB service -- so the API resolves that
+ * fallback in production and every seller would receive
+ * `Link: http://localhost:3000/en/products/...`. A dead link, in the outbound
+ * message that is the entire point of this feature.
+ *
+ * The same misconfiguration already shipped once on the web side, where
+ * shared links pointed at localhost. That one could be repaired at runtime by
+ * reading window.location.origin; this one cannot, because there is no
+ * browser -- which is why the link is OMITTED rather than emitted broken. A
+ * seller who gets the buyer's name, number and product still has everything
+ * they need to reply; a seller who clicks a localhost link concludes the
+ * marketplace is broken.
+ */
+/**
+ * Loopback or the unspecified address, in any spelling.
+ *
+ * A list of exact strings kept missing spellings of the same thing: `[::1]`
+ * because URL.hostname keeps the brackets, then `localhost.` with the root
+ * dot, `127.0.0.2` (the whole 127/8 is loopback), and `::ffff:127.0.0.1`,
+ * which URL normalises to the hex form `::ffff:7f00:1`. Each was a different
+ * way of writing "this machine" that the previous check let through into a
+ * seller's message as a link nobody can open.
+ *
+ * PRIVATE and LINK-LOCAL addresses are deliberately NOT rejected. Loopback
+ * means "unconfigured" -- it is the fallback this whole function exists to
+ * catch. A 10.x or 192.168.x origin is the opposite: someone typed it, and an
+ * internal or staging deployment where that address is exactly right would
+ * have its links silently dropped if this refused them.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  // Brackets around an IPv6 literal, and the root dot, are spelling rather
+  // than identity.
+  const host = hostname
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '')
+    .toLowerCase();
+
+  if (host === 'localhost' || host === '0.0.0.0' || host === '::') return true;
+  if (host === '::1') return true;
+  // All of 127.0.0.0/8, not just .1.
+  if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  // IPv4-mapped IPv6, in either the dotted or the normalised hex form.
+  if (/^::ffff:127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+  if (/^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(host)) return true;
+  // The mapped UNSPECIFIED address too: `::ffff:0.0.0.0` normalises to
+  // `::ffff:0:0`, which the 127/8 patterns above do not match, so it slipped
+  // through while plain `0.0.0.0` and `::` were rejected. Same class, one
+  // spelling further out.
+  if (host === '::ffff:0:0' || host === '::ffff:0.0.0.0') return true;
+
+  return false;
+}
+
+export function publicSiteUrl(siteUrl: string = SITE_URL): string | null {
+  if (!siteUrl) return null;
+
+  let url: URL;
+  try {
+    url = new URL(siteUrl);
+  } catch {
+    return null;
+  }
+
+  // Scheme checked, because a link is built by concatenation and anything
+  // else produces something that is not a web address at all. `javascript:`
+  // parses happily and yielded `javascript:alert(1)/en/products/<id>` in an
+  // outbound message.
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+
+  if (isLoopbackHost(url.hostname)) return null;
+
+  // ORIGIN, not the string as given. The previous version returned the input
+  // with a trailing slash trimmed, so a query, a path or embedded credentials
+  // survived into a link built by concatenation:
+  //   https://example.com?x=1     -> https://example.com?x=1/en/products/<id>
+  //   https://user:pass@example.com -> credentials in a message to a seller
+  // url.origin drops all three, which is the only part of a configured site
+  // URL a product link should be built from.
+  return url.origin;
+}
+
+/**
+ * The metadata half of the outbound message.
+ *
+ * CONTACT FIRST, and the product name bounded. The From line used to come
+ * last, and template parameters truncate from the end -- product names are
+ * unbounded `String` in the schema and the seeded catalogue already has a
+ * deliberately absurd one, so a long enough name pushed the buyer's name and
+ * phone number off the end entirely. The seller then received an inquiry with
+ * no way to reply to it, which is worse than receiving nothing: it looks
+ * answerable and is not.
+ *
+ * Ordering alone would protect the contact line; bounding the name as well
+ * keeps the whole summary comfortably inside the parameter budget. NOT a
+ * guarantee, and the earlier wording claiming one was wrong: productId is
+ * interpolated twice and the configured origin is unbounded, so nothing here
+ * proves a ceiling. What holds is measured rather than asserted -- the worst
+ * realistic summary is 443 of 1024 characters, and a test pins that -- and
+ * the ordering is what makes the remaining risk survivable, since truncation
+ * eats the link before it reaches the contact line.
+ *
+ * Buyer-supplied values are labelled and NOT escaped: WhatsApp text bodies are
+ * not markup, so escaping would corrupt legitimate content. The protection
+ * that matters is the length cap at the DTO boundary.
+ */
+export function buildInquirySummary(input: {
+  productName: string;
+  productId: string;
+  buyerName: string;
+  buyerPhone: string;
+  siteUrl?: string;
+}): string {
+  const base = publicSiteUrl(input.siteUrl ?? SITE_URL);
+  // Truncated by CODE POINT. .slice() counts UTF-16 code units, so a product
+  // name with a non-BMP character straddling the boundary left an unpaired
+  // surrogate in the outbound summary. Readily reachable -- unlike the
+  // template-parameter cap this was parked alongside, a 200-character name is
+  // ordinary, and medical device names carry CJK and symbols routinely.
+  const name =
+    [...input.productName].length > INQUIRY_SUMMARY_NAME_MAX_LENGTH
+      ? `${truncateByCodePoint(input.productName, INQUIRY_SUMMARY_NAME_MAX_LENGTH - 1)}\u2026`
+      : input.productName;
+
+  return [
+    `New inquiry via the marketplace`,
+    ``,
+    `From: ${input.buyerName} (${input.buyerPhone})`,
+    ``,
+    `Product: ${name}`,
+    `Ref: ${input.productId}`,
+    // Omitted rather than emitted broken when no public origin is configured.
+    // The Ref line is what keeps the inquiry traceable without it.
+    ...(base ? [`Link: ${base}/en/products/${input.productId}`] : []),
+  ].join('\n');
+}
+
+/**
+ * The whole message as one string, for the non-template text path.
+ *
+ * The two halves stay SEPARATE for the template path, where each is its own
+ * parameter: combining them meant a near-limit question lost its ending to
+ * the product metadata sitting in front of it -- silently, after the API had
+ * already accepted the message as valid.
+ */
+export function buildInquiryMessage(input: {
+  productName: string;
+  productId: string;
+  buyerName: string;
+  buyerPhone: string;
+  message: string;
+  siteUrl?: string;
+}): string {
+  return `${buildInquirySummary(input)}\n\n${input.message}`;
+}
+
+/**
+ * Makes provider-supplied text safe to put in a log line.
+ *
+ * Meta's error.message is external input. Newlines let it forge log entries
+ * that look like they came from us, and an unbounded value inflates log
+ * volume. The 500-character truncation on the database column happens AFTER
+ * the log call, so it protects the wrong thing.
+ */
+export function sanitizeForLog(value: string, max = 200): string {
+  // \p{Cf} as well as \p{Cc}. Stripping only control characters left FORMAT
+  // characters through -- U+202E RIGHT-TO-LEFT OVERRIDE among them, which
+  // visually reverses the rest of a line. This function exists precisely to
+  // stop provider text forging log entries, and a reordered line forges one
+  // just as effectively as an injected newline.
+  // Three classes, because each was missed in turn.
+  //
+  // \r \n \t are the obvious ones, and \p{Cc} covers the remaining C0/C1
+  // controls. \p{Cf} covers FORMAT characters -- U+202E RIGHT-TO-LEFT
+  // OVERRIDE among them, which visually reverses the rest of a line.
+  //
+  // U+2028 and U+2029 belong to NEITHER category: they are Zl and Zp, line
+  // and paragraph separators. JavaScript treats them as real line
+  // terminators, so provider text carrying one splits a log line exactly as
+  // \n does -- the whole thing this function exists to prevent. Matched
+  // explicitly, since no character class groups them with the controls.
+  // Whitespace collapsed with the SAME rule its sibling in whatsapp.service
+  // uses, so the two cannot disagree about what counts. `\s` covers vertical
+  // whitespace, U+00A0 and U+FEFF; U+0085 NEXT LINE is added explicitly
+  // because JS `\s` does not match it.
+  //
+  // Then \p{Cc} for the remaining C0/C1 controls and \p{Cf} for FORMAT
+  // characters -- U+202E RIGHT-TO-LEFT OVERRIDE among them, which visually
+  // reverses the rest of a line and forges an entry as effectively as an
+  // injected newline. U+2028/U+2029 are Zl/Zp and belong to neither category,
+  // which is why the whitespace rule has to run first.
+  const flat = value
+    .replace(/[\s\u0085]+/g, ' ')
+    .replace(/[\p{Cc}\p{Cf}]/gu, '');
+  // Truncated by CODE POINT, like the other two truncations in this feature.
+  // This one was missed when they were fixed -- the class was "cuts that
+  // split a surrogate pair", and fixing the two cited instances left the
+  // third. Provider error text is the most likely of the three to carry a
+  // non-BMP character, since it can echo arbitrary input back.
+  return [...flat].length > max
+    ? `${truncateByCodePoint(flat, max - 1)}\u2026`
+    : flat;
+}
+
 @Injectable()
 export class InquiriesService {
   private readonly logger = new Logger(InquiriesService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly whatsapp: WhatsappService,
+  ) {}
 
   /**
-   * Records a buyer's inquiry. Nothing is delivered here.
+   * Records the inquiry, THEN attempts delivery.
    *
-   * The lead is captured and readable; sending it to the seller is a separate
-   * change. Recording first is not a staging convenience -- it is the order
-   * the delivered feature keeps, because a provider failure must leave a row
-   * an operator can retry from rather than a silently discarded buyer.
+   * That order is the whole design, and it is why the capture change shipped
+   * first. A send that fails -- bad credentials, a Meta outage, a seller
+   * number Meta rejects -- must still leave a lead the marketplace can see
+   * and retry (#91 story 9). Sending first and persisting after loses the
+   * lead precisely when something is already wrong.
+   *
+   * Delivery can never fail the mutation. Every path below either updates the
+   * row or logs and returns what it knows, because by the time any of it runs
+   * the buyer's inquiry is already saved, and telling them otherwise invites
+   * a resubmission of something that was recorded.
    */
   async create(args: CreateInquiryArgs) {
     // Canonicalised before anything is stored or counted. The form shows a
@@ -206,8 +460,9 @@ export class InquiriesService {
 
     const ipHash = hashIp(args.callerIp);
 
+    let created: InsertedInquiry;
     try {
-      return await this.insertInquiry({
+      created = await this.insertInquiry({
         idempotencyKey: args.idempotencyKey,
         ...submission,
         ipHash,
@@ -232,9 +487,277 @@ export class InquiriesService {
         // happened to pick the same key is exactly the collision this
         // rejects, and it is the one path where two callers genuinely raced
         // for one key rather than one caller retrying.
+        //
+        // NOT delivered again. The winner's own request is what sends; this
+        // one lost the race and is a duplicate of it, so sending here would
+        // put the same inquiry on the seller's phone twice.
         if (winner) return assertSameSubmission(winner, submission);
       }
       throw error;
+    }
+
+    // Delivered ONLY when this call actually wrote the row. A retry that
+    // matched the idempotency key returns the stored row untouched -- the
+    // request that created it is what sends, and sending again would put the
+    // same inquiry on the seller's phone twice.
+    //
+    // FIX(#151): a crash in the gap between that commit and this send strands
+    // the row forever. The transaction has committed by the time we get here,
+    // so a process restart, a deploy, or a cancelled request leaves a PENDING
+    // row that no later retry will deliver -- every retry matches the
+    // idempotency key and returns without sending, which is correct for a
+    // duplicate and wrong for one that was never attempted.
+    //
+    // FREQUENCY: a window of milliseconds, and only while the provider is
+    // configured at all -- unconfigured, delivery resolves synchronously to
+    // FAILED before anything can interrupt it. Zero occurrences are possible
+    // today.
+    //
+    // FIX WHEN TOUCHED: the same recovery mechanism the ambiguous-outcome
+    // case needs -- a sweep of PENDING rows -- distinguishing
+    // never-attempted from attempted-ambiguous, which providerMessageId
+    // already does. An outbox written in the same transaction is the fuller
+    // answer.
+    //
+    // Related, same issue: a row that reached FAILED is likewise never
+    // delivered by any later request, even once the cause is repaired --
+    // credentials set, a seller number added, a 429 window passed. Those are
+    // DEFINITE non-deliveries and safe to re-send by construction, but doing
+    // it here would hand an attacker an amplifier: a duplicate deliberately
+    // consumes no rate-limit budget, so a known key could drive unlimited
+    // outbound requests. It belongs to the sweeper, which we trigger and
+    // pace.
+    // The union makes this a type-level guarantee: `created.product` does not
+    // exist on the not-inserted branch, so delivering a duplicate is a
+    // compile error rather than a convention to remember.
+    if (!created.inserted) return created.inquiry;
+
+    // Wrapped, so NOTHING in delivery can fail the mutation.
+    //
+    // Every branch inside deliver() already handles its own errors, and
+    // sendInquiry returns a result rather than throwing -- but "does not
+    // throw" is a property of that code today, not a guarantee this one can
+    // rest on. sendInquiry builds its request payload BEFORE its own try, and
+    // the whole design of this method is that the lead is saved before any of
+    // it runs. An escape here tells the buyer their inquiry failed when it is
+    // sitting in the table, and invites them to submit it again.
+    try {
+      return await this.deliver(created, submission);
+    } catch (error) {
+      this.logger.error(
+        `Inquiry ${created.inquiry.id} was recorded but delivery threw ` +
+          `unexpectedly; the lead is safe and the row is left as written: ` +
+          `${sanitizeForLog(error instanceof Error ? error.message : 'unknown error')}`,
+      );
+      return created.inquiry;
+    }
+  }
+
+  /**
+   * Hands a recorded inquiry to the provider and records what came back.
+   *
+   * Separate from create() because every branch here is about an outcome that
+   * has already been persisted. Nothing in it may throw: see markFailed.
+   */
+  private async deliver(
+    // The INSERTED branch only. Taking the union here would let a caller pass
+    // a duplicate and have it delivered; taking the narrowed type makes that
+    // impossible to write.
+    created: Extract<InsertedInquiry, { inserted: true }>,
+    submission: SubmissionIdentity,
+  ): Promise<Prisma.InquiryGetPayload<object>> {
+    const { inquiry, product } = created;
+
+    const sellerNumber = product.seller.whatsappNumber;
+    if (!sellerNumber) {
+      // A seller with no number is a CONFIGURATION state, not a buyer error.
+      // The lead is captured and deliverable once that seller is onboarded,
+      // so it must not surface as a failed request -- and the form is hidden
+      // for such sellers anyway (Product.hasInquiryContact), so reaching this
+      // means a direct caller, or a number removed after the page loaded.
+      return this.markFailed(inquiry, 'seller has no WhatsApp number');
+    }
+
+    if (!publicSiteUrl()) {
+      // Loud, and naming the variable. The send still goes -- the buyer's
+      // number is what makes an inquiry actionable -- but the seller gets no
+      // link, and an operator should know why rather than discovering it from
+      // a seller asking.
+      this.logger.warn(
+        `[NOT CONFIGURED] NEXT_PUBLIC_SITE_URL is unset or points at ` +
+          `localhost on this service, so outbound inquiries carry no product ` +
+          `link. render.yaml declares it for the web service only.`,
+      );
+    }
+
+    const result = await this.whatsapp.sendInquiry(sellerNumber, {
+      summary: buildInquirySummary({
+        productName: product.name,
+        productId: product.id,
+        buyerName: submission.buyerName,
+        buyerPhone: submission.buyerPhone,
+      }),
+      // The buyer's own words, kept as their own template parameter so they
+      // are never truncated by metadata sitting in front of them.
+      buyerMessage: submission.message,
+    });
+
+    if (!result.ok) {
+      const reason = sanitizeForLog(result.reason);
+
+      if (result.ambiguous) {
+        // The request may have reached Meta before the response was lost, so
+        // this is NOT a failure. Left PENDING: a FAILED row invites a retry
+        // that double-messages the seller, while PENDING says exactly what is
+        // true -- we do not know.
+        //
+        // TODO(#151): reconcile ambiguous PENDING rows via a delivery
+        // webhook. Nothing resolves one today, so it stays PENDING forever.
+        //
+        // FREQUENCY: requires a provider timeout or a dropped connection,
+        // which cannot occur at all until Meta credentials exist.
+        //
+        // FIX WHEN TOUCHED: a delivery webhook keyed on providerMessageId,
+        // which is already stored for exactly this purpose.
+        this.logger.warn(
+          `Inquiry ${inquiry.id} has an AMBIGUOUS provider outcome, left ` +
+            `PENDING rather than FAILED: ${reason}`,
+        );
+
+        // The ATTEMPT is recorded, even though the status is not changed.
+        //
+        // Without this the branch wrote nothing at all, so a row left PENDING
+        // by an ambiguous send was byte-identical to one left PENDING by a
+        // crash before the send -- and the recovery sweep those cases are
+        // parked for could not tell them apart. It cannot use
+        // providerMessageId to distinguish them either, because an ambiguous
+        // send never returns one; that was an error in this feature's own
+        // notes, corrected here and in #151.
+        //
+        // failureReason on a PENDING row reads oddly, but the alternative is
+        // a column that exists only to say "definitely failed" and a sweeper
+        // that cannot function. Status stays PENDING because that is what is
+        // true: we do not know.
+        return this.recordAttempt(inquiry, result.reason);
+      }
+
+      this.logger.warn(
+        `Inquiry ${inquiry.id} recorded but not delivered: ${reason}`,
+      );
+      return this.markFailed(inquiry, result.reason);
+    }
+
+    // The provider has ALREADY accepted the message at this point. If
+    // recording that fact fails, the send still happened -- so surfacing the
+    // write error would tell the buyer their inquiry did not go through and
+    // invite a retry that sends the seller a duplicate.
+    //
+    // TODO(#151): sweep rows stuck PENDING after an accepted send.
+    // Reconciliation is manual today; nothing sweeps them.
+    //
+    // FREQUENCY: requires a database failure inside the window between an
+    // accepted send and its status write -- milliseconds, and only while the
+    // provider is configured at all.
+    try {
+      return await this.prisma.inquiry.update({
+        where: { id: inquiry.id },
+        data: {
+          status: InquiryStatus.SENT,
+          providerMessageId: result.providerMessageId,
+        },
+      });
+    } catch (error) {
+      this.logger.error(
+        `Inquiry ${inquiry.id} was DELIVERED (provider id ` +
+          `${sanitizeForLog(result.providerMessageId ?? 'unknown', 64)}) but ` +
+          `could not be marked SENT; it remains PENDING and needs ` +
+          `reconciling: ` +
+          `${sanitizeForLog(error instanceof Error ? error.message : 'unknown error')}`,
+      );
+      // Returned as SENT even though the row is not. Meta ACCEPTED this
+      // message; returning the untouched PENDING row made the resolver report
+      // delivered:false and show the buyer "we could not reach the seller"
+      // for a message that had in fact arrived. The database inconsistency is
+      // real and logged for reconciliation, but the buyer should be told what
+      // actually happened, not what the failed write recorded.
+      return {
+        ...inquiry,
+        status: InquiryStatus.SENT,
+        providerMessageId: result.providerMessageId,
+      };
+    }
+  }
+
+  /**
+   * Notes an ambiguous attempt without claiming an outcome.
+   *
+   * Status deliberately untouched: PENDING is what is true. Only the reason
+   * is stored, so a later sweep can tell an attempted-but-unknown row from
+   * one that was never attempted at all.
+   */
+  private async recordAttempt(
+    inquiry: Prisma.InquiryGetPayload<object>,
+    reason: string,
+  ): Promise<Prisma.InquiryGetPayload<object>> {
+    const failureReason = sanitizeForLog(reason, FAILURE_REASON_MAX_LENGTH);
+    try {
+      return await this.prisma.inquiry.update({
+        where: { id: inquiry.id },
+        data: { failureReason },
+      });
+    } catch (error) {
+      // Same contract as markFailed: the lead is already saved, so this must
+      // not become the buyer's problem.
+      this.logger.error(
+        `Inquiry ${inquiry.id} had an ambiguous outcome that could not be ` +
+          `recorded: ` +
+          `${sanitizeForLog(error instanceof Error ? error.message : 'unknown error')}`,
+      );
+      return { ...inquiry, failureReason };
+    }
+  }
+
+  /**
+   * Records a delivery failure, and cannot itself fail the mutation.
+   *
+   * The inquiry is ALREADY persisted by the time this runs, so letting a
+   * transient database error escape would tell the buyer their submission
+   * failed and invite them to resubmit something already recorded.
+   */
+  private async markFailed(
+    inquiry: Prisma.InquiryGetPayload<object>,
+    reason: string,
+  ): Promise<Prisma.InquiryGetPayload<object>> {
+    try {
+      return await this.prisma.inquiry.update({
+        where: { id: inquiry.id },
+        // Truncated because this is provider-supplied text on a column an
+        // operator reads, not a place to accumulate arbitrary length.
+        data: {
+          status: InquiryStatus.FAILED,
+          // Flattened before STORAGE, not only before logging. This is
+          // provider-supplied text on a column an operator reads and may
+          // paste elsewhere; newlines and control characters in it are the
+          // same hazard one step removed.
+          failureReason: sanitizeForLog(reason, FAILURE_REASON_MAX_LENGTH),
+        },
+      });
+    } catch (error) {
+      this.logger.error(
+        `Inquiry ${inquiry.id} could not be marked FAILED ` +
+          `(${sanitizeForLog(reason)}); it remains PENDING and needs ` +
+          `reconciling: ` +
+          `${sanitizeForLog(error instanceof Error ? error.message : 'unknown error')}`,
+      );
+      // The row that WAS persisted, with what we know applied in memory.
+      // Re-reading from the database that just failed is no more likely to
+      // work, and pushing the error to the caller is the very thing this
+      // catch exists to prevent.
+      return {
+        ...inquiry,
+        status: InquiryStatus.FAILED,
+        failureReason: sanitizeForLog(reason, FAILURE_REASON_MAX_LENGTH),
+      };
     }
   }
 
@@ -245,7 +768,7 @@ export class InquiriesService {
     buyerPhone: string;
     message: string;
     ipHash: string | null;
-  }): Promise<Prisma.InquiryGetPayload<object>> {
+  }): Promise<InsertedInquiry> {
     const { buyerName, buyerPhone, message, ipHash } = args;
 
     // The limit check and the insert are ONE serializable transaction.
@@ -257,26 +780,47 @@ export class InquiriesService {
     return this.withSerializationRetry(() =>
       this.prisma.$transaction(
         async (tx) => {
-          // The idempotency check runs INSIDE each attempt, not only once
-          // before the first one.
+          // The idempotency check runs FIRST, and inside each attempt.
           //
-          // Two identical requests race; one is aborted with P2034 and
-          // retried. By then the winner has committed, and its row counts
-          // against the very limits this attempt is about to check -- so at a
-          // limit boundary the retry was rejected with "Too many inquiries"
-          // instead of returning the winner, and the P2002 recovery below
-          // never ran because the insert was never reached. Rechecking here
-          // also means a duplicate never consumes rate-limit budget, which is
-          // correct independently: it is one submission.
+          // First, because a recorded submission is answerable without a
+          // product: it is not being delivered, so no snapshot is needed. The
+          // previous order read the product before this check, which made a
+          // retry throw NotFound if the product had since been removed --
+          // breaking the idempotency contract for a row that plainly exists.
+          // Unreachable while Inquiry.productId is ON DELETE RESTRICT, since
+          // a product with inquiries cannot be deleted at all, but resting
+          // correctness on a constraint elsewhere is not a reason to keep the
+          // weaker order.
+          //
+          // Inside each attempt, because two identical requests race and one
+          // is aborted with P2034 and retried. By then the winner has
+          // committed, and its row counts against the very limits this
+          // attempt is about to check -- so at a limit boundary the retry was
+          // rejected with "Too many inquiries" instead of returning the
+          // winner, and the P2002 recovery below never ran because the insert
+          // was never reached. Rechecking here also means a duplicate never
+          // consumes rate-limit budget, which is correct independently: it is
+          // one submission.
           const seen = await tx.inquiry.findUnique({
             where: { idempotencyKey: args.idempotencyKey },
           });
-          if (seen) return assertSameSubmission(seen, args);
+          if (seen) {
+            // NOT delivered: this row already exists, so the request that
+            // wrote it is what sends. No product is returned, so nothing
+            // downstream can accidentally deliver off this branch.
+            return {
+              inserted: false,
+              inquiry: assertSameSubmission(seen, args),
+            };
+          }
 
           // Read INSIDE the transaction, and this snapshot is what the insert
-          // uses. Reading it before and reusing that copy would let a product
-          // reassigned in the gap have its inquiry attributed to the previous
-          // seller.
+          // AND the send use. Reading it outside and reusing that copy would
+          // let a product reassigned in the gap have its inquiry attributed
+          // to the previous seller -- which once delivery exists means the
+          // buyer's name, phone and question handed to an organisation with
+          // nothing to do with the listing. Nothing reassigns products today,
+          // which is exactly why it would have gone unnoticed.
           const product = await tx.product.findUnique({
             where: { id: args.productId },
             include: { seller: true },
@@ -303,7 +847,7 @@ export class InquiriesService {
             ipHash,
           });
 
-          return tx.inquiry.create({
+          const inquiry = await tx.inquiry.create({
             data: {
               idempotencyKey: args.idempotencyKey,
               productId: product.id,
@@ -317,6 +861,11 @@ export class InquiriesService {
               status: InquiryStatus.PENDING,
             },
           });
+
+          // The product snapshot travels WITH the row. Looking the seller's
+          // number up again after the transaction closed would reopen the
+          // reassignment gap this read exists to close.
+          return { inserted: true, inquiry, product };
         },
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
       ),

@@ -4,14 +4,21 @@ import {
   INQUIRY_RATE_LIMIT_PER_SELLER,
   INQUIRY_RATE_LIMIT_PER_PHONE,
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
+  WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH,
 } from '@medinstru/config';
 import {
   InquiriesService,
   assertSameSubmission,
+  buildInquiryMessage,
+  buildInquirySummary,
   hashIp,
+  publicSiteUrl,
+  sanitizeForLog,
 } from './inquiries.service';
+import { WhatsappService, sanitizeTemplateParam } from './whatsapp.service';
 import { randomBytes } from 'node:crypto';
 import { Prisma } from '../../generated/prisma/client';
+import { InquiryStatus } from '../../generated/prisma/enums';
 import { PrismaService } from '../prisma/prisma.service';
 
 const PRODUCT = {
@@ -54,6 +61,303 @@ const ARGS = {
   message: 'Is this available in Chennai?',
 };
 
+describe('buildInquiryMessage', () => {
+  const message = buildInquiryMessage({
+    productName: 'Portable Digital X-Ray Machine',
+    productId: 'seed-product-01',
+    buyerName: 'Asha Rao',
+    buyerPhone: '+919000000001',
+    message: 'Is this available in Chennai?',
+    siteUrl: 'https://laxair.shop',
+  });
+
+  it('identifies the product without a round trip (#91 story 4)', () => {
+    expect(message).toContain('Portable Digital X-Ray Machine');
+    expect(message).toContain('seed-product-01');
+  });
+
+  it('carries the same canonical URL a buyer would share', () => {
+    // A forwarded inquiry and a forwarded link must land on one page.
+    expect(message).toContain(
+      'https://laxair.shop/en/products/seed-product-01',
+    );
+  });
+
+  it('does not double the slash when the site URL has a trailing one', () => {
+    const trailing = buildInquiryMessage({
+      productName: 'X',
+      productId: 'p1',
+      buyerName: 'B',
+      buyerPhone: '+919000000001',
+      message: 'hi',
+      siteUrl: 'https://laxair.shop/',
+    });
+    expect(trailing).toContain('https://laxair.shop/en/products/p1');
+    expect(trailing).not.toContain('shop//en');
+  });
+
+  it('keeps the contact line even when the product name is absurd', () => {
+    // buildInquirySummary used to put "From: name (phone)" LAST, and
+    // sanitizeTemplateParam truncates from the end. Product names are
+    // unbounded String in the schema -- the seeded catalogue already has a
+    // deliberately absurd one -- so a long enough name pushed the buyer's
+    // name and phone off the end entirely. The seller then received an
+    // inquiry with no way to reply, which is worse than receiving nothing:
+    // it looks answerable and is not.
+    const summary = buildInquirySummary({
+      productName: 'X'.repeat(5000),
+      productId: 'seed-product-01',
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+      siteUrl: 'https://laxair.shop',
+    });
+    const sent = sanitizeTemplateParam(summary);
+
+    expect(sent).toContain('Asha Rao');
+    expect(sent).toContain('+919000000001');
+    // And the whole thing still fits its parameter, rather than relying on
+    // nothing after the contact line mattering.
+    expect(sent.length).toBeLessThanOrEqual(1024);
+  });
+
+  it('bounds the summary itself, not just what survives sanitising', () => {
+    // Ordering alone protects the contact line, so this bound is belt-and-
+    // braces -- which is exactly why it needs its own assertion. Without one,
+    // removing the cap changes nothing observable and the guarantee silently
+    // becomes "nothing after the contact line happened to matter".
+    const summary = buildInquirySummary({
+      productName: 'X'.repeat(5000),
+      productId: 'seed-product-01',
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+    });
+
+    // Fits its parameter BEFORE sanitizeTemplateParam does any truncating.
+    expect(summary.length).toBeLessThanOrEqual(
+      WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH,
+    );
+    // And the name was shortened rather than the line dropped.
+    expect(summary).toContain('Product: ');
+    expect(summary).toContain('\u2026');
+  });
+
+  it('puts the contact line before the product details', () => {
+    const summary = buildInquirySummary({
+      productName: 'X-Ray',
+      productId: 'p1',
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+    });
+    expect(summary.indexOf('Asha Rao')).toBeLessThan(summary.indexOf('X-Ray'));
+  });
+
+  it('includes how to reach the buyer back', () => {
+    expect(message).toContain('Asha Rao');
+    expect(message).toContain('+919000000001');
+  });
+});
+
+describe('sanitizeForLog', () => {
+  // Provider text is external input, and this function exists so it cannot
+  // forge a log entry. Three classes had to be covered, and each was missed
+  // in turn -- so they are asserted by CODE POINT here rather than by pasting
+  // characters into a string literal, where a shell or an editor can silently
+  // normalise them (which it did, hiding an earlier fix that had not applied
+  // at all).
+  it.each([
+    ['U+2028 LINE SEPARATOR', 0x2028],
+    ['U+2029 PARAGRAPH SEPARATOR', 0x2029],
+    ['U+000A LINE FEED', 0x000a],
+    ['U+0009 TAB', 0x0009],
+    ['U+202E RIGHT-TO-LEFT OVERRIDE', 0x202e],
+    ['U+0000 NUL', 0x0000],
+    ['U+000B VERTICAL TAB', 0x000b],
+    ['U+000C FORM FEED', 0x000c],
+    ['U+0085 NEXT LINE', 0x0085],
+    ['U+00A0 NO-BREAK SPACE', 0x00a0],
+    ['U+FEFF ZERO WIDTH NO-BREAK SPACE', 0xfeff],
+  ])('removes %s', (_label, code) => {
+    const ch = String.fromCharCode(code);
+    expect(sanitizeForLog(`before${ch}after`)).not.toContain(ch);
+  });
+
+  it('leaves ordinary text alone', () => {
+    expect(sanitizeForLog('provider 400: invalid recipient')).toBe(
+      'provider 400: invalid recipient',
+    );
+  });
+
+  it('bounds the length, ellipsising rather than cutting silently', () => {
+    const out = sanitizeForLog('x'.repeat(500), 200);
+    expect(out).toHaveLength(200);
+    expect(out.endsWith('\u2026')).toBe(true);
+  });
+
+  it('does not split a surrogate pair when it truncates', () => {
+    // The THIRD instance of this class. The template parameter and the
+    // product name were fixed together; this one was missed, which is what
+    // "fix the class, not the cited instance" is supposed to prevent.
+    // Provider error text is the likeliest of the three to carry a non-BMP
+    // character, since it can echo arbitrary input back.
+    const out = sanitizeForLog('x'.repeat(199) + '\u{1F600}'.repeat(10), 200);
+    const unpaired =
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    expect(unpaired.test(out)).toBe(false);
+  });
+});
+
+describe('publicSiteUrl', () => {
+  // SITE_URL falls back to http://localhost:3000, and render.yaml declares
+  // NEXT_PUBLIC_SITE_URL only for the WEB service -- so the API resolves that
+  // fallback in production and every seller would have received
+  // `Link: http://localhost:3000/en/products/...`. Verified by importing the
+  // config with the variable unset before this existed.
+  it.each([
+    ['http://localhost:3000', 'the development fallback'],
+    ['http://127.0.0.1:3000', 'loopback by address'],
+    ['http://[::1]:3000', 'loopback over IPv6'],
+    ['http://0.0.0.0:3000', 'the unspecified address a container binds'],
+    ['', 'nothing at all'],
+    ['not a url', 'something unparseable'],
+  ])('rejects %s (%s)', (value) => {
+    expect(publicSiteUrl(value)).toBeNull();
+  });
+
+  it.each([
+    ['http://localhost.', 'localhost with the root dot'],
+    ['http://127.0.0.2', 'the rest of 127/8, not just .1'],
+    ['http://[::ffff:127.0.0.1]', 'IPv4-mapped loopback'],
+    ['http://[::1]', 'IPv6 loopback in brackets'],
+    ['http://0.0.0.0', 'the unspecified address'],
+    ['http://[::ffff:0.0.0.0]', 'the MAPPED unspecified address'],
+    ['http://[::]', 'the unspecified address in IPv6'],
+  ])('rejects %s (%s)', (value) => {
+    // Each is a different SPELLING of "this machine". A list of exact strings
+    // kept missing one, which is why the check is now a predicate.
+    expect(publicSiteUrl(value)).toBeNull();
+  });
+
+  it.each([
+    ['http://10.0.0.1', 'RFC1918 private'],
+    ['http://169.254.1.1', 'link-local'],
+  ])('ACCEPTS %s (%s), deliberately', (value) => {
+    // Loopback means "unconfigured" -- it is the fallback this function
+    // exists to catch. A private address is the opposite: someone typed it,
+    // and an internal or staging deployment where it is exactly right would
+    // have its links silently dropped if this refused them. Raised as a
+    // finding; declined with this reasoning rather than complied with.
+    expect(publicSiteUrl(value)).toBe(value);
+  });
+
+  it.each([
+    ['https://example.com?x=1', 'a query string'],
+    ['https://user:pass@example.com', 'embedded credentials'],
+    ['https://example.com/base/', 'a path'],
+  ])('reduces %s to its ORIGIN (%s)', (value) => {
+    // The link is built by CONCATENATION, so anything beyond the origin
+    // survives into it: `https://example.com?x=1` became
+    // `https://example.com?x=1/en/products/<id>`, putting the product path
+    // inside the query. Embedded credentials would have gone into a message
+    // sent to a seller.
+    expect(publicSiteUrl(value)).toBe('https://example.com');
+  });
+
+  it.each([
+    ['ftp://example.com', 'a non-web scheme'],
+    ['javascript:alert(1)', 'a script url'],
+  ])('rejects %s (%s)', (value) => {
+    // Both parse happily. `javascript:alert(1)` yielded
+    // `javascript:alert(1)/en/products/<id>` in an outbound message.
+    expect(publicSiteUrl(value)).toBeNull();
+  });
+
+  it('accepts a real public origin, without a trailing slash', () => {
+    expect(publicSiteUrl('https://laxair.shop/')).toBe('https://laxair.shop');
+  });
+});
+
+describe('the outbound summary fits its parameter budget', () => {
+  // The comment above buildInquirySummary used to claim the summary "fits
+  // deterministically". It does not: productId is interpolated twice and the
+  // configured origin is unbounded, so only productName is actually capped.
+  // The margin is large, but a claim nothing checks is how the message-length
+  // bug in this same feature stayed hidden -- so it is measured here.
+  it('survives the worst realistic inputs with room to spare', () => {
+    const summary = buildInquirySummary({
+      // Far past the 200-char cap, to prove the cap does the work.
+      productName: 'X'.repeat(400),
+      // A cuid, which is what this column actually holds.
+      productId: 'c'.repeat(25),
+      buyerName: 'N'.repeat(80),
+      buyerPhone: `+${'9'.repeat(14)}`,
+      siteUrl: 'https://laxair.shop',
+    });
+
+    // Asserts NOT TRUNCATED, which is the property. An earlier version of
+    // this assertion demanded the sanitised length equal the raw one, and
+    // failed at 441 vs 443 -- the summary contains blank lines, so flattening
+    // legitimately contracts it. That is the rule working, not breaking.
+    const sent = sanitizeTemplateParam(summary);
+    expect(sent.length).toBeLessThan(WHATSAPP_TEMPLATE_PARAM_MAX_LENGTH);
+    expect(sent.length).toBeLessThanOrEqual(summary.length);
+    // The link is the last line, so its survival proves nothing was cut.
+    expect(sent).toContain('/en/products/');
+  });
+
+  it('keeps the contact line when something does overflow', () => {
+    // The ordering is what makes the remaining risk survivable: truncation
+    // eats from the end, so it reaches the link before the phone number.
+    const summary = buildInquirySummary({
+      productName: 'X'.repeat(400),
+      productId: 'c'.repeat(25),
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+      // An absurd but structurally valid origin, standing in for the
+      // unbounded input nothing caps.
+      siteUrl: `https://${'sub.'.repeat(200)}example.com`,
+    });
+    const sent = sanitizeTemplateParam(summary);
+
+    expect(sent).toContain('Asha Rao');
+    expect(sent).toContain('+919000000001');
+  });
+});
+
+describe('the outbound summary without a public site url', () => {
+  it('OMITS the link rather than sending a dead one', () => {
+    // A seller who clicks a localhost link concludes the marketplace is
+    // broken. One who gets a name, a number and a product does not need the
+    // link at all -- which is why this degrades rather than refusing.
+    const summary = buildInquirySummary({
+      productName: 'Portable Digital X-Ray Machine',
+      productId: 'seed-product-01',
+      buyerName: 'Asha Rao',
+      buyerPhone: '+919000000001',
+      siteUrl: 'http://localhost:3000',
+    });
+
+    expect(summary).not.toContain('localhost');
+    expect(summary).not.toContain('Link:');
+    // Everything that makes the inquiry actionable survives.
+    expect(summary).toContain('Asha Rao');
+    expect(summary).toContain('+919000000001');
+    // And it stays traceable without the link.
+    expect(summary).toContain('Ref: seed-product-01');
+  });
+
+  it('includes the link when a real origin is configured', () => {
+    expect(
+      buildInquirySummary({
+        productName: 'X',
+        productId: 'p1',
+        buyerName: 'Asha',
+        buyerPhone: '+919000000001',
+        siteUrl: 'https://laxair.shop',
+      }),
+    ).toContain('Link: https://laxair.shop/en/products/p1');
+  });
+});
+
 describe('InquiriesService', () => {
   let service: InquiriesService;
   let prisma: {
@@ -62,9 +366,11 @@ describe('InquiriesService', () => {
     inquiry: {
       findUnique: jest.Mock;
       create: jest.Mock;
+      update: jest.Mock;
       count: jest.Mock;
     };
   };
+  let whatsapp: { sendInquiry: jest.Mock };
 
   beforeEach(() => {
     prisma = {
@@ -87,10 +393,29 @@ describe('InquiriesService', () => {
           .mockImplementation(({ data }: { data: object }) =>
             Promise.resolve({ id: 'inq-1', ...data }),
           ),
+        // Returns the WHOLE row with the change applied, as Prisma does. A
+        // mock echoing only `data` back is not a row the code could ever have
+        // written, and it made a partial update -- one that changes
+        // failureReason without touching status -- look as though it had
+        // erased the status.
+        update: jest.fn().mockImplementation(({ data }: { data: unknown }) =>
+          Promise.resolve({
+            ...storedRowFor('inq-1'),
+            ...(data as object),
+          }),
+        ),
         count: jest.fn().mockResolvedValue(0),
       },
     };
-    service = new InquiriesService(prisma as unknown as PrismaService);
+    whatsapp = {
+      sendInquiry: jest
+        .fn()
+        .mockResolvedValue({ ok: true, providerMessageId: 'wamid.1' }),
+    };
+    service = new InquiriesService(
+      prisma as unknown as PrismaService,
+      whatsapp as unknown as WhatsappService,
+    );
     jest.spyOn(service['logger'], 'warn').mockImplementation(() => undefined);
   });
 
@@ -427,6 +752,234 @@ describe('InquiriesService', () => {
     // carrying it here would reach an anonymous caller (#91 story 6).
     const result = await service.create(ARGS);
     expect(JSON.stringify(result)).not.toContain('+919876543210');
+  });
+
+  describe('delivery', () => {
+    it('records the inquiry BEFORE attempting delivery', async () => {
+      // #91 story 9. A send that fails -- bad credentials, a Meta outage, a
+      // number Meta rejects -- must still leave a lead the marketplace can
+      // see and retry. Sending first and persisting after loses the lead
+      // exactly when something is already wrong.
+      const order: string[] = [];
+      prisma.inquiry.create.mockImplementation(({ data }: { data: object }) => {
+        order.push('create');
+        return Promise.resolve({ id: 'inq-1', ...data });
+      });
+      whatsapp.sendInquiry.mockImplementation(() => {
+        order.push('send');
+        return Promise.resolve({ ok: true, providerMessageId: 'wamid.1' });
+      });
+
+      await service.create(ARGS);
+
+      expect(order).toEqual(['create', 'send']);
+    });
+
+    it('marks a delivered inquiry SENT and keeps the provider message id', async () => {
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.abc',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.SENT);
+      expect(result.providerMessageId).toBe('wamid.abc');
+    });
+
+    it('sends to the seller the TRANSACTION saw, not a later re-read', async () => {
+      // The product snapshot travels with the row. Looking the number up
+      // again after the transaction closed would reopen the reassignment gap
+      // -- and once delivery exists, that gap hands a buyer's name and phone
+      // number to an organisation with nothing to do with the listing.
+      prisma.product.findUnique.mockResolvedValue({
+        ...PRODUCT,
+        sellerId: 'org-current',
+        seller: { id: 'org-current', whatsappNumber: '+919999900000' },
+      });
+
+      await service.create(ARGS);
+
+      expect(whatsapp.sendInquiry).toHaveBeenCalledWith(
+        '+919999900000',
+        expect.anything(),
+      );
+    });
+
+    it('still records the lead when the provider rejects the send', async () => {
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        reason: 'provider 400: invalid recipient',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.FAILED);
+      expect(prisma.inquiry.create).toHaveBeenCalled();
+    });
+
+    it('still records the lead when the seller has no number', async () => {
+      // A configuration state, not a buyer error. The form is hidden for such
+      // sellers, so reaching this means a direct caller or a number removed
+      // after the page loaded -- and the lead is deliverable once they are
+      // onboarded.
+      prisma.product.findUnique.mockResolvedValue({
+        ...PRODUCT,
+        seller: { id: 'org-1', whatsappNumber: null },
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.FAILED);
+      expect(whatsapp.sendInquiry).not.toHaveBeenCalled();
+      expect(prisma.inquiry.create).toHaveBeenCalled();
+    });
+
+    it('leaves an AMBIGUOUS outcome PENDING, never FAILED', async () => {
+      // A timeout or a dropped connection means the request may have reached
+      // Meta and been accepted before the response was lost. FAILED invites a
+      // retry that double-messages the seller; PENDING says what is true --
+      // we do not know.
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        ambiguous: true,
+        reason: 'provider timed out after 10000ms',
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.PENDING);
+      // The ATTEMPT is recorded even though the status is not changed. It
+      // previously wrote nothing, so a row left PENDING by an ambiguous send
+      // was byte-identical to one left PENDING by a crash before the send --
+      // and the recovery sweep those are parked for could not tell them
+      // apart. providerMessageId cannot distinguish them either, because an
+      // ambiguous send never returns one.
+      const written = prisma.inquiry.update.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      };
+      expect(Object.keys(written.data)).toEqual(['failureReason']);
+      expect(written.data.failureReason).toMatch(/timed out/);
+      expect(result.failureReason).toMatch(/timed out/);
+    });
+
+    it('leaves a never-attempted row distinguishable from an ambiguous one', async () => {
+      // The whole point of recording the attempt: a sweeper keys off this.
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.1',
+      });
+
+      const delivered = await service.create(ARGS);
+
+      // A delivered row carries an id and no reason; an ambiguous one carries
+      // a reason and no id; a never-attempted row carries neither.
+      expect(delivered.providerMessageId).toBe('wamid.1');
+      expect(delivered.failureReason ?? null).toBeNull();
+    });
+
+    it('does NOT deliver again for an idempotent retry', async () => {
+      // The whole mechanism defeated through the back door: the database
+      // deduplicates perfectly and the seller is messaged twice anyway.
+      // Delivery is gated on this call having actually written the row.
+      prisma.inquiry.findUnique.mockResolvedValue(storedRowFor('inq-existing'));
+
+      await service.create(ARGS);
+
+      expect(whatsapp.sendInquiry).not.toHaveBeenCalled();
+    });
+
+    it('is never failed by an unexpected throw from the provider layer', async () => {
+      // sendInquiry returns a result rather than throwing, but that is a
+      // property of its code today -- it builds its request payload before
+      // its own try. The lead is already saved by the time delivery runs, so
+      // an escape would tell the buyer their inquiry failed when it is
+      // sitting in the table, and invite them to submit it again.
+      whatsapp.sendInquiry.mockImplementation(() => {
+        throw new TypeError('payload build blew up');
+      });
+
+      const result = await service.create(ARGS);
+
+      expect(result.id).toBe('inq-1');
+      expect(prisma.inquiry.create).toHaveBeenCalled();
+    });
+
+    it('flattens provider text before STORING it, not just before logging', async () => {
+      // failureReason is on a column an operator reads and may paste
+      // elsewhere; newlines in it are the same hazard one step removed.
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        reason: 'provider said\nERROR forged\tline',
+      });
+
+      await service.create(ARGS);
+
+      const written = prisma.inquiry.update.mock.calls[0][0] as {
+        data: { failureReason: string };
+      };
+      expect(written.data.failureReason).not.toContain('\n');
+      expect(written.data.failureReason).not.toContain('\t');
+    });
+
+    it('does not report failure when marking a FAILED inquiry fails', async () => {
+      // The inquiry is already persisted, so a transient write error must not
+      // escape and tell the buyer their submission failed -- inviting them to
+      // resubmit something that was recorded.
+      whatsapp.sendInquiry.mockResolvedValue({ ok: false, reason: 'nope' });
+      prisma.inquiry.update.mockRejectedValue(new Error('db down'));
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.FAILED);
+    });
+
+    it('still reports a DELIVERED inquiry as SENT when marking it fails', async () => {
+      // Meta ACCEPTED this message. Returning the untouched PENDING row made
+      // the resolver report delivered:false and show the buyer "we could not
+      // reach the seller" for a message that had in fact arrived.
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: true,
+        providerMessageId: 'wamid.xyz',
+      });
+      prisma.inquiry.update.mockRejectedValue(new Error('db down'));
+
+      const result = await service.create(ARGS);
+
+      expect(result.status).toBe(InquiryStatus.SENT);
+      expect(result.providerMessageId).toBe('wamid.xyz');
+    });
+
+    it('truncates a runaway provider failure reason', async () => {
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        reason: 'x'.repeat(5000),
+      });
+
+      await service.create(ARGS);
+
+      const written = prisma.inquiry.update.mock.calls[0][0] as {
+        data: { failureReason: string };
+      };
+      expect(written.data.failureReason.length).toBeLessThanOrEqual(500);
+    });
+
+    it('never lets raw provider text reach the logger', async () => {
+      // Meta's error.message is external input. Newlines let it forge log
+      // entries that look like ours, and the column truncation happens after
+      // the log call, so it protects the wrong thing.
+      const warn = jest.spyOn(service['logger'], 'warn');
+      whatsapp.sendInquiry.mockResolvedValue({
+        ok: false,
+        reason: 'line one\nERROR forged line two\ttabbed',
+      });
+
+      await service.create(ARGS);
+
+      const logged = warn.mock.calls.map((c) => String(c[0])).join(' ');
+      expect(logged).not.toContain('\n');
+      expect(logged).not.toContain('\t');
+    });
   });
 
   describe('rate limiting', () => {

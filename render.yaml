@@ -43,6 +43,23 @@ services:
           property: connectionString
       - key: JWT_SECRET
         sync: false # generated once via `openssl rand -base64 32`, set manually in the dashboard
+      # The API needs this too, and it is easy to miss because the name says
+      # NEXT_PUBLIC. Outbound WhatsApp inquiries embed a product link built
+      # from it, and packages/config falls back to http://localhost:3000 --
+      # so without it here every seller receives a dead localhost link in the
+      # one message this whole feature exists to send.
+      #
+      # The code degrades rather than sending that: buildInquirySummary omits
+      # the link entirely when no public origin is configured, and logs a
+      # warning naming this variable. The inquiry still carries the buyer's
+      # name, number and a Ref, so it stays actionable -- but the link is the
+      # difference between a seller clicking through and typing a search.
+      #
+      # Since this file is NOT an active Blueprint sync (see the header),
+      # setting it here does nothing on its own; it must also be set by hand
+      # on medinstru-api in Render's dashboard.
+      - key: NEXT_PUBLIC_SITE_URL
+        value: https://laxair.shop
       # The API half of blob storage, and it is genuinely required: this
       # service rewrites each product's imageUrl per request, so without it
       # the API keeps returning local paths no matter what the web service
