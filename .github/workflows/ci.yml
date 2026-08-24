@@ -1021,7 +1021,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - run: pnpm install --frozen-lockfile
       - name: Mutate the guard files and check the tests notice
         run: node scripts/mutation-test.mjs | tee "$GITHUB_STEP_SUMMARY"
