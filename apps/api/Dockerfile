@@ -1,6 +1,34 @@
 # syntax=docker/dockerfile:1
 
 FROM node:26-alpine AS base
+
+# Alpine security patches, applied at build time rather than waited for.
+#
+# Trivy scans the built image against a CVE database that moves independently
+# of this repo, so an image whose Dockerfile has not changed starts failing
+# the moment a CVE lands upstream. Not hypothetical: CVE-2026-14456 (openssl
+# DoS via unbounded memory, libcrypto3/libssl3 3.5.7-r0 -> 3.5.8-r0) began
+# failing every Docker-touching PR while node:26-alpine still shipped the
+# vulnerable version.
+#
+# A blanket upgrade rather than naming the packages: pinning the fix to
+# today's CVE means the next one needs another commit and another red build.
+#
+# THE ARG IS THE POINT, and `--no-cache` is not enough on its own -- that flag
+# controls APK's package index, not Docker's layer cache. Without a changing
+# input this RUN is served from the layer cache on rebuild, so a newly
+# published Alpine patch would be silently skipped: exactly the failure the
+# blanket upgrade exists to prevent. CI never hits that (fresh runners, no
+# cache-from) but Render caches layers between deploys, which is where it
+# would actually bite.
+#
+# RENDER_GIT_COMMIT changes on every deploy, so every deploy re-runs the
+# upgrade; rebuilding the same commit locally reuses the layer, which is what
+# you want. Verified that a changed ARG really does invalidate the layer
+# rather than assumed.
+ARG RENDER_GIT_COMMIT=""
+RUN echo "alpine patch layer for ${RENDER_GIT_COMMIT:-local}" \
+    && apk upgrade --no-cache
 # Node 26 stopped bundling corepack — install it explicitly before enabling
 # (it still reads the pnpm version to use from package.json's packageManager
 # field, same as before).
@@ -68,6 +96,34 @@ RUN pnpm --filter api deploy --prod --legacy /out
 
 # ---- prod: minimal runtime image — no pnpm, no workspace, no dev deps.
 FROM node:26-alpine AS prod
+
+# Alpine security patches, applied at build time rather than waited for.
+#
+# Trivy scans the built image against a CVE database that moves independently
+# of this repo, so an image whose Dockerfile has not changed starts failing
+# the moment a CVE lands upstream. Not hypothetical: CVE-2026-14456 (openssl
+# DoS via unbounded memory, libcrypto3/libssl3 3.5.7-r0 -> 3.5.8-r0) began
+# failing every Docker-touching PR while node:26-alpine still shipped the
+# vulnerable version.
+#
+# A blanket upgrade rather than naming the packages: pinning the fix to
+# today's CVE means the next one needs another commit and another red build.
+#
+# THE ARG IS THE POINT, and `--no-cache` is not enough on its own -- that flag
+# controls APK's package index, not Docker's layer cache. Without a changing
+# input this RUN is served from the layer cache on rebuild, so a newly
+# published Alpine patch would be silently skipped: exactly the failure the
+# blanket upgrade exists to prevent. CI never hits that (fresh runners, no
+# cache-from) but Render caches layers between deploys, which is where it
+# would actually bite.
+#
+# RENDER_GIT_COMMIT changes on every deploy, so every deploy re-runs the
+# upgrade; rebuilding the same commit locally reuses the layer, which is what
+# you want. Verified that a changed ARG really does invalidate the layer
+# rather than assumed.
+ARG RENDER_GIT_COMMIT=""
+RUN echo "alpine patch layer for ${RENDER_GIT_COMMIT:-local}" \
+    && apk upgrade --no-cache
 WORKDIR /app
 ENV NODE_ENV=production
 # node:22-alpine ships a global npm install we never invoke (CMD below
