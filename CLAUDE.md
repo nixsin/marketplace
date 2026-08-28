@@ -842,6 +842,28 @@ call, so it protects the wrong thing.
 
 ## Known gotchas (already solved once — don't re-derive)
 
+**`prisma migrate dev` refuses to run — and wants to RESET — when the dev
+database holds a migration record with no matching file.** Same family as the
+`bundleId` drift below, one level up: `prisma migrate dev` on the abandoned
+`feat/bulk-inquiry` branch left a row in `_prisma_migrations` named
+`20260822051416_add_inquiry_bundle`, whose file was never committed. Prisma
+compares applied *names* against `prisma/migrations/`, finds one it cannot
+account for, and offers exactly one remedy: `migrate reset`, which drops the
+whole dev database. Taking that offer would have wiped the local catalogue for
+the second time this project has managed it.
+
+The surgical fix, once you have confirmed the file genuinely does not exist
+**and** the migration's effect is already reverted:
+
+```bash
+/opt/homebrew/opt/postgresql@16/bin/psql "postgresql://postgres:postgres@127.0.0.1:5432/medinstru" \
+  -c "DELETE FROM _prisma_migrations WHERE migration_name = '<orphan>'"
+```
+
+That is metadata only — verify the row count before and after (16 products
+either side, in the real case). Never reach for `migrate reset` on a database
+holding data you would have to re-seed.
+
 **`beforeEach(() => mock.mockResolvedValue(x))` silently CALLS the mock after
 every test.** Vitest (and Jest) treat a function returned from `beforeEach` as
 a teardown callback, and `mockResolvedValue` returns the `MockInstance` — which
