@@ -15,11 +15,11 @@
     "prepare": "husky"
   },
   "devDependencies": {
-    "@anthropic-ai/sdk": "^0.117.1",
+    "@anthropic-ai/sdk": "^0.120.0",
     "@medinstru/config": "workspace:*",
     "husky": "^9.1.7",
     "lint-staged": "^17.3.0",
-    "openai": "^7.4.0"
+    "openai": "^7.5.0"
   },
   "lint-staged": {
     "apps/api/**/*.ts": "pnpm --filter api exec eslint --fix",
