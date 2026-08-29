@@ -1277,8 +1277,19 @@ wrong and the fix is to delete it, not to work around it.
   `*` all *do* admit `10.x`, which is easy to misread as a cap:
 
   ```bash
-  awk -F: '/^  .+@[0-9]/{pkg=$0; sub(/^  /,"",pkg); sub(/:$/,"",pkg)} /^      eslint: /{r=$0; sub(/^      eslint: /,"",r); if(pkg!~/\(/) print pkg" -> "r}' pnpm-lock.yaml | sort -u
+  awk '/^  [^ ]/{pkg=$0; sub(/^  /,"",pkg); sub(/:$/,"",pkg); insec=0}
+       /^    peerDependencies:$/{insec=1; next}
+       /^    [a-zA-Z]/{insec=0}
+       insec && /^      eslint:/{r=$0; sub(/^      eslint: */,"",r); print pkg" -> "r}' \
+    pnpm-lock.yaml | sort -u
   ```
+
+  It tracks entry into and exit from each `peerDependencies:` block on
+  purpose. A shorter version that just greps every six-space-indented
+  `eslint:` line also reads the `dependencies:` blocks, where `eslint:
+  9.39.5(jiti@2.7.0)` is a *resolved version*, not a peer range — which
+  reads as a package pinned to 9 and would manufacture a blocker that
+  isn't there.
 
   So the thing to re-check before retrying is **`eslint-config-next`
   shipping a release whose whole plugin set accepts ESLint 10**, not
