@@ -1183,9 +1183,7 @@ error message — see the entries below for what that verification looks
 like), not merely pending review or CI. It's a quick visual signal on
 the PR list that no action is expected on that PR until the upstream
 gap closes — check the title before re-investigating one. Currently:
-`[blocked] Bump typescript from 5.9.3 to 7.0.2` (#27),
-`[blocked] Bump eslint from 9.39.5 to 10.8.1` (#24),
-`[blocked] Bump @eslint/js from 9.39.5 to 10.0.1` (#25). Rename with
+`[blocked] Bump eslint from 9.39.5 to 10.9.0` (#161). Rename with
 `gh pr edit <number> --title "[blocked] <original title>"` — don't
 touch the rest of the title. Remove the prefix once the underlying
 blocker actually clears and the PR becomes a normal mergeable bump
@@ -1195,35 +1193,47 @@ failing on packages nobody can currently fix; add a package's exact npm
 name there in the same commit that marks its PR `[blocked]`, and remove
 it there too the moment the prefix comes off.
 
-- **PR #27 (`typescript` 5.9.3 → 7.0.2) is blocked upstream — don't
-  re-investigate, don't try to force it through.** `typescript-eslint`
+**"In sync" means with the *blockers*, not with the PR numbers** — those
+churn underneath you. Dependabot closes and reopens a bump every time a
+new upstream version ships, so the PR carrying a blocked upgrade changes
+identity repeatedly while the blocker itself sits still: #24, #25 and #27
+are all closed and superseded, and `eslint` is now carried by #161 while
+`typescript` and `@eslint/js` have no open PR at all right now. All three
+packages stay in `known-outdated-packages.txt` regardless, because an
+entry tracks an unfixable dependency, not a PR. A closed PR is therefore
+never evidence a blocker cleared — re-check the upstream package.
+
+- **The `typescript` 5.9.3 → 7.x bump is blocked upstream — don't
+  re-investigate, don't try to force it through.** PR #27 carried it and
+  is now closed; Dependabot will reopen an equivalent. `typescript-eslint`
   does not support TypeScript 7 at all: `pnpm lint:check` fails outright
   with `typescript-eslint does not support TS 7.0`, and
   `typescript-eslint@latest` (checked directly via `npm view
   typescript-eslint@latest peerDependencies`) still declares `typescript:
   '>=4.8.4 <6.1.0'`. Also checked the `canary` dist-tag specifically
   (`npm view typescript-eslint@canary peerDependencies`) since `@latest`
-  alone doesn't cover separately-tagged prereleases — as of `8.67.1-alpha.4`
-  it declares the identical range, so there is no newer or prerelease
-  version that fixes this yet. Tracked upstream:
+  alone doesn't cover separately-tagged prereleases — re-checked
+  2026-08-29 at `8.68.1-alpha.6`, which declares the identical range, so
+  there is no newer or prerelease version that fixes this yet. Tracked
+  upstream:
   [typescript-eslint#10940](https://github.com/typescript-eslint/typescript-eslint/issues/10940).
   Merging this bump would permanently break `lint` — a never-path-filtered,
-  always-required check — for every future PR. Left open, deliberately
-  unmerged, with the conflict against `main` resolved (so it doesn't sit
-  in a stale `CONFLICTING` state) but nothing else touched. Before
+  always-required check — for every future PR. Mark whatever PR currently
+  carries it `[blocked]` and leave it alone; `typescript` stays in
+  `scripts/known-outdated-packages.txt` in the meantime. Before
   attempting this bump again: re-check `typescript-eslint`'s current
   peer-dependency range for `typescript` — once it covers `7.x`, this
   becomes a normal bump like any other Dependabot PR.
-- **PR #24 (`eslint` 9.39.5 → 10.8.1) and PR #25 (`@eslint/js` 9.39.5 →
-  10.0.1) are both blocked by the same upstream gap — don't
-  re-investigate, don't try to force either through.** `eslint-config-next`
-  (this repo's `apps/web` lint config, latest is `16.3.1`, already what's
-  installed) pulls in `eslint-plugin-react@^7.37.0` as a transitive
-  dependency (`pnpm why eslint-plugin-react --filter web`), and that
-  plugin crashes under ESLint 10: `TypeError: Error while loading rule
-  'react/display-name': contextOrFilename.getFilename is not a function`,
-  because the rule-context shape it expects was removed. Confirmed via
-  both `npm view eslint-plugin-react@latest peerDependencies` (`eslint:
+- **PR #161 (`eslint` 9.39.5 → 10.9.0) is blocked upstream inside
+  `eslint-config-next` — don't re-investigate, don't try to force it
+  through.** `eslint-config-next` (this repo's `apps/web` lint config,
+  `16.3.2` in the lockfile, `16.3.3` latest) pulls in
+  `eslint-plugin-react` as a transitive dependency (`pnpm why
+  eslint-plugin-react --filter web`), and that plugin crashes under ESLint
+  10: `TypeError: Error while loading rule 'react/display-name':
+  contextOrFilename.getFilename is not a function`, because the
+  rule-context shape it expects was removed. Confirmed via both `npm view
+  eslint-plugin-react@latest peerDependencies` (still `7.37.5`, `eslint:
   '^3 || ... || ^9.7'` — no `^10`) and its `next` dist-tag (`7.8.0-rc.0`,
   itself far older than `latest` and clearly abandoned — no active
   prerelease channel carries a fix yet). The actual fix exists only as an
@@ -1231,23 +1241,71 @@ it there too the moment the prefix comes off.
   [eslint-plugin-react#4022](https://github.com/jsx-eslint/eslint-plugin-react/pull/4022)
   ("fix: complete ESLint 10 compatibility"), consolidating
   [#4018](https://github.com/jsx-eslint/eslint-plugin-react/issues/4018).
-  **The automated `ai-failure-analysis` comment on this PR is wrong** — it
-  suggested bumping to `eslint-plugin-react@^7.38.0`/`^7.39.0`; neither
-  version exists on npm (verified directly, `npm view
-  eslint-plugin-react@7.38.0` 404s). Treat that job's suggestions as
-  unverified, same as always — this is a concrete instance of it
-  fabricating a plausible-sounding but nonexistent fix.
-  **PR #25 is the same family, not a separate issue**: `@eslint/js` is
-  meant to track ESLint's own major version, and its `10.0.1` lockfile
-  entry declares a peer of `eslint: ^10.0.0` (optional, which is why
-  `lint` doesn't actually crash on this one — apps/api's `eslint` stays
-  pinned at `^9.18.0`) — a real, verified, unsupported major-version
-  pairing, confirmed by reading `pnpm-lock.yaml` directly, not just
-  trusting the AI reviewer's finding on that PR. Before attempting either
-  bump again: re-check whether `eslint-config-next` (or
-  `eslint-plugin-react` directly) has shipped a version with a peer range
-  covering `eslint@^10` — once it has, both become normal bumps like any
-  other Dependabot PR, ideally merged together since they're the same major.
+  Re-verified 2026-08-29: #4022 is still open, last updated 2026-08-22.
+
+  **`typescript-eslint` is the obvious second suspect and it is NOT a
+  blocker — that has been checked, don't re-check it.** `apps/api` lints
+  through it, so it would gate this bump if it lagged, but it does not:
+  the version already in `pnpm-lock.yaml` (`8.67.0`) declares `eslint:
+  '^8.57.0 || ^9.0.0 || ^10.0.0'`, as do `latest` (`8.68.0`) and canary
+  (`8.68.1-alpha.6`). Support landed between `8.55.0` and `8.60.0`, so
+  this repo has been clear on that front since well before the bump was
+  attempted.
+
+  **`eslint-plugin-react` is the blocker with a demonstrated crash, but it
+  is NOT the only package holding this bump back — checked 2026-08-29, and
+  the tempting "it's just the one plugin now" framing is wrong.** Three
+  plugins in the tree cap their `eslint` peer below `10`, and every one of
+  them arrives through `eslint-config-next` and is already at its latest
+  published version: `eslint-plugin-react@7.37.5` (`^3 || ... || ^9.7`),
+  `eslint-plugin-import@2.32.0` (`^2 || ... || ^9`) and
+  `eslint-plugin-jsx-a11y@6.10.2` (`^3 || ... || ^9`). Only the first has
+  a reproduced runtime failure and a known upstream fix; the other two are
+  peer-range exclusions whose runtime behaviour under ESLint 10 was not
+  tested, since the run dies on `react` first. Every other `eslint` peer
+  in `pnpm-lock.yaml` is satisfied — check that claim with the extractor
+  below rather than eyeballing it, and note that `>=8.0.0`, `>=9.0.0` and
+  `*` all *do* admit `10.x`, which is easy to misread as a cap:
+
+  ```bash
+  awk -F: '/^  .+@[0-9]/{pkg=$0; sub(/^  /,"",pkg); sub(/:$/,"",pkg)} /^      eslint: /{r=$0; sub(/^      eslint: /,"",r); if(pkg!~/\(/) print pkg" -> "r}' pnpm-lock.yaml | sort -u
+  ```
+
+  So the thing to re-check before retrying is **`eslint-config-next`
+  shipping a release whose whole plugin set accepts ESLint 10**, not
+  `eslint-plugin-react` on its own — fixing only the crashing plugin still
+  leaves two unsatisfied peers behind it.
+
+  **Watch which peer you are reading, because this package has two and
+  only one of them is satisfied.** `typescript-eslint`'s `eslint` peer
+  covers `^10`; its `typescript` peer still caps at `<6.1.0`, which is the
+  separate TS 7 blocker documented directly above. One package can block
+  two different bumps and be clear for one of them, so verify each named
+  blocker on its own rather than treating a `[blocked]` note as a single
+  atom that expires all at once.
+
+  **The automated `ai-failure-analysis` comment on the original PR is
+  wrong** — it suggested bumping to
+  `eslint-plugin-react@^7.38.0`/`^7.39.0`; neither version exists on npm
+  (verified directly, `npm view eslint-plugin-react@7.38.0` 404s). Treat
+  that job's suggestions as unverified, same as always — this is a
+  concrete instance of it fabricating a plausible-sounding but nonexistent
+  fix.
+
+  **`@eslint/js` is the same family, not a separate issue** — its own PR
+  (#25) is closed with no replacement open, but the package stays in
+  `known-outdated-packages.txt` per the rule above. `@eslint/js` tracks
+  ESLint's own major version, and `10.0.1` declares a peer of `eslint:
+  ^10.0.0` — optional, which is why `lint` doesn't actually crash on this
+  one, since apps/api's `eslint` stays pinned at `^9.18.0`. A real,
+  verified, unsupported major-version pairing: check it with `npm view
+  @eslint/js@10.0.1 peerDependencies`, which is reproducible now that the
+  closed PR's lockfile entry is gone. Before attempting either bump again:
+  re-run the peer-range check above and confirm all three capped plugins
+  now cover `eslint@^10` (whether by their own releases, or by
+  `eslint-config-next` dropping or replacing them) — once so, both become
+  normal bumps like any other Dependabot PR, ideally merged together since
+  they're the same major.
 - **`gh api -f key=@path` does NOT read the file — only `-F` does.** The
   `@<path>` (or `@-` for stdin) file-reading syntax is documented under
   `-F/--field` (typed parameters) only; `-f/--raw-field` treats an `@...`
