@@ -1203,6 +1203,14 @@ packages stay in `known-outdated-packages.txt` regardless, because an
 entry tracks an unfixable dependency, not a PR. A closed PR is therefore
 never evidence a blocker cleared — re-check the upstream package.
 
+**Where these entries say "don't re-investigate", they mean don't re-derive
+the finding from scratch — they do NOT mean "never check again."** Every
+one ends with the exact command and the exact upstream condition that
+clears it, because a blocker note whose only instruction is "trust me" goes
+stale silently and this one did. Run the stated check before concluding a
+bump is still blocked; it is one command. If it now passes, the entry is
+wrong and the fix is to delete it, not to work around it.
+
 - **The `typescript` 5.9.3 → 7.x bump is blocked upstream — don't
   re-investigate, don't try to force it through.** PR #27 carried it and
   is now closed; Dependabot will reopen an equivalent. `typescript-eslint`
@@ -1219,7 +1227,7 @@ never evidence a blocker cleared — re-check the upstream package.
   [typescript-eslint#10940](https://github.com/typescript-eslint/typescript-eslint/issues/10940).
   Merging this bump would permanently break `lint` — a never-path-filtered,
   always-required check — for every future PR. Mark whatever PR currently
-  carries it `[blocked]` and leave it alone; `typescript` stays in
+  carries it `[blocked]` and leave it unmerged; `typescript` stays in
   `scripts/known-outdated-packages.txt` in the meantime. Before
   attempting this bump again: re-check `typescript-eslint`'s current
   peer-dependency range for `typescript` — once it covers `7.x`, this
@@ -1243,9 +1251,10 @@ never evidence a blocker cleared — re-check the upstream package.
   [#4018](https://github.com/jsx-eslint/eslint-plugin-react/issues/4018).
   Re-verified 2026-08-29: #4022 is still open, last updated 2026-08-22.
 
-  **`typescript-eslint` is the obvious second suspect and it is NOT a
-  blocker — that has been checked, don't re-check it.** `apps/api` lints
-  through it, so it would gate this bump if it lagged, but it does not:
+  **`typescript-eslint` is the obvious second suspect, and as of
+  2026-08-29 it is NOT a blocker — confirm with the extractor below rather
+  than re-deriving it by hand.** `apps/api` lints through it, so it would
+  gate this bump if it lagged, but it does not:
   the version already in `pnpm-lock.yaml` (`8.67.0`) declares `eslint:
   '^8.57.0 || ^9.0.0 || ^10.0.0'`, as do `latest` (`8.68.0`) and canary
   (`8.68.1-alpha.6`). Support landed between `8.55.0` and `8.60.0`, so
