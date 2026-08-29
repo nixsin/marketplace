@@ -1556,6 +1556,29 @@ disagrees with the page's locale. A browser viewing the locale its own
 and once one such request populates the edge everyone gets a `HIT`.
 `localeCookie: false` is therefore **not** needed.
 
+**There is a third condition the paragraph above omits, and it widens
+cacheability further.** `syncCookie` returns early for any request whose
+`Sec-Fetch-Dest` is present and not `document`, so prefetches and the router's
+own cache revalidations never write `NEXT_LOCALE` -- only real navigations do.
+next-intl's stated reason is correctness rather than caching (Next 16.3's
+router revalidates routes of a locale the user just switched away from, and
+updating the cookie from such a request would overwrite the locale they had
+just chosen), but the caching consequence is real.
+
+Recorded here after nearly being recorded wrongly: this guard was first read
+in 4.14.0 while reviewing that bump and written up as something 4.14.0 added.
+It is not -- `syncCookie.js` is **byte-identical between 4.13.6 and 4.14.0**.
+Reading only the new version's source cannot tell you what changed; diffing
+the two can, and it is one command. The general form is worth more than the
+instance: *"I read the new code and it does X"* is not evidence that X is new.
+
+`apps/web/test/locale-cookie-caching.spec.ts` now asserts all three conditions
+over real HTTP against the production build, so this no longer depends on
+anyone re-reading a dependency's source on upgrade day. It is deliberately
+version-agnostic -- it pins the property the Cloudflare HTML rules need, not
+one release's implementation of it -- and it sends a realistic
+`Accept-Language` on every request, for the reason the paragraph above gives.
+
 The trap worth remembering: `curl` sends no `Accept-Language`, which no browser
 does, so it hits the one path that *does* write a cookie and reports `BYPASS`
 every time. Diagnosing cache behaviour with a bare `curl` reproduces a failure
