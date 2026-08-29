@@ -466,6 +466,29 @@ the PR's Checks tab ("Approve workflows to run") when ready — this causes
 CI to actually execute using repo secrets, so treat it with the same
 care as any other secrets-using action, not as a rubber-stamp click.
 
+**A `github_actions`-ecosystem Dependabot PR is usually cheaper to re-do by
+hand than to merge.** Its own runs sit at `action_required` indefinitely, so
+nothing has been verified; approving them spends a secrets-exposing click per
+PR; and the AI review then fails closed anyway on the empty-`OPENAI_API_KEY`
+path documented above, so each merge also costs an admin bypass with a posted
+justification. Three such PRs (#157/#158/#159) proposed **five lines between
+them**. Applying the same bumps on an ordinary branch gets real CI, a real AI
+review, and one merge — and Dependabot closes its own PRs as resolved once the
+versions match. Reserve the approve-and-merge path for bumps you cannot
+trivially reproduce, which in practice means `npm_and_yarn` lockfile changes.
+
+**Action pins drift silently, and Dependabot will not sweep them.** It opens a
+bump against the versions present when it runs, so a job added afterwards keeps
+whatever was current the day it was written, forever. Found five such
+stragglers across two files while everything around them was already current --
+including `mutation-test` on `pnpm/action-setup@v4`, which predates the pnpm 11
+that `packageManager` pins. Grep for the whole class rather than the cited
+line:
+
+```bash
+git grep -nE 'actions/checkout@v[1-6]|actions/setup-node@v[1-6]|pnpm/action-setup@v[1-5]' -- .github/
+```
+
 ## Shared configuration (`packages/config`, `@medinstru/config`)
 
 Single source of truth for configuration **values**: the web app's runtime

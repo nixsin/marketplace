@@ -1017,11 +1017,11 @@ jobs:
     # PR never pays for it.
     if: needs.changes.outputs.api == 'true' || needs.changes.outputs.web == 'true' || needs.changes.outputs.deps == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'mutation-test'))
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - run: pnpm install --frozen-lockfile
       - name: Mutate the guard files and check the tests notice
         run: node scripts/mutation-test.mjs | tee "$GITHUB_STEP_SUMMARY"
