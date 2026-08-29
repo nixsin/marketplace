@@ -466,16 +466,41 @@ the PR's Checks tab ("Approve workflows to run") when ready — this causes
 CI to actually execute using repo secrets, so treat it with the same
 care as any other secrets-using action, not as a rubber-stamp click.
 
-**A `github_actions`-ecosystem Dependabot PR is usually cheaper to re-do by
-hand than to merge.** Its own runs sit at `action_required` indefinitely, so
-nothing has been verified; approving them spends a secrets-exposing click per
-PR; and the AI review then fails closed anyway on the empty-`OPENAI_API_KEY`
-path documented above, so each merge also costs an admin bypass with a posted
-justification. Three such PRs (#157/#158/#159) proposed **five lines between
-them**. Applying the same bumps on an ordinary branch gets real CI, a real AI
-review, and one merge — and Dependabot closes its own PRs as resolved once the
-versions match. Reserve the approve-and-merge path for bumps you cannot
-trivially reproduce, which in practice means `npm_and_yarn` lockfile changes.
+**A `github_actions`-ecosystem Dependabot PR is often cheaper to re-do by hand
+than to merge — but re-doing it does NOT skip the security review, it moves
+it.** The reason to reach for this is the AI review, which fails closed on
+those PRs via the empty-`OPENAI_API_KEY` path documented above, so every merge
+costs an admin bypass with a posted justification; three such PRs
+(#157/#158/#159) proposed **five lines between them**. Re-applying the bumps on
+an ordinary branch gets a real AI review and one merge, and Dependabot closes
+its own PRs once the versions match.
+
+**Do not read that as a way around the `action_required` gate.** That gate
+exists so a human consciously decides before a *newly trusted third-party
+action version* runs with repository secrets, and recreating the same bump on
+your own branch does not make the new version any safer — it just moves the
+decision from a click to a diff review, where it still has to actually happen.
+A raised review made exactly this objection about an earlier wording here, and
+it was right. So the review is the precondition, not the paperwork:
+
+- Read the release notes for **every** major being crossed, not just the
+  target. Record what you found in the PR — for #165 that was checkout v7
+  blocking fork-PR checkout under `pull_request_target`/`workflow_run` (grepped
+  — this repo uses neither trigger), checkout v6 moving credentials to a
+  separate file, and setup-node v7 dropping a dummy `NODE_AUTH_TOKEN` export.
+- Confirm the tags resolve, via `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`.
+- Prefer versions **already trusted elsewhere in this repo**. #165 was low-risk
+  precisely because `main` had been running those three majors at 22, 16 and 13
+  call sites for weeks; a bump to something genuinely new deserves more care
+  than a sweep of stragglers onto the established version does.
+
+The stronger control neither path gives you is SHA-pinning, which would make a
+retagged release inert. Not adopted here — with Dependabot doing the bumps it
+trades a real risk for constant lockfile-shaped churn — but that is the actual
+fix if this repo ever handles anything worth stealing from CI.
+
+Reserve the approve-and-merge path for bumps you cannot trivially reproduce,
+which in practice means `npm_and_yarn` lockfile changes.
 
 **Action pins drift silently, and Dependabot will not sweep them.** It opens a
 bump against the versions present when it runs, so a job added afterwards keeps
