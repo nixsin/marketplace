@@ -26,6 +26,28 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 /** Bumped if the payload shape or signing scheme ever changes. */
 const VERSION = "v1";
 
+/**
+ * The map filenames the gate supports.
+ *
+ * Exported so the build script and the serving route share ONE definition
+ * rather than two regexes that agree until they don't. They disagreed in the
+ * first version: the script moved every `.map` while the route served only
+ * this shape, so a map with any other basename would have been moved,
+ * repointed, and then 404'd forever -- silently, because the reference in the
+ * chunk still looked right.
+ */
+export const SOURCEMAP_FILENAME = /^[A-Za-z0-9_-]+\.(?:js|css)\.map$/;
+
+/**
+ * Shortest signing key accepted.
+ *
+ * This is an authentication boundary: whoever holds the key mints arbitrary
+ * tokens. The README recommends 32 random bytes; this stops a one-character
+ * placeholder from quietly becoming production's real key, which a
+ * recommendation alone cannot.
+ */
+export const SOURCEMAP_MIN_KEY_LENGTH = 32;
+
 /** Name only, never a value -- this package is committed. */
 export const SOURCEMAP_SIGNING_KEY_ENV = "SOURCEMAP_SIGNING_KEY";
 
@@ -64,8 +86,17 @@ export function signSourcemapToken({
   if (!key) {
     throw new Error(`${SOURCEMAP_SIGNING_KEY_ENV} is not set`);
   }
-  if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
-    throw new Error("ttlSeconds must be a positive number");
+  if (key.length < SOURCEMAP_MIN_KEY_LENGTH) {
+    throw new Error(
+      `${SOURCEMAP_SIGNING_KEY_ENV} must be at least ${SOURCEMAP_MIN_KEY_LENGTH} characters — ` +
+        `whoever holds it can mint any token`,
+    );
+  }
+  // Integer, not merely positive. `Math.floor` on a fractional value below 1
+  // yields 0 and mints a token that is already expired, and any other
+  // fraction silently shortens the life the caller asked for.
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds <= 0) {
+    throw new Error("ttlSeconds must be a positive whole number of seconds");
   }
   if (ttlSeconds > SOURCEMAP_TOKEN_MAX_TTL_SECONDS) {
     throw new Error(
@@ -81,7 +112,7 @@ export function signSourcemapToken({
     // maps at 3am" answerable.
     sid: randomBytes(9).toString("base64url"),
     iat: issuedAt,
-    exp: issuedAt + Math.floor(ttlSeconds),
+    exp: issuedAt + ttlSeconds,
   };
 
   const body = `${VERSION}.${b64url(JSON.stringify(payload))}`;
@@ -134,11 +165,24 @@ export function verifySourcemapToken({ token, key, now = Date.now() }) {
   // Checked AFTER the signature, deliberately: an unsigned payload's claims
   // are attacker-controlled, and reading them first would mean acting on
   // values nothing has vouched for.
-  if (typeof payload?.exp !== "number" || payload.exp * 1000 <= now) {
-    return { ok: false, reason: "expired", payload };
+  //
+  // EVERY field is validated, not just the two that gate access. The type
+  // declaration promises all four are present, and a caller trusting that
+  // promise logged `sid: undefined` for a signed payload that happened to
+  // omit it -- which is worse than refusing, because it looks like a
+  // successful access with no session to attribute it to.
+  if (
+    typeof payload?.iss !== "string" ||
+    !payload.iss ||
+    typeof payload.sid !== "string" ||
+    !payload.sid ||
+    !Number.isFinite(payload.iat) ||
+    !Number.isFinite(payload.exp)
+  ) {
+    return { ok: false, reason: "incomplete payload" };
   }
-  if (typeof payload.iss !== "string" || !payload.iss) {
-    return { ok: false, reason: "no issuer" };
+  if (payload.exp * 1000 <= now) {
+    return { ok: false, reason: "expired", payload };
   }
 
   return { ok: true, payload };

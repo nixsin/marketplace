@@ -1939,7 +1939,7 @@ surface were readable with no authentication.
 
 `scripts/privatize-sourcemaps.mjs` moves every map to `.next/sourcemaps/` and
 repoints each chunk's `sourceMappingURL` at `/sourcemaps/<file>`, a route that
-returns the map only to a request carrying `mi_srcmap=$SOURCEMAP_ACCESS_TOKEN`.
+returns the map only to a request carrying a valid signed token in `mi_srcmap`.
 
 **Maps are kept WHOLE rather than stripped.** Stripping `sourcesContent` was
 the first attempt and it works, but it throws away the useful half for
@@ -1990,7 +1990,7 @@ logs, referrers and shell history. The generator prints the exact
 `document.cookie` line to paste.
 
 **The route fails closed and 404s rather than 403s.** An unset
-`SOURCEMAP_ACCESS_TOKEN` makes maps unavailable rather than public — a
+`SOURCEMAP_SIGNING_KEY` makes maps unavailable rather than public — a
 misconfigured deploy must not fall back to the state this exists to end. A 403
 would confirm something is behind the path; there is nothing to gain from
 telling an unauthorised caller that.

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { createHmac } from "node:crypto";
 import {
   SOURCEMAP_TOKEN_MAX_TTL_SECONDS,
   signSourcemapToken,
   verifySourcemapToken,
 } from "@medinstru/config/sourcemap-token";
 
-const KEY = "signing-key-for-the-suite-only";
+const KEY = "signing-key-for-the-suite-only-long-enough";
 
 /**
  * The token format itself, away from HTTP.
@@ -48,7 +49,7 @@ describe("sourcemap tokens", () => {
   });
 
   it("refuses a signature made with a different key", () => {
-    const { token } = signSourcemapToken({ issuer: "a@example.com", key: "other-key" });
+    const { token } = signSourcemapToken({ issuer: "a@example.com", key: "a-different-key-that-is-also-long-enough" });
     const result = verifySourcemapToken({ token, key: KEY });
 
     expect(result.ok).toBe(false);
@@ -93,6 +94,39 @@ describe("sourcemap tokens", () => {
         ttlSeconds: SOURCEMAP_TOKEN_MAX_TTL_SECONDS + 1,
       }),
     ).toThrow();
+  });
+
+  it("refuses a signed payload missing sid, rather than logging undefined", () => {
+    // The type declaration promises sid and iat are present. Validating only
+    // exp and iss meant a correctly signed payload without them returned
+    // ok:true and the route logged `sid: undefined` -- worse than refusing,
+    // because it reads as a successful access with no session to attribute.
+    const body = `v1.${Buffer.from(
+      JSON.stringify({ iss: "a@example.com", iat: 1, exp: 4102444800 }),
+    ).toString("base64url")}`;
+    const sig = createHmac("sha256", KEY).update(body).digest("base64url");
+
+    const result = verifySourcemapToken({ token: `${body}.${sig}`, key: KEY });
+
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.reason).toBe("incomplete payload");
+  });
+
+  it("refuses a key short enough to guess", () => {
+    // Possession of the key mints arbitrary tokens, so this is an
+    // authentication boundary -- a README recommendation cannot stop a
+    // one-character placeholder becoming production's real key.
+    expect(() => signSourcemapToken({ issuer: "a@example.com", key: "x" })).toThrow(
+      /at least/i,
+    );
+  });
+
+  it.each([0.5, 1.5, 0.001])("refuses a fractional ttl of %p", (ttlSeconds) => {
+    // Math.floor(0.5) is 0 -- a token already expired the moment it is
+    // minted. Any other fraction silently shortens the requested life.
+    expect(() =>
+      signSourcemapToken({ issuer: "a@example.com", key: KEY, ttlSeconds }),
+    ).toThrow(/whole number/i);
   });
 
   it.each(["", "not-a-token", "v1.only-two", "v2.abc.def"])(

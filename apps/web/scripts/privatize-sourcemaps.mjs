@@ -30,7 +30,8 @@
  * `next build` directly.
  */
 import { mkdir, readdir, readFile, rename, writeFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { SOURCEMAP_FILENAME } from "@medinstru/config/sourcemap-token";
 
 const WEB_ROOT = join(import.meta.dirname, "..");
 const STATIC_DIR = join(WEB_ROOT, ".next", "static");
@@ -75,7 +76,28 @@ let bytes = 0;
 const names = new Set();
 
 for (const path of maps) {
-  const name = path.slice(path.lastIndexOf("/") + 1);
+  // `basename`, not a lastIndexOf("/") -- node:path.join emits backslashes on
+  // Windows, which would make the whole path the "filename" and quietly break
+  // both the collision check below and the rename destination.
+  const name = basename(path);
+
+  // The SAME pattern the route serves, imported rather than restated. These
+  // were two separate regexes and they disagreed: this script moved every
+  // `.map` while the route served only this shape, so a map with any other
+  // basename got moved, repointed, and then 404'd forever -- silently, since
+  // the reference in the chunk still looked correct.
+  //
+  // Failing the build is deliberate. The alternative, leaving an unsupported
+  // map in place, would publish exactly the source this whole change exists
+  // to stop publishing.
+  if (!SOURCEMAP_FILENAME.test(name)) {
+    throw new Error(
+      `source map "${name}" does not match the name the gated route serves ` +
+        `(${SOURCEMAP_FILENAME}) — it would be moved and then permanently 404. ` +
+        `Widen SOURCEMAP_FILENAME in packages/config to cover it.`,
+    );
+  }
+
   if (names.has(name)) {
     // Two maps with the same basename in different directories would collide
     // in the flat private directory and one would silently win. Refused

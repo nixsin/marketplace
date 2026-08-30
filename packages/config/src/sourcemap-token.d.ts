@@ -1,4 +1,6 @@
 export declare const SOURCEMAP_SIGNING_KEY_ENV: string;
+export declare const SOURCEMAP_FILENAME: RegExp;
+export declare const SOURCEMAP_MIN_KEY_LENGTH: number;
 export declare const SOURCEMAP_TOKEN_DEFAULT_TTL_SECONDS: number;
 export declare const SOURCEMAP_TOKEN_MAX_TTL_SECONDS: number;
 

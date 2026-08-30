@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  SOURCEMAP_FILENAME,
   SOURCEMAP_SIGNING_KEY_ENV,
   verifySourcemapToken,
 } from "@medinstru/config/sourcemap-token";
@@ -27,13 +28,6 @@ import {
 
 /** The cookie a whitelisted session carries. */
 const COOKIE = "mi_srcmap";
-
-/**
- * Only the shapes `next build` actually emits. Validated rather than merely
- * checked for traversal, because this value comes from the URL and indexes a
- * directory inside the deployed image.
- */
-const SAFE_NAME = /^[A-Za-z0-9_-]+\.(?:js|css)\.map$/;
 
 /**
  * Every refusal looks like this.
@@ -86,7 +80,12 @@ export async function GET(
   }
 
   const { file } = await params;
-  if (!SAFE_NAME.test(file)) return notFound();
+  // The same pattern the build script enforces, shared rather than restated
+  // -- two copies disagreed once, and a map the script moved but the route
+  // refused would 404 forever with nothing reporting it. Validated rather
+  // than merely checked for traversal, since this comes from the URL and
+  // indexes a directory inside the deployed image.
+  if (!SOURCEMAP_FILENAME.test(file)) return notFound();
 
   let body: Buffer;
   try {

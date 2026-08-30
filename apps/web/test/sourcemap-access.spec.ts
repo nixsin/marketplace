@@ -5,7 +5,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { signSourcemapToken } from "@medinstru/config/sourcemap-token";
 
 const WEB_ROOT = join(import.meta.dirname, "..");
-const KEY = "signing-key-for-the-suite-only";
+const KEY = "signing-key-for-the-suite-only-long-enough";
 
 /** A token minted the way the CLI mints one. */
 function mint(overrides: Partial<Parameters<typeof signSourcemapToken>[0]> = {}) {
@@ -32,6 +32,7 @@ const BASE = `http://localhost:${PORT}`;
 describe("source map access", () => {
   let server: ChildProcess;
   let mapName: string;
+  let allMaps: string[];
 
   beforeAll(async () => {
     const dir = join(WEB_ROOT, ".next", "sourcemaps");
@@ -45,6 +46,7 @@ describe("source map access", () => {
     // build stops emitting maps or the directory moves.
     expect(maps.length).toBeGreaterThan(0);
     mapName = maps[0];
+    allMaps = maps;
 
     server = spawn("node_modules/.bin/next", ["start", "-p", String(PORT)], {
       cwd: WEB_ROOT,
@@ -68,6 +70,24 @@ describe("source map access", () => {
     server?.kill();
   });
 
+  it("serves EVERY map the build moved, not just one", async () => {
+    // The build script moves every `.map` it finds; the route serves only
+    // names matching a pattern. Those were two separate regexes and they
+    // disagreed -- a map with any other basename would be moved, repointed,
+    // and then 404 forever, silently, because the reference in the chunk
+    // still looked right. They now share one definition, and this asserts
+    // the whole set rather than maps[0], which could not have caught it.
+    const failed: string[] = [];
+    for (const name of allMaps) {
+      const res = await fetch(`${BASE}/sourcemaps/${name}`, {
+        headers: { cookie: `mi_srcmap=${mint()}` },
+      });
+      if (res.status !== 200) failed.push(`${name} -> ${res.status}`);
+    }
+
+    expect(failed).toEqual([]);
+  });
+
   it("does NOT serve maps from the public static path any more", async () => {
     // The original exposure, asserted directly: this exact URL returned the
     // full map with inlined source on production.
@@ -82,7 +102,7 @@ describe("source map access", () => {
 
   it("refuses a token signed with a DIFFERENT key", async () => {
     const res = await fetch(`${BASE}/sourcemaps/${mapName}`, {
-      headers: { cookie: `mi_srcmap=${mint({ key: "a-different-signing-key" })}` },
+      headers: { cookie: `mi_srcmap=${mint({ key: "a-different-signing-key-also-long-enough" })}` },
     });
 
     expect(res.status).toBe(404);
