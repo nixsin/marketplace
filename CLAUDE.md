@@ -548,7 +548,15 @@ direct ESM equivalent (`unstable_mockModule` requires restructuring every call
 site). Keep it that way.
 
 **`__dirname` does not exist in ESM** — four files use `import.meta.dirname`
-now, which needs Node 20.11+ and is well under NestJS 12's own 20.19 floor.
+now, which needs Node 20.11+.
+
+**The real Node floor is 22.12, not the 20.19 the release notes give.** That
+figure is `@nestjs/core`'s (`engines: >=20`, with 20.19 required for
+`require(esm)`); the toolchain around it is stricter — `@nestjs/schematics@12`
+declares `>=22.12.0`, and the `@angular-devkit` packages it pulls want
+`^22.22.3 || ^24.15.0 || >=26.0.0`. Nothing here runs below that (CI is 22 and
+24, Docker is 26), but quote 22.12 rather than 20.19 when the question comes
+up, and check the CLI packages rather than `@nestjs/core` alone.
 
 **Verified on Node 22, not just 24.** CI runs the API jobs on 22 and Jest's
 `require(esm)` error text recommends 24.9+, which suggests a bump is needed.
@@ -573,6 +581,18 @@ Exception` rather than its own text. No behaviour change for the buyer, since
 but the server no longer says *which* field is wrong, so the inquiry form's
 mirrored constraints are now the only thing that can tell a buyer what to fix.
 Both are pinned by tests in `inquiries.e2e-spec.ts`.
+
+**`@nestjs/schematics` is deliberately NOT a direct dependency any more.** At
+v12 it peers to `typescript: >=6.0.0`, which this repo cannot satisfy —
+TypeScript 6 deprecates `baseUrl` and turns on `strictPropertyInitialization`,
+which fires on every `@InputType()` DTO field in the auth and inquiry layers.
+Pinning it back to `^11.1.0` only trades that for a different unmet peer
+(`chokidar ^4` via `@angular-devkit/core@19`). Dropping the direct dependency
+resolves it completely: `@nestjs/cli` carries its own copy, `nest-cli.json`'s
+`"collection": "@nestjs/schematics"` resolves through it, and `pnpm peers
+check` is clean for the first time in this repo's history. Verified with a
+real `nest generate service --dry-run`, not just `--help`. Re-add it only
+alongside a TypeScript 6 migration.
 
 ## Shared configuration (`packages/config`, `@medinstru/config`)
 
