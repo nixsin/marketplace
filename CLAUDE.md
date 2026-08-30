@@ -596,6 +596,57 @@ check` is clean for the first time in this repo's history. Verified with a
 real `nest generate service --dry-run`, not just `--help`. Re-add it only
 alongside a TypeScript 6 migration.
 
+## API coverage measures ALL of `src` — and the exclusions were the story
+
+`apps/api`'s `collectCoverageFrom` was a hand-curated list of **10 files out
+of 50**. The badge read 87.83%, which sounds like "the API is 87.83% covered"
+and did not mean that.
+
+**Auditing every excluded path is what found the real gap.** Three categories
+came out of it, and only one was a genuine hole:
+
+- **Correctly excluded, nothing to cover.** `inquiries/phone.ts` is a two-line
+  re-export of `@medinstru/config` with zero executable statements;
+  `auth/types/auth-token-payload.ts` is a type-only interface erased at
+  compile. Jest never loads either. Not gaps.
+- **Excluded and well tested anyway** — `inquiries.service.ts` at 96.85%,
+  `whatsapp.service.ts` at 98.38%, `graphql-cache.ts` and
+  `correlation.middleware.ts` at 100%. The riskiest code in the repo, none of
+  it counted toward the number.
+- **Excluded and genuinely untested** — `s3-blob-store.ts` (0%, the production
+  storage path), `app.setup.ts` (0%), `correlation-exception.filter.ts` (0%).
+
+**The one worth remembering: `storage/storage.module.ts` held `createBlobStore()`,
+a real exported factory with three branches, at 0%.** The conventional
+`!**/*.module.ts` exclusion — which looks obviously safe, since modules are
+normally decorator shells — was hiding the function that decides whether
+production writes to R2 or to a local directory no CDN serves. **A filename
+pattern is not a safe proxy for "contains no logic."** That is the reason
+`collectCoverageFrom` is now `["**/*.ts", "!**/*.spec.ts"]` and excludes
+nothing else, `main.ts` and the module shells included: an exclusion is a
+place things hide, and the cost of counting a few decorator statements is
+lower than the cost of another `createBlobStore`.
+
+**Chasing resolvers and models to 100% is theatre, and the numbers say so.**
+`products.resolver.ts` reads 59% with every method tested. The "uncovered"
+lines are decorator type-thunks — `@Query(() => Product)`,
+`@Args('limit', { type: () => Int })` — arrow functions GraphQL invokes only
+at schema-build time, which the e2e suite already does and a unit test never
+will. The same applies to every `*.model.ts` and `*.input.ts` sitting at
+71–87%. Read those numbers as "decorator-dense", not "untested", and spend
+effort on files where the uncovered lines are statements you could actually
+execute.
+
+Widening the set moved the figure from 87.83% over 140 statements to
+**90.42% over 679** — genuinely higher while measuring nearly five times as
+much. Getting there added 56 tests (370 → 426) across seven new suites, and
+the ones that mattered were `s3-blob-store` (17 tests: every not-found
+spelling providers disagree on, and that a real failure is rethrown rather
+than laundered into "missing"), `app.setup` (the `/graphql` cache-control
+patch, including that it fails closed once headers are sent), and
+`products.service.findPaged`, which turned out to have **no test at all**
+despite being the query behind the catalogue's numbered pagination.
+
 ## Shared configuration (`packages/config`, `@medinstru/config`)
 
 Single source of truth for configuration **values**: the web app's runtime

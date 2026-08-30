@@ -104,16 +104,8 @@
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "collectCoverageFrom": [
-      "app.controller.ts",
-      "auth/auth.service.ts",
-      "auth/auth.resolver.ts",
-      "auth/otp-store.service.ts",
-      "auth/guards/jwt-auth.guard.ts",
-      "auth/guards/roles.guard.ts",
-      "organizations/organizations.service.ts",
-      "organizations/organizations.resolver.ts",
-      "products/products.service.ts",
-      "products/products.resolver.ts"
+      "**/*.ts",
+      "!**/*.spec.ts"
     ],
     "coverageThreshold": {
       "global": {

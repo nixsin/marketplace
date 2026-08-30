@@ -17,11 +17,13 @@ function makeProduct(id: string) {
 describe('ProductsService', () => {
   let service: ProductsService;
   let prisma: {
-    product: { findMany: jest.Mock; findUnique: jest.Mock };
+    product: { findMany: jest.Mock; findUnique: jest.Mock; count: jest.Mock };
   };
 
   beforeEach(() => {
-    prisma = { product: { findMany: jest.fn(), findUnique: jest.fn() } };
+    prisma = {
+      product: { findMany: jest.fn(), findUnique: jest.fn(), count: jest.fn() },
+    };
     service = new ProductsService(prisma as unknown as PrismaService);
   });
 
@@ -154,6 +156,101 @@ describe('ProductsService', () => {
 
     expect(result.items).toEqual([]);
     expect(result.nextCursor).toBeUndefined();
+  });
+
+  describe('findPaged', () => {
+    // Offset pagination for the numbered catalogue -- the app's entry page,
+    // and untested until now. Every assertion below is about a value the
+    // page renders directly, so a regression here is visible to every
+    // visitor rather than to a later query.
+
+    it('defaults to the first page and a page size of 4', async () => {
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(0);
+
+      const result = await service.findPaged();
+
+      expect(prisma.product.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 0, take: 4 }),
+      );
+      expect(result).toMatchObject({ page: 1, pageSize: 4 });
+    });
+
+    it('computes skip from the requested page', async () => {
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(0);
+
+      await service.findPaged(3, 10);
+
+      expect(prisma.product.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 20, take: 10 }),
+      );
+    });
+
+    it.each([0, -1, -999])('CLAMPS page %p up to 1', async (page) => {
+      // A negative page would compute a negative `skip`, which Prisma
+      // rejects outright -- so an out-of-range ?page= in a shared link
+      // would 500 the catalogue rather than showing its first page.
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(0);
+
+      const result = await service.findPaged(page, 4);
+
+      expect(prisma.product.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 0 }),
+      );
+      expect(result.page).toBe(1);
+    });
+
+    it('orders by the exact columns the catalogue index covers', async () => {
+      // createdAt DESC then id DESC -- the same ordering findPage uses and
+      // the pair the Product_createdAt_id_idx index exists to serve.
+      // Changing it here silently drops the index and reintroduces a
+      // sequential scan on the busiest query in the app.
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(0);
+
+      await service.findPaged(1, 4);
+
+      expect(prisma.product.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          include: { seller: true },
+        }),
+      );
+    });
+
+    it('reports ONE page for an empty catalogue, never zero', async () => {
+      // ceil(0/4) is 0, and a pager rendering "page 1 of 0" is a bug the
+      // Math.max exists to prevent.
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(0);
+
+      const result = await service.findPaged(1, 4);
+
+      expect(result).toMatchObject({ totalCount: 0, totalPages: 1 });
+    });
+
+    it('rounds a partial last page UP', async () => {
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(9);
+
+      const result = await service.findPaged(1, 4);
+
+      expect(result.totalPages).toBe(3);
+    });
+
+    it('normalizes every item it returns', async () => {
+      // The page renders these directly, so an un-normalized row reaches
+      // the browser as-is.
+      prisma.product.findMany.mockResolvedValue([makeProduct('p1')]);
+      prisma.product.count.mockResolvedValue(1);
+
+      const result = await service.findPaged(1, 4);
+
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]).toMatchObject({ id: 'p1' });
+    });
   });
 });
 
