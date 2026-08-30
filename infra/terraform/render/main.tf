@@ -228,7 +228,7 @@ resource "render_keyvalue" "cache" {
   # derivable from Postgres, so losing the cache costs latency, not data. It
   # is set because a cold cache after every restart makes an outage worse at
   # exactly the wrong moment, not because the contents are precious.
-  persistence_mode = "journal_snapshot"
+  persistence_mode = var.key_value_persistence_mode
 
   # Evict the least-recently-used key rather than returning errors when full.
   # A cache that refuses writes is worse than one that forgets: the former
@@ -238,4 +238,42 @@ resource "render_keyvalue" "cache" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+# REDIS_URL, delivered to the API without anyone handling the credential.
+#
+# This is the whole point of doing it in Terraform rather than the dashboard:
+# the connection string is read straight off the Key Value resource above and
+# written into an env group. It is never typed, never pasted, never in a shell
+# history, and never in this repository -- Render generates it, Terraform
+# moves it, and the API receives it.
+#
+# The INTERNAL connection string, not the external one. Both services live in
+# the same Render environment, so internal keeps the traffic off the public
+# network and out of egress accounting. The external string exists for
+# connecting from a laptop, which is not what the API is doing.
+#
+# An env group rather than setting env_vars on the service directly, because
+# render_web_service.api carries `ignore_changes = all` -- provider v1.9.1
+# sends maintenance_mode fields that Render rejects for free services, which
+# produced a partial apply. Linking a group sidesteps that entirely: the
+# service resource is untouched, and the link is its own resource.
+resource "render_env_group" "cache" {
+  count = var.enable_key_value ? 1 : 0
+
+  name           = "medinstru-cache-env"
+  environment_id = var.environment_id
+
+  env_vars = {
+    REDIS_URL = {
+      value = render_keyvalue.cache[0].connection_info.internal_connection_string
+    }
+  }
+}
+
+resource "render_env_group_link" "cache_api" {
+  count = var.enable_key_value ? 1 : 0
+
+  env_group_id = render_env_group.cache[0].id
+  service_ids  = [local.api_service_id]
 }

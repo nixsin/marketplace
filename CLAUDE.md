@@ -2103,8 +2103,34 @@ setting on a paid plan (`wal_level`, `max_wal_size`, `checkpoint_timeout`,
 `wal_compression`) are documented next to the resource so moving plans is a
 variable change rather than an archaeology exercise.
 
-**The Key Value instance is gated behind `enable_key_value`, default false**,
-because creating it is billable and the API runs without it.
+**The whole path is code — creation AND wiring.** `enable_key_value = true`
+then `terraform apply` creates the instance, an env group carrying `REDIS_URL`,
+and the link attaching that group to the API service. Nothing is done in the
+dashboard.
+
+The credential is never handled by a person: Terraform reads
+`connection_info.internal_connection_string` straight off the Key Value
+resource and writes it into the env group. Render generates it, Terraform
+moves it, the API receives it — it is never typed, pasted, or in a shell
+history. The **internal** string, not the external one: both services sit in
+the same Render environment, so this keeps the traffic off the public network.
+
+**An env group rather than `env_vars` on the service**, because
+`render_web_service.api` carries `ignore_changes = all` — provider v1.9.1
+sends `maintenance_mode` fields Render rejects for free services, which
+produced a partial apply. Linking a group sidesteps it: the service resource
+is untouched and the link is its own resource.
+
+**`plan` defaults to `free`**, matching every other service here — the
+provider accepts `free`, `starter`, `standard`, `pro`, `pro_plus`. One caveat
+the schema cannot express: whether a plan accepts `persistence_mode`. Free
+tiers on Render have rejected settings the schema validates happily before
+(`parameter_overrides` on free Postgres is the same shape), so a refused apply
+there is the plan talking, not the configuration — drop
+`key_value_persistence_mode` to `"off"` or move to `starter`.
+
+`enable_key_value` still defaults to **false**, so a plan creates nothing
+until someone decides to. The API runs without a cache by design.
 
 ## Deployment
 

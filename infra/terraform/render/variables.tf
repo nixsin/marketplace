@@ -97,9 +97,38 @@ variable "enable_key_value" {
 }
 
 variable "key_value_plan" {
-  description = "Plan for the Key Value instance. Persistence requires a paid plan on Render."
+  description = <<-EOT
+    Plan for the Key Value instance. The provider accepts `free`, `starter`,
+    `standard`, `pro`, `pro_plus`.
+
+    Defaults to `free`, matching every other service in this project. Be aware
+    of one thing the provider schema cannot express: whether a given plan
+    accepts `persistence_mode`. Render's free tiers have rejected settings the
+    schema happily validates before -- `parameter_overrides` on free Postgres
+    is the same shape -- so if an apply is refused for persistence, that is
+    the plan talking, not the configuration. Move to `starter` or set
+    `key_value_persistence_mode = "off"`.
+  EOT
   type        = string
-  default     = "starter"
+  default     = "free"
+}
+
+variable "key_value_persistence_mode" {
+  description = <<-EOT
+    Redis durability. `journal_snapshot` is the durable option -- a journal
+    (Redis's AOF) alongside periodic snapshots -- and matches the dev stack's
+    `--appendonly yes`.
+
+    Separated from the resource so it can be dropped to `off` without editing
+    main.tf if the chosen plan refuses it.
+  EOT
+  type        = string
+  default     = "journal_snapshot"
+
+  validation {
+    condition     = contains(["journal_snapshot", "snapshot", "off"], var.key_value_persistence_mode)
+    error_message = "Must be journal_snapshot, snapshot, or off — Render does not use Redis's own 'aof' vocabulary."
+  }
 }
 
 variable "postgres_parameter_overrides" {
