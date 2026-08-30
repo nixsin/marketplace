@@ -1924,37 +1924,87 @@ here because it needs verifying against a real two-deployment test — the
 interaction with the service worker's own stale-while-revalidate on navigations
 is explicitly unverified, per `next.config.ts`'s own comment.
 
-### Public source maps expose every tunable in `packages/config`
+### Source maps are gated, not public and not deleted
 
-`productionBrowserSourceMaps: true`, with `sourcesContent` embedded. All 11
-referenced maps return `200` — **3.3 MB of original TypeScript, readable by
-anyone.**
+`productionBrowserSourceMaps: true` stays on — a production stack trace that
+resolves to a real file and line beats a minified offset, and browsers fetch
+maps only with devtools open. The problem was never that they exist. It is
+that `next start` serves everything under `.next/static`, so **anyone could
+`curl` a map and read the complete original text of 34 of our files** — 2.38
+MB of it, `packages/config` included, publishing every rate limit and ceiling
+the app has. Verified against live production before the fix: the exact
+`INQUIRY_RATE_LIMIT_PER_SELLER = 60` and `PER_PHONE = 5` behind
+[#152](https://github.com/nixsin/marketplace/issues/152)'s accepted DoS
+surface were readable with no authentication.
 
-The config's comment says to revisit "once there's real business logic worth
-keeping out of a public source map." Two things have changed since:
+`scripts/privatize-sourcemaps.mjs` moves every map to `.next/sourcemaps/` and
+repoints each chunk's `sourceMappingURL` at `/sourcemaps/<file>`, a route that
+returns the map only to a request carrying a valid signed token in `mi_srcmap`.
 
-1. The risky logic is all in `apps/api`, which ships **no** browser maps. That
-   half of the original reasoning still holds.
-2. But `packages/config/src/index.js` is in the client bundle and therefore in
-   the maps — so every rate limit, page size, cache TTL and auth lifetime is
-   published. Given [#152](https://github.com/nixsin/marketplace/issues/152)
-   already records the per-seller inquiry cap as an accepted DoS surface,
-   handing an attacker the exact ceilings makes reaching them cheaper.
+**Maps are kept WHOLE rather than stripped.** Stripping `sourcesContent` was
+the first attempt and it works, but it throws away the useful half for
+everyone including us. Gating keeps the full map for a session that holds the
+token and gives the public nothing — no exposure, no loss.
 
-**No user-facing performance cost either way** — browsers fetch maps only with
-devtools open, so this is purely a disclosure question.
+**`.next/sourcemaps/` is safe because `next start` publicly serves only
+`.next/static/**`.** Verified directly rather than assumed: a canary file
+placed elsewhere under `.next/` returns 404 at every path shape tried
+(`/probe`, `/_next/probe`, `/.next/probe`). The prod image copies the whole
+`.next` directory, so the maps travel with it and stay reachable to the route.
 
-| Option | Gains | Costs |
-|---|---|---|
-| **Keep public** | Debuggable production stack traces for anyone, including you, with zero setup | Publishes every tunable; makes #152 cheaper to exploit |
-| **Turn off in prod** | Nothing readable | Production stack traces become unmappable — the thing they were turned on for |
-| **Keep generating, stop serving** | Maps stay available to whoever holds the build output | Needs a rule at Cloudflare or the origin; maps are useless to a browser that cannot fetch them |
+**Tokens are signed and self-describing, not one shared secret.** A shared
+static secret would say nothing about who is using it, could not expire, and
+revoking one person's access would mean rotating it for everybody. Each token
+carries who minted it (`iss`), a distinct id per grant (`sid`), and an expiry
+the server enforces — signed with `SOURCEMAP_SIGNING_KEY` so the identity
+cannot be edited. Mint one with `pnpm --filter web sourcemap:token`; it
+defaults to the git identity and a 2-hour life, with a 24-hour ceiling.
 
-Worth noting the *specific* exposure rather than the general one: it is not the
-UI code that matters, it is the constants file. Moving the genuinely
-security-relevant ceilings out of the client-imported module — the client uses
-about 8 of its 68 exports — would shrink the disclosure without touching the
-source-map decision at all.
+Verification is **stateless** — it needs only the key, so nothing is stored,
+replicated or cleaned up. That matters because the thing being protected is a
+debugging aid, and a debugging aid that needs its own datastore does not get
+used. **Time-bounding is therefore the revocation mechanism:** there is
+nothing to revoke, which is why the ceiling exists.
+
+The signing/verifying code is a **subpath export**
+(`@medinstru/config/sourcemap-token`), and that is load-bearing: the package's
+main entry is imported by client components, so pulling `node:crypto` into it
+would break the browser build. The client never imports this path.
+
+**The signature is checked before any claim is read.** A payload nothing has
+vouched for is attacker-controlled — an implementation that read `exp` first
+would be acting on a value the caller chose. A forged token fails on the
+signature, never on its own claims, and a test asserts exactly that by
+checking the *reason*.
+
+**Every access is logged with the issuer**, which is the whole point of the
+identity: `{"msg":"sourcemap served","file":…,"iss":…,"sid":…}`. Refusals are
+logged too, but only when a token was actually presented — otherwise every
+crawler hitting the path buries the entries that mean something. The reason is
+never returned to the caller: telling them whether the signature was wrong or
+merely expired hands them a probing oracle.
+
+**A cookie, not a header or query parameter.** Devtools fetches maps itself
+and cannot be made to send a custom header; a token in a URL ends up in access
+logs, referrers and shell history. The generator prints the exact
+`document.cookie` line to paste.
+
+**The route fails closed and 404s rather than 403s.** An unset
+`SOURCEMAP_SIGNING_KEY` makes maps unavailable rather than public — a
+misconfigured deploy must not fall back to the state this exists to end. A 403
+would confirm something is behind the path; there is nothing to gain from
+telling an unauthorised caller that.
+
+**Nothing automated consumed these maps, and that is worth knowing before
+weighing the trade.** There is no error-tracking service in the workspace —
+no Sentry, Bugsnag, Rollbar, Datadog — and `reportApiFailure` logs
+`error.message` to the visitor's own console, never a stack, never to us. The
+sole beneficiary is a developer opening devtools by hand, which is exactly the
+case the token now serves.
+
+The `content-type` is JSON and `cache-control` is `private, no-store`: the
+response varies by cookie, and an edge that cached one would hand it to
+everyone.
 
 ### `product.count()` is the one catalogue query the index cannot help
 

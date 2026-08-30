@@ -48,6 +48,78 @@ One command, one prerequisite ([Docker](https://docs.docker.com/get-docker/)): b
 | **Repo** | pnpm workspace monorepo — `apps/web`, `apps/api`, `packages/*` (shared code, Phase 1+) |
 | **Deploy** | Render, Docker-based — see [docs/deployment.md](./docs/deployment.md) |
 
+## Debugging production
+
+Production ships source maps, but they are **not public** — a stack trace in
+the browser console resolves to a real file and line only for a session
+holding an access token. Without one, `/sourcemaps/*` returns 404 and you see
+minified code.
+
+They are gated because the maps inline the original source of every file that
+reaches the browser, `packages/config` included — which would publish every
+rate limit, page-size ceiling and token lifetime the app has.
+
+### One-time setup
+
+Generate a signing key and set it in two places — on the web service, and in
+your own shell:
+
+```bash
+node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
+```
+
+Set it as `SOURCEMAP_SIGNING_KEY` on the Render web service, and export the
+same value locally. Never commit it; `.env.example` lists the name only.
+
+Leave it unset and source maps are simply unavailable — that is the safe
+default, and the route fails closed rather than falling back to serving them
+publicly.
+
+### Each time you need access
+
+```bash
+pnpm --filter web sourcemap:token
+```
+
+```
+  Source-map access token
+
+    for      you@example.com
+    grant    QvuKuEYNd3vd
+    expires  2026-08-30T09:14:57.000Z  (in 120 min)
+
+  Paste this in the browser console on https://laxair.shop :
+
+    document.cookie = "mi_srcmap=<token>; path=/; SameSite=Strict; Secure"
+```
+
+Paste that line into the browser console **on the site's own origin**, then
+open devtools. Source maps resolve until the token expires.
+
+A cookie rather than a header or `?token=`, because devtools fetches maps
+itself and cannot be made to send a custom header — and a token in a URL ends
+up in access logs, referrers and shell history.
+
+### Options
+
+| | |
+|---|---|
+| `--as you@example.com` | Who the token is for. Defaults to your git email. |
+| `--ttl 30m` | Lifetime — `90s`, `30m`, `2h`, or seconds. Default 2h, ceiling 24h. |
+
+### What to know
+
+- **The token names you.** Every access is logged with your identity and the
+  grant id: `{"msg":"sourcemap served","file":…,"iss":…,"sid":…}`. Do not
+  share it — anything done with it is recorded against your name.
+- **It expires on its own.** There is nothing to revoke; verification is
+  stateless, so the clock is the only mechanism. That is why the ceiling
+  exists.
+- **Two tokens for the same person are still tellable apart**, by their grant
+  id — so a leaked one can be distinguished from a fresh one in the log.
+- **Rotating `SOURCEMAP_SIGNING_KEY` invalidates every outstanding token** at
+  once, which is the blunt instrument if you need one.
+
 ## Documentation
 
 | | |
@@ -55,6 +127,7 @@ One command, one prerequisite ([Docker](https://docs.docker.com/get-docker/)): b
 | [TECHNICAL_PLAN.md](./TECHNICAL_PLAN.md) | Architecture, data model, roles, full roadmap — **read this first** for anything beyond setup |
 | [docs/development.md](./docs/development.md) | Local setup, running the apps, testing |
 | [docs/caching-and-performance.md](./docs/caching-and-performance.md) | Shell/data split, GraphQL-over-GET caching, minification, security headers |
+| [Debugging production](#debugging-production) | Getting a source-map access token |
 | [docs/localization.md](./docs/localization.md) | English/Hindi routing, instant client-side language switching |
 | [docs/deployment.md](./docs/deployment.md) | Environment variables, Render setup |
 | [CLAUDE.md](./CLAUDE.md) | CI/CD pipeline, review gates, operational playbook — for whoever's maintaining this repo day to day |
