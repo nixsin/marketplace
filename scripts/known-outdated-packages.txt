@@ -1,14 +1,31 @@
 # Packages allowed to show as outdated in dependency-freshness.yml without
 # failing the check. Each entry here MUST correspond to a genuine, verified
-# upstream blocker documented in CLAUDE.md's Known Gotchas section — not
-# "we haven't gotten around to it yet." A package belongs here only if no
-# amount of waiting-and-retrying will fix it until an external project
-# ships a release; otherwise the check should stay red, since that's a
-# real, actionable signal.
+# blocker OUTSIDE our own code — not "we haven't gotten around to it." A
+# package belongs here only if no amount of waiting-and-retrying will fix it
+# until an external project ships a release; otherwise the check should stay
+# red, since that's a real, actionable signal.
 #
-# Remove an entry the moment its blocker actually clears — the
-# corresponding Dependabot PR's `[blocked]` title prefix should come off
-# in the same commit/PR, per CLAUDE.md's `[blocked]` convention.
-eslint
-@eslint/js
-typescript
+# That bar excludes a case worth naming, because it looks similar and is
+# not: an upgrade that is merely EXPENSIVE. NestJS 12 needs this repo's
+# Jest suite migrated from CommonJS to ESM (its packages ship as ESM, and
+# ts-jest compiles the specs to CJS, so the two meet at `ReferenceError:
+# exports is not defined`). Nothing upstream is broken — the work is in our
+# code, so it stays actionable and red until it is done.
+#
+# Give every entry an inline reason. A bare name cannot be reviewed without
+# cross-referencing CLAUDE.md, and the two drift apart silently; the reason
+# here is what lets a reader decide whether the entry is still true.
+#
+# Remove an entry the moment its blocker actually clears — the corresponding
+# Dependabot PR's `[blocked]` title prefix should come off in the same
+# commit/PR, per CLAUDE.md's `[blocked]` convention.
+
+# --- Upstream has not shipped a compatible release -------------------------
+
+eslint        # eslint-plugin-react (via eslint-config-next) peers to ^9.7, no ^10
+@eslint/js    # tracks eslint's own major; same blocker
+typescript    # typescript-eslint peers to >=4.8.4 <6.1.0, so TS 7 is out
+
+# --- Upstream's `latest` tag points at a prerelease ------------------------
+
+prisma        # `latest` is 8.0.0-rc.12; stable is 7.10.0 on the `prev` tag
