@@ -654,13 +654,16 @@ the sitemap shards off that, not off `totalPages`.
 unbounded-cost by construction. Deep walks belong on the cursor query
 `products(cursor:)`, which has none.
 
-**The open case, stated plainly:** past 100,000 products the sitemap stops
-being able to finish the catalogue. It now fails loudly there rather than
-publishing duplicates, which is the right failure but still a failure — the
-actual fix is cursor traversal in `loadSitemapProducts`, a redesign rather
-than a limit, and it is not done here. Today's catalogue is a few dozen
-products, so the gap is real and not reachable; revisit it before the
-catalogue grows three orders of magnitude, not after.
+**The open case, stated plainly, and tracked in
+[#172](https://github.com/nixsin/marketplace/issues/172):** past 100,000
+products the sitemap stops being able to finish the catalogue. It fails loudly
+there rather than publishing duplicates, which is the right failure but still
+a failure — the actual fix is cursor traversal in `loadSitemapProducts`, a
+redesign rather than a limit. The awkward part is that cursor traversal is
+inherently sequential while the current code fetches eight pages at once, so
+it is not a drop-in swap. Today's catalogue is a few dozen products, so the
+gap is real and three orders of magnitude away; revisit before the catalogue
+approaches the ceiling, not after.
 
 **`PRODUCTS_MAX_PAGE_SIZE` is 100 because `SITEMAP_API_PAGE_SIZE` is 100**,
 and the API clamps *silently* — a short page, never an error. So raising the
