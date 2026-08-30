@@ -82,7 +82,9 @@ describe('S3BlobStore', () => {
     it('sends the body and content type to the configured bucket', async () => {
       send.mockResolvedValue({});
 
-      await store.put('products/a.png', Buffer.from('bytes'), 'image/png');
+      const body = Buffer.from('bytes');
+
+      await store.put('products/a.png', body, 'image/png');
 
       const { name, input } = sentCommand();
       expect(name).toBe('PutObjectCommand');
@@ -91,6 +93,9 @@ describe('S3BlobStore', () => {
         Key: 'products/a.png',
         ContentType: 'image/png',
       });
+      // The bytes themselves, not just the metadata around them -- dropping
+      // or replacing the payload would otherwise pass this test.
+      expect(input.Body).toBe(body);
     });
 
     it('rejects a traversing key BEFORE any request is made', async () => {

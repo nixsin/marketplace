@@ -41,21 +41,46 @@ describe('PrismaService', () => {
     expect(disconnect).toHaveBeenCalledTimes(1);
   });
 
-  it('AWAITS the connection rather than firing and forgetting', async () => {
+  it('AWAITS the connection, staying pending until it settles', async () => {
     // If the hook returned before $connect settled, Nest would report the
     // module ready while the pool was still opening -- and a failure would
     // surface as an unhandled rejection at some unrelated later moment
     // instead of failing startup.
-    let settled = false;
-    Object.assign(service, {
-      $connect: async () => {
-        await Promise.resolve();
-        settled = true;
-      },
+    //
+    // A DEFERRED promise, not `await Promise.resolve()`. An
+    // already-resolved promise settles on the same microtask turn that the
+    // test resumes on, so its continuation runs either way and the
+    // assertion cannot tell awaiting from fire-and-forget -- it passes
+    // against both implementations, which makes it worse than no test.
+    let release!: () => void;
+    const connected = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    Object.assign(service, { $connect: () => connected });
+
+    let done = false;
+    const init = service.onModuleInit().then(() => {
+      done = true;
     });
 
-    await service.onModuleInit();
+    // Several turns, so nothing is merely slow to be observed.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(done).toBe(false);
 
-    expect(settled).toBe(true);
+    release();
+    await init;
+    expect(done).toBe(true);
+  });
+
+  it('PROPAGATES a connection failure instead of swallowing it', async () => {
+    // The other half of the same property, and the one with teeth: a hook
+    // that did not await would leave this as an unhandled rejection while
+    // reporting the module started cleanly.
+    Object.assign(service, {
+      $connect: () => Promise.reject(new Error('pool refused')),
+    });
+
+    await expect(service.onModuleInit()).rejects.toThrow('pool refused');
   });
 });

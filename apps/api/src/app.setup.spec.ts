@@ -48,9 +48,12 @@ describe('configureApp', () => {
       setHeader: (k: string, v: unknown): void => {
         headers[k] = v;
       },
-      send: jest.fn(function (this: unknown) {
-        return res as unknown as Response;
-      }),
+      // Typed with a body parameter to match Express's Response.send(body?).
+      // A zero-arg implementation makes Jest infer a zero-arg mock, so every
+      // `res.send('...')` below would be passing an argument the type says
+      // does not exist.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      send: jest.fn((_body?: unknown) => res as unknown as Response),
     };
     // The middleware REPLACES res.send, so the original mock has to be
     // held separately -- asserting on res.send after patching would be

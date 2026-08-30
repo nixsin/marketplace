@@ -74,18 +74,31 @@ describe('createBlobStore', () => {
 
   it('never puts a credential VALUE in the error it throws', () => {
     // Same discipline as @medinstru/config's resolveApiKey: an error that
-    // names the variable is useful, one that quotes the value leaks it
-    // into every log that captured the boot failure.
+    // names the variable is useful, one that quotes the value leaks it into
+    // every log that captured the boot failure.
+    //
+    // BLOB_ACCOUNT is set explicitly so the only thing missing is the
+    // secret -- otherwise an unrelated endpoint/account error could throw
+    // first and this would pass without ever reaching the credential path.
     withEnv({
       BLOB_PROVIDER: 'r2',
+      BLOB_ACCOUNT: 'acct',
       [BLOB_CREDENTIAL_ENV.accessKeyId]: 'AKIAREALLOOKINGKEY',
       [BLOB_CREDENTIAL_ENV.secretAccessKey]: undefined,
     });
 
+    // Captured rather than asserted inside a catch block: an assertion that
+    // only runs on the error path passes vacuously if no error is thrown,
+    // which is the exact failure mode this whole test exists to rule out.
+    let caught: unknown;
     try {
       createBlobStore();
     } catch (error) {
-      expect(String(error)).not.toContain('AKIAREALLOOKINGKEY');
+      caught = error;
     }
+
+    expect(caught).toBeDefined();
+    expect(String(caught)).toContain(BLOB_CREDENTIAL_ENV.secretAccessKey);
+    expect(String(caught)).not.toContain('AKIAREALLOOKINGKEY');
   });
 });
