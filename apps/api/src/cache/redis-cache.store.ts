@@ -29,7 +29,21 @@ export class RedisCacheStore implements CacheStore, OnModuleDestroy {
   constructor(url: string) {
     this.client = createClient({
       url,
+      // WITHOUT THIS, "fails open" is not true. node-redis queues commands
+      // issued while disconnected and replays them once a connection is
+      // established -- so against an unreachable Redis a `get()` does not
+      // reject, it simply never settles. The catch blocks below never run,
+      // the caller never falls through to the database, and the request hangs
+      // until something upstream times out.
+      //
+      // Caught by running the e2e suite with REDIS_URL pointing at a closed
+      // port: every test timed out rather than passing on the null path.
+      // With the queue disabled a command fails immediately while
+      // disconnected, which is what the error handling was written for.
+      disableOfflineQueue: true,
       socket: {
+        // Bounded so a connect attempt cannot hold a request open either.
+        connectTimeout: 1_000,
         // Caps the backoff rather than growing it without bound, so a Redis
         // that comes back after an hour is picked up within seconds instead
         // of after the next exponential step.
@@ -102,13 +116,34 @@ export class RedisCacheStore implements CacheStore, OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    // Best effort. A cache that will not close must not stop the process
-    // exiting -- most of all in tests, where a hung handle looks like a
-    // failing suite.
+    // BOUNDED, because `quit()` on a client that never connected waits for a
+    // connection that is not coming. That is not a test-only concern: a pod
+    // rolling while Redis is unreachable would hang on shutdown, and the
+    // orchestrator would eventually SIGKILL it. Found by an e2e `afterAll`
+    // blowing its 5s hook timeout in CI, where REDIS_URL is set but no Redis
+    // is running -- exactly the shape of the production case.
+    //
+    // `quit()` is still tried first: it drains in-flight commands, which
+    // `destroy()` does not. It simply is not allowed to take forever.
+    const SHUTDOWN_MS = 1_000;
     try {
-      await this.client.quit();
+      await Promise.race([
+        this.client.quit(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('quit timed out')), SHUTDOWN_MS),
+        ),
+      ]);
     } catch {
-      this.client.destroy();
+      // Covers both a rejected quit and the timeout above.
+      try {
+        this.client.destroy();
+      } catch {
+        // `destroy()` throws "The client is closed" when it already is --
+        // which is the common case here, since a failed `quit()` usually
+        // closed it on the way out. Shutdown has exactly one job, and
+        // throwing while doing it would fail the caller's teardown for a
+        // state that is already what we wanted.
+      }
     }
   }
 }

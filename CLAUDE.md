@@ -2069,9 +2069,32 @@ to 17 on the very next request, with no flush and no `DEL` — and both
 one-row table, against the `COUNT(*)` full scan it protects. That cost is flat
 as the catalogue grows, which is the entire point, since counting is not.
 
-**Fails open, and says so.** No `REDIS_URL` yields a null cache and every read
-falls through to Postgres, so a bare local run and the e2e suite work
-unchanged. An unreachable Redis behaves the same way. Health is tracked as a
+**Fails open, and `disableOfflineQueue: true` is what makes that TRUE rather
+than aspirational.** node-redis QUEUES commands issued while disconnected and
+replays them on connect — so against an unreachable Redis a `get()` never
+settles, the error handling never runs, and the request hangs until something
+upstream times out. The catch blocks look like they cover it and do not: a
+hang is not an error. CI caught this, not local testing, because locally there
+is always a Redis. Every e2e test failed with a 5s timeout rather than passing
+on the null path.
+
+**Shutdown is bounded for the same class of reason.** `quit()` on a client
+that never connected waits for a connection that is not coming — unbounded,
+that hangs a rolling deploy until the orchestrator SIGKILLs the pod. It races
+a 1s timeout, then `destroy()`, and that `destroy()` is itself wrapped because
+it throws "The client is closed" when it already is, which would fail the
+caller's teardown for a state that is already what we wanted.
+
+**`REDIS_URL` is deliberately EMPTY in `apps/api/.env.example`.** CI copies
+that file verbatim (`cp .env.example .env`), so a URL pointing at a Redis no
+job runs makes every one construct a client and log cache-unavailable for the
+whole run. The API treats the cache as optional, so blank is both honest and
+correct.
+
+No `REDIS_URL` yields a null cache and every read falls through to Postgres,
+so a bare local run and the e2e suite work unchanged. An unreachable Redis
+behaves the same way — verified by running the e2e suite against a closed
+port, which is the only way to see this failure at all. Health is tracked as a
 *state* and logged only on transition, because a cache that has been down for
 three weeks looks exactly like one that is merely cold — one loud line beats
 ten thousand identical warnings nobody reads.
