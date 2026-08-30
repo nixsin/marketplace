@@ -11,7 +11,8 @@
     "^.+\\.(t|j)s$": [
       "ts-jest",
       {
-        "tsconfig": "<rootDir>/../tsconfig.spec.json"
+        "tsconfig": "<rootDir>/../tsconfig.spec.json",
+        "useESM": true
       }
     ]
   },
@@ -22,7 +23,7 @@
     "<rootDir>/setup-env.ts"
   ],
   "maxWorkers": 1,
-  "transformIgnorePatterns": [
-    "/node_modules/(?!@medinstru/config)"
+  "extensionsToTreatAsEsm": [
+    ".ts"
   ]
 }

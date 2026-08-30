@@ -514,6 +514,66 @@ line:
 git grep -nE 'actions/checkout@v[1-6]|actions/setup-node@v[1-6]|pnpm/action-setup@v[1-5]' -- .github/
 ```
 
+## The API test suite runs as ESM (NestJS 12)
+
+NestJS 12 ships every `@nestjs/*` package as ESM with `"type": "module"`, so a
+CommonJS Jest cannot load them at all. The migration is recorded here because
+each step fails in a way that points somewhere else.
+
+**The errors arrive in a fixed order, and only the last one is the real
+problem.** `Must use import to load ES Module` → `transformIgnorePatterns`
+looks like the fix and is not, because the refusal is based on the package's
+own `type` field rather than its syntax. Adding `--experimental-vm-modules`
+(which is what gates `vm.SourceTextModule`, and therefore Jest's whole ESM
+path) then gets you to `ReferenceError: exports is not defined` — which is
+ts-jest still *emitting* CommonJS.
+
+**`module` must be forced in `tsconfig.spec.json`.** The base config's
+`nodenext` picks ESM or CJS from the nearest `package.json`'s `type`, and
+`apps/api` is not `"type": "module"` — so nodenext emits CJS no matter what
+ts-jest's `useESM` says. `module: esnext` + `moduleResolution: bundler`
+overrides it for tests only. Note the symmetry: this file previously forced
+`commonjs` for the opposite reason (`@medinstru/config` is ESM and Jest was
+CJS). That workaround is gone — running as ESM is what both dependencies
+wanted. Making `apps/api` itself `"type": "module"` would also work and would
+change what `nest build` emits for production; keeping it in the spec config
+does not.
+
+**`jest` is not a global under ESM.** Jest still injects `describe`/`it`/
+`expect`, but the `jest` object itself must be `import { jest } from
+'@jest/globals'` — 12 spec files needed it. Related and load-bearing: this
+suite uses **no `jest.mock()` anywhere**, mocking through Nest's DI instead,
+which is the single reason the migration was tractable. `jest.mock` has no
+direct ESM equivalent (`unstable_mockModule` requires restructuring every call
+site). Keep it that way.
+
+**`__dirname` does not exist in ESM** — four files use `import.meta.dirname`
+now, which needs Node 20.11+ and is well under NestJS 12's own 20.19 floor.
+
+**Verified on Node 22, not just 24.** CI runs the API jobs on 22 and Jest's
+`require(esm)` error text recommends 24.9+, which suggests a bump is needed.
+It is not — that advice is for `require`ing ESM from CJS, and this suite is
+ESM throughout. 370 unit and 39 e2e tests pass on 22, so `node-version` is
+unchanged. Worth re-checking rather than assuming if the config changes again.
+
+**`graphql` had to go DOWN, 17 → 16, and that fixed a live production
+mismatch.** The ESM suite surfaced `Cannot require() ES Module graphql/
+index.mjs in a cycle` — graphql 17 is ESM, and the CJS packages `graphql-tag`
+and `graphql-type-json` `require()` it. But the real finding was underneath:
+**`@apollo/server@5` peers to `^16.11.0` only**, so graphql 17 had been an
+unmet peer in production the whole time. 16.14.2 satisfies every consumer
+(`@nestjs/graphql@14`, `@nestjs/apollo@14`, Apollo Server, both CJS packages)
+and is now allowlisted, since following `latest` would re-break Apollo.
+
+**Two v12 behaviour changes that touch this app.** `playground` is gone from
+`@nestjs/graphql` 14 — GraphiQL is the built-in IDE, so the option is
+`graphiql`. And a class-validator rejection now surfaces a bare `Bad Request
+Exception` rather than its own text. No behaviour change for the buyer, since
+`categorizeInquiryError` matched neither string and both land in `unknown` —
+but the server no longer says *which* field is wrong, so the inquiry form's
+mirrored constraints are now the only thing that can tell a buyer what to fix.
+Both are pinned by tests in `inquiries.e2e-spec.ts`.
+
 ## Shared configuration (`packages/config`, `@medinstru/config`)
 
 Single source of truth for configuration **values**: the web app's runtime
@@ -1221,14 +1281,9 @@ following `latest` would put the CLI a whole major ahead of the client. The
 stable line is on the `prev` tag. Both cases are outside our code and clear
 only when someone else acts.
 
-**An upgrade that is merely EXPENSIVE is not one of them.** NestJS 12 ships
-its packages as ESM; ts-jest compiles our specs to CommonJS; the two meet at
-`ReferenceError: exports is not defined`, and `transformIgnorePatterns` cannot
-help because the packages declare `"type": "module"`. Running Jest under
-`--experimental-vm-modules` gets past the first error and into the second.
-Nothing upstream is broken — the work is a CJS→ESM migration of our own test
-suite, so it stays actionable and the check stays red until it is done.
-Allowlisting it would convert a real backlog item into a permanent lie.
+**An upgrade that is merely EXPENSIVE is not one of them** — it stays
+actionable and the check stays red until it is done. NestJS 12 was that case,
+and it is now done; see the section below for what it took.
 
 **Where these entries say "don't re-investigate", they mean don't re-derive
 the finding from scratch — they do NOT mean "never check again."** Every

@@ -21,7 +21,10 @@ import { StorageModule } from './storage/storage.module';
       driver: ApolloDriver,
       autoSchemaFile: join(process.cwd(), 'src/schema.gql'),
       sortSchema: true,
-      playground: process.env.NODE_ENV !== 'production',
+      // Renamed in @nestjs/graphql 14: `playground` (Apollo's hosted
+      // Playground, long deprecated) is gone and GraphiQL is the built-in
+      // IDE. Same intent -- an explorer in dev, nothing exposed in prod.
+      graphiql: process.env.NODE_ENV !== 'production',
       context: ({ req }: { req: Request }) => ({ req }),
     }),
     PrismaModule,

@@ -24,7 +24,7 @@ import { isE164 } from './phone';
  */
 describe('seeded phone numbers', () => {
   const seed = readFileSync(
-    join(__dirname, '..', '..', 'prisma', 'seed.ts'),
+    join(import.meta.dirname, '..', '..', 'prisma', 'seed.ts'),
     'utf8',
   );
 

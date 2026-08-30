@@ -15,7 +15,10 @@ import { join } from 'node:path';
  * would regenerate it and the staleness is exactly what needs catching.
  */
 describe('committed GraphQL schema', () => {
-  const schema = readFileSync(join(__dirname, '..', 'schema.gql'), 'utf8');
+  const schema = readFileSync(
+    join(import.meta.dirname, '..', 'schema.gql'),
+    'utf8',
+  );
 
   /**
    * The body of one named type, so a field can be asserted to be ON it.

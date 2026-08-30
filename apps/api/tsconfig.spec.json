@@ -1,32 +1,33 @@
 {
-  // Test-only compiler options, and both overrides below are load-bearing.
+  // Test-only compiler options.
   //
-  // apps/api imports @medinstru/config, which ships as plain ESM with no
-  // build step (see packages/config/package.json for why). Jest runs this
-  // suite as CommonJS.
+  // These tests run as ESM, which is what NestJS 12 requires: all
+  // @nestjs/* packages now ship as ESM and declare `"type": "module"`, so
+  // Jest cannot load them from a CommonJS test context at all --
+  // `transformIgnorePatterns` does not help, because the refusal is based
+  // on the package's own type declaration rather than on its syntax.
   //
-  // The real tsconfig sets `module: nodenext`, which makes TypeScript emit
-  // ESM or CJS per the *imported package's* own `type` field -- so
-  // @medinstru/config was transpiled but its `export` statements were
-  // preserved, and Jest's CJS runtime failed to parse them. The symptom
-  // ("Unexpected token 'export'") looks exactly like a file that was never
-  // transformed at all, which sends you chasing transformIgnorePatterns.
-  // It was being transformed the whole time, just to the wrong format.
+  // This file used to do the exact opposite: it forced `module: commonjs`
+  // so that @medinstru/config (plain ESM, no build step) would be emitted
+  // as require() calls for a CommonJS Jest. That workaround is now
+  // unnecessary and actively wrong -- running the suite as ESM is what
+  // both dependencies wanted in the first place.
   //
-  // Forcing commonjs here emits require() instead. moduleResolution must
-  // move off nodenext with it -- TypeScript rejects that pairing.
-  //
-  // Both live HERE rather than in tsconfig.json so `nest build` keeps
-  // emitting exactly what it emitted before.
+  // So the only override left is `allowJs`, and the base config's
+  // `nodenext` module/resolution pair -- which is what emits real ESM --
+  // is inherited rather than overridden.
+  // `module` must be forced. The base config's `nodenext` decides ESM vs
+  // CJS from the nearest package.json's `type` field, and apps/api is not
+  // `"type": "module"` -- so nodenext emits CommonJS here and the suite
+  // fails with `ReferenceError: exports is not defined` even with ts-jest's
+  // `useESM`. Making apps/api itself `"type": "module"` would fix it and
+  // change what `nest build` emits for production at the same time; this
+  // keeps the change inside the tests, which is the same reason the old
+  // commonjs override lived here.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "allowJs": true,
-    "module": "commonjs",
-    "moduleResolution": "node",
-    // The base config enables these, and TypeScript only permits them
-    // under node16/nodenext/bundler resolution -- which is exactly what
-    // the override above moves off. Turned off for tests only.
-    "resolvePackageJsonExports": false,
-    "resolvePackageJsonImports": false
+    "module": "esnext",
+    "moduleResolution": "bundler"
   }
 }
