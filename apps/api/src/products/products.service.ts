@@ -1,7 +1,15 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { blobUrl } from '../storage/blob-config';
-import { MANAGED_IMAGE_PREFIX } from '@medinstru/config';
+import {
+  MANAGED_IMAGE_PREFIX,
+  PRODUCTS_MAX_OFFSET,
+  PRODUCTS_MAX_PAGE_SIZE,
+} from '@medinstru/config';
 
 // Prisma's `details Json?` column accepts any valid JSON value (object,
 // array, string, number, null) -- but the GraphQL field is typed
@@ -92,6 +100,11 @@ export class ProductsService {
   }
 
   async findPage(cursor?: string, limit = 6) {
+    // Same unbounded-arg problem as findPaged's pageSize, same ceiling.
+    const safeLimit = Math.min(
+      Math.max(1, Math.trunc(limit) || 1),
+      PRODUCTS_MAX_PAGE_SIZE,
+    );
     // Cursor-based, not offset-based (see TECHNICAL_PLAN.md §12B) — degrades
     // predictably as the catalog grows, unlike page-number/offset pagination.
     //
@@ -103,14 +116,14 @@ export class ProductsService {
     // skip or repeat a row whenever a tie's relative order shifts between
     // the page-1 and page-2 queries. Found via a genuinely flaky e2e test.
     const items = await this.prisma.product.findMany({
-      take: limit + 1,
+      take: safeLimit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: { seller: true },
     });
 
-    const hasMore = items.length > limit;
-    const page = hasMore ? items.slice(0, limit) : items;
+    const hasMore = items.length > safeLimit;
+    const page = hasMore ? items.slice(0, safeLimit) : items;
     const nextCursor = hasMore ? page[page.length - 1].id : undefined;
 
     return { items: page.map(normalizeProduct), nextCursor };
@@ -120,10 +133,58 @@ export class ProductsService {
   // is a deliberate, separate query rather than replacing findPage above.
   async findPaged(page = 1, pageSize = 4) {
     const safePage = Math.max(1, page);
+    // pageSize is an anonymous, public GraphQL arg that reached Prisma's
+    // `take` unbounded: one request could ask for the whole catalogue, and
+    // `pageSize: 0` made totalPages Infinity below (ceil(n / 0)). Clamped
+    // rather than rejected, so an out-of-range value in a shared link still
+    // renders a page instead of erroring.
+    const safePageSize = Math.min(
+      Math.max(1, Math.trunc(pageSize) || 1),
+      PRODUCTS_MAX_PAGE_SIZE,
+    );
+    // The other half of the same problem: `page` is an anonymous public Int
+    // too, and skip = (page - 1) * pageSize at a max Int is an offset of
+    // 214,748,364,600 -- rows Postgres reads and DISCARDS before returning
+    // anything. Bounded on the offset rather than on `page`, because the
+    // legitimate page number grows with the catalogue (the sitemap walks it
+    // in order), so a page cap would break sitemap generation at a size
+    // nobody would connect back to this line.
+    //
+    // The cap is ALIGNED DOWN to a page boundary. A bare
+    // Math.min(..., PRODUCTS_MAX_OFFSET) lands mid-page whenever the ceiling
+    // is not divisible by pageSize: at pageSize 3 it queries offset 100000
+    // while reporting page 33334, which really starts at 99999 -- skipping
+    // that row and making the page number a lie about the rows returned.
+    const maxSkip =
+      Math.floor(PRODUCTS_MAX_OFFSET / safePageSize) * safePageSize;
+    const skip = (safePage - 1) * safePageSize;
+
+    // REJECTED, not clamped. Clamping mapped every page past the ceiling to
+    // the same final page, so a sequential consumer -- the sitemap, above
+    // all -- would walk off the end and receive that page's rows over and
+    // over, with nothing anywhere reporting a problem. Publishing a sitemap
+    // of duplicated products silently is worse than failing to publish one.
+    //
+    // Deliberately different from the treatment of page 0 or a negative
+    // page, which ARE clamped: those are malformed requests for a page that
+    // exists, and rendering the first page is friendlier than an error. This
+    // is a request for a page that cannot be served at all, and answering it
+    // with different rows than were asked for is a lie.
+    if (skip > maxSkip) {
+      throw new BadRequestException(
+        `Page ${safePage} is beyond the deepest page this query can serve ` +
+          `at pageSize ${safePageSize}. Use the cursor query for deep walks.`,
+      );
+    }
+    // Equal to safePage now that unservable pages throw rather than being
+    // clamped -- kept as its own name because it is what the response
+    // promises, and the two must not drift apart again.
+    const servedPage = Math.floor(skip / safePageSize) + 1;
+
     const [items, totalCount] = await Promise.all([
       this.prisma.product.findMany({
-        skip: (safePage - 1) * pageSize,
-        take: pageSize,
+        skip,
+        take: safePageSize,
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], // see findPage
         include: { seller: true },
       }),
@@ -132,10 +193,26 @@ export class ProductsService {
 
     return {
       items: items.map(normalizeProduct),
-      page: safePage,
-      pageSize,
+      page: servedPage,
+      pageSize: safePageSize,
       totalCount,
-      totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
+      // Capped at what is actually REACHABLE, not at what exists. The
+      // offset bound above means pages past maxSkip cannot be served -- a
+      // request for one returns the capped page instead -- so advertising
+      // them would promise pages that silently resolve to the wrong rows.
+      // totalCount stays truthful; only the page count is bounded, and the
+      // sitemap shards off totalCount rather than this.
+      //
+      // Unreachable below a 100,000-product catalogue, which is far above
+      // today's. The real fix past that is cursor traversal for deep walks
+      // -- offset pagination cannot serve them at any bound.
+      totalPages: Math.max(
+        1,
+        Math.min(
+          Math.ceil(totalCount / safePageSize),
+          Math.floor(maxSkip / safePageSize) + 1,
+        ),
+      ),
     };
   }
 }

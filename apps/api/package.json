@@ -54,6 +54,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.6",
     "@eslint/js": "^9.39.5",
+    "@jest/globals": "^30.4.2",
     "@nestjs/cli": "^12.0.0",
     "@nestjs/testing": "^12.0.1",
     "@types/express": "^5.0.6",
@@ -104,16 +105,8 @@
       "^(\\.{1,2}/.*)\\.js$": "$1"
     },
     "collectCoverageFrom": [
-      "app.controller.ts",
-      "auth/auth.service.ts",
-      "auth/auth.resolver.ts",
-      "auth/otp-store.service.ts",
-      "auth/guards/jwt-auth.guard.ts",
-      "auth/guards/roles.guard.ts",
-      "organizations/organizations.service.ts",
-      "organizations/organizations.resolver.ts",
-      "products/products.service.ts",
-      "products/products.resolver.ts"
+      "**/*.ts",
+      "!**/*.spec.ts"
     ],
     "coverageThreshold": {
       "global": {

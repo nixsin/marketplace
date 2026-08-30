@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PRODUCTS_MAX_PAGE_SIZE } from '@medinstru/config';
 
 const fetchProductsPaged = vi.fn();
 vi.mock("@/lib/api", () => ({
@@ -8,8 +9,12 @@ vi.mock("next/cache", () => ({
   unstable_cache: (fn: (...args: unknown[]) => unknown) => fn,
 }));
 
-const { loadInitialProducts, loadSitemapProductCount, loadSitemapProducts } =
-  await import("./catalog-seo");
+const {
+  loadInitialProducts,
+  loadSitemapProductCount,
+  loadSitemapProducts,
+  SITEMAP_API_PAGE_SIZE,
+} = await import("./catalog-seo");
 
 describe("catalog SEO data", () => {
   beforeEach(() => fetchProductsPaged.mockReset());
@@ -98,5 +103,16 @@ describe("catalog SEO data", () => {
       .mockRejectedValueOnce(new Error("page 2 failed"));
 
     await expect(loadSitemapProducts()).rejects.toThrow("page 2 failed");
+  });
+});
+
+describe("sitemap page size vs. the API's ceiling", () => {
+  it("never asks for more per request than the API will serve", () => {
+    // The API clamps pageSize to PRODUCTS_MAX_PAGE_SIZE silently -- it
+    // returns a short page rather than an error. So a bump to
+    // SITEMAP_API_PAGE_SIZE past that ceiling would truncate every shard
+    // with nothing failing anywhere: the sitemap would just quietly stop
+    // listing products, which is the whole feature.
+    expect(SITEMAP_API_PAGE_SIZE).toBeLessThanOrEqual(PRODUCTS_MAX_PAGE_SIZE);
   });
 });

@@ -365,6 +365,16 @@ wrong — it reviews a diff it has never seen before. If you are confident it
 is wrong, say so in a PR comment with evidence and use your judgment. Do not
 silently override.
 
+**Do not wait on CI while an unaddressed review finding is sitting there.**
+The two AI passes post as soon as they finish, minutes before the slow jobs
+(Playwright, Docker, Lighthouse) do — so a review round is usually readable
+long before the run goes green. Waiting for the whole run first wastes that
+gap, and worse, the fixes will re-trigger everything anyway, so the run being
+waited on is already superseded. Read the review the moment it lands, fix,
+push, and let CI settle around the final commit. The only reason to wait is a
+finding whose validity actually depends on a CI result — pass 2's job, which
+by definition needs the results it is reviewing.
+
 **Converging a review, in four rules.** The reviewer is stateless by design,
 so it will repeat a finding forever unless you close the loop:
 
@@ -595,6 +605,183 @@ resolves it completely: `@nestjs/cli` carries its own copy, `nest-cli.json`'s
 check` is clean for the first time in this repo's history. Verified with a
 real `nest generate service --dry-run`, not just `--help`. Re-add it only
 alongside a TypeScript 6 migration.
+
+## The products queries are bounded, and offset pagination is the weak one
+
+`productsPaged(page:, pageSize:)` and `products(limit:)` are anonymous public
+GraphQL args that reached Prisma's `take`/`skip` unclamped. Three concrete
+consequences, all fixed: `pageSize: 0` made `totalPages` `Math.ceil(n / 0)` —
+Infinity, not a serialisable Int; `pageSize: 1000000` fetched the whole
+catalogue in one request; and `page` at a max GraphQL Int produced an offset
+of **214,748,364,600** rows for Postgres to read and discard.
+
+**The bound is on the OFFSET, not on `page`, and that choice is load-bearing.**
+The legitimate page number grows with the catalogue — the sitemap walks it in
+order — so a page cap would break sitemap generation at a catalogue size
+nobody would connect back to the constant. `PRODUCTS_MAX_OFFSET` (100,000)
+keeps the sitemap correct up to a 100,000-product catalogue, and `findPaged`
+reports back the page it actually **served** rather than the one requested,
+because echoing the request would tell a client it is looking at page
+2,147,483,647 of a catalogue that stops long before it.
+
+**The cap must be ALIGNED DOWN to a page boundary**, and a bare
+`Math.min(skip, PRODUCTS_MAX_OFFSET)` is not. Whenever the ceiling is not
+divisible by `pageSize` the capped offset lands mid-page: at `pageSize: 3` it
+queries offset 100,000 while reporting page 33,334, which really begins at
+99,999 — so that row is skipped and the page number describes rows the caller
+did not get. `Math.floor(PRODUCTS_MAX_OFFSET / pageSize) * pageSize` fixes it.
+The first version of this bound had the bug and its tests missed it because
+they all used `pageSize: 100`, which divides evenly; the regression tests now
+use 3, 7 and 33 and assert the property — `(page - 1) * pageSize === skip` —
+rather than any particular number.
+
+**A page past the ceiling is REJECTED, not clamped — and that asymmetry is
+deliberate.** Page 0 and negative pages *are* clamped, because those are
+malformed requests for a page that exists and rendering the first page is
+friendlier than an error. A page beyond the offset ceiling is different: it
+cannot be served at all, and answering it with different rows than were asked
+for is a lie. Clamping mapped every such page to the same final one, so a
+sequential consumer — the sitemap above all — would walk off the end and
+receive that page's rows over and over with nothing reporting a problem.
+Publishing a sitemap of duplicated products silently is worse than failing to
+publish one.
+
+`totalPages` is capped at what is reachable for the same reason, so the API
+never advertises a page it would then reject. `totalCount` stays truthful —
+the sitemap shards off that, not off `totalPages`.
+
+**This bounds the damage; it does not fix offset pagination.** OFFSET is
+unbounded-cost by construction. Deep walks belong on the cursor query
+`products(cursor:)`, which has none.
+
+**The open case, stated plainly, and tracked in
+[#172](https://github.com/nixsin/marketplace/issues/172):** past 100,000
+products the sitemap stops being able to finish the catalogue. It fails loudly
+there rather than publishing duplicates, which is the right failure but still
+a failure — the actual fix is cursor traversal in `loadSitemapProducts`, a
+redesign rather than a limit. The awkward part is that cursor traversal is
+inherently sequential while the current code fetches eight pages at once, so
+it is not a drop-in swap. Today's catalogue is a few dozen products, so the
+gap is real and three orders of magnitude away; revisit before the catalogue
+approaches the ceiling, not after.
+
+**`PRODUCTS_MAX_PAGE_SIZE` is 100 because `SITEMAP_API_PAGE_SIZE` is 100**,
+and the API clamps *silently* — a short page, never an error. So raising the
+sitemap's chunk past the API's ceiling would truncate every shard with nothing
+failing anywhere.
+
+They are **not** in the same place, and that is the point worth stating
+precisely: `PRODUCTS_MAX_PAGE_SIZE` is exported from `@medinstru/config`, while
+`SITEMAP_API_PAGE_SIZE` stays in `apps/web/src/lib/catalog-seo.ts` next to the
+paging loop that uses it. What couples them is a test —
+`apps/web/src/lib/catalog-seo.spec.ts` asserts the sitemap's value never
+exceeds the API's — rather than a shared definition, because they are not the
+same quantity: one is a ceiling, the other a chosen batch size beneath it.
+
+## API coverage measures ALL of `src` — and the exclusions were the story
+
+`apps/api`'s `collectCoverageFrom` was a hand-curated list of **10 files out
+of 50**. The badge read 87.83%, which sounds like "the API is 87.83% covered"
+and did not mean that.
+
+**Auditing every excluded path is what found the real gap.** Three categories
+came out of it, and only one was a genuine hole:
+
+- **Correctly excluded, nothing to cover.** `inquiries/phone.ts` is a two-line
+  re-export of `@medinstru/config` with zero executable statements;
+  `auth/types/auth-token-payload.ts` is a type-only interface erased at
+  compile. Jest never loads either. Not gaps.
+- **Excluded and well tested anyway** — `inquiries.service.ts` at 96.85%,
+  `whatsapp.service.ts` at 98.38%, `graphql-cache.ts` and
+  `correlation.middleware.ts` at 100%. The riskiest code in the repo, none of
+  it counted toward the number.
+- **Excluded and genuinely untested** — `s3-blob-store.ts` (0%, the production
+  storage path), `app.setup.ts` (0%), `correlation-exception.filter.ts` (0%).
+
+**The one worth remembering: `storage/storage.module.ts` held `createBlobStore()`,
+a real exported factory with three branches, at 0%.** The conventional
+`!**/*.module.ts` exclusion — which looks obviously safe, since modules are
+normally decorator shells — was hiding the function that decides whether
+production writes to R2 or to a local directory no CDN serves. **A filename
+pattern is not a safe proxy for "contains no logic."** That is the reason
+`collectCoverageFrom` is now `["**/*.ts", "!**/*.spec.ts"]` and excludes
+nothing else, `main.ts` and the module shells included: an exclusion is a
+place things hide, and the cost of counting a few decorator statements is
+lower than the cost of another `createBlobStore`.
+
+**Chasing resolvers and models to 100% is theatre, and the numbers say so.**
+`products.resolver.ts` reads 59% with every method tested. The "uncovered"
+lines are decorator type-thunks — `@Query(() => Product)`,
+`@Args('limit', { type: () => Int })` — arrow functions GraphQL invokes only
+at schema-build time, which the e2e suite already does and a unit test never
+will. The same applies to every `*.model.ts` and `*.input.ts` sitting at
+71–87%. Read those numbers as "decorator-dense", not "untested", and spend
+effort on files where the uncovered lines are statements you could actually
+execute.
+
+**Three ways to stop counting decorator thunks were tried, and none is worth
+taking** — measured, not reasoned about, because each sounds like it should
+work:
+
+| Approach | Result |
+|---|---|
+| `/* istanbul ignore next */` above the decorator | **Worse**: 59.09% → 57.14%. The hint binds to the method node, not the decorator expression, so the thunk is still counted and the comment adds a line. |
+| `coverageProvider: "v8"` | **Moves the artifact.** `products.resolver.ts` 59% → 100%, but `product.model.ts` 76% → 17%, because a class body that is entirely decorators reads as entirely unexecuted. |
+| `coveragePathIgnorePatterns` | File-level only — the exact exclusion trap this whole section exists to describe. |
+
+So the numbers stay as they are and get read correctly instead. If the v8
+provider is ever adopted for another reason, expect the models and resolvers
+to swap places rather than improve.
+
+Widening the set moved the figure from 87.83% over ~140 statements to
+**90.48% over 679** — genuinely higher while measuring nearly five times as
+much. Getting there added **82 unit tests (370 → 452)**, of which **59** are
+in eight new suites and the rest went into `products.service.spec.ts`,
+and the ones that mattered were `s3-blob-store` (17 tests: every not-found
+spelling providers disagree on, and that a real failure is rethrown rather
+than laundered into "missing"), `app.setup` (the `/graphql` cache-control
+patch, including that it fails closed once headers are sent), and
+`products.service.findPaged`, which turned out to have **no test at all**
+despite being the query behind the catalogue's numbered pagination.
+
+**Nothing type-checks the spec files, and that is worth knowing before
+trusting one.** `nest build` excludes them and ts-jest transpiles without
+checking, so a spec can carry a real type error and still run green. Found
+here via a review finding, confirmed with:
+
+```bash
+cd apps/api && npx tsc --noEmit -p tsconfig.spec.json 2>&1 | grep -v TS2307
+```
+
+It reported genuine TS2345s in a fully passing suite — a response double
+declared `setHeader` as returning `void` where Express returns the response,
+so it was not actually assignable to the type it stood in for. Run this
+whenever a test double is involved.
+
+**`@jest/globals` is declared, and the type check is still not clean — those
+are two separate problems.** The import is required (the `jest` object is not
+a global under ESM) and was for a while a *phantom dependency*: imported by
+twelve specs, declared nowhere, resolving only through pnpm's layout. That is
+now fixed — it is a real devDependency, so the specs no longer depend on
+incidental hoisting.
+
+Declaring it does not make `tsc --noEmit` pass, and the reason is worth
+knowing before anyone tries: it trades 17 resolution errors for **142**
+`Argument of type X is not assignable to parameter of type 'never'`.
+`@jest/globals`' `jest.fn()` is generic and infers `never` for arguments
+unless given a type argument, so every bare `jest.fn()` followed by
+`mockResolvedValue(x)` fails — 131 call sites, nearly all in specs that
+predate the ESM migration. Fixing it means typing each mock
+(`jest.fn<() => Promise<T>>()`); it is mechanical, it is not risky, and it is
+its own change. Until then:
+
+```bash
+cd apps/api && npx tsc --noEmit -p tsconfig.spec.json 2>&1 | grep -vE 'TS2345|TS2322|TS18046'
+```
+
+which still catches the class that matters — a test double that is not
+assignable to the type it stands in for, which is what surfaced the
+`setHeader` bug above.
 
 ## Shared configuration (`packages/config`, `@medinstru/config`)
 

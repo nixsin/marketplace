@@ -431,6 +431,48 @@ export const ONBOARDING_TOKEN_TTL = "15m";
 
 /** How long a requested OTP stays valid. */
 // ---------------------------------------------------------------------------
+// Product catalogue pagination
+// ---------------------------------------------------------------------------
+
+/**
+ * The largest page the products queries will serve.
+ *
+ * `productsPaged(pageSize:)` and `products(limit:)` are anonymous, public
+ * GraphQL args that reached Prisma's `take` unbounded -- so a single request
+ * could ask for the entire catalogue, and `pageSize: 0` produced
+ * `totalPages: Infinity`. Both are clamped against this.
+ *
+ * 100 rather than something smaller because the sitemap genuinely pages in
+ * hundreds: `SITEMAP_API_PAGE_SIZE` in apps/web/src/lib/catalog-seo.ts is
+ * exactly 100, and a lower ceiling here would silently truncate it. It lives
+ * in this package for that reason -- the two numbers must move together, and
+ * a comment saying so is what this package exists to replace.
+ */
+export const PRODUCTS_MAX_PAGE_SIZE = 100;
+
+/**
+ * The deepest OFFSET `productsPaged` will scan to.
+ *
+ * Capping pageSize alone left the other half open: `page` is also an
+ * anonymous public Int, and `skip: (page - 1) * pageSize` at a max GraphQL
+ * Int is an offset of 214,748,364,600 -- rows Postgres reads and discards
+ * before returning anything.
+ *
+ * Bounded on the OFFSET rather than on `page`, because the page number that
+ * is legitimate grows with the catalogue: the sitemap walks it in order, so
+ * its deepest page is a function of how many products exist. Capping `page`
+ * would break sitemap generation at a size nobody would connect to this
+ * constant.
+ *
+ * 100,000 means the sitemap keeps working up to a 100,000-product catalogue
+ * (it pages by SITEMAP_API_PAGE_SIZE, so offset == product index). Today's
+ * catalogue is a few dozen. Past that, deep walks belong on the cursor query
+ * `products(cursor:)`, which has no offset cost at all -- offset pagination
+ * is unbounded-cost by construction and this only bounds the damage.
+ */
+export const PRODUCTS_MAX_OFFSET = 100_000;
+
+// ---------------------------------------------------------------------------
 // Product inquiries (#91)
 // ---------------------------------------------------------------------------
 

@@ -30,7 +30,11 @@ export interface SitemapProduct {
 }
 
 export const PRODUCTS_PER_SITEMAP = 24_000;
-const SITEMAP_API_PAGE_SIZE = 100;
+// Exported so a test can assert it never exceeds the API's own
+// PRODUCTS_MAX_PAGE_SIZE. The API clamps silently, so a bump here
+// past that ceiling would truncate every sitemap shard without any
+// error -- the shards would simply go short and nobody would notice.
+export const SITEMAP_API_PAGE_SIZE = 100;
 const API_PAGES_PER_SITEMAP = PRODUCTS_PER_SITEMAP / SITEMAP_API_PAGE_SIZE;
 const SITEMAP_FETCH_CONCURRENCY = 8;
 
