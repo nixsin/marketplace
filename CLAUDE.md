@@ -606,6 +606,36 @@ check` is clean for the first time in this repo's history. Verified with a
 real `nest generate service --dry-run`, not just `--help`. Re-add it only
 alongside a TypeScript 6 migration.
 
+## The products queries are bounded, and offset pagination is the weak one
+
+`productsPaged(page:, pageSize:)` and `products(limit:)` are anonymous public
+GraphQL args that reached Prisma's `take`/`skip` unclamped. Three concrete
+consequences, all fixed: `pageSize: 0` made `totalPages` `Math.ceil(n / 0)` —
+Infinity, not a serialisable Int; `pageSize: 1000000` fetched the whole
+catalogue in one request; and `page` at a max GraphQL Int produced an offset
+of **214,748,364,600** rows for Postgres to read and discard.
+
+**The bound is on the OFFSET, not on `page`, and that choice is load-bearing.**
+The legitimate page number grows with the catalogue — the sitemap walks it in
+order — so a page cap would break sitemap generation at a catalogue size
+nobody would connect back to the constant. `PRODUCTS_MAX_OFFSET` (100,000)
+keeps the sitemap correct up to a 100,000-product catalogue, and `findPaged`
+reports back the page it actually **served** rather than the one requested,
+because echoing the request would tell a client it is looking at page
+2,147,483,647 of a catalogue that stops long before it.
+
+**This bounds the damage; it does not fix offset pagination.** OFFSET is
+unbounded-cost by construction. Deep walks belong on the cursor query
+`products(cursor:)`, which has none — that is the real fix if the catalogue
+ever approaches the ceiling.
+
+**`PRODUCTS_MAX_PAGE_SIZE` is 100 because `SITEMAP_API_PAGE_SIZE` is 100**,
+and the API clamps *silently* — a short page, never an error. So raising the
+sitemap's chunk past the API's ceiling would truncate every shard with nothing
+failing anywhere. `apps/web/src/lib/catalog-seo.spec.ts` asserts the sitemap's
+value never exceeds the API's; both live in `@medinstru/config` for exactly
+the two-numbers-must-move-together reason that package exists.
+
 ## API coverage measures ALL of `src` — and the exclusions were the story
 
 `apps/api`'s `collectCoverageFrom` was a hand-curated list of **10 files out
@@ -685,14 +715,30 @@ declared `setHeader` as returning `void` where Express returns the response,
 so it was not actually assignable to the type it stood in for. Run this
 whenever a test double is involved.
 
-**The `grep -v TS2307` is required, not laziness.** Every spec importing
-`@jest/globals` reports "cannot find module": it is a phantom dependency,
-imported but never declared, resolving only through pnpm's layout. Declaring
-it does NOT fix the check — it swaps 17 resolution errors for **137** real
-ones, because `@jest/globals`' own `jest.Mock` typings disagree with the
-ambient `@types/jest` ones the existing specs were written against.
-Reconciling those is its own change; until someone takes it, filter TS2307
-and read the rest.
+**`@jest/globals` is declared, and the type check is still not clean — those
+are two separate problems.** The import is required (the `jest` object is not
+a global under ESM) and was for a while a *phantom dependency*: imported by
+twelve specs, declared nowhere, resolving only through pnpm's layout. That is
+now fixed — it is a real devDependency, so the specs no longer depend on
+incidental hoisting.
+
+Declaring it does not make `tsc --noEmit` pass, and the reason is worth
+knowing before anyone tries: it trades 17 resolution errors for **142**
+`Argument of type X is not assignable to parameter of type 'never'`.
+`@jest/globals`' `jest.fn()` is generic and infers `never` for arguments
+unless given a type argument, so every bare `jest.fn()` followed by
+`mockResolvedValue(x)` fails — 131 call sites, nearly all in specs that
+predate the ESM migration. Fixing it means typing each mock
+(`jest.fn<() => Promise<T>>()`); it is mechanical, it is not risky, and it is
+its own change. Until then:
+
+```bash
+cd apps/api && npx tsc --noEmit -p tsconfig.spec.json 2>&1 | grep -vE 'TS2345|TS2322|TS18046'
+```
+
+which still catches the class that matters — a test double that is not
+assignable to the type it stands in for, which is what surfaced the
+`setHeader` bug above.
 
 ## Shared configuration (`packages/config`, `@medinstru/config`)
 

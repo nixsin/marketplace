@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { blobUrl } from '../storage/blob-config';
 import {
   MANAGED_IMAGE_PREFIX,
+  PRODUCTS_MAX_OFFSET,
   PRODUCTS_MAX_PAGE_SIZE,
 } from '@medinstru/config';
 
@@ -137,9 +138,22 @@ export class ProductsService {
       Math.max(1, Math.trunc(pageSize) || 1),
       PRODUCTS_MAX_PAGE_SIZE,
     );
+    // The other half of the same problem: `page` is an anonymous public Int
+    // too, and skip = (page - 1) * pageSize at a max Int is an offset of
+    // 214,748,364,600 -- rows Postgres reads and DISCARDS before returning
+    // anything. Bounded on the offset rather than on `page`, because the
+    // legitimate page number grows with the catalogue (the sitemap walks it
+    // in order), so a page cap would break sitemap generation at a size
+    // nobody would connect back to this line.
+    const skip = Math.min((safePage - 1) * safePageSize, PRODUCTS_MAX_OFFSET);
+    // Reported back as the page actually served, not the one asked for --
+    // echoing the request would tell a client it is looking at page 500,000
+    // of a catalogue that stops well before it.
+    const servedPage = Math.floor(skip / safePageSize) + 1;
+
     const [items, totalCount] = await Promise.all([
       this.prisma.product.findMany({
-        skip: (safePage - 1) * safePageSize,
+        skip,
         take: safePageSize,
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], // see findPage
         include: { seller: true },
@@ -149,7 +163,7 @@ export class ProductsService {
 
     return {
       items: items.map(normalizeProduct),
-      page: safePage,
+      page: servedPage,
       pageSize: safePageSize,
       totalCount,
       totalPages: Math.max(1, Math.ceil(totalCount / safePageSize)),

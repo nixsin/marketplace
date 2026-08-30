@@ -34,7 +34,7 @@ describe('configureApp', () => {
     // Jest's expect takes no message argument (that is Vitest); throw
     // instead so a missing registration fails with something readable.
     if (!call) throw new Error("no '/graphql' middleware was registered");
-    return call![1] as (
+    return call[1] as (
       req: Partial<Request>,
       res: Partial<Response>,
       next: NextFunction,

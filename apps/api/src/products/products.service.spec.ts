@@ -9,7 +9,7 @@ import {
   normalizeProduct,
 } from './products.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { PRODUCTS_MAX_PAGE_SIZE } from '@medinstru/config';
+import { PRODUCTS_MAX_OFFSET, PRODUCTS_MAX_PAGE_SIZE } from '@medinstru/config';
 
 function makeProduct(id: string) {
   return { id, name: `Product ${id}`, createdAt: new Date() };
@@ -266,6 +266,49 @@ describe('ProductsService', () => {
         );
       },
     );
+
+    it('BOUNDS the offset for an absurd page number', async () => {
+      // Capping pageSize alone left this open: `page` is an anonymous
+      // public Int too, and skip = (page - 1) * pageSize at a max GraphQL
+      // Int is an offset of 214,748,364,600 -- rows Postgres reads and
+      // discards before returning anything.
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(0);
+
+      await service.findPaged(2_147_483_647, 100);
+
+      const { skip } = prisma.product.findMany.mock.calls[0][0] as {
+        skip: number;
+      };
+      expect(skip).toBe(PRODUCTS_MAX_OFFSET);
+    });
+
+    it('reports the page it SERVED, not the absurd one requested', async () => {
+      // Echoing the request would tell a client it is looking at page
+      // 2,147,483,647 of a catalogue that stops long before it.
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(0);
+
+      const result = await service.findPaged(2_147_483_647, 100);
+
+      expect(result.page).toBe(PRODUCTS_MAX_OFFSET / 100 + 1);
+      expect(result.page).toBeLessThan(2_147_483_647);
+    });
+
+    it('leaves a NORMAL deep page completely untouched', async () => {
+      // The bound must not disturb ordinary paging -- including the
+      // sitemap's, which walks the catalogue in order at pageSize 100 and
+      // is the deepest legitimate caller there is.
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(0);
+
+      const result = await service.findPaged(500, 100);
+
+      expect(prisma.product.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ skip: 499 * 100 }),
+      );
+      expect(result.page).toBe(500);
+    });
 
     it('CAPS an enormous pageSize at PRODUCTS_MAX_PAGE_SIZE', async () => {
       // The query is anonymous and public, so an unbounded `take` is a way

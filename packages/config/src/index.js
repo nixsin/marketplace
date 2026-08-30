@@ -453,6 +453,28 @@ export const ONBOARDING_TOKEN_TTL = "15m";
  */
 export const PRODUCTS_MAX_PAGE_SIZE = 100;
 
+/**
+ * The deepest OFFSET `productsPaged` will scan to.
+ *
+ * Capping pageSize alone left the other half open: `page` is also an
+ * anonymous public Int, and `skip: (page - 1) * pageSize` at a max GraphQL
+ * Int is an offset of 214,748,364,600 -- rows Postgres reads and discards
+ * before returning anything.
+ *
+ * Bounded on the OFFSET rather than on `page`, because the page number that
+ * is legitimate grows with the catalogue: the sitemap walks it in order, so
+ * its deepest page is a function of how many products exist. Capping `page`
+ * would break sitemap generation at a size nobody would connect to this
+ * constant.
+ *
+ * 100,000 means the sitemap keeps working up to a 100,000-product catalogue
+ * (it pages by SITEMAP_API_PAGE_SIZE, so offset == product index). Today's
+ * catalogue is a few dozen. Past that, deep walks belong on the cursor query
+ * `products(cursor:)`, which has no offset cost at all -- offset pagination
+ * is unbounded-cost by construction and this only bounds the damage.
+ */
+export const PRODUCTS_MAX_OFFSET = 100_000;
+
 export const INQUIRY_NAME_MAX_LENGTH = 80;
 export const INQUIRY_MESSAGE_MAX_LENGTH = 1000;
 
