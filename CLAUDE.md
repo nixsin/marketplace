@@ -550,13 +550,15 @@ site). Keep it that way.
 **`__dirname` does not exist in ESM** — four files use `import.meta.dirname`
 now, which needs Node 20.11+.
 
-**The real Node floor is 22.12, not the 20.19 the release notes give.** That
+**The real Node floor is 22.22.3, not the 20.19 the release notes give.** That
 figure is `@nestjs/core`'s (`engines: >=20`, with 20.19 required for
 `require(esm)`); the toolchain around it is stricter — `@nestjs/schematics@12`
-declares `>=22.12.0`, and the `@angular-devkit` packages it pulls want
-`^22.22.3 || ^24.15.0 || >=26.0.0`. Nothing here runs below that (CI is 22 and
-24, Docker is 26), but quote 22.12 rather than 20.19 when the question comes
-up, and check the CLI packages rather than `@nestjs/core` alone.
+declares `>=22.12.0`, and the `@angular-devkit` packages `@nestjs/cli` pulls
+want `^22.22.3 || ^24.15.0 || >=26.0.0` — so **22.22.3 is the binding number**,
+being the highest of them. Nothing here runs below it (CI's `node-version: 22`
+resolves to 22.23.x, Docker is 26), but the floor is the maximum across the
+whole toolchain, not `@nestjs/core`'s own `engines`, which is the one the
+release notes quote.
 
 **Verified on Node 22, not just 24.** CI runs the API jobs on 22 and Jest's
 `require(esm)` error text recommends 24.9+, which suggests a bump is needed.

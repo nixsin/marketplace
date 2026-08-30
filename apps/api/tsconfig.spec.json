@@ -13,9 +13,6 @@
   // unnecessary and actively wrong -- running the suite as ESM is what
   // both dependencies wanted in the first place.
   //
-  // So the only override left is `allowJs`, and the base config's
-  // `nodenext` module/resolution pair -- which is what emits real ESM --
-  // is inherited rather than overridden.
   // `module` must be forced. The base config's `nodenext` decides ESM vs
   // CJS from the nearest package.json's `type` field, and apps/api is not
   // `"type": "module"` -- so nodenext emits CommonJS here and the suite
