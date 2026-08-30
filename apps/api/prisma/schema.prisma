@@ -234,3 +234,28 @@ enum InquiryStatus {
   /// recorded -- failing to deliver must never mean failing to capture.
   FAILED
 }
+
+/// A monotonic counter bumped whenever the catalogue changes.
+///
+/// This is the invalidation mechanism for the shared cache, and it exists
+/// because delete-on-write cannot be made reliable across stateless
+/// instances: if the process dies or the Redis call fails between the COMMIT
+/// and the DEL, the stale entry survives its full TTL and nothing knows the
+/// invalidation was lost.
+///
+/// Bumping this row INSIDE the writing transaction removes that window
+/// entirely. Cache keys embed the version, so a reader on version 42 cannot
+/// address an entry written under 41 -- invalidation stops being an action
+/// that can fail and becomes a consequence of the write committing. A rolled
+/// back transaction leaves the version untouched, which is also correct:
+/// nothing changed, so nothing needed invalidating.
+///
+/// Single row, `id` fixed at 1. Not a table of versions per entity, because
+/// the catalogue is the only cached aggregate today and a per-entity scheme
+/// would be inventing structure for a need that does not exist yet.
+model CacheVersion {
+  id        Int      @id @default(1)
+  /// Incremented, never reset. BigInt so it cannot realistically wrap.
+  version   BigInt   @default(0)
+  updatedAt DateTime @updatedAt
+}

@@ -81,3 +81,38 @@ variable "api_custom_domains" {
   type        = set(string)
   default     = ["api.laxair.shop"]
 }
+
+variable "enable_key_value" {
+  description = <<-EOT
+    Create the Redis (Render Key Value) instance the API's shared cache uses.
+
+    OFF by default because turning it on CREATES a billable service. The API
+    treats the cache as optional -- an unset REDIS_URL yields a null cache and
+    every read falls through to Postgres -- so nothing breaks while this is
+    false. Enable it, apply, then set REDIS_URL on the API service from the
+    instance's connection info.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "key_value_plan" {
+  description = "Plan for the Key Value instance. Persistence requires a paid plan on Render."
+  type        = string
+  default     = "starter"
+}
+
+variable "postgres_parameter_overrides" {
+  description = <<-EOT
+    Postgres server parameters, applied through the provider's
+    `parameter_overrides` map.
+
+    EMPTY by default, and that is not laziness. Render's free tier does not
+    accept parameter overrides, and this repo's database is on free until it
+    is migrated -- sending them would fail the apply for no benefit. The WAL
+    settings worth setting on a paid plan are documented in main.tf next to
+    the resource; move them here when the plan changes.
+  EOT
+  type        = map(string)
+  default     = {}
+}

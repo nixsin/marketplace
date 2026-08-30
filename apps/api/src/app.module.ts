@@ -7,6 +7,7 @@ import type { Request } from 'express';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
+import { CacheModule } from './cache/cache.module';
 import { AuthModule } from './auth/auth.module';
 import { OrganizationsModule } from './organizations/organizations.module';
 import { ProductsModule } from './products/products.module';
@@ -28,6 +29,7 @@ import { StorageModule } from './storage/storage.module';
       context: ({ req }: { req: Request }) => ({ req }),
     }),
     PrismaModule,
+    CacheModule,
     AuthModule,
     OrganizationsModule,
     ProductsModule,

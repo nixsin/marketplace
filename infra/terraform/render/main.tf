@@ -56,6 +56,30 @@ resource "render_postgres" "main" {
     description = "everywhere"
   }]
 
+  # Postgres server parameters, including the write-ahead log.
+  #
+  # EMPTY on the free plan, which does not accept overrides -- sending any
+  # would fail the apply. Declared here so the knob is in code rather than in
+  # someone's memory, and so moving to a paid plan is a variable change rather
+  # than an archaeology exercise.
+  #
+  # What to set when the plan allows it, and why:
+  #
+  #   wal_level = "replica"          Enough WAL detail for physical replication
+  #                                  and PITR. "minimal" is faster and cannot be
+  #                                  recovered from, which is the wrong trade for
+  #                                  a database with no backup strategy today
+  #                                  (docs/render.md §6).
+  #   max_wal_size = "2GB"           Fewer forced checkpoints under write bursts
+  #                                  -- bulk upload is the coming one.
+  #   checkpoint_timeout = "15min"   Spreads checkpoint I/O rather than spiking it.
+  #   wal_compression = "on"         Smaller WAL for the same durability; costs CPU
+  #                                  that this workload is not short of.
+  #
+  # Render manages backups and PITR at the plan level rather than through
+  # parameters, so those are a plan decision, not a setting.
+  parameter_overrides = var.postgres_parameter_overrides
+
   lifecycle {
     prevent_destroy = true
 
@@ -172,5 +196,46 @@ resource "render_web_service" "web" {
       )
       error_message = "The existing free web service is missing; recover it manually and import it instead of allowing Terraform to recreate it."
     }
+  }
+}
+
+# Redis for the API's shared cache. See apps/api/src/cache/README.md for what
+# it holds and why invalidation is version-keyed rather than delete-based.
+#
+# Gated OFF by default: creating this is a billable service, and the API runs
+# without it (an unset REDIS_URL yields a null cache and every read falls
+# through to Postgres). Enable, apply, then set REDIS_URL on the API service.
+resource "render_keyvalue" "cache" {
+  count = var.enable_key_value ? 1 : 0
+
+  name           = "medinstru-cache"
+  plan           = var.key_value_plan
+  region         = var.region
+  environment_id = var.environment_id
+
+  # Redis's write-ahead log. Render calls the durable option
+  # "journal_snapshot" -- a journal (Redis's AOF) alongside periodic
+  # snapshots -- rather than using Redis's own vocabulary. `terraform
+  # validate` is what surfaced that: "aof" is not an accepted value, and the
+  # accepted set is ["journal_snapshot" "snapshot" "off"]. Worth validating
+  # rather than assuming the provider mirrors the underlying engine's names.
+  #
+  # Matched by `--appendonly yes --appendfsync everysec` on the dev stack in
+  # docker-compose.yml, so local behaviour is not quietly more forgiving than
+  # production.
+  #
+  # Worth being honest about what this buys HERE: everything cached is
+  # derivable from Postgres, so losing the cache costs latency, not data. It
+  # is set because a cold cache after every restart makes an outage worse at
+  # exactly the wrong moment, not because the contents are precious.
+  persistence_mode = "journal_snapshot"
+
+  # Evict the least-recently-used key rather than returning errors when full.
+  # A cache that refuses writes is worse than one that forgets: the former
+  # surfaces as failures, the latter as a miss the caller already handles.
+  max_memory_policy = "allkeys_lru"
+
+  lifecycle {
+    prevent_destroy = true
   }
 }

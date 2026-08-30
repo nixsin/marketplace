@@ -9,6 +9,8 @@ import {
   normalizeProduct,
 } from './products.service';
 import { PrismaService } from '../prisma/prisma.service';
+import type { CacheStore } from '../cache/cache-store';
+import type { CacheVersionService } from '../cache/cache-version.service';
 import { PRODUCTS_MAX_OFFSET, PRODUCTS_MAX_PAGE_SIZE } from '@medinstru/config';
 
 function makeProduct(id: string) {
@@ -20,12 +22,28 @@ describe('ProductsService', () => {
   let prisma: {
     product: { findMany: jest.Mock; findUnique: jest.Mock; count: jest.Mock };
   };
+  let cache: Record<string, jest.Mock>;
+  let cacheVersion: { current: jest.Mock };
 
   beforeEach(() => {
     prisma = {
       product: { findMany: jest.fn(), findUnique: jest.fn(), count: jest.fn() },
     };
-    service = new ProductsService(prisma as unknown as PrismaService);
+    // A null cache and a fixed version: these tests are about the query
+    // logic, not the cache. The shared cache has its own suites, and the
+    // e2e suite exercises the real Redis path.
+    cache = {
+      get: jest.fn(() => Promise.resolve(null)),
+      set: jest.fn(() => Promise.resolve(undefined)),
+      del: jest.fn(() => Promise.resolve(undefined)),
+      isHealthy: jest.fn(() => true),
+    };
+    cacheVersion = { current: jest.fn(() => Promise.resolve(0n)) };
+    service = new ProductsService(
+      prisma as unknown as PrismaService,
+      cache as unknown as CacheStore,
+      cacheVersion as unknown as CacheVersionService,
+    );
   });
 
   describe('findById', () => {
