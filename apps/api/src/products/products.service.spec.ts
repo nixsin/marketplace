@@ -243,13 +243,21 @@ describe('ProductsService', () => {
     it('normalizes every item it returns', async () => {
       // The page renders these directly, so an un-normalized row reaches
       // the browser as-is.
-      prisma.product.findMany.mockResolvedValue([makeProduct('p1')]);
+      //
+      // The fixture carries a details value normalizeDetails REJECTS -- an
+      // array, which is typeof 'object' but not representable as a details
+      // map -- so the assertion fails if findPaged returns the raw row.
+      // Asserting only the id would pass either way, which is no assertion
+      // about normalization at all.
+      prisma.product.findMany.mockResolvedValue([
+        { ...makeProduct('p1'), details: ['not', 'a', 'map'], imageUrl: null },
+      ]);
       prisma.product.count.mockResolvedValue(1);
 
       const result = await service.findPaged(1, 4);
 
       expect(result.items).toHaveLength(1);
-      expect(result.items[0]).toMatchObject({ id: 'p1' });
+      expect(result.items[0]).toMatchObject({ id: 'p1', details: null });
     });
   });
 });

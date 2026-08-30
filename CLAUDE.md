@@ -637,15 +637,37 @@ will. The same applies to every `*.model.ts` and `*.input.ts` sitting at
 effort on files where the uncovered lines are statements you could actually
 execute.
 
-Widening the set moved the figure from 87.83% over 140 statements to
+**Three ways to stop counting decorator thunks were tried, and none is worth
+taking** — measured, not reasoned about, because each sounds like it should
+work:
+
+| Approach | Result |
+|---|---|
+| `/* istanbul ignore next */` above the decorator | **Worse**: 59.09% → 57.14%. The hint binds to the method node, not the decorator expression, so the thunk is still counted and the comment adds a line. |
+| `coverageProvider: "v8"` | **Moves the artifact.** `products.resolver.ts` 59% → 100%, but `product.model.ts` 76% → 17%, because a class body that is entirely decorators reads as entirely unexecuted. |
+| `coveragePathIgnorePatterns` | File-level only — the exact exclusion trap this whole section exists to describe. |
+
+So the numbers stay as they are and get read correctly instead. If the v8
+provider is ever adopted for another reason, expect the models and resolvers
+to swap places rather than improve.
+
+Widening the set moved the figure from 87.83% over ~140 statements to
 **90.42% over 679** — genuinely higher while measuring nearly five times as
-much. Getting there added 56 tests (370 → 426) across seven new suites, and
-the ones that mattered were `s3-blob-store` (17 tests: every not-found
+much. Getting there added 57 tests (370 → 427) across **eight** new suites,
+and the ones that mattered were `s3-blob-store` (17 tests: every not-found
 spelling providers disagree on, and that a real failure is rethrown rather
 than laundered into "missing"), `app.setup` (the `/graphql` cache-control
 patch, including that it fails closed once headers are sent), and
 `products.service.findPaged`, which turned out to have **no test at all**
 despite being the query behind the catalogue's numbered pagination.
+
+**Nothing type-checks the spec files, and that is worth knowing before
+trusting one.** `nest build` excludes them and ts-jest transpiles without
+checking, so a spec can carry a real type error and still run green — found
+here via `npx tsc --noEmit -p tsconfig.spec.json`, which reported genuine
+TS2345s in a passing suite. Run that when a test double is involved; a double
+that is not actually assignable to the type it stands in for is testing
+something other than the real signature.
 
 ## Shared configuration (`packages/config`, `@medinstru/config`)
 

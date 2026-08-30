@@ -45,8 +45,13 @@ describe('configureApp', () => {
     const res = {
       statusCode,
       headersSent: false,
-      setHeader: (k: string, v: unknown): void => {
+      // Returns the response, as Express's setHeader does. A void return
+      // makes the double structurally unassignable to Partial<Response> --
+      // a real TS2345 that nothing currently reports, because nest build
+      // excludes specs and ts-jest transpiles without type-checking.
+      setHeader: (k: string, v: unknown) => {
         headers[k] = v;
+        return res as unknown as Response;
       },
       // Typed with a body parameter to match Express's Response.send(body?).
       // A zero-arg implementation makes Jest infer a zero-arg mock, so every

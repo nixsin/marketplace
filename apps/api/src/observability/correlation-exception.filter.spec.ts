@@ -38,7 +38,18 @@ describe('CorrelationExceptionFilter', () => {
     // client receives.
     const boom = new Error('kaboom');
 
-    expect(() => filter.catch(boom)).toThrow(boom);
+    // Identity, not toThrow(boom): Jest matches thrown Errors on message,
+    // so a DIFFERENT error with the same text would satisfy that -- and
+    // "rethrows the same value" is the actual contract, since anything
+    // downstream may be holding a reference to it.
+    let caught: unknown;
+    try {
+      filter.catch(boom);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(boom);
   });
 
   it('logs one JSON record carrying the error message', () => {
