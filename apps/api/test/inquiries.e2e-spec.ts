@@ -304,6 +304,44 @@ describe('Inquiries (e2e)', () => {
     expect(await prisma.inquiry.count()).toBe(0);
   });
 
+  it('keeps the exact substrings the web client routes error copy on', async () => {
+    // apps/web's categorizeInquiryError matches SUBSTRINGS of this message to
+    // decide which error the buyer is shown -- CLAUDE.md calls it a wire
+    // contract, and rewording one side silently re-categorises the other.
+    // Asserted here because a NestJS major is exactly the kind of change that
+    // can alter how an exception's message reaches the client without anyone
+    // editing the string.
+    //
+    // "  " is deliberate: it passes the DTO's @Length(2) and is rejected by
+    // the service's own trim, so this reaches the service's
+    // BadRequestException rather than class-validator.
+    const blankName = await submit({ input: { ...input(), buyerName: '  ' } });
+    expect(blankName.body.errors?.[0]?.message.toLowerCase()).toContain(
+      'enter your name',
+    );
+  });
+
+  it('reports a DTO-level rejection without naming the field', async () => {
+    // NestJS 12 changed this: a class-validator failure used to surface its
+    // own text ("buyerName must be longer than or equal to 2 characters") and
+    // now surfaces a bare "Bad Request Exception".
+    //
+    // No behaviour change for the buyer, which is why it is recorded rather
+    // than fixed -- categorizeInquiryError matched neither string, so both
+    // land in the same "unknown" branch and show the same copy. It matters
+    // for a different reason: the server no longer says WHICH field is wrong,
+    // so the form's own mirrored constraints (minLength=2 on the name, the
+    // phone placeholder) are now the only thing that can tell a buyer what to
+    // fix. Weakening one of those would strand them with "Something went
+    // wrong" and no way forward.
+    const badPhone = await submit({
+      input: { ...input(), buyerPhone: '12345' },
+    });
+
+    expect(badPhone.body.errors?.[0]?.message).toBe('Bad Request Exception');
+    expect(await prisma.inquiry.count()).toBe(0);
+  });
+
   it('never exposes the seller number through the product type either', async () => {
     // The number is reachable from Product.seller in the data model, so the
     // guard that matters is that no field surfaces it. hasInquiryContact is a

@@ -1,3 +1,6 @@
+// `jest` is not a global under ESM -- Jest injects describe/it/expect but
+// not the jest object itself, so it has to be imported explicitly.
+import { jest } from '@jest/globals';
 import { UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { AuthService } from './auth.service';

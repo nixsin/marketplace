@@ -1,7 +1,7 @@
 import { config } from 'dotenv';
 import { resolve } from 'path';
 
-config({ path: resolve(__dirname, '../.env.test') });
+config({ path: resolve(import.meta.dirname, '../.env.test') });
 
 /**
  * WhatsApp delivery is FORCED OFF for every e2e run.

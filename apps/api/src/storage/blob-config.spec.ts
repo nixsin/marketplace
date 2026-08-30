@@ -106,7 +106,7 @@ describe('the migration script mirrors this provider table', () => {
   // a provider added here and forgotten there would fail only when
   // someone actually ran the migration, with a confusing endpoint error.
   const script = readFileSync(
-    join(__dirname, '..', '..', 'scripts', 'upload-blobs.mjs'),
+    join(import.meta.dirname, '..', '..', 'scripts', 'upload-blobs.mjs'),
     'utf8',
   );
 

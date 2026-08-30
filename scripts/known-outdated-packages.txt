@@ -25,6 +25,7 @@
 eslint        # eslint-plugin-react (via eslint-config-next) peers to ^9.7, no ^10
 @eslint/js    # tracks eslint's own major; same blocker
 typescript    # typescript-eslint peers to >=4.8.4 <6.1.0, so TS 7 is out
+graphql       # @apollo/server@5 peers to ^16.11.0 only; 17 is an unmet peer
 
 # --- Upstream's `latest` tag points at a prerelease ------------------------
 
