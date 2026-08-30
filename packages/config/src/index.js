@@ -431,12 +431,9 @@ export const ONBOARDING_TOKEN_TTL = "15m";
 
 /** How long a requested OTP stays valid. */
 // ---------------------------------------------------------------------------
-// Product inquiries (#91)
+// Product catalogue pagination
 // ---------------------------------------------------------------------------
 
-// Bounds on what a buyer can submit. Not cosmetic: message is interpolated
-// into an outbound message body, and an unbounded field is both an abuse
-// vector and a way to exceed the provider's own payload limits.
 /**
  * The largest page the products queries will serve.
  *
@@ -475,6 +472,13 @@ export const PRODUCTS_MAX_PAGE_SIZE = 100;
  */
 export const PRODUCTS_MAX_OFFSET = 100_000;
 
+// ---------------------------------------------------------------------------
+// Product inquiries (#91)
+// ---------------------------------------------------------------------------
+
+// Bounds on what a buyer can submit. Not cosmetic: message is interpolated
+// into an outbound message body, and an unbounded field is both an abuse
+// vector and a way to exceed the provider's own payload limits.
 export const INQUIRY_NAME_MAX_LENGTH = 80;
 export const INQUIRY_MESSAGE_MAX_LENGTH = 1000;
 

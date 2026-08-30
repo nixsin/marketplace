@@ -643,9 +643,15 @@ ever approaches the ceiling.
 **`PRODUCTS_MAX_PAGE_SIZE` is 100 because `SITEMAP_API_PAGE_SIZE` is 100**,
 and the API clamps *silently* — a short page, never an error. So raising the
 sitemap's chunk past the API's ceiling would truncate every shard with nothing
-failing anywhere. `apps/web/src/lib/catalog-seo.spec.ts` asserts the sitemap's
-value never exceeds the API's; both live in `@medinstru/config` for exactly
-the two-numbers-must-move-together reason that package exists.
+failing anywhere.
+
+They are **not** in the same place, and that is the point worth stating
+precisely: `PRODUCTS_MAX_PAGE_SIZE` is exported from `@medinstru/config`, while
+`SITEMAP_API_PAGE_SIZE` stays in `apps/web/src/lib/catalog-seo.ts` next to the
+paging loop that uses it. What couples them is a test —
+`apps/web/src/lib/catalog-seo.spec.ts` asserts the sitemap's value never
+exceeds the API's — rather than a shared definition, because they are not the
+same quantity: one is a ceiling, the other a chosen batch size beneath it.
 
 ## API coverage measures ALL of `src` — and the exclusions were the story
 
@@ -703,8 +709,9 @@ provider is ever adopted for another reason, expect the models and resolvers
 to swap places rather than improve.
 
 Widening the set moved the figure from 87.83% over ~140 statements to
-**90.42% over 679** — genuinely higher while measuring nearly five times as
-much. Getting there added 57 tests (370 → 427) across **eight** new suites,
+**90.48% over 679** — genuinely higher while measuring nearly five times as
+much. Getting there added **82 unit tests (370 → 452)**, of which **59** are
+in eight new suites and the rest went into `products.service.spec.ts`,
 and the ones that mattered were `s3-blob-store` (17 tests: every not-found
 spelling providers disagree on, and that a real failure is rethrown rather
 than laundered into "missing"), `app.setup` (the `/graphql` cache-control
