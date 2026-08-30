@@ -4,6 +4,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { ProductsService } from '../src/products/products.service';
 import { configureApp } from '../src/app.setup';
 import { assertConnectedToTestDatabase } from './helpers/assert-test-database';
 import { graphqlCacheControl } from '../src/graphql-cache';
@@ -222,6 +223,7 @@ describe('Product by id (e2e)', () => {
 describe('GraphQL-over-GET caching (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaService;
+  let products: ProductsService;
 
   const QUERY =
     'query { productsPaged(page: 1, pageSize: 2) { totalCount items { id name } } }';
@@ -236,6 +238,7 @@ describe('GraphQL-over-GET caching (e2e)', () => {
     await app.init();
 
     prisma = moduleFixture.get(PrismaService);
+    products = moduleFixture.get(ProductsService);
     await assertConnectedToTestDatabase(prisma);
   });
 
@@ -247,6 +250,12 @@ describe('GraphQL-over-GET caching (e2e)', () => {
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "Product", "License", "User", "Organization" RESTART IDENTITY CASCADE',
     );
+    // The service memoises COUNT(*) for a minute, and that memo outlives a
+    // TRUNCATE -- the instance is built once in beforeAll. Without this,
+    // a test that changes how many products exist reads the previous
+    // test's count. Proven by the totalCount test below, which fails with
+    // `1` instead of `3` when this line is removed.
+    products.invalidateProductCount();
     const seller = await prisma.organization.create({
       data: { name: 'Cache Test Co', type: 'SELLER' },
     });
@@ -321,6 +330,33 @@ describe('GraphQL-over-GET caching (e2e)', () => {
     // would be told `no-store` and drop the entry it just confirmed was
     // still fresh, turning cheap revalidation into a permanent miss.
     expect(revalidated.headers['cache-control']).toBe(graphqlCacheControl());
+  });
+
+  it('reports a totalCount that matches the rows actually present', async () => {
+    // Placed AFTER the ETag tests deliberately: they query productsPaged and
+    // so warm the memoised COUNT(*) with a value of 1. This is the only test
+    // that changes how many products exist, so it is the one that would read
+    // that stale 1 if the beforeEach did not invalidate. Ordering is what
+    // makes it discriminating -- run first, against a cold memo, it would
+    // pass either way and prove nothing.
+    const seller = await prisma.organization.findFirstOrThrow();
+    await prisma.product.createMany({
+      data: [2, 3].map((n) => ({
+        name: `Extra ${n}`,
+        brand: 'MedTech',
+        category: 'Diagnostic Imaging',
+        location: 'Chennai, TN',
+        sellerId: seller.id,
+      })),
+    });
+
+    const res = await request(app.getHttpServer())
+      .get('/graphql')
+      .set('apollo-require-preflight', 'true')
+      .query({ query: QUERY })
+      .expect(200);
+
+    expect(res.body.data.productsPaged.totalCount).toBe(3);
   });
 
   it('does not override Cache-Control on POST — mutations/POST queries stay uncacheable', async () => {

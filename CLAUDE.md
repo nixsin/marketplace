@@ -1956,27 +1956,42 @@ security-relevant ceilings out of the client-imported module — the client uses
 about 8 of its 68 exports — would shrink the disclosure without touching the
 source-map decision at all.
 
-### `product.count()` is the one catalogue query the index cannot help
+### `product.count()` is memoised (fixed)
 
-`products.service.ts` runs an unfiltered `COUNT(*)` on every paged request, to
-compute `totalPages`. No index serves that; Postgres walks the table. The
-`Product(createdAt, id)` index added in #162 makes the *rows* free and leaves
-the count untouched.
+`productsPaged` needs `totalCount` for `totalPages`, and an unfiltered
+`COUNT(*)` is the one query in that path no index can serve — Postgres walks
+the table while the rows beside it are free on `Product(createdAt, id)`. It is
+also the value that changes least often: the catalogue is read-only in the app,
+written only by the seed.
 
-Irrelevant at today's few dozen products, and it does real work — the pager
-renders `totalPages` directly. Recorded because it is the part of the catalogue
-path whose cost grows with the catalogue while everything around it does not,
-which makes it easy to misattribute later.
+**The TTL equals `SHARED_MAX_AGE_SECONDS`, deliberately, and a longer one
+would be wrong rather than merely bolder.** The rows and the count must
+describe the same moment — at a longer TTL a pager could advertise a page the
+items no longer support. At parity the count is never staler than the response
+it appears in, which is already edge-cached for that long, so this adds no
+staleness a visitor was not already seeing.
 
-| Option | Gains | Costs |
-|---|---|---|
-| **Leave it** | Exact page count, always | One full scan per uncached paged request |
-| **Cache the count separately, longer TTL than the page** | Nearly free; the count changes far less often than the rows | A newly added product can be missing from `totalPages` for the TTL |
-| **Approximate from `pg_class.reltuples`** | O(1) | Only approximate, and stale between `ANALYZE` runs — wrong for a pager |
-| **Drop `totalPages`, use has-more** | No count at all | Changes the pager UI from numbered pages to next/previous |
+**Concurrent misses are deduped into one query, and that is not a micro-
+optimisation.** The sitemap fetches eight pages at once by design, so a cold
+memo would otherwise fire eight full scans. The shared promise is cleared when
+it settles — including on rejection, since a rejected promise left in the slot
+would serve the same failure to every later caller until the process restarted.
 
-The second is the natural first move, and it composes with #173: once product
-and catalogue pages are edge-cached, the count runs far less often anyway.
+**`invalidateProductCount()` exists for a writer that does not exist yet.**
+Nothing in the API creates or deletes a product today, so the TTL is the only
+invalidation there is to do. The method is there so whoever adds the first
+write — bulk upload is the likely one — has an obvious place to call rather
+than discovering the staleness afterwards.
+
+**It is also what makes the e2e suite honest.** The memo outlives the suite's
+`TRUNCATE`, because the service instance is built once in `beforeAll`. Every
+test in that describe happened to recreate exactly one product, so a stale
+count of 1 stayed accidentally correct — the trap being that the first test to
+create two would get a confusing wrong answer. The `beforeEach` now
+invalidates, and one test creates three products **after** the ETag tests have
+warmed the memo, so it fails with `Received: 1` if that line is removed.
+Ordering is what makes it discriminating: placed first, against a cold memo,
+it would pass either way and prove nothing.
 
 ## Deployment
 

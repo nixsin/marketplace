@@ -9,7 +9,11 @@ import {
   normalizeProduct,
 } from './products.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { PRODUCTS_MAX_OFFSET, PRODUCTS_MAX_PAGE_SIZE } from '@medinstru/config';
+import {
+  PRODUCTS_MAX_OFFSET,
+  PRODUCTS_MAX_PAGE_SIZE,
+  PRODUCT_COUNT_CACHE_SECONDS,
+} from '@medinstru/config';
 
 function makeProduct(id: string) {
   return { id, name: `Product ${id}`, createdAt: new Date() };
@@ -157,6 +161,98 @@ describe('ProductsService', () => {
 
     expect(result.items).toEqual([]);
     expect(result.nextCursor).toBeUndefined();
+  });
+
+  describe('total count caching', () => {
+    // COUNT(*) with no filter is the one query in the paged path no index can
+    // serve. These assert the memo does what it claims and, more importantly,
+    // that it cannot serve a count from a different moment than the rows.
+
+    beforeEach(() => {
+      prisma.product.findMany.mockResolvedValue([]);
+    });
+
+    it('runs COUNT once across repeated requests inside the window', async () => {
+      prisma.product.count.mockResolvedValue(42);
+
+      await service.findPaged(1, 4);
+      await service.findPaged(2, 4);
+      await service.findPaged(3, 4);
+
+      expect(prisma.product.count).toHaveBeenCalledTimes(1);
+    });
+
+    it('DEDUPES concurrent misses into a single query', async () => {
+      // Not a micro-optimisation: the sitemap fetches eight pages at once by
+      // design, so a cold cache would otherwise fire eight full scans.
+      let resolve!: (n: number) => void;
+      prisma.product.count.mockReturnValue(
+        new Promise<number>((r) => {
+          resolve = r;
+        }),
+      );
+
+      const all = Promise.all([
+        service.findPaged(1, 4),
+        service.findPaged(2, 4),
+        service.findPaged(3, 4),
+      ]);
+      resolve(42);
+      const results = await all;
+
+      expect(prisma.product.count).toHaveBeenCalledTimes(1);
+      expect(results.map((r) => r.totalCount)).toEqual([42, 42, 42]);
+    });
+
+    it('re-queries once the window has passed', async () => {
+      prisma.product.count.mockResolvedValue(42);
+      await service.findPaged(1, 4);
+
+      // Advance past the TTL rather than waiting for it.
+      const later = Date.now() + (PRODUCT_COUNT_CACHE_SECONDS + 1) * 1000;
+      jest.spyOn(Date, 'now').mockReturnValue(later);
+      prisma.product.count.mockResolvedValue(43);
+      const after = await service.findPaged(1, 4);
+
+      expect(prisma.product.count).toHaveBeenCalledTimes(2);
+      expect(after.totalCount).toBe(43);
+    });
+
+    it('does NOT cache a failure', async () => {
+      // A rejected promise left in the in-flight slot would serve the same
+      // failure to every later caller until the process restarted.
+      prisma.product.count.mockRejectedValueOnce(new Error('db blip'));
+      await expect(service.findPaged(1, 4)).rejects.toThrow('db blip');
+
+      prisma.product.count.mockResolvedValue(7);
+      const after = await service.findPaged(1, 4);
+
+      expect(after.totalCount).toBe(7);
+    });
+
+    it('can be invalidated explicitly, for whoever adds the first write', async () => {
+      prisma.product.count.mockResolvedValue(42);
+      await service.findPaged(1, 4);
+
+      service.invalidateProductCount();
+      prisma.product.count.mockResolvedValue(43);
+      const after = await service.findPaged(1, 4);
+
+      expect(after.totalCount).toBe(43);
+    });
+
+    it('never reports a totalPages the cached count does not support', async () => {
+      // The rows and the count must describe the same moment. The TTL is
+      // equal to the response's own edge TTL for exactly this reason -- a
+      // longer one would let the pager advertise a page the items no longer
+      // support.
+      prisma.product.count.mockResolvedValue(9);
+
+      const result = await service.findPaged(1, 4);
+
+      expect(result.totalCount).toBe(9);
+      expect(result.totalPages).toBe(Math.ceil(9 / 4));
+    });
   });
 
   describe('findPage (cursor)', () => {

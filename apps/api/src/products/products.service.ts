@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { blobUrl } from '../storage/blob-config';
 import {
   MANAGED_IMAGE_PREFIX,
+  PRODUCT_COUNT_CACHE_SECONDS,
   PRODUCTS_MAX_OFFSET,
   PRODUCTS_MAX_PAGE_SIZE,
 } from '@medinstru/config';
@@ -84,6 +85,62 @@ export function normalizeProduct<
 @Injectable()
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * The catalogue's total product count, memoised.
+   *
+   * `COUNT(*)` with no filter is the one query in the paged path that no
+   * index can serve -- Postgres walks the table, while the rows beside it are
+   * free on `Product(createdAt, id)`. It is also the value that changes least
+   * often: the catalogue is read-only in the app today, written only by the
+   * seed.
+   *
+   * `inFlight` is not an optimisation detail. Without it, N concurrent misses
+   * each run their own COUNT -- and the sitemap fetches eight pages at once by
+   * design, so a cold cache would fire eight full scans rather than one. The
+   * promise is shared and cleared when it settles, so a failure is retried by
+   * the next caller rather than cached.
+   */
+  private countCache: { value: number; expiresAt: number } | null = null;
+  private inFlightCount: Promise<number> | null = null;
+
+  private async totalProductCount(now = Date.now()): Promise<number> {
+    if (this.countCache && this.countCache.expiresAt > now) {
+      return this.countCache.value;
+    }
+    // A second caller arriving during the first one's query joins it rather
+    // than starting another.
+    this.inFlightCount ??= this.prisma.product
+      .count()
+      .then((value) => {
+        this.countCache = {
+          value,
+          expiresAt: Date.now() + PRODUCT_COUNT_CACHE_SECONDS * 1000,
+        };
+        return value;
+      })
+      .finally(() => {
+        // Cleared whether it resolved or threw. Leaving a rejected promise
+        // here would serve the same failure to every later caller until the
+        // process restarted.
+        this.inFlightCount = null;
+      });
+
+    return this.inFlightCount;
+  }
+
+  /**
+   * Drops the memoised count.
+   *
+   * Nothing calls this yet, deliberately -- no code path in the API creates or
+   * deletes a product, so the TTL is the only invalidation there is to do.
+   * It exists so that whoever adds the first write (bulk upload is the likely
+   * one) has an obvious place to call, rather than discovering the staleness
+   * afterwards.
+   */
+  invalidateProductCount(): void {
+    this.countCache = null;
+  }
 
   // Mirrors OrganizationsService.findById exactly -- NotFoundException
   // thrown here (the service), not the resolver; Apollo's Nest integration
@@ -188,7 +245,7 @@ export class ProductsService {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], // see findPage
         include: { seller: true },
       }),
-      this.prisma.product.count(),
+      this.totalProductCount(),
     ]);
 
     return {

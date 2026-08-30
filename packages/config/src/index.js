@@ -448,6 +448,23 @@ export const ONBOARDING_TOKEN_TTL = "15m";
  * in this package for that reason -- the two numbers must move together, and
  * a comment saying so is what this package exists to replace.
  */
+/**
+ * How long the catalogue's total product count may be reused.
+ *
+ * `productsPaged` needs `totalCount` to compute `totalPages`, and an
+ * unfiltered `COUNT(*)` is the one query in that path no index can serve --
+ * Postgres walks the table. The rows beside it are free, on
+ * `Product(createdAt, id)`.
+ *
+ * Deliberately EQUAL to SHARED_MAX_AGE_SECONDS rather than longer. A longer
+ * TTL would cut database work further and buy a real inconsistency: the rows
+ * and the count would come from different moments, so a pager could advertise
+ * a page the items no longer support. At parity the count is never staler
+ * than the response it appears in, which is already cached for that long at
+ * the edge -- so this adds no staleness that visitors were not already seeing.
+ */
+export const PRODUCT_COUNT_CACHE_SECONDS = SHARED_MAX_AGE_SECONDS;
+
 export const PRODUCTS_MAX_PAGE_SIZE = 100;
 
 /**
