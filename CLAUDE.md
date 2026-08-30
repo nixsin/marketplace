@@ -624,6 +624,17 @@ reports back the page it actually **served** rather than the one requested,
 because echoing the request would tell a client it is looking at page
 2,147,483,647 of a catalogue that stops long before it.
 
+**The cap must be ALIGNED DOWN to a page boundary**, and a bare
+`Math.min(skip, PRODUCTS_MAX_OFFSET)` is not. Whenever the ceiling is not
+divisible by `pageSize` the capped offset lands mid-page: at `pageSize: 3` it
+queries offset 100,000 while reporting page 33,334, which really begins at
+99,999 — so that row is skipped and the page number describes rows the caller
+did not get. `Math.floor(PRODUCTS_MAX_OFFSET / pageSize) * pageSize` fixes it.
+The first version of this bound had the bug and its tests missed it because
+they all used `pageSize: 100`, which divides evenly; the regression tests now
+use 3, 7 and 33 and assert the property — `(page - 1) * pageSize === skip` —
+rather than any particular number.
+
 **This bounds the damage; it does not fix offset pagination.** OFFSET is
 unbounded-cost by construction. Deep walks belong on the cursor query
 `products(cursor:)`, which has none — that is the real fix if the catalogue

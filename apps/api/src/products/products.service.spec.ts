@@ -295,6 +295,31 @@ describe('ProductsService', () => {
       expect(result.page).toBeLessThan(2_147_483_647);
     });
 
+    it.each([3, 7, 33])(
+      'keeps the capped offset ON a page boundary for pageSize %i',
+      async (pageSize) => {
+        // PRODUCTS_MAX_OFFSET is not divisible by these. A bare
+        // Math.min(skip, MAX) would land mid-page: at pageSize 3 it queries
+        // offset 100000 while reporting page 33334, which really begins at
+        // 99999 -- skipping a row and making the page number a lie about
+        // the rows returned. Only pageSize 100 was tested before, which
+        // divides evenly and hid it.
+        prisma.product.findMany.mockResolvedValue([]);
+        prisma.product.count.mockResolvedValue(0);
+
+        const result = await service.findPaged(2_147_483_647, pageSize);
+
+        const { skip } = prisma.product.findMany.mock.calls[0][0] as {
+          skip: number;
+        };
+        expect(skip % pageSize).toBe(0);
+        expect(skip).toBeLessThanOrEqual(PRODUCTS_MAX_OFFSET);
+        // The reported page and the queried offset must describe the same
+        // rows -- that is the property, not the particular numbers.
+        expect((result.page - 1) * pageSize).toBe(skip);
+      },
+    );
+
     it('leaves a NORMAL deep page completely untouched', async () => {
       // The bound must not disturb ordinary paging -- including the
       // sitemap's, which walks the catalogue in order at pageSize 100 and

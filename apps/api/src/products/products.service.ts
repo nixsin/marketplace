@@ -145,7 +145,15 @@ export class ProductsService {
     // legitimate page number grows with the catalogue (the sitemap walks it
     // in order), so a page cap would break sitemap generation at a size
     // nobody would connect back to this line.
-    const skip = Math.min((safePage - 1) * safePageSize, PRODUCTS_MAX_OFFSET);
+    //
+    // The cap is ALIGNED DOWN to a page boundary. A bare
+    // Math.min(..., PRODUCTS_MAX_OFFSET) lands mid-page whenever the ceiling
+    // is not divisible by pageSize: at pageSize 3 it queries offset 100000
+    // while reporting page 33334, which really starts at 99999 -- skipping
+    // that row and making the page number a lie about the rows returned.
+    const maxSkip =
+      Math.floor(PRODUCTS_MAX_OFFSET / safePageSize) * safePageSize;
+    const skip = Math.min((safePage - 1) * safePageSize, maxSkip);
     // Reported back as the page actually served, not the one asked for --
     // echoing the request would tell a client it is looking at page 500,000
     // of a catalogue that stops well before it.
