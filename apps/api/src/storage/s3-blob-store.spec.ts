@@ -124,6 +124,34 @@ describe('S3BlobStore', () => {
       );
     });
 
+    it('reads from the right bucket and key', async () => {
+      // Behaviour alone proves nothing about WHICH object was read -- the
+      // stub returns the same bytes for any Bucket/Key.
+      send.mockResolvedValue({
+        Body: {
+          transformToByteArray: () =>
+            Promise.resolve(new Uint8Array([1, 2, 3])),
+        },
+      });
+
+      await store.get('products/a.png');
+
+      const { name, input } = sentCommand();
+      expect(name).toBe('GetObjectCommand');
+      expect(input).toMatchObject({
+        Bucket: 'test-bucket',
+        Key: 'products/a.png',
+      });
+    });
+
+    it('rejects a traversing key BEFORE any request is made', async () => {
+      // The read paths take caller-supplied keys too; a key that escapes
+      // the prefix must not reach the provider on the way out either.
+      await expect(store.get('../secrets/a.png')).rejects.toThrow();
+
+      expect(send).not.toHaveBeenCalled();
+    });
+
     it('returns null for a response with no body', async () => {
       send.mockResolvedValue({});
 
@@ -167,6 +195,24 @@ describe('S3BlobStore', () => {
 
       await expect(store.exists('products/a.png')).resolves.toBe(true);
       expect(sentCommand().name).toBe('HeadObjectCommand');
+    });
+
+    it('asks about the right bucket and key', async () => {
+      send.mockResolvedValue({});
+
+      await store.exists('products/a.png');
+
+      const { input } = sentCommand();
+      expect(input).toMatchObject({
+        Bucket: 'test-bucket',
+        Key: 'products/a.png',
+      });
+    });
+
+    it('rejects a traversing key before asking the provider anything', async () => {
+      await expect(store.exists('../secrets/a.png')).rejects.toThrow();
+
+      expect(send).not.toHaveBeenCalled();
     });
 
     it('is false when the provider says not found', async () => {

@@ -1,10 +1,12 @@
 // `jest` is not a global under ESM -- Jest injects describe/it/expect but
 // not the jest object itself, so it has to be imported explicitly.
 import { jest } from '@jest/globals';
-import type { INestApplication } from '@nestjs/common';
+import { ValidationPipe, type INestApplication } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import { configureApp } from './app.setup';
 import { CORRELATION_HEADERS } from './observability/correlation';
+import { correlationMiddleware } from './observability/correlation.middleware';
+import { CorrelationExceptionFilter } from './observability/correlation-exception.filter';
 
 /**
  * The shared bootstrap, which had no unit test.
@@ -76,12 +78,18 @@ describe('configureApp', () => {
     configureApp(app as unknown as INestApplication);
   });
 
-  it('installs a validation pipe, a correlation filter and middleware', () => {
-    expect(app.useGlobalPipes).toHaveBeenCalledTimes(1);
-    expect(app.useGlobalFilters).toHaveBeenCalledTimes(1);
-    // Correlation middleware first, so every later handler can attribute
-    // itself to a request; the /graphql handler is registered after it.
-    expect(app.use.mock.calls[0]).toHaveLength(1);
+  it('installs a ValidationPipe, the correlation filter, and middleware', () => {
+    // Asserting the INSTANCES, not just the call counts. Counting alone
+    // passes if configureApp installs the wrong pipe, the wrong filter, or
+    // arbitrary middleware -- which is everything the description claims.
+    const pipe = app.useGlobalPipes.mock.calls[0][0];
+    const filter = app.useGlobalFilters.mock.calls[0][0];
+
+    expect(pipe).toBeInstanceOf(ValidationPipe);
+    expect(filter).toBeInstanceOf(CorrelationExceptionFilter);
+    // Correlation middleware first, so every later handler and log line can
+    // attribute itself to a request.
+    expect(app.use.mock.calls[0][0]).toBe(correlationMiddleware);
   });
 
   describe('CORS', () => {
@@ -172,6 +180,38 @@ describe('configureApp', () => {
 
       graphqlMiddleware()({ method: 'GET' }, res, jest.fn() as NextFunction);
       res.send('{"errors":[{"message":"boom"}],"data":null}');
+
+      expect(headers['Cache-Control']).toBeUndefined();
+    });
+
+    it.each([400, 404, 429, 500, 502, 503])(
+      'does NOT cache a %i, even with a success-shaped body',
+      (status) => {
+        // The status line is checked as well as the body. Without this, an
+        // implementation that keyed only on `data` being present would mark
+        // a 500 publicly cacheable -- storing an outage at the edge for
+        // s-maxage plus the whole stale-while-revalidate window on top, for
+        // everyone routed through that location, with no purge hook.
+        const { res, headers } = makeRes(status);
+
+        graphqlMiddleware()({ method: 'GET' }, res, jest.fn() as NextFunction);
+        res.send('{"data":{"products":[]}}');
+
+        expect(headers['Cache-Control']).toBeUndefined();
+        // Still measurable from RUM, which is the point of setting this
+        // unconditionally -- a failing request is worth timing too.
+        expect(headers['Timing-Allow-Origin']).toBe('*');
+      },
+    );
+
+    it('does not cache a 304, whose body Express has already blanked', () => {
+      // Express builds a 304 by emptying the body and stripping Content-*,
+      // leaving Cache-Control alone. An empty body cannot be judged, so
+      // this must fail closed rather than guess.
+      const { res, headers } = makeRes(304);
+
+      graphqlMiddleware()({ method: 'GET' }, res, jest.fn() as NextFunction);
+      res.send('');
 
       expect(headers['Cache-Control']).toBeUndefined();
     });

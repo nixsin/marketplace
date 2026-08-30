@@ -9,6 +9,7 @@ import {
   normalizeProduct,
 } from './products.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { PRODUCTS_MAX_PAGE_SIZE } from '@medinstru/config';
 
 function makeProduct(id: string) {
   return { id, name: `Product ${id}`, createdAt: new Date() };
@@ -158,6 +159,31 @@ describe('ProductsService', () => {
     expect(result.nextCursor).toBeUndefined();
   });
 
+  describe('findPage (cursor)', () => {
+    it('CAPS limit at the same ceiling as findPaged', async () => {
+      // Same unbounded public arg, same fix. Cited on findPaged only; both
+      // queries take a caller-supplied size straight into Prisma's `take`.
+      prisma.product.findMany.mockResolvedValue([]);
+
+      await service.findPage(undefined, 1_000_000);
+
+      expect(prisma.product.findMany).toHaveBeenCalledWith(
+        // take is limit + 1, to detect whether another page exists.
+        expect.objectContaining({ take: PRODUCTS_MAX_PAGE_SIZE + 1 }),
+      );
+    });
+
+    it('CLAMPS a zero limit up to 1', async () => {
+      prisma.product.findMany.mockResolvedValue([]);
+
+      await service.findPage(undefined, 0);
+
+      expect(prisma.product.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 2 }),
+      );
+    });
+  });
+
   describe('findPaged', () => {
     // Offset pagination for the numbered catalogue -- the app's entry page,
     // and untested until now. Every assertion below is about a value the
@@ -218,6 +244,54 @@ describe('ProductsService', () => {
           include: { seller: true },
         }),
       );
+    });
+
+    it.each([0, -5, 0.5, Number.NaN])(
+      'CLAMPS a pageSize of %p up to 1',
+      async (pageSize) => {
+        // pageSize reached Prisma's `take` unbounded, and 0 made totalPages
+        // `Math.ceil(n / 0)` -- Infinity, which is not a serialisable Int.
+        // Clamped rather than rejected so a bad value in a shared link still
+        // renders a page.
+        prisma.product.findMany.mockResolvedValue([]);
+        prisma.product.count.mockResolvedValue(9);
+
+        const result = await service.findPaged(1, pageSize);
+
+        expect(result.pageSize).toBe(1);
+        expect(result.totalPages).toBe(9);
+        expect(Number.isFinite(result.totalPages)).toBe(true);
+        expect(prisma.product.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({ take: 1 }),
+        );
+      },
+    );
+
+    it('CAPS an enormous pageSize at PRODUCTS_MAX_PAGE_SIZE', async () => {
+      // The query is anonymous and public, so an unbounded `take` is a way
+      // to ask for the whole catalogue in one request -- against the
+      // performance-first tenet and cheap to abuse.
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(0);
+
+      const result = await service.findPaged(1, 1_000_000);
+
+      expect(result.pageSize).toBe(PRODUCTS_MAX_PAGE_SIZE);
+      expect(prisma.product.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: PRODUCTS_MAX_PAGE_SIZE }),
+      );
+    });
+
+    it('reports the CLAMPED pageSize back, not the one asked for', async () => {
+      // The page renders this number. Echoing the request would tell a
+      // client it got 1,000,000 rows when it got 100.
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(500);
+
+      const result = await service.findPaged(1, 1_000_000);
+
+      expect(result.pageSize).toBe(PRODUCTS_MAX_PAGE_SIZE);
+      expect(result.totalPages).toBe(5);
     });
 
     it('reports ONE page for an empty catalogue, never zero', async () => {

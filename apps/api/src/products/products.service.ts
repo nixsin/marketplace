@@ -1,7 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { blobUrl } from '../storage/blob-config';
-import { MANAGED_IMAGE_PREFIX } from '@medinstru/config';
+import {
+  MANAGED_IMAGE_PREFIX,
+  PRODUCTS_MAX_PAGE_SIZE,
+} from '@medinstru/config';
 
 // Prisma's `details Json?` column accepts any valid JSON value (object,
 // array, string, number, null) -- but the GraphQL field is typed
@@ -92,6 +95,11 @@ export class ProductsService {
   }
 
   async findPage(cursor?: string, limit = 6) {
+    // Same unbounded-arg problem as findPaged's pageSize, same ceiling.
+    const safeLimit = Math.min(
+      Math.max(1, Math.trunc(limit) || 1),
+      PRODUCTS_MAX_PAGE_SIZE,
+    );
     // Cursor-based, not offset-based (see TECHNICAL_PLAN.md §12B) — degrades
     // predictably as the catalog grows, unlike page-number/offset pagination.
     //
@@ -103,14 +111,14 @@ export class ProductsService {
     // skip or repeat a row whenever a tie's relative order shifts between
     // the page-1 and page-2 queries. Found via a genuinely flaky e2e test.
     const items = await this.prisma.product.findMany({
-      take: limit + 1,
+      take: safeLimit + 1,
       ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       include: { seller: true },
     });
 
-    const hasMore = items.length > limit;
-    const page = hasMore ? items.slice(0, limit) : items;
+    const hasMore = items.length > safeLimit;
+    const page = hasMore ? items.slice(0, safeLimit) : items;
     const nextCursor = hasMore ? page[page.length - 1].id : undefined;
 
     return { items: page.map(normalizeProduct), nextCursor };
@@ -120,10 +128,19 @@ export class ProductsService {
   // is a deliberate, separate query rather than replacing findPage above.
   async findPaged(page = 1, pageSize = 4) {
     const safePage = Math.max(1, page);
+    // pageSize is an anonymous, public GraphQL arg that reached Prisma's
+    // `take` unbounded: one request could ask for the whole catalogue, and
+    // `pageSize: 0` made totalPages Infinity below (ceil(n / 0)). Clamped
+    // rather than rejected, so an out-of-range value in a shared link still
+    // renders a page instead of erroring.
+    const safePageSize = Math.min(
+      Math.max(1, Math.trunc(pageSize) || 1),
+      PRODUCTS_MAX_PAGE_SIZE,
+    );
     const [items, totalCount] = await Promise.all([
       this.prisma.product.findMany({
-        skip: (safePage - 1) * pageSize,
-        take: pageSize,
+        skip: (safePage - 1) * safePageSize,
+        take: safePageSize,
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], // see findPage
         include: { seller: true },
       }),
@@ -133,9 +150,9 @@ export class ProductsService {
     return {
       items: items.map(normalizeProduct),
       page: safePage,
-      pageSize,
+      pageSize: safePageSize,
       totalCount,
-      totalPages: Math.max(1, Math.ceil(totalCount / pageSize)),
+      totalPages: Math.max(1, Math.ceil(totalCount / safePageSize)),
     };
   }
 }

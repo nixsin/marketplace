@@ -437,6 +437,22 @@ export const ONBOARDING_TOKEN_TTL = "15m";
 // Bounds on what a buyer can submit. Not cosmetic: message is interpolated
 // into an outbound message body, and an unbounded field is both an abuse
 // vector and a way to exceed the provider's own payload limits.
+/**
+ * The largest page the products queries will serve.
+ *
+ * `productsPaged(pageSize:)` and `products(limit:)` are anonymous, public
+ * GraphQL args that reached Prisma's `take` unbounded -- so a single request
+ * could ask for the entire catalogue, and `pageSize: 0` produced
+ * `totalPages: Infinity`. Both are clamped against this.
+ *
+ * 100 rather than something smaller because the sitemap genuinely pages in
+ * hundreds: `SITEMAP_API_PAGE_SIZE` in apps/web/src/lib/catalog-seo.ts is
+ * exactly 100, and a lower ceiling here would silently truncate it. It lives
+ * in this package for that reason -- the two numbers must move together, and
+ * a comment saying so is what this package exists to replace.
+ */
+export const PRODUCTS_MAX_PAGE_SIZE = 100;
+
 export const INQUIRY_NAME_MAX_LENGTH = 80;
 export const INQUIRY_MESSAGE_MAX_LENGTH = 1000;
 

@@ -62,6 +62,7 @@ export declare function normalizeE164(value: string): string | null;
 // consumer with a narrower type than the value's own runtime shape.
 export declare const SESSION_TOKEN_TTL: "7d";
 export declare const ONBOARDING_TOKEN_TTL: "15m";
+export declare const PRODUCTS_MAX_PAGE_SIZE: number;
 export declare const INQUIRY_NAME_MAX_LENGTH: number;
 export declare const INQUIRY_MESSAGE_MAX_LENGTH: number;
 export declare const INQUIRY_RATE_LIMIT_WINDOW_MS: number;

@@ -365,6 +365,16 @@ wrong — it reviews a diff it has never seen before. If you are confident it
 is wrong, say so in a PR comment with evidence and use your judgment. Do not
 silently override.
 
+**Do not wait on CI while an unaddressed review finding is sitting there.**
+The two AI passes post as soon as they finish, minutes before the slow jobs
+(Playwright, Docker, Lighthouse) do — so a review round is usually readable
+long before the run goes green. Waiting for the whole run first wastes that
+gap, and worse, the fixes will re-trigger everything anyway, so the run being
+waited on is already superseded. Read the review the moment it lands, fix,
+push, and let CI settle around the final commit. The only reason to wait is a
+finding whose validity actually depends on a CI result — pass 2's job, which
+by definition needs the results it is reviewing.
+
 **Converging a review, in four rules.** The reviewer is stateless by design,
 so it will repeat a finding forever unless you close the loop:
 
@@ -663,11 +673,26 @@ despite being the query behind the catalogue's numbered pagination.
 
 **Nothing type-checks the spec files, and that is worth knowing before
 trusting one.** `nest build` excludes them and ts-jest transpiles without
-checking, so a spec can carry a real type error and still run green — found
-here via `npx tsc --noEmit -p tsconfig.spec.json`, which reported genuine
-TS2345s in a passing suite. Run that when a test double is involved; a double
-that is not actually assignable to the type it stands in for is testing
-something other than the real signature.
+checking, so a spec can carry a real type error and still run green. Found
+here via a review finding, confirmed with:
+
+```bash
+cd apps/api && npx tsc --noEmit -p tsconfig.spec.json 2>&1 | grep -v TS2307
+```
+
+It reported genuine TS2345s in a fully passing suite — a response double
+declared `setHeader` as returning `void` where Express returns the response,
+so it was not actually assignable to the type it stood in for. Run this
+whenever a test double is involved.
+
+**The `grep -v TS2307` is required, not laziness.** Every spec importing
+`@jest/globals` reports "cannot find module": it is a phantom dependency,
+imported but never declared, resolving only through pnpm's layout. Declaring
+it does NOT fix the check — it swaps 17 resolution errors for **137** real
+ones, because `@jest/globals`' own `jest.Mock` typings disagree with the
+ambient `@types/jest` ones the existing specs were written against.
+Reconciling those is its own change; until someone takes it, filter TS2307
+and read the rest.
 
 ## Shared configuration (`packages/config`, `@medinstru/config`)
 
