@@ -320,6 +320,37 @@ describe('ProductsService', () => {
       },
     );
 
+    it('never advertises a page the offset bound cannot serve', async () => {
+      // A catalogue larger than PRODUCTS_MAX_OFFSET would otherwise report
+      // totalPages from the full count while refusing to serve anything
+      // past the cap -- so a client paging to the advertised end would get
+      // the capped page's rows back, repeatedly, with no error.
+      //
+      // totalCount stays truthful; only the reachable page count is bounded.
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(PRODUCTS_MAX_OFFSET * 3);
+
+      const result = await service.findPaged(1, 100);
+
+      expect(result.totalCount).toBe(PRODUCTS_MAX_OFFSET * 3);
+      expect(result.totalPages).toBe(PRODUCTS_MAX_OFFSET / 100 + 1);
+
+      // And the last advertised page really is servable: asking for it must
+      // come back as itself, not as some clamped other page.
+      prisma.product.findMany.mockClear();
+      const last = await service.findPaged(result.totalPages, 100);
+      expect(last.page).toBe(result.totalPages);
+    });
+
+    it('still reports the true page count for a normal catalogue', async () => {
+      prisma.product.findMany.mockResolvedValue([]);
+      prisma.product.count.mockResolvedValue(9);
+
+      const result = await service.findPaged(1, 4);
+
+      expect(result.totalPages).toBe(3);
+    });
+
     it('leaves a NORMAL deep page completely untouched', async () => {
       // The bound must not disturb ordinary paging -- including the
       // sitemap's, which walks the catalogue in order at pageSize 100 and

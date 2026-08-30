@@ -174,7 +174,23 @@ export class ProductsService {
       page: servedPage,
       pageSize: safePageSize,
       totalCount,
-      totalPages: Math.max(1, Math.ceil(totalCount / safePageSize)),
+      // Capped at what is actually REACHABLE, not at what exists. The
+      // offset bound above means pages past maxSkip cannot be served -- a
+      // request for one returns the capped page instead -- so advertising
+      // them would promise pages that silently resolve to the wrong rows.
+      // totalCount stays truthful; only the page count is bounded, and the
+      // sitemap shards off totalCount rather than this.
+      //
+      // Unreachable below a 100,000-product catalogue, which is far above
+      // today's. The real fix past that is cursor traversal for deep walks
+      // -- offset pagination cannot serve them at any bound.
+      totalPages: Math.max(
+        1,
+        Math.min(
+          Math.ceil(totalCount / safePageSize),
+          Math.floor(maxSkip / safePageSize) + 1,
+        ),
+      ),
     };
   }
 }
