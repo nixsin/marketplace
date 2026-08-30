@@ -2,9 +2,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
+import { signSourcemapToken } from "@medinstru/config/sourcemap-token";
 
 const WEB_ROOT = join(import.meta.dirname, "..");
-const TOKEN = "test-token-for-the-suite-only";
+const KEY = "signing-key-for-the-suite-only";
+
+/** A token minted the way the CLI mints one. */
+function mint(overrides: Partial<Parameters<typeof signSourcemapToken>[0]> = {}) {
+  return signSourcemapToken({ issuer: "suite@example.com", key: KEY, ...overrides }).token;
+}
 const PORT = 3974;
 const BASE = `http://localhost:${PORT}`;
 
@@ -43,7 +49,7 @@ describe("source map access", () => {
     server = spawn("node_modules/.bin/next", ["start", "-p", String(PORT)], {
       cwd: WEB_ROOT,
       stdio: "pipe",
-      env: { ...process.env, SOURCEMAP_ACCESS_TOKEN: TOKEN },
+      env: { ...process.env, SOURCEMAP_SIGNING_KEY: KEY },
     });
 
     const deadline = Date.now() + 30_000;
@@ -74,9 +80,9 @@ describe("source map access", () => {
     expect((await fetch(`${BASE}/sourcemaps/${mapName}`)).status).toBe(404);
   });
 
-  it("refuses a WRONG token", async () => {
+  it("refuses a token signed with a DIFFERENT key", async () => {
     const res = await fetch(`${BASE}/sourcemaps/${mapName}`, {
-      headers: { cookie: "mi_srcmap=not-the-token" },
+      headers: { cookie: `mi_srcmap=${mint({ key: "a-different-signing-key" })}` },
     });
 
     expect(res.status).toBe(404);
@@ -95,7 +101,7 @@ describe("source map access", () => {
     // Whole, not stripped: the point of gating rather than deleting the
     // source is that an authorised session loses nothing.
     const res = await fetch(`${BASE}/sourcemaps/${mapName}`, {
-      headers: { cookie: `mi_srcmap=${TOKEN}` },
+      headers: { cookie: `mi_srcmap=${mint()}` },
     });
 
     expect(res.status).toBe(200);
@@ -108,11 +114,48 @@ describe("source map access", () => {
     // The response varies by cookie. An edge that stored one would hand it to
     // everyone, undoing the gate entirely.
     const res = await fetch(`${BASE}/sourcemaps/${mapName}`, {
-      headers: { cookie: `mi_srcmap=${TOKEN}` },
+      headers: { cookie: `mi_srcmap=${mint()}` },
     });
 
     expect(res.headers.get("cache-control")).toContain("no-store");
     expect(res.headers.get("cache-control")).toContain("private");
+  });
+
+  it("refuses an EXPIRED token, even though the signature is valid", async () => {
+    // Time-bounding is the revocation mechanism -- there is no server-side
+    // state to clear, so a grant that outlives its window must be refused on
+    // its own claims.
+    const stale = signSourcemapToken({
+      issuer: "stale@example.com",
+      key: KEY,
+      ttlSeconds: 60,
+      now: Date.now() - 60 * 60 * 1000,
+    }).token;
+
+    const res = await fetch(`${BASE}/sourcemaps/${mapName}`, {
+      headers: { cookie: `mi_srcmap=${stale}` },
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("refuses a token whose payload was edited after signing", async () => {
+    // The payload is readable by design -- it says who the token belongs to.
+    // Readable must not mean editable.
+    const token = mint();
+    const [version, payload, signature] = token.split(".");
+    const tampered = Buffer.from(
+      JSON.stringify({
+        ...(JSON.parse(Buffer.from(payload, "base64url").toString()) as object),
+        iss: "someone-else@example.com",
+      }),
+    ).toString("base64url");
+
+    const res = await fetch(`${BASE}/sourcemaps/${mapName}`, {
+      headers: { cookie: `mi_srcmap=${version}.${tampered}.${signature}` },
+    });
+
+    expect(res.status).toBe(404);
   });
 
   it.each([
@@ -125,7 +168,7 @@ describe("source map access", () => {
     // image, so it is validated against the shapes `next build` emits rather
     // than merely checked for traversal.
     const res = await fetch(`${BASE}/sourcemaps/${name}`, {
-      headers: { cookie: `mi_srcmap=${TOKEN}` },
+      headers: { cookie: `mi_srcmap=${mint()}` },
     });
 
     expect(res.status).toBe(404);

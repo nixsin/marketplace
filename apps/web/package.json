@@ -3,14 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
     "build": "next build && node scripts/privatize-sourcemaps.mjs",
-    "start": "next start",
+    "dev": "next dev",
     "lint": "eslint",
+    "sourcemap:token": "node scripts/generate-sourcemap-token.mjs",
+    "start": "next start",
     "test": "vitest run",
-    "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "test:perf": "node scripts/perf-budget.mjs",
-    "test:e2e": "playwright test"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@medinstru/config": "workspace:*",

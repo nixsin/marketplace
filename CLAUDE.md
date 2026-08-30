@@ -1952,10 +1952,42 @@ placed elsewhere under `.next/` returns 404 at every path shape tried
 (`/probe`, `/_next/probe`, `/.next/probe`). The prod image copies the whole
 `.next` directory, so the maps travel with it and stay reachable to the route.
 
+**Tokens are signed and self-describing, not one shared secret.** A shared
+static secret would say nothing about who is using it, could not expire, and
+revoking one person's access would mean rotating it for everybody. Each token
+carries who minted it (`iss`), a distinct id per grant (`sid`), and an expiry
+the server enforces — signed with `SOURCEMAP_SIGNING_KEY` so the identity
+cannot be edited. Mint one with `pnpm --filter web sourcemap:token`; it
+defaults to the git identity and a 2-hour life, with a 24-hour ceiling.
+
+Verification is **stateless** — it needs only the key, so nothing is stored,
+replicated or cleaned up. That matters because the thing being protected is a
+debugging aid, and a debugging aid that needs its own datastore does not get
+used. **Time-bounding is therefore the revocation mechanism:** there is
+nothing to revoke, which is why the ceiling exists.
+
+The signing/verifying code is a **subpath export**
+(`@medinstru/config/sourcemap-token`), and that is load-bearing: the package's
+main entry is imported by client components, so pulling `node:crypto` into it
+would break the browser build. The client never imports this path.
+
+**The signature is checked before any claim is read.** A payload nothing has
+vouched for is attacker-controlled — an implementation that read `exp` first
+would be acting on a value the caller chose. A forged token fails on the
+signature, never on its own claims, and a test asserts exactly that by
+checking the *reason*.
+
+**Every access is logged with the issuer**, which is the whole point of the
+identity: `{"msg":"sourcemap served","file":…,"iss":…,"sid":…}`. Refusals are
+logged too, but only when a token was actually presented — otherwise every
+crawler hitting the path buries the entries that mean something. The reason is
+never returned to the caller: telling them whether the signature was wrong or
+merely expired hands them a probing oracle.
+
 **A cookie, not a header or query parameter.** Devtools fetches maps itself
 and cannot be made to send a custom header; a token in a URL ends up in access
-logs, referrers and shell history. Set it once from the console on the site's
-own origin.
+logs, referrers and shell history. The generator prints the exact
+`document.cookie` line to paste.
 
 **The route fails closed and 404s rather than 403s.** An unset
 `SOURCEMAP_ACCESS_TOKEN` makes maps unavailable rather than public — a
