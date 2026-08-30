@@ -20,8 +20,8 @@ cat > "$TMPDIR/allowlist.txt" <<'EOF'
 # comment line, should be ignored
 
 eslint
-@eslint/js
-typescript
+@eslint/js  # inline reason: must be stripped, not treated as part of the name
+   typescript
 EOF
 
 # --- No outdated packages at all: must pass. ---
@@ -66,6 +66,22 @@ cat > "$TMPDIR/all-unaccounted.json" <<'EOF'
 EOF
 if ./scripts/check-outdated.sh "$TMPDIR/all-unaccounted.json" "$TMPDIR/allowlist.txt" > "$TMPDIR/out.txt" 2>&1; then
   fail "expected failure when no outdated packages are allowlisted"
+fi
+
+
+# --- An entry carrying an inline reason must still match. ---
+#
+# The reason is the whole point of allowing it: a bare package name cannot
+# be reviewed without cross-referencing CLAUDE.md, and the two drift. If
+# the parser ever stops stripping it, the entry silently stops matching and
+# the package reads as actionable again -- so assert the match directly.
+# `typescript` is indented in the fixture above for the same reason.
+cat > "$TMPDIR/inline.json" <<'EOF'
+{"@eslint/js": {"current": "9.39.5", "latest": "10.0.1"},
+ "typescript": {"current": "5.9.3", "latest": "7.0.2"}}
+EOF
+if ! ./scripts/check-outdated.sh "$TMPDIR/inline.json" "$TMPDIR/allowlist.txt" > "$TMPDIR/out.txt"; then
+  fail "an allowlist entry with an inline reason (or leading space) should still match"
 fi
 
 echo "OK: check-outdated.sh pass/fail decisions verified"

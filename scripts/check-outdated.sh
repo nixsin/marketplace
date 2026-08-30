@@ -33,9 +33,19 @@ echo
 # read loop (not `mapfile`/`readarray`) since those aren't available in
 # macOS's stock bash 3.2 — this needs to run identically there and on
 # CI's bash 5.
+# An entry may carry its reason inline (`prisma  # latest is an RC`), so
+# the justification travels with the package rather than living only in
+# CLAUDE.md, where an entry and its rationale drift apart silently. The
+# inline part is stripped here; without that, the whole-line comparison
+# below would never match and the entry would be silently inert -- which
+# fails OPEN (the check goes red), so it is loud rather than dangerous,
+# but it is still a trap worth removing.
 allowed=()
 while IFS= read -r a; do
-  allowed+=("$a")
+  a="${a%%#*}"                       # drop an inline reason
+  a="${a#"${a%%[![:space:]]*}"}"     # trim leading space
+  a="${a%"${a##*[![:space:]]}"}"     # trim trailing space
+  [ -n "$a" ] && allowed+=("$a")
 done < <(grep -v '^[[:space:]]*#' "$ALLOWLIST" | grep -v '^[[:space:]]*$')
 
 unaccounted=()
