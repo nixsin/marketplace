@@ -1924,11 +1924,38 @@ here because it needs verifying against a real two-deployment test — the
 interaction with the service worker's own stale-while-revalidate on navigations
 is explicitly unverified, per `next.config.ts`'s own comment.
 
-### Public source maps expose every tunable in `packages/config`
+### Source maps ship mappings, not source (fixed)
 
-`productionBrowserSourceMaps: true`, with `sourcesContent` embedded. All 11
-referenced maps return `200` — **3.3 MB of original TypeScript, readable by
-anyone.**
+`productionBrowserSourceMaps: true` stays on — a production stack trace that
+resolves to a real file and line is worth having, and browsers fetch maps only
+with devtools open. What was riding along with it was `sourcesContent`: the
+complete text of 34 of our own files, publicly readable, **2.38 MB of the 3.46
+MB served**. `apps/web/scripts/strip-sourcemap-content.mjs` removes it after
+`next build`.
+
+**The exposure was a source-map artifact, not a bundling one, and that
+distinction decided the fix.** The tunables in `packages/config` appear in
+**zero** shipped chunks — tree-shaking already drops them, verified by grep —
+and in exactly one map each, because `sourcesContent` inlines the whole
+original file including the exports that were shaken out. Splitting the config
+package would have fixed nothing.
+
+What survives is the `names` array: `INQUIRY_RATE_LIMIT_PER_PHONE` as an
+identifier, never `= 5`. That asymmetry is the point — a per-phone limit is
+inferable from behaviour, while the exact ceiling is what makes probing
+[#152](https://github.com/nixsin/marketplace/issues/152) cheap.
+
+**A source map is not always flat, and the first version of this script
+believed it was.** The compiled stylesheet ships as an INDEX map — `sections`,
+each with its own nested `map` — so a check for a top-level `sourcesContent`
+skipped it entirely. The script reported success while still publishing 48 KB
+of CSS source. `apps/web/test/sourcemap-content.spec.ts` recurses through
+`sections` for that reason, and asserts against the real build output rather
+than against the script, because the regression worth catching is a build-tool
+change quietly reinstating the field.
+
+The historical note below is kept because the reasoning still applies to
+anyone weighing whether to turn maps off entirely.
 
 The config's comment says to revisit "once there's real business logic worth
 keeping out of a public source map." Two things have changed since:
