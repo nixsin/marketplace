@@ -1924,64 +1924,55 @@ here because it needs verifying against a real two-deployment test — the
 interaction with the service worker's own stale-while-revalidate on navigations
 is explicitly unverified, per `next.config.ts`'s own comment.
 
-### Source maps ship mappings, not source (fixed)
+### Source maps are gated, not public and not deleted
 
 `productionBrowserSourceMaps: true` stays on — a production stack trace that
-resolves to a real file and line is worth having, and browsers fetch maps only
-with devtools open. What was riding along with it was `sourcesContent`: the
-complete text of 34 of our own files, publicly readable, **2.38 MB of the 3.46
-MB served**. `apps/web/scripts/strip-sourcemap-content.mjs` removes it after
-`next build`.
+resolves to a real file and line beats a minified offset, and browsers fetch
+maps only with devtools open. The problem was never that they exist. It is
+that `next start` serves everything under `.next/static`, so **anyone could
+`curl` a map and read the complete original text of 34 of our files** — 2.38
+MB of it, `packages/config` included, publishing every rate limit and ceiling
+the app has. Verified against live production before the fix: the exact
+`INQUIRY_RATE_LIMIT_PER_SELLER = 60` and `PER_PHONE = 5` behind
+[#152](https://github.com/nixsin/marketplace/issues/152)'s accepted DoS
+surface were readable with no authentication.
 
-**The exposure was a source-map artifact, not a bundling one, and that
-distinction decided the fix.** The tunables in `packages/config` appear in
-**zero** shipped chunks — tree-shaking already drops them, verified by grep —
-and in exactly one map each, because `sourcesContent` inlines the whole
-original file including the exports that were shaken out. Splitting the config
-package would have fixed nothing.
+`scripts/privatize-sourcemaps.mjs` moves every map to `.next/sourcemaps/` and
+repoints each chunk's `sourceMappingURL` at `/sourcemaps/<file>`, a route that
+returns the map only to a request carrying `mi_srcmap=$SOURCEMAP_ACCESS_TOKEN`.
 
-What survives is the `names` array: `INQUIRY_RATE_LIMIT_PER_PHONE` as an
-identifier, never `= 5`. That asymmetry is the point — a per-phone limit is
-inferable from behaviour, while the exact ceiling is what makes probing
-[#152](https://github.com/nixsin/marketplace/issues/152) cheap.
+**Maps are kept WHOLE rather than stripped.** Stripping `sourcesContent` was
+the first attempt and it works, but it throws away the useful half for
+everyone including us. Gating keeps the full map for a session that holds the
+token and gives the public nothing — no exposure, no loss.
 
-**A source map is not always flat, and the first version of this script
-believed it was.** The compiled stylesheet ships as an INDEX map — `sections`,
-each with its own nested `map` — so a check for a top-level `sourcesContent`
-skipped it entirely. The script reported success while still publishing 48 KB
-of CSS source. `apps/web/test/sourcemap-content.spec.ts` recurses through
-`sections` for that reason, and asserts against the real build output rather
-than against the script, because the regression worth catching is a build-tool
-change quietly reinstating the field.
+**`.next/sourcemaps/` is safe because `next start` publicly serves only
+`.next/static/**`.** Verified directly rather than assumed: a canary file
+placed elsewhere under `.next/` returns 404 at every path shape tried
+(`/probe`, `/_next/probe`, `/.next/probe`). The prod image copies the whole
+`.next` directory, so the maps travel with it and stay reachable to the route.
 
-The historical note below is kept because the reasoning still applies to
-anyone weighing whether to turn maps off entirely.
+**A cookie, not a header or query parameter.** Devtools fetches maps itself
+and cannot be made to send a custom header; a token in a URL ends up in access
+logs, referrers and shell history. Set it once from the console on the site's
+own origin.
 
-The config's comment says to revisit "once there's real business logic worth
-keeping out of a public source map." Two things have changed since:
+**The route fails closed and 404s rather than 403s.** An unset
+`SOURCEMAP_ACCESS_TOKEN` makes maps unavailable rather than public — a
+misconfigured deploy must not fall back to the state this exists to end. A 403
+would confirm something is behind the path; there is nothing to gain from
+telling an unauthorised caller that.
 
-1. The risky logic is all in `apps/api`, which ships **no** browser maps. That
-   half of the original reasoning still holds.
-2. But `packages/config/src/index.js` is in the client bundle and therefore in
-   the maps — so every rate limit, page size, cache TTL and auth lifetime is
-   published. Given [#152](https://github.com/nixsin/marketplace/issues/152)
-   already records the per-seller inquiry cap as an accepted DoS surface,
-   handing an attacker the exact ceilings makes reaching them cheaper.
+**Nothing automated consumed these maps, and that is worth knowing before
+weighing the trade.** There is no error-tracking service in the workspace —
+no Sentry, Bugsnag, Rollbar, Datadog — and `reportApiFailure` logs
+`error.message` to the visitor's own console, never a stack, never to us. The
+sole beneficiary is a developer opening devtools by hand, which is exactly the
+case the token now serves.
 
-**No user-facing performance cost either way** — browsers fetch maps only with
-devtools open, so this is purely a disclosure question.
-
-| Option | Gains | Costs |
-|---|---|---|
-| **Keep public** | Debuggable production stack traces for anyone, including you, with zero setup | Publishes every tunable; makes #152 cheaper to exploit |
-| **Turn off in prod** | Nothing readable | Production stack traces become unmappable — the thing they were turned on for |
-| **Keep generating, stop serving** | Maps stay available to whoever holds the build output | Needs a rule at Cloudflare or the origin; maps are useless to a browser that cannot fetch them |
-
-Worth noting the *specific* exposure rather than the general one: it is not the
-UI code that matters, it is the constants file. Moving the genuinely
-security-relevant ceilings out of the client-imported module — the client uses
-about 8 of its 68 exports — would shrink the disclosure without touching the
-source-map decision at all.
+The `content-type` is JSON and `cache-control` is `private, no-store`: the
+response varies by cookie, and an edge that cached one would hand it to
+everyone.
 
 ### `product.count()` is the one catalogue query the index cannot help
 
