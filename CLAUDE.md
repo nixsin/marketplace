@@ -635,23 +635,32 @@ they all used `pageSize: 100`, which divides evenly; the regression tests now
 use 3, 7 and 33 and assert the property — `(page - 1) * pageSize === skip` —
 rather than any particular number.
 
-**`totalPages` is capped at what is REACHABLE, not at what exists.** Without
-that, a catalogue past the ceiling advertises pages the API will never serve:
-a client paging to the advertised end gets the capped page's rows back,
-repeatedly, with no error anywhere. `totalCount` stays truthful — the sitemap
-shards off that, not off `totalPages`.
+**A page past the ceiling is REJECTED, not clamped — and that asymmetry is
+deliberate.** Page 0 and negative pages *are* clamped, because those are
+malformed requests for a page that exists and rendering the first page is
+friendlier than an error. A page beyond the offset ceiling is different: it
+cannot be served at all, and answering it with different rows than were asked
+for is a lie. Clamping mapped every such page to the same final one, so a
+sequential consumer — the sitemap above all — would walk off the end and
+receive that page's rows over and over with nothing reporting a problem.
+Publishing a sitemap of duplicated products silently is worse than failing to
+publish one.
+
+`totalPages` is capped at what is reachable for the same reason, so the API
+never advertises a page it would then reject. `totalCount` stays truthful —
+the sitemap shards off that, not off `totalPages`.
 
 **This bounds the damage; it does not fix offset pagination.** OFFSET is
 unbounded-cost by construction. Deep walks belong on the cursor query
 `products(cursor:)`, which has none.
 
-**The open case, stated plainly:** past 100,000 products the sitemap still
-walks numbered pages and would repeat the capped page instead of finishing
-the catalogue. Nothing in the bound fixes that — the fix is cursor traversal
-for the sitemap, tracked rather than done here because it is a redesign of
-`loadSitemapProducts`, not a limit. Today's catalogue is a few dozen products,
-so the gap is real but not reachable; check it before the catalogue grows
-three orders of magnitude, not after.
+**The open case, stated plainly:** past 100,000 products the sitemap stops
+being able to finish the catalogue. It now fails loudly there rather than
+publishing duplicates, which is the right failure but still a failure — the
+actual fix is cursor traversal in `loadSitemapProducts`, a redesign rather
+than a limit, and it is not done here. Today's catalogue is a few dozen
+products, so the gap is real and not reachable; revisit it before the
+catalogue grows three orders of magnitude, not after.
 
 **`PRODUCTS_MAX_PAGE_SIZE` is 100 because `SITEMAP_API_PAGE_SIZE` is 100**,
 and the API clamps *silently* — a short page, never an error. So raising the

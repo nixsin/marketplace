@@ -267,88 +267,58 @@ describe('ProductsService', () => {
       },
     );
 
-    it('BOUNDS the offset for an absurd page number', async () => {
-      // Capping pageSize alone left this open: `page` is an anonymous
-      // public Int too, and skip = (page - 1) * pageSize at a max GraphQL
-      // Int is an offset of 214,748,364,600 -- rows Postgres reads and
-      // discards before returning anything.
+    it('REJECTS an absurd page rather than serving a different one', async () => {
+      // skip = (page - 1) * pageSize at a max GraphQL Int is an offset of
+      // 214,748,364,600 rows for Postgres to read and discard. Rejected
+      // rather than clamped: clamping mapped every page past the ceiling to
+      // the same final page, so a sequential consumer would receive that
+      // page's rows over and over with nothing reporting a problem.
       prisma.product.findMany.mockResolvedValue([]);
       prisma.product.count.mockResolvedValue(0);
 
-      await service.findPaged(2_147_483_647, 100);
-
-      const { skip } = prisma.product.findMany.mock.calls[0][0] as {
-        skip: number;
-      };
-      expect(skip).toBe(PRODUCTS_MAX_OFFSET);
+      await expect(service.findPaged(2_147_483_647, 100)).rejects.toThrow(
+        /beyond the deepest page/i,
+      );
+      expect(prisma.product.findMany).not.toHaveBeenCalled();
     });
 
-    it('reports the page it SERVED, not the absurd one requested', async () => {
-      // Echoing the request would tell a client it is looking at page
-      // 2,147,483,647 of a catalogue that stops long before it.
-      prisma.product.findMany.mockResolvedValue([]);
-      prisma.product.count.mockResolvedValue(0);
-
-      const result = await service.findPaged(2_147_483_647, 100);
-
-      expect(result.page).toBe(PRODUCTS_MAX_OFFSET / 100 + 1);
-      expect(result.page).toBeLessThan(2_147_483_647);
-    });
-
-    it.each([3, 7, 33])(
-      'keeps the capped offset ON a page boundary for pageSize %i',
+    it.each([3, 7, 33, 100])(
+      'draws the boundary EXACTLY for pageSize %i',
       async (pageSize) => {
-        // PRODUCTS_MAX_OFFSET is not divisible by these. A bare
-        // Math.min(skip, MAX) would land mid-page: at pageSize 3 it queries
-        // offset 100000 while reporting page 33334, which really begins at
-        // 99999 -- skipping a row and making the page number a lie about
-        // the rows returned. Only pageSize 100 was tested before, which
-        // divides evenly and hid it.
+        // The last reachable page must work and the very next one must not.
+        // PRODUCTS_MAX_OFFSET is not divisible by 3, 7 or 33, so the ceiling
+        // has to be aligned down to a page boundary -- an unaligned bound
+        // would put the cut between pages and make one of these two
+        // assertions wrong. Only pageSize 100 was exercised originally,
+        // which divides evenly and hid exactly that.
         prisma.product.findMany.mockResolvedValue([]);
         prisma.product.count.mockResolvedValue(0);
 
-        const result = await service.findPaged(2_147_483_647, pageSize);
+        const lastPage =
+          Math.floor(
+            (Math.floor(PRODUCTS_MAX_OFFSET / pageSize) * pageSize) / pageSize,
+          ) + 1;
 
-        const { skip } = prisma.product.findMany.mock.calls[0][0] as {
-          skip: number;
-        };
-        expect(skip % pageSize).toBe(0);
-        expect(skip).toBeLessThanOrEqual(PRODUCTS_MAX_OFFSET);
-        // The reported page and the queried offset must describe the same
-        // rows -- that is the property, not the particular numbers.
-        expect((result.page - 1) * pageSize).toBe(skip);
+        const ok = await service.findPaged(lastPage, pageSize);
+        expect(ok.page).toBe(lastPage);
+
+        await expect(service.findPaged(lastPage + 1, pageSize)).rejects.toThrow(
+          /beyond the deepest page/i,
+        );
       },
     );
 
-    it('never advertises a page the offset bound cannot serve', async () => {
-      // A catalogue larger than PRODUCTS_MAX_OFFSET would otherwise report
-      // totalPages from the full count while refusing to serve anything
-      // past the cap -- so a client paging to the advertised end would get
-      // the capped page's rows back, repeatedly, with no error.
-      //
-      // totalCount stays truthful; only the reachable page count is bounded.
-      prisma.product.findMany.mockResolvedValue([]);
-      prisma.product.count.mockResolvedValue(PRODUCTS_MAX_OFFSET * 3);
-
-      const result = await service.findPaged(1, 100);
-
-      expect(result.totalCount).toBe(PRODUCTS_MAX_OFFSET * 3);
-      expect(result.totalPages).toBe(PRODUCTS_MAX_OFFSET / 100 + 1);
-
-      // And the last advertised page really is servable: asking for it must
-      // come back as itself, not as some clamped other page.
-      prisma.product.findMany.mockClear();
-      const last = await service.findPaged(result.totalPages, 100);
-      expect(last.page).toBe(result.totalPages);
-    });
-
-    it('still reports the true page count for a normal catalogue', async () => {
+    it('does NOT reject a page that is merely past the end of the data', async () => {
+      // A page beyond totalPages but inside the offset ceiling is ordinary
+      // pagination, not an unservable request -- it returns an empty page,
+      // the same as it always did. Only the structural limit throws.
       prisma.product.findMany.mockResolvedValue([]);
       prisma.product.count.mockResolvedValue(9);
 
-      const result = await service.findPaged(1, 4);
+      const result = await service.findPaged(500, 4);
 
-      expect(result.totalPages).toBe(3);
+      expect(result.items).toEqual([]);
+      expect(result.page).toBe(500);
     });
 
     it('leaves a NORMAL deep page completely untouched', async () => {

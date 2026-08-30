@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { blobUrl } from '../storage/blob-config';
 import {
@@ -153,10 +157,28 @@ export class ProductsService {
     // that row and making the page number a lie about the rows returned.
     const maxSkip =
       Math.floor(PRODUCTS_MAX_OFFSET / safePageSize) * safePageSize;
-    const skip = Math.min((safePage - 1) * safePageSize, maxSkip);
-    // Reported back as the page actually served, not the one asked for --
-    // echoing the request would tell a client it is looking at page 500,000
-    // of a catalogue that stops well before it.
+    const skip = (safePage - 1) * safePageSize;
+
+    // REJECTED, not clamped. Clamping mapped every page past the ceiling to
+    // the same final page, so a sequential consumer -- the sitemap, above
+    // all -- would walk off the end and receive that page's rows over and
+    // over, with nothing anywhere reporting a problem. Publishing a sitemap
+    // of duplicated products silently is worse than failing to publish one.
+    //
+    // Deliberately different from the treatment of page 0 or a negative
+    // page, which ARE clamped: those are malformed requests for a page that
+    // exists, and rendering the first page is friendlier than an error. This
+    // is a request for a page that cannot be served at all, and answering it
+    // with different rows than were asked for is a lie.
+    if (skip > maxSkip) {
+      throw new BadRequestException(
+        `Page ${safePage} is beyond the deepest page this query can serve ` +
+          `at pageSize ${safePageSize}. Use the cursor query for deep walks.`,
+      );
+    }
+    // Equal to safePage now that unservable pages throw rather than being
+    // clamped -- kept as its own name because it is what the response
+    // promises, and the two must not drift apart again.
     const servedPage = Math.floor(skip / safePageSize) + 1;
 
     const [items, totalCount] = await Promise.all([
