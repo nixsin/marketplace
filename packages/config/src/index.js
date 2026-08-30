@@ -448,6 +448,18 @@ export const ONBOARDING_TOKEN_TTL = "15m";
  * in this package for that reason -- the two numbers must move together, and
  * a comment saying so is what this package exists to replace.
  */
+/**
+ * How long the catalogue's total product count may be reused.
+ *
+ * Equal to SHARED_MAX_AGE_SECONDS deliberately: the rows and the count must
+ * describe the same moment, and at parity the count is never staler than the
+ * response it appears in, which is already edge-cached for that long. It is a
+ * BACKSTOP rather than the invalidation mechanism -- the cache key embeds the
+ * catalogue version, so a write invalidates instantly and this TTL only bounds
+ * how long an orphaned entry lingers before expiring.
+ */
+export const PRODUCT_COUNT_CACHE_SECONDS = SHARED_MAX_AGE_SECONDS;
+
 export const PRODUCTS_MAX_PAGE_SIZE = 100;
 
 /**

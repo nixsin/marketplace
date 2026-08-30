@@ -2028,6 +2028,133 @@ which makes it easy to misattribute later.
 The second is the natural first move, and it composes with #173: once product
 and catalogue pages are edge-cached, the count runs far less often anyway.
 
+## The shared cache, and why invalidation is version-keyed
+
+`apps/api` caches through Redis. **The service holds no cache state** — several
+stateless instances behind a load balancer share one Redis, so they cannot
+disagree about a cached value and an invalidation cannot reach only some of
+them. An in-memory memo does both, which is why one was rejected here.
+
+**Delete-on-write cannot be made reliable, and that decided the design.** The
+obvious scheme is: write, then `DEL` the key. It has a window that does not
+close — if the process dies, the pod is evicted, or the Redis call fails
+between COMMIT and DEL, the stale entry survives its full TTL and *nothing
+knows the invalidation was lost*. With several instances it is worse than
+small, it is invisible.
+
+Instead a single Postgres row holds a catalogue **version**, bumped **inside
+the transaction that writes**, and the cache key embeds it:
+
+```
+v1:products:count:gen:41     ← before the write
+v1:products:count:gen:42     ← after it
+```
+
+Invalidation stops being an action that can fail and becomes a *consequence of
+the write committing*. A reader on version 42 cannot address the entry written
+under 41. A rolled-back transaction leaves the version untouched, which is also
+correct — nothing changed. Orphaned keys are never deleted; they expire.
+
+**`bump()` takes the caller's transaction client, and that is the whole
+guarantee.** Called on the service's own Prisma instance it would commit
+separately from the write and reintroduce the gap. A test asserts the bump
+lands on the passed client and not on `this.prisma`.
+
+**Verified end to end, not reasoned about:** inserting a product and bumping
+the version in one `psql` transaction moved the API's reported count from 16
+to 17 on the very next request, with no flush and no `DEL` — and both
+`gen:0` and `gen:1` were visible in Redis afterwards.
+
+**The cost is one extra query per uncached read** — a primary-key lookup on a
+one-row table, against the `COUNT(*)` full scan it protects. That cost is flat
+as the catalogue grows, which is the entire point, since counting is not.
+
+**Fails open, and `disableOfflineQueue: true` is what makes that TRUE rather
+than aspirational.** node-redis QUEUES commands issued while disconnected and
+replays them on connect — so against an unreachable Redis a `get()` never
+settles, the error handling never runs, and the request hangs until something
+upstream times out. The catch blocks look like they cover it and do not: a
+hang is not an error. CI caught this, not local testing, because locally there
+is always a Redis. Every e2e test failed with a 5s timeout rather than passing
+on the null path.
+
+**Shutdown is bounded for the same class of reason.** `quit()` on a client
+that never connected waits for a connection that is not coming — unbounded,
+that hangs a rolling deploy until the orchestrator SIGKILLs the pod. It races
+a 1s timeout, then `destroy()`, and that `destroy()` is itself wrapped because
+it throws "The client is closed" when it already is, which would fail the
+caller's teardown for a state that is already what we wanted.
+
+**`REDIS_URL` is deliberately EMPTY in `apps/api/.env.example`.** CI copies
+that file verbatim (`cp .env.example .env`), so a URL pointing at a Redis no
+job runs makes every one construct a client and log cache-unavailable for the
+whole run. The API treats the cache as optional, so blank is both honest and
+correct.
+
+No `REDIS_URL` yields a null cache and every read falls through to Postgres,
+so a bare local run and the e2e suite work unchanged. An unreachable Redis
+behaves the same way — verified by running the e2e suite against a closed
+port, which is the only way to see this failure at all. Health is tracked as a
+*state* and logged only on transition, because a cache that has been down for
+three weeks looks exactly like one that is merely cold — one loud line beats
+ten thousand identical warnings nobody reads.
+
+**The e2e suite needs the migration.** `CacheVersion` missing from
+`medinstru_test` makes the resolver throw, which surfaces as
+`Cache-Control: no-store` rather than as an obvious database error — because
+`isCacheableGraphqlResponse` correctly fails closed on any `errors` key. Run
+`pnpm --filter api test:e2e:migrate` when a cache-related e2e test fails for a
+reason that looks like caching.
+
+### Durability declared as code, for both stores
+
+**Redis:** `--appendonly yes --appendfsync everysec --save ""` in
+`docker-compose.yml`, and `persistence_mode = "journal_snapshot"` on the
+Render Key Value instance. Note the vocabulary gap: Render does **not** accept
+`"aof"`, and `terraform validate` is what surfaced that — the accepted set is
+`["journal_snapshot" "snapshot" "off"]`. Do not assume a provider mirrors the
+underlying engine's names.
+
+Worth being honest about what this buys: everything cached is derivable from
+Postgres, so losing it costs latency, not data. It is set because a cold cache
+after every restart makes an outage worse at exactly the wrong moment.
+
+**Postgres:** `parameter_overrides` on `render_postgres` is where WAL settings
+belong, and it is **empty by default on purpose** — the free tier does not
+accept overrides, and sending any would fail the apply. The values worth
+setting on a paid plan (`wal_level`, `max_wal_size`, `checkpoint_timeout`,
+`wal_compression`) are documented next to the resource so moving plans is a
+variable change rather than an archaeology exercise.
+
+**The whole path is code — creation AND wiring.** `enable_key_value = true`
+then `terraform apply` creates the instance, an env group carrying `REDIS_URL`,
+and the link attaching that group to the API service. Nothing is done in the
+dashboard.
+
+The credential is never handled by a person: Terraform reads
+`connection_info.internal_connection_string` straight off the Key Value
+resource and writes it into the env group. Render generates it, Terraform
+moves it, the API receives it — it is never typed, pasted, or in a shell
+history. The **internal** string, not the external one: both services sit in
+the same Render environment, so this keeps the traffic off the public network.
+
+**An env group rather than `env_vars` on the service**, because
+`render_web_service.api` carries `ignore_changes = all` — provider v1.9.1
+sends `maintenance_mode` fields Render rejects for free services, which
+produced a partial apply. Linking a group sidesteps it: the service resource
+is untouched and the link is its own resource.
+
+**`plan` defaults to `free`**, matching every other service here — the
+provider accepts `free`, `starter`, `standard`, `pro`, `pro_plus`. One caveat
+the schema cannot express: whether a plan accepts `persistence_mode`. Free
+tiers on Render have rejected settings the schema validates happily before
+(`parameter_overrides` on free Postgres is the same shape), so a refused apply
+there is the plan talking, not the configuration — drop
+`key_value_persistence_mode` to `"off"` or move to `starter`.
+
+`enable_key_value` still defaults to **false**, so a plan creates nothing
+until someone decides to. The API runs without a cache by design.
+
 ## Deployment
 
 **Terraform for Render and Cloudflare lives under `infra/terraform/`**

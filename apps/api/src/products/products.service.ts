@@ -1,14 +1,18 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { CACHE_STORE, cacheKeys, type CacheStore } from '../cache/cache-store';
+import { CacheVersionService } from '../cache/cache-version.service';
 import { blobUrl } from '../storage/blob-config';
 import {
   MANAGED_IMAGE_PREFIX,
   PRODUCTS_MAX_OFFSET,
   PRODUCTS_MAX_PAGE_SIZE,
+  PRODUCT_COUNT_CACHE_SECONDS,
 } from '@medinstru/config';
 
 // Prisma's `details Json?` column accepts any valid JSON value (object,
@@ -83,7 +87,44 @@ export function normalizeProduct<
 
 @Injectable()
 export class ProductsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(CACHE_STORE) private readonly cache: CacheStore,
+    private readonly cacheVersion: CacheVersionService,
+  ) {}
+
+  /**
+   * The catalogue's total product count, from the SHARED cache.
+   *
+   * `COUNT(*)` with no filter is the one query in the paged path that no
+   * index can serve -- Postgres walks the table, while the rows beside it
+   * are free on `Product(createdAt, id)`. It is also the value that changes
+   * least often, which is what makes it worth caching.
+   *
+   * Nothing is held in this process. Several stateless instances behind a
+   * load balancer share one Redis, so they cannot disagree about the count,
+   * and an invalidation cannot reach only some of them -- both of which an
+   * in-memory memo would do.
+   *
+   * The key embeds the catalogue VERSION, which is what makes invalidation
+   * reliable rather than best-effort. See cache/README.md: a reader on
+   * version 42 cannot address an entry written under 41, so a lost DEL
+   * cannot leave a stale value behind.
+   */
+  private async totalProductCount(): Promise<number> {
+    const version = await this.cacheVersion.current();
+    const key = cacheKeys.productCount(version);
+
+    const cached = await this.cache.get<number>(key);
+    if (typeof cached === 'number') return cached;
+
+    const value = await this.prisma.product.count();
+    // Deliberately not awaited: a slow cache must not add latency to a
+    // request whose answer is already in hand. The store swallows its own
+    // failures and reports them through its health signal instead.
+    void this.cache.set(key, value, PRODUCT_COUNT_CACHE_SECONDS);
+    return value;
+  }
 
   // Mirrors OrganizationsService.findById exactly -- NotFoundException
   // thrown here (the service), not the resolver; Apollo's Nest integration
@@ -188,7 +229,7 @@ export class ProductsService {
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }], // see findPage
         include: { seller: true },
       }),
-      this.prisma.product.count(),
+      this.totalProductCount(),
     ]);
 
     return {
