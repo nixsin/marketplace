@@ -1390,6 +1390,28 @@ deploy seems stuck after a fix has genuinely merged and gone green on
 assuming the fix itself is wrong — a manual "Deploy latest commit" from
 the dashboard skips the queue.
 
+**`pnpm deploy --prod` run inside the workspace leaves it in production mode,
+and the next command dies with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`.**
+Same error as the Docker baseline-regen flow below, different cause, so it is
+worth naming separately: `pnpm --filter web deploy --prod --legacy /out` is a
+perfectly reasonable way to check what actually lands in the production image
+(it is how `shadcn` was confirmed to leave it), but it re-runs
+`pnpm install --production` against the real workspace on the way. Every later
+command then finds devDependencies missing, wants to purge and reinstall
+`node_modules`, and cannot prompt from a non-TTY — so `pnpm lint:check` fails
+with a stack trace that says nothing about dependencies.
+
+Recovery is the same one line, and it is fast:
+
+```bash
+CI=true pnpm install
+```
+
+Verify with a real test run rather than a clean install exit code. If you only
+need to know whether a package is in the prod install, reading
+`package.json`'s `dependencies` is enough and costs nothing — reach for the
+real deploy only when the mechanism itself is in question.
+
 **Regenerating Playwright Linux baselines via Docker (bind-mounting the
 full repo) leaves a stray `.pnpm-store/` at the repo root that corrupts
 the HOST's `node_modules` with Linux-native binaries** — hit this twice
@@ -1737,15 +1759,22 @@ wrong and the fix is to delete it, not to work around it.
   trend". Revisit enforcing it if runs ever move to dedicated hardware, or
   if the budget gains enough margin to survive the observed spread — not
   by reflexively re-enabling it.
-- **Turbopack's `//# sourceMappingURL` doesn't match the chunk's own
-  filename hash** in this Next.js version — `<hash>.js` chunks reference a
-  `.js.map` under a *different* hash, unrelated to any `.js` file actually in
-  the build output. Lighthouse logs a harmless "mapping for last column out
-  of bounds" warning because of this. Not investigated further; if you need
-  per-module bundle attribution, don't rely on `source-map-explorer` pointed
-  at the obvious `<chunk>.js.map` path — it won't resolve. Grepping the raw
-  chunk for library signature strings doesn't work either (fully stripped,
-  no license banners, no module-path comments in production output).
+- **Turbopack's source maps DO resolve now — this entry used to say they
+  don't.** It recorded that `<hash>.js` chunks referenced a `.js.map` under an
+  unrelated hash, so `source-map-explorer` could not be pointed at the obvious
+  path. Re-measured 2026-08-30 against production: every one of the 11
+  referenced maps returns `200`, and per-module attribution works. Lighthouse's
+  "mapping for last column out of bounds" warning is still harmless.
+
+  Worth keeping because the capability is genuinely useful and the old note
+  said it was unavailable: parsing `sources` and `sourcesContent` out of
+  `apps/web/.next/static/chunks/*.js.map` gives a per-package byte breakdown in
+  one pass, no tooling. That is how the "our own code is 8% of the bundle, 188
+  KB against 2,119 KB of dependencies" figure was produced, and how three
+  suspected-unused dependencies were cleared. Grepping the raw chunk for
+  library signature strings still doesn't work (fully stripped, no license
+  banners, no module-path comments in production output) — read the maps
+  instead.
 - **`radix-ui`'s barrel import is not a real bundle-size cost.** Its
   `package.json` declares `sideEffects: false`, so already-scoped named
   imports (`import { Dialog } from "radix-ui"`) tree-shake correctly without
@@ -1854,6 +1883,100 @@ automatically, so no error-specific edge rule is needed.
 authenticated response must never be edge-cached — that needs `private,
 no-store` keyed off the request carrying credentials, and it must land
 before the first authenticated query, not after.
+
+## Three measured performance trade-offs, priced
+
+Audited against live production at `e076f51` (2026-08-30). Each of these is a
+**deliberate choice that is now costed** rather than a defect — recorded so the
+next person weighs the same trade rather than rediscovering the number, or
+"fixes" something that was chosen on purpose. The genuine gaps found in the
+same pass are in [#173](https://github.com/nixsin/marketplace/issues/173).
+
+Measure with a realistic browser `Accept-Language` and `Sec-Fetch-Dest`. A bare
+curl lands on the one next-intl path that always writes a cookie and reports
+`BYPASS` for everything, which is a failure real traffic never sees.
+
+### `deploymentId` re-downloads the whole bundle on every deploy
+
+`next.config.ts` sets `deploymentId` from `RENDER_GIT_COMMIT`, which appends
+`?dpl=<commit>` to every asset URL. Those filenames are **already**
+content-hashed and served `immutable`, so a chunk whose bytes did not change
+ought to survive a deploy in the browser cache. The query string means none of
+them do.
+
+**Measured cost: 239 KB compressed, per returning visitor, per deploy** — 13
+chunks, most of them byte-identical across a deploy that touched one file.
+
+It buys real version-skew protection (#78 §3.3): a stale tab detects a new
+deploy instead of calling an API route its own bundle no longer matches. That
+is not theoretical here — a four-PR merge burst on 2026-08-19 put the web app
+live calling a `product(id)` query the API had not deployed yet.
+
+| Option | Gains | Costs |
+|---|---|---|
+| **Keep as-is** | Skew protection on every asset | 239 KB per visitor per deploy |
+| **Scope `?dpl=` to HTML and RSC payloads only** | Static chunks keep `immutable`; skew still detected on navigation | A tab that never navigates keeps stale chunks — but it already does, since `deploymentId` does not reach a tab that never navigates either |
+| **Drop it entirely** | Full `immutable` benefit | Loses the one control that caught a real outage |
+
+The middle option is the one worth investigating: skew is detected on
+*navigation*, and navigation is exactly when the HTML is re-fetched. Not done
+here because it needs verifying against a real two-deployment test — the
+interaction with the service worker's own stale-while-revalidate on navigations
+is explicitly unverified, per `next.config.ts`'s own comment.
+
+### Public source maps expose every tunable in `packages/config`
+
+`productionBrowserSourceMaps: true`, with `sourcesContent` embedded. All 11
+referenced maps return `200` — **3.3 MB of original TypeScript, readable by
+anyone.**
+
+The config's comment says to revisit "once there's real business logic worth
+keeping out of a public source map." Two things have changed since:
+
+1. The risky logic is all in `apps/api`, which ships **no** browser maps. That
+   half of the original reasoning still holds.
+2. But `packages/config/src/index.js` is in the client bundle and therefore in
+   the maps — so every rate limit, page size, cache TTL and auth lifetime is
+   published. Given [#152](https://github.com/nixsin/marketplace/issues/152)
+   already records the per-seller inquiry cap as an accepted DoS surface,
+   handing an attacker the exact ceilings makes reaching them cheaper.
+
+**No user-facing performance cost either way** — browsers fetch maps only with
+devtools open, so this is purely a disclosure question.
+
+| Option | Gains | Costs |
+|---|---|---|
+| **Keep public** | Debuggable production stack traces for anyone, including you, with zero setup | Publishes every tunable; makes #152 cheaper to exploit |
+| **Turn off in prod** | Nothing readable | Production stack traces become unmappable — the thing they were turned on for |
+| **Keep generating, stop serving** | Maps stay available to whoever holds the build output | Needs a rule at Cloudflare or the origin; maps are useless to a browser that cannot fetch them |
+
+Worth noting the *specific* exposure rather than the general one: it is not the
+UI code that matters, it is the constants file. Moving the genuinely
+security-relevant ceilings out of the client-imported module — the client uses
+about 8 of its 68 exports — would shrink the disclosure without touching the
+source-map decision at all.
+
+### `product.count()` is the one catalogue query the index cannot help
+
+`products.service.ts` runs an unfiltered `COUNT(*)` on every paged request, to
+compute `totalPages`. No index serves that; Postgres walks the table. The
+`Product(createdAt, id)` index added in #162 makes the *rows* free and leaves
+the count untouched.
+
+Irrelevant at today's few dozen products, and it does real work — the pager
+renders `totalPages` directly. Recorded because it is the part of the catalogue
+path whose cost grows with the catalogue while everything around it does not,
+which makes it easy to misattribute later.
+
+| Option | Gains | Costs |
+|---|---|---|
+| **Leave it** | Exact page count, always | One full scan per uncached paged request |
+| **Cache the count separately, longer TTL than the page** | Nearly free; the count changes far less often than the rows | A newly added product can be missing from `totalPages` for the TTL |
+| **Approximate from `pg_class.reltuples`** | O(1) | Only approximate, and stale between `ANALYZE` runs — wrong for a pager |
+| **Drop `totalPages`, use has-more** | No count at all | Changes the pager UI from numbered pages to next/previous |
+
+The second is the natural first move, and it composes with #173: once product
+and catalogue pages are edge-cached, the count runs far less often anyway.
 
 ## Deployment
 
