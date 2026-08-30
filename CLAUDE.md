@@ -1203,6 +1203,33 @@ packages stay in `known-outdated-packages.txt` regardless, because an
 entry tracks an unfixable dependency, not a PR. A closed PR is therefore
 never evidence a blocker cleared — re-check the upstream package.
 
+**Every entry carries its reason inline** (`prisma  # \`latest\` is 8.0.0-rc.12`),
+and `check-outdated.sh` strips it before matching. A bare package name cannot
+be reviewed without cross-referencing this file, which is exactly how the two
+drift apart; the reason is what lets a reader decide whether the entry is
+still true without re-deriving it. Note the failure mode if that strip ever
+regresses: the entry stops matching, the package reads as actionable, and the
+check goes **red** — loud rather than silent, but a regression test covers it
+anyway.
+
+**Two things belong there, and a third looks like it does and does not.**
+Upstream having shipped no compatible release is the original case (`eslint`,
+`@eslint/js`, `typescript`). Upstream pointing `latest` at a *prerelease* is
+the second: `prisma@latest` is `8.0.0-rc.12`, while `@prisma/client@latest` is
+the stable `7.10.0` — and Prisma requires the CLI and client to match, so
+following `latest` would put the CLI a whole major ahead of the client. The
+stable line is on the `prev` tag. Both cases are outside our code and clear
+only when someone else acts.
+
+**An upgrade that is merely EXPENSIVE is not one of them.** NestJS 12 ships
+its packages as ESM; ts-jest compiles our specs to CommonJS; the two meet at
+`ReferenceError: exports is not defined`, and `transformIgnorePatterns` cannot
+help because the packages declare `"type": "module"`. Running Jest under
+`--experimental-vm-modules` gets past the first error and into the second.
+Nothing upstream is broken — the work is a CJS→ESM migration of our own test
+suite, so it stays actionable and the check stays red until it is done.
+Allowlisting it would convert a real backlog item into a permanent lie.
+
 **Where these entries say "don't re-investigate", they mean don't re-derive
 the finding from scratch — they do NOT mean "never check again."** Every
 one ends with the exact command and the exact upstream condition that
