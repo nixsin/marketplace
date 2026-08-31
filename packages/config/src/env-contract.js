@@ -51,14 +51,23 @@
  * - `unknown`    nothing recognised. Permissive like localhost, but it says
  *                so out loud every single time -- see UNKNOWN_ENVIRONMENT_HINT
  */
-export const DEPLOY_ENVIRONMENTS = /** @type {const} */ ([
-  "render",
-  "github-ci",
-  "ci-local",
-  "test",
-  "localhost",
-  "unknown",
-]);
+/**
+ * Named rather than loose strings, so a config file that has to declare
+ * APP_ENV declares a value this module actually recognises -- a typo is now a
+ * hard error, and a magic string is how you write one.
+ */
+export const DEPLOY_ENVIRONMENT = /** @type {const} */ ({
+  RENDER: "render",
+  GITHUB_CI: "github-ci",
+  CI_LOCAL: "ci-local",
+  TEST: "test",
+  LOCALHOST: "localhost",
+  UNKNOWN: "unknown",
+});
+
+export const DEPLOY_ENVIRONMENTS = /** @type {const} */ (
+  Object.values(DEPLOY_ENVIRONMENT)
+);
 
 /** Explicit override. Set this and nothing is inferred at all. */
 export const APP_ENV_OVERRIDE = "APP_ENV";
@@ -94,6 +103,24 @@ export const APP_ENV_OVERRIDE = "APP_ENV";
  */
 export function isRenderDeploy(env = process.env) {
   return env.RENDER === "true" || Boolean(env.RENDER_GIT_COMMIT);
+}
+
+/**
+ * Is this a real deployment, as opposed to a laptop, a CI runner or a test?
+ *
+ * THE QUESTION APP CODE SHOULD ASK. `isRenderDeploy()` answers "which
+ * platform", which is this package's business, not apps/web's -- app code
+ * encoding the hosting provider means every future platform is a grep across
+ * both apps rather than one line here.
+ *
+ * Render is the only deployment target today, so this is currently a rename
+ * with one call site. That is the point at which the boundary is free to
+ * draw; after the second platform it is a refactor.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ */
+export function isDeployedEnvironment(env = process.env) {
+  return isRenderDeploy(env);
 }
 
 /**
@@ -197,131 +224,289 @@ const isPort = (value) => {
 const atLeast = (n) => (value) =>
   value.length >= n ? null : `must be at least ${n} characters`;
 
+const isNotBlank = (value) => (value.length > 0 ? null : "must not be empty");
+
+/**
+ * @param {RegExp} pattern
+ * @param {string} describe
+ */
+const matches = (pattern, describe) => (value) =>
+  pattern.test(value) ? null : describe;
+
+/** Run several checks, reporting the first problem. */
+const all =
+  (...checks) =>
+  (value) => {
+    for (const check of checks) {
+      const problem = check(value);
+      if (problem) return problem;
+    }
+    return null;
+  };
+
+/**
+ * Values that mean "nobody filled this in", matched anywhere in the string
+ * rather than anchored: `dev-secret-change-me` is the literal this repo ships
+ * in .env.example, and the point is that it must never reach production
+ * wearing a longer name.
+ */
+const PLACEHOLDER_PATTERN =
+  /(change[-_]?me|your[-_]?(key|secret|token|value|url)|replace[-_]?me|todo|fixme|xxxx+|<[^>]+>)/i;
+
+/** @param {string} value */
+function looksLikePlaceholder(value) {
+  return PLACEHOLDER_PATTERN.test(value);
+}
+
+/**
+ * Mistakes worth catching on EVERY variable, whatever it is for.
+ *
+ * Each produces a value that is subtly wrong in a way the rule's own check
+ * cannot see. A DATABASE_URL with a trailing newline still parses as a URL.
+ * A JWT_SECRET wrapped in literal quotes still passes a length check -- and
+ * then signs tokens with a secret two characters longer than anyone believes.
+ *
+ * @param {string} value
+ * @returns {string | null}
+ */
+function universalProblem(value) {
+  if (value !== value.trim()) {
+    // Overwhelmingly a copy-paste or a here-doc that kept its newline. Shells
+    // and dotenv both preserve it, and nothing downstream trims.
+    return "has leading or trailing whitespace";
+  }
+
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    // A dashboard field is not a shell. Quoting there stores the quotes.
+    return "is wrapped in quotes — a dashboard or CI field stores them as part of the value";
+  }
+
+  return null;
+}
+
 // ---------------------------------------------------------------------
 // The contracts
 // ---------------------------------------------------------------------
 
 /**
- * `levels` is keyed by environment. Anything omitted defaults to "optional",
- * which keeps the tables readable: only deviations from "we do not care" are
- * written down.
+ * ONE VARIABLE LIST, SHARED BY EVERY ENVIRONMENT.
+ *
+ * Every environment declares every variable. What differs between a laptop,
+ * CI and production is the VALUE, never which variables exist.
+ *
+ * This replaced a per-environment severity table, and the reason is worth
+ * keeping: that table let a variable be "required on render, optional
+ * everywhere else", which sounds careful and means the variable is invisible
+ * in the four environments where you would actually notice it missing. You
+ * find out on the deploy. Declaring everything everywhere moves that
+ * discovery to the laptop, which is the only place it is cheap.
+ *
+ * ABSENT AND EMPTY ARE NOW DIFFERENT THINGS, and this is the detail that
+ * makes the model work. `process.env.FOO` is `undefined` when nobody wrote
+ * the variable down and `""` when somebody wrote `FOO=`. So:
+ *
+ *   undefined  -> ERROR. Nobody declared it; this environment is incomplete.
+ *   ""         -> a VALUE, meaning "off" -- but only where `emptyMeans` says
+ *                 so. Elsewhere an empty value is an error, because a blank
+ *                 JWT_SECRET is not a decision anybody made on purpose.
+ *   anything   -> validated by `check`, plus `perEnvironment` where the
+ *                 rules for a valid value genuinely differ (a localhost URL
+ *                 is correct on a laptop and catastrophic in production).
+ *
+ * An earlier version treated "" as absent. That was wrong under this model:
+ * it threw away the one signal that distinguishes "deliberately off" from
+ * "forgotten", which is the distinction the whole design now rests on.
  *
  * @typedef {object} EnvRule
  * @property {string} name
  * @property {boolean} secret        Never echo this value into a message.
  * @property {string} why            What actually breaks, in one line.
- * @property {Partial<Record<DeployEnvironment, Severity>>} levels
- * @property {(value: string) => string | null} [check]
+ * @property {string | null} emptyMeans  What `FOO=` means, or null if empty is invalid.
+ * @property {(value: string) => string | null} check
+ * @property {Partial<Record<DeployEnvironment, (value: string) => string | null>>} [perEnvironment]
  */
+
+/** Rejects a URL pointing at the machine serving it. */
+const notLoopback = (value) => {
+  let hostname;
+  try {
+    ({ hostname } = new URL(value));
+  } catch {
+    return null; // `check` already reports a malformed URL
+  }
+  return ["localhost", "localhost.", "127.0.0.1", "::1", "[::1]", "0.0.0.0"].includes(
+    hostname,
+  )
+    ? "points at this machine — every visitor would resolve it to their own"
+    : null;
+};
+
+/** Rejects plain http, which HSTS makes unreachable for returning visitors. */
+const mustBeHttps = (value) =>
+  value.startsWith("http://")
+    ? "must use https:// in production — HSTS is served with a two-year max-age"
+    : null;
+
+/** Rejects a value nobody actually filled in. */
+const notPlaceholder = (value) =>
+  looksLikePlaceholder(value) ? "is still a placeholder" : null;
+
+const noTrailingSlash = (value) =>
+  value.endsWith("/")
+    ? "must not end with a trailing slash — it is concatenated with paths"
+    : null;
 
 /** @type {EnvRule[]} */
 export const API_ENV_CONTRACT = [
   {
+    name: "APP_ENV",
+    secret: false,
+    why: "States which environment this is instead of leaving it inferred.",
+    emptyMeans: null,
+    check: isOneOf([...DEPLOY_ENVIRONMENTS]),
+  },
+  {
     name: "DATABASE_URL",
     secret: true, // contains the password
     why: "Nothing works without it; Prisma cannot connect.",
-    levels: {
-      render: "required",
-      localhost: "required",
-      "github-ci": "required",
-      "ci-local": "required",
-    },
+    emptyMeans: null,
     check: isUrl(["postgresql:", "postgres:"]),
+    perEnvironment: { render: notLoopback },
   },
   {
     name: "JWT_SECRET",
     secret: true,
     why: "Signs session tokens. A guessable one is a full authentication bypass.",
-    // Not required in `test`: the e2e suite builds its own module fixtures.
-    levels: {
-      render: "required",
-      localhost: "required",
-      "github-ci": "required",
-      "ci-local": "required",
-    },
+    emptyMeans: null,
     check: atLeast(16),
+    // .env.example and docker-compose.yml ship `dev-secret-change-me` on
+    // purpose, so the realistic production failure is not an absent secret
+    // but the development one carried forward.
+    perEnvironment: { render: notPlaceholder },
   },
   {
     name: "PORT",
     secret: false,
-    // Worth flagging even though it has a fallback, because the fallback is
-    // actively wrong here: main.ts uses `process.env.PORT ?? 3000`, and 3000
-    // is the WEB app's port. Unset locally, the API quietly binds the port
-    // the web dev server wants, and the failure surfaces as the web app
-    // refusing to start rather than as anything about the API.
-    why: "Unset, the API falls back to 3000 — the web app's port.",
-    levels: { localhost: "recommended" },
+    why: "The port this service listens on.",
+    emptyMeans: null,
     check: isPort,
   },
   {
     name: "REDIS_URL",
     secret: true, // Render's connection string carries credentials
-    why: "Absent, the shared cache silently does not run and every read hits Postgres.",
-    // Deliberately NOT required anywhere. The API treats the cache as
-    // optional by construction, `.env.example` ships it blank so CI's
-    // `cp .env.example .env` does not point at a Redis no job runs, and a
-    // bare checkout must work. On Render it is `recommended`, because there
-    // it is Terraform-provisioned and its absence means the cache the
-    // catalogue depends on is not actually wired up.
-    levels: { render: "recommended" },
+    why: "The shared cache. Absent, every read falls through to Postgres.",
+    emptyMeans:
+      "no shared cache — the API uses a null cache and reads Postgres directly, " +
+      "which is a supported state rather than a degraded one",
     check: isUrl(["redis:", "rediss:"]),
   },
   {
     name: "INQUIRY_IP_HASH_SECRET",
     secret: true,
-    why: "Without it the per-IP rate limit does not run at all — silently, on an unauthenticated endpoint.",
-    levels: { render: "required" },
+    why: "Keys the HMAC that stores a submitter's address as a hash.",
+    emptyMeans:
+      "the per-IP rate limit does not run — storing nothing is the honest " +
+      "option, because an unkeyed digest over IPv4's 2^32 space is reversible",
     check: atLeast(16),
+    perEnvironment: {
+      // The one environment where "off" is not an acceptable answer: this is
+      // an abuse control on an unauthenticated endpoint.
+      render: (value) => (value ? notPlaceholder(value) : null),
+    },
   },
   {
     name: "INQUIRY_TRUST_PROXY_HEADERS",
     secret: false,
     why: 'Only the exact string "true" enables it; anything else reads as off.',
-    levels: {},
+    emptyMeans: null,
     check: isOneOf(["true", "false"]),
   },
   {
     name: "BLOB_PROVIDER",
     secret: false,
-    why: "Defaults to `local`, which on Render writes uploads into the container filesystem — no CDN serves them and a redeploy discards them.",
-    levels: { render: "required" },
+    why: "`local` writes uploads into the container filesystem — no CDN serves them and a redeploy discards them.",
+    emptyMeans: null,
     check: isOneOf(["r2", "s3", "b2", "spaces", "minio", "local"]),
+    perEnvironment: {
+      render: (value) =>
+        value === "local"
+          ? "must not be `local` in production — uploads would go to a container directory no CDN serves and a redeploy discards"
+          : null,
+    },
   },
   {
     name: "BLOB_ACCESS_KEY_ID",
     secret: true,
-    why: "Required once BLOB_PROVIDER is not `local`.",
-    levels: {},
+    why: "Required once BLOB_PROVIDER is not `local` — enforced by a cross-check, since it depends on another variable.",
+    emptyMeans: "no object-storage credentials, which is correct for BLOB_PROVIDER=local",
+    check: isNotBlank,
   },
   {
     name: "BLOB_SECRET_ACCESS_KEY",
     secret: true,
-    why: "Required once BLOB_PROVIDER is not `local`.",
-    levels: {},
+    why: "Required once BLOB_PROVIDER is not `local` — enforced by a cross-check, since it depends on another variable.",
+    emptyMeans: "no object-storage credentials, which is correct for BLOB_PROVIDER=local",
+    check: isNotBlank,
+  },
+  {
+    name: "NEXT_PUBLIC_SITE_URL",
+    secret: false,
+    // Easy to miss on the API service because the name says NEXT_PUBLIC.
+    why: "Outbound inquiries embed a product link built from it; without it the link is omitted and the seller has to search instead of clicking.",
+    emptyMeans:
+      "outbound WhatsApp inquiries omit the product link and log " +
+      "[NOT CONFIGURED] — the buyer's name, number and Ref still get through",
+    check: all(isUrl(["http:", "https:"]), noTrailingSlash),
+    perEnvironment: { render: all(notLoopback, mustBeHttps) },
   },
   {
     name: "WHATSAPP_ACCESS_TOKEN",
     secret: true,
     why: "Absent, inquiries are still recorded but never delivered to the seller.",
-    levels: { render: "recommended" },
+    emptyMeans: "WhatsApp delivery is off; inquiries are recorded and not sent",
+    check: matches(/^\S+$/, "must not contain whitespace"),
   },
   {
     name: "WHATSAPP_PHONE_NUMBER_ID",
     secret: false,
-    why: "Absent, inquiries are still recorded but never delivered to the seller.",
-    levels: { render: "recommended" },
+    why: "Meta's numeric sender ID.",
+    emptyMeans: "WhatsApp delivery is off",
+    // A phone NUMBER pasted here instead of the id is the classic mistake,
+    // and it arrives carrying + and spaces.
+    check: matches(
+      /^\d{5,}$/,
+      "must be Meta's numeric phone number ID, not a phone number (digits only)",
+    ),
   },
   {
     name: "WHATSAPP_TEMPLATE_NAME",
     secret: false,
     why: "Business-initiated WhatsApp messages REQUIRE a pre-approved template; free-form text is rejected outside a 24h window the buyer opens.",
-    levels: {},
+    emptyMeans: "WhatsApp delivery is off",
+    check: matches(
+      /^[a-z0-9_]+$/,
+      "must be lowercase letters, digits and underscores only — Meta rejects anything else",
+    ),
+  },
+  {
+    name: "WHATSAPP_TEMPLATE_LANGUAGE",
+    secret: false,
+    why: "The template's approved locale. A mismatch is rejected at send time, not at boot.",
+    emptyMeans: "the service falls back to its documented default locale",
+    check: matches(
+      /^[a-z]{2}(_[A-Z]{2})?$/,
+      'must be a language code such as "en" or "en_US"',
+    ),
   },
   {
     name: "WHATSAPP_ALLOW_FREE_FORM",
     secret: false,
     why: "An opt-in for a known-open service window, never a fallback for a missing template.",
-    levels: {},
+    emptyMeans: null,
     check: isOneOf(["true", "false"]),
   },
 ];
@@ -329,75 +514,63 @@ export const API_ENV_CONTRACT = [
 /**
  * NOTE ON ORDERING, so these rules are not mistaken for the only defence.
  *
- * On Render, `@medinstru/config` throws while it is being IMPORTED if
+ * On a deployment, `@medinstru/config` throws while it is being IMPORTED if
  * NEXT_PUBLIC_API_URL or NEXT_PUBLIC_SITE_URL is missing or points at
- * localhost — and next.config.ts imports it, so that throw happens before
- * any code in this file runs. These two rules are therefore usually
- * unreachable during a real boot, and that is fine: they exist so
- * `scripts/check-env.mjs --env render` can answer "would this pass on
- * Render?" from a laptop WITHOUT importing the web config and throwing.
- *
- * Three layers, deliberately, because each catches what the others cannot:
- * next.config.ts's siteUrlProblem (the richest message, private ranges and
- * embedded credentials included), the config's own throw (covers every
- * import path, not just next.config.ts), and this table (reports everything
- * at once, and can be run against an environment you are not in).
+ * localhost -- and next.config.ts imports it, so that throw happens before
+ * any code in this file runs. These rules are therefore usually unreachable
+ * during a real boot, and that is fine: they exist so
+ * `scripts/check-env.mjs --env render` can answer "would this pass in
+ * production?" from a laptop WITHOUT importing the web config and throwing.
  *
  * @type {EnvRule[]}
  */
 export const WEB_ENV_CONTRACT = [
   {
+    name: "APP_ENV",
+    secret: false,
+    why: "States which environment this is instead of leaving it inferred.",
+    emptyMeans: null,
+    check: isOneOf([...DEPLOY_ENVIRONMENTS]),
+  },
+  {
     name: "NEXT_PUBLIC_API_URL",
     secret: false,
-    // The default is what makes this dangerous rather than obvious: a build
-    // with no value produces a bundle that calls localhost:4000 from the
-    // visitor's browser. It also feeds the CSP's connect-src, so a wrong
-    // value blocks the requests as well as misdirecting them.
-    why: "On Render the config REFUSES to fall back and throws; anywhere else it defaults to http://localhost:4000/graphql.",
-    levels: { render: "required" },
+    why: "The origin every visitor's browser fetches products from, and the value connect-src is derived from — a wrong one misdirects and blocks at once.",
+    emptyMeans: null,
     check: isUrl(["http:", "https:"]),
+    perEnvironment: { render: all(notLoopback, mustBeHttps) },
   },
   {
     name: "NEXT_PUBLIC_SITE_URL",
     secret: false,
-    why: "On Render the config REFUSES to fall back and throws; anywhere else it defaults to http://localhost:3000.",
-    levels: { render: "required" },
-    check: isUrl(["http:", "https:"]),
+    why: "Canonical URLs, hreflang alternates and OpenGraph images are all built from it.",
+    emptyMeans: null,
+    check: all(isUrl(["http:", "https:"]), noTrailingSlash),
+    perEnvironment: { render: all(notLoopback, mustBeHttps) },
   },
   {
     name: "NEXT_PUBLIC_BLOB_BASE_URL",
     secret: false,
     why: "The public base for product images; without it they resolve against the app's own origin.",
-    levels: { render: "recommended" },
-    check: isUrl(["http:", "https:"]),
+    emptyMeans:
+      "images are served from this app's own origin — the real state on a " +
+      "laptop and in CI, where no object storage exists",
+    check: all(isUrl(["http:", "https:"]), noTrailingSlash),
+    perEnvironment: { render: mustBeHttps },
   },
   {
     name: "SOURCEMAP_SIGNING_KEY",
     secret: true,
-    // Genuinely optional: the route fails closed, so unset means maps are
-    // unavailable rather than public. That is the safe state, so its absence
-    // is not even a warning -- only a malformed value is.
-    why: "Unset means source maps are unavailable, which is the safe default. A short key weakens the signature.",
-    levels: {},
+    why: "Signs source-map access tokens.",
+    emptyMeans:
+      "source maps are unavailable — the /sourcemaps route fails closed, " +
+      "which is the safe state rather than a broken one",
     check: atLeast(32),
   },
 ];
 
 export const CONTRACTS = { api: API_ENV_CONTRACT, web: WEB_ENV_CONTRACT };
 
-// ---------------------------------------------------------------------
-// Cross-field rules
-// ---------------------------------------------------------------------
-
-/**
- * Combinations, which a per-variable table cannot express. Each returns a
- * finding or null.
- *
- * These are where the genuinely damaging misconfigurations live: every one
- * of them is a state in which each individual variable looks fine.
- *
- * @type {Record<string, ((env: Record<string, string | undefined>, environment: DeployEnvironment) => {level: "error"|"warning", message: string} | null)[]>}
- */
 export const CROSS_CHECKS = {
   api: [
     // The documented known-bad pairing: free-form ON with no template sends a
@@ -543,53 +716,86 @@ export function checkEnv({ app, env = process.env, environment }) {
   /** @type {Finding[]} */
   const warnings = [];
 
-  for (const rule of rules) {
-    const severity = rule.levels[target] ?? "optional";
-    const raw = env[rule.name];
-    // An empty string is ABSENT, not present-and-blank. `.env.example` ships
-    // several variables as `NAME=` on purpose, and dotenv loads those as "".
-    // Treating that as set would report a blank JWT_SECRET as satisfied.
-    const present = raw !== undefined && raw !== "";
+  // A TYPO IN APP_ENV IS A HARD ERROR, never a silent downgrade.
+  //
+  // detectEnvironment() ignores an unrecognised value and carries on
+  // inferring, so a bad override cannot crash a tool that only wanted to
+  // print a report. But "ignored" must not mean "unnoticed": APP_ENV exists
+  // to state the environment outright, and `APP_ENV=prod` quietly getting
+  // localhost's rules is the failure this module exists to remove.
+  const override = env[APP_ENV_OVERRIDE];
+  if (override && !DEPLOY_ENVIRONMENTS.includes(override)) {
+    errors.push({
+      level: "error",
+      message:
+        `${APP_ENV_OVERRIDE} is set to ${JSON.stringify(override)}, which is not a ` +
+        `known environment. It was IGNORED and the environment was inferred as ` +
+        `"${target}" instead — which may be more permissive than you intended. ` +
+        `Use one of: ${DEPLOY_ENVIRONMENTS.join(", ")}.`,
+    });
+  }
 
-    if (!present) {
-      if (severity === "required") {
+  if (target === "unknown") {
+    warnings.push({ level: "warning", message: UNKNOWN_ENVIRONMENT_HINT });
+  }
+
+  for (const rule of rules) {
+    const raw = env[rule.name];
+
+    // ABSENT: nobody declared it. Always an error -- every environment
+    // declares every variable, so this means the environment is incomplete
+    // rather than that the variable does not apply here.
+    if (raw === undefined) {
+      errors.push({
+        level: "error",
+        message:
+          `${rule.name} is not declared. Every environment declares every variable — ` +
+          `${rule.why}` +
+          (rule.emptyMeans
+            ? ` Set it to empty (${rule.name}=) to mean: ${rule.emptyMeans}.`
+            : ""),
+      });
+      continue;
+    }
+
+    // EMPTY: a value, not an absence -- but only where that is documented.
+    // A blank JWT_SECRET is not a decision anybody made on purpose.
+    if (raw === "") {
+      if (!rule.emptyMeans) {
         errors.push({
           level: "error",
-          message: `${rule.name} is not set. ${rule.why}`,
-        });
-      } else if (severity === "recommended") {
-        warnings.push({
-          level: "warning",
-          message: `${rule.name} is not set. ${rule.why}`,
+          message: `${rule.name} is declared but empty, and empty is not a valid value for it. ${rule.why}`,
         });
       }
       continue;
     }
 
-    if (!rule.check) continue;
-    const problem = rule.check(raw);
+    // A placeholder is an ERROR in production and a WARNING elsewhere: the
+    // dev stack ships `dev-secret-change-me` on purpose.
+    if (looksLikePlaceholder(raw) && target !== "render") {
+      warnings.push({
+        level: "warning",
+        message:
+          `${rule.name} still looks like a placeholder` +
+          (rule.secret ? " (value not shown — this variable is a secret)." : `. Found: ${JSON.stringify(raw)}`),
+      });
+    }
+
+    const problem =
+      universalProblem(raw) ??
+      rule.check(raw) ??
+      rule.perEnvironment?.[target]?.(raw) ??
+      null;
     if (!problem) continue;
 
-    // A malformed value is an ERROR at every severity, including "optional".
-    // Absence and wrongness are different failures: absence is often a
-    // deliberate, documented state, while a value that is present and
-    // malformed is never intended by anyone.
-    //
     // The value is only shown for a non-secret rule -- these messages are
-    // printed into Render logs and CI output.
+    // printed into deploy logs and CI output.
     errors.push({
       level: "error",
       message: rule.secret
         ? `${rule.name} ${problem}. (Value not shown — this variable is a secret.)`
         : `${rule.name} ${problem}. Found: ${JSON.stringify(raw)}`,
     });
-  }
-
-  // An unrecognised environment is not an error -- docker-web-prod-boot is a
-  // legitimate one -- but it must never pass in silence, or "permissive by
-  // default" becomes invisible exactly where it matters most.
-  if (target === "unknown") {
-    warnings.push({ level: "warning", message: UNKNOWN_ENVIRONMENT_HINT });
   }
 
   for (const cross of CROSS_CHECKS[app] ?? []) {
@@ -599,6 +805,69 @@ export function checkEnv({ app, env = process.env, environment }) {
   }
 
   return { environment: target, app, errors, warnings, ok: errors.length === 0 };
+}
+
+/**
+ * How a value is shown in the startup banner.
+ *
+ * A SECRET IS NEVER PRINTED, not even partially. A masked prefix looks
+ * helpful and is not: it narrows a brute-force and, worse, it is exactly the
+ * kind of thing that gets pasted into a bug report. The banner's job is to
+ * answer "is this set, and to what shape" -- for a secret, "set" is the whole
+ * answer. Length is shown because a wrong-length secret is a real and common
+ * misconfiguration, and length alone reveals nothing usable.
+ *
+ * @param {EnvRule} rule
+ * @param {string | undefined} raw
+ */
+export function displayValue(rule, raw) {
+  if (raw === undefined) return "(not declared)";
+  if (raw === "") return "(empty)";
+  if (rule.secret) return `*** (${raw.length} chars)`;
+  return raw;
+}
+
+/**
+ * The startup banner: which environment this is, and every variable's value.
+ *
+ * Printed on EVERY boot, not only on failure. The question "what is this
+ * process actually configured with" is asked far more often than "is the
+ * configuration valid", and answering it needs no debugging session, no shell
+ * on the box and no guessing about which .env won.
+ *
+ * @param {CheckResult} result
+ * @param {Record<string, string | undefined>} env
+ * @returns {string}
+ */
+export function formatStartupBanner(result, env) {
+  const rules = CONTRACTS[result.app];
+  const nameWidth = Math.max(...rules.map((r) => r.name.length));
+
+  const title = `${result.app.toUpperCase()} starting — environment: ${result.environment}`;
+
+  const rows = rules.map((rule) => {
+    const raw = env[rule.name];
+    const shown = displayValue(rule, raw);
+    // A declared-empty value is legitimate but worth seeing at a glance, so
+    // it carries what empty MEANS rather than just reading as blank.
+    const note =
+      raw === "" && rule.emptyMeans ? `  ← ${rule.emptyMeans.split(" — ")[0]}` : "";
+    return `${rule.name.padEnd(nameWidth)}  ${shown}${note}`;
+  });
+
+  // Width from the widest ACTUAL line, so the box closes. Computing it from
+  // the title alone left every row overflowing the right border, which looks
+  // like a rendering bug and undermines the one job a banner has.
+  const inner = Math.max(title.length, ...rows.map((r) => r.length)) + 2;
+  const bar = "─".repeat(inner + 2);
+
+  return [
+    `┌${bar}┐`,
+    `│  ${title.padEnd(inner)}│`,
+    `├${bar}┤`,
+    ...rows.map((r) => `│  ${r.padEnd(inner)}│`),
+    `└${bar}┘`,
+  ].join("\n");
 }
 
 /**
@@ -616,10 +885,10 @@ export function formatReport(result) {
   for (const { message } of result.warnings) lines.push(`  WARNING  ${message}`);
 
   if (result.ok && result.warnings.length === 0) {
-    lines.push("  OK — every variable this environment requires is set.");
+    lines.push("  OK — every variable is declared, and every value is valid.");
   } else if (result.ok) {
     lines.push(
-      `  OK with ${result.warnings.length} warning(s) — nothing required is missing.`,
+      `  OK with ${result.warnings.length} warning(s) — nothing is missing or invalid.`,
     );
   } else {
     lines.push("");
@@ -648,13 +917,128 @@ export function assertEnvOrExit({
   log = console.error,
 }) {
   const result = checkEnv({ app, env });
-  const report = formatReport(result);
+
+  // ONCE PER PROCESS. Next loads next.config.ts more than once during a
+  // build, so without this the banner appears several times in a row and
+  // starts reading as noise -- which is how a startup diagnostic stops being
+  // read at all. Keyed on a symbol rather than a module-level variable
+  // because the config package can legitimately be loaded through more than
+  // one specifier (the main entry, a subpath, a cache-busting query string in
+  // tests) and each of those is a separate module instance.
+  const printedKey = Symbol.for("@medinstru/config:banner-printed");
+  const alreadyPrinted = Boolean(globalThis[printedKey]);
+  globalThis[printedKey] = true;
+
+  // The banner prints on EVERY boot, not only on failure. "What is this
+  // process actually configured with" is asked far more often than "is the
+  // configuration valid", and answering it in the first lines of the log
+  // needs no shell on the box and no guessing about which .env won. Secrets
+  // are shown as *** with a length and never partially -- see displayValue.
+  if (!alreadyPrinted) log(formatStartupBanner(result, env));
 
   // Everything goes to stderr, warnings included. Render and GitHub Actions
   // both interleave the streams, and a startup diagnostic on stdout can be
   // swallowed by a process that pipes stdout somewhere.
-  if (!result.ok || result.warnings.length > 0) log(report);
+  if (!result.ok || result.warnings.length > 0) log(formatReport(result));
 
   if (!result.ok) exit(1);
   return result;
+}
+
+// ---------------------------------------------------------------------
+// Seeing the contract, not just enforcing it
+// ---------------------------------------------------------------------
+
+/**
+ * What one environment must declare, and what the rules for its VALUES are.
+ *
+ * Every environment declares every variable, so the interesting question is
+ * no longer "which variables apply here" -- it is "what counts as a valid
+ * value here". This answers that.
+ *
+ * Derived, never a second table. A hand-maintained summary would drift from
+ * the rules it summarises, silently, which is the failure this module exists
+ * to remove.
+ *
+ * @param {"api" | "web"} app
+ * @param {DeployEnvironment} environment
+ */
+export function expectationsFor(app, environment) {
+  const rules = CONTRACTS[app];
+  if (!rules) throw new Error(`Unknown app "${app}" — expected api or web`);
+  if (!DEPLOY_ENVIRONMENTS.includes(environment)) {
+    throw new Error(
+      `Unknown environment "${environment}" — expected one of: ${DEPLOY_ENVIRONMENTS.join(", ")}`,
+    );
+  }
+
+  return {
+    /** Declared in every environment, without exception. */
+    declared: rules.map((r) => r.name),
+    /** May be declared empty here, and what empty means. */
+    mayBeEmpty: rules
+      .filter((r) => r.emptyMeans)
+      .map((r) => ({ name: r.name, means: r.emptyMeans })),
+    /** Carries an extra value rule in THIS environment. */
+    extraValueRules: rules
+      .filter((r) => r.perEnvironment?.[environment])
+      .map((r) => r.name),
+  };
+}
+
+/**
+ * The whole contract as one readable table.
+ *
+ * One row per variable, because there is one variable list. The columns are
+ * what actually varies: whether empty is a legal value, and which
+ * environments constrain the value further.
+ *
+ * @param {"api" | "web"} app
+ * @returns {string}
+ */
+export function formatMatrix(app) {
+  const rules = CONTRACTS[app];
+  if (!rules) throw new Error(`Unknown app "${app}" — expected api or web`);
+
+  const rows = rules.map((rule) => ({
+    name: rule.name,
+    empty: rule.emptyMeans ? "allowed" : "no",
+    secret: rule.secret ? "yes" : "",
+    extra: DEPLOY_ENVIRONMENTS.filter((e) => rule.perEnvironment?.[e]).join(", "),
+  }));
+
+  const w = (key, header) =>
+    Math.max(header.length, ...rows.map((r) => r[key].length));
+  const widths = {
+    name: w("name", "variable"),
+    empty: w("empty", "empty ok"),
+    secret: w("secret", "secret"),
+    extra: w("extra", "stricter in"),
+  };
+
+  const line = (name, empty, secret, extra) =>
+    [
+      name.padEnd(widths.name),
+      empty.padEnd(widths.empty),
+      secret.padEnd(widths.secret),
+      extra,
+    ]
+      .join("  ")
+      .trimEnd();
+
+  const header = line("variable", "empty ok", "secret", "stricter in");
+
+  return [
+    `${app}: every environment declares every one of these`,
+    "",
+    header,
+    "-".repeat(header.length),
+    ...rows.map((r) => line(r.name, r.empty, r.secret, r.extra)),
+    "",
+    "empty ok    = `NAME=` is a legal value here and means something specific;",
+    "              see the rule's emptyMeans. Absent is ALWAYS an error.",
+    "secret      = never printed; the startup banner shows *** and a length.",
+    "stricter in = environments that constrain the VALUE further (for example",
+    "              rejecting a localhost URL in production).",
+  ].join("\n");
 }

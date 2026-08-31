@@ -1,3 +1,9 @@
+import {
+  DEV_API_URL,
+  DEV_BLOB_BASE_URL,
+  DEV_SITE_URL,
+} from "@medinstru/config";
+import { DEPLOY_ENVIRONMENT } from "@medinstru/config/env-contract";
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
@@ -15,6 +21,22 @@ export default defineConfig({
     // of node:test since these run inside the web app's own suite.
     include: ["test/**/*.spec.ts", "src/**/*.spec.ts", "src/**/*.spec.tsx"],
     setupFiles: ["./vitest.setup.ts"],
+    // The test environment declares every variable, like docker-compose.yml
+    // and ci.yml do -- there is one variable list and every environment
+    // declares all of it. Values come from @medinstru/config rather than
+    // literals, so "the localhost API" has one definition instead of six.
+    //
+    // Several specs in test/ boot a real `next start`, which runs the
+    // environment check; without these it would refuse to start.
+    env: {
+      APP_ENV: DEPLOY_ENVIRONMENT.TEST,
+      NEXT_PUBLIC_API_URL: DEV_API_URL,
+      NEXT_PUBLIC_SITE_URL: DEV_SITE_URL,
+      NEXT_PUBLIC_BLOB_BASE_URL: DEV_BLOB_BASE_URL,
+      // Empty: source maps unavailable. The route fails closed, so this is
+      // the safe state rather than a broken one.
+      SOURCEMAP_SIGNING_KEY: "",
+    },
     testTimeout: 30_000,
     hookTimeout: 30_000,
     // Each spec file in test/ boots its own `next start` on a fixed port —

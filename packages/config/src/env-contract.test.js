@@ -2,11 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   API_ENV_CONTRACT,
-  isRenderDeploy,
+  DEPLOY_ENVIRONMENTS,
   WEB_ENV_CONTRACT,
   checkEnv,
   detectEnvironment,
+  displayValue,
+  expectationsFor,
+  formatMatrix,
   formatReport,
+  formatStartupBanner,
+  isRenderDeploy,
 } from "./env-contract.js";
 
 const messages = (findings) => findings.map((f) => f.message).join("\n");
@@ -67,9 +72,15 @@ test("a bare process is localhost; a production one with no platform is unknown"
   assert.equal(detectEnvironment({ NODE_ENV: "production" }), "unknown");
 });
 
-test("an unknown environment is permissive but never silent", () => {
+test("an unknown environment is still held to the full contract", () => {
+  // "unknown" used to be permissive -- nothing required, just a warning. Under
+  // one shared variable list there is nothing left to be permissive ABOUT: an
+  // unrecognised environment declares the same variables as every other one.
+  // What survives is the warning, because "we could not tell where we are" is
+  // still worth saying out loud.
   const result = checkEnv({ app: "web", env: { NODE_ENV: "production" } });
-  assert.equal(result.ok, true, formatReport(result));
+  assert.equal(result.ok, false);
+  assert.match(messages(result.errors), /NEXT_PUBLIC_API_URL is not declared/);
   assert.match(messages(result.warnings), /Environment not recognised/);
   assert.match(messages(result.warnings), /set APP_ENV/);
 });
@@ -98,245 +109,288 @@ test("GitHub Actions and a local CI run are told apart", () => {
 });
 
 // ---------------------------------------------------------------------
-// Severity semantics
+// The model: same variables everywhere, values differ
 // ---------------------------------------------------------------------
 
-test("a required variable missing is an error; recommended is only a warning", () => {
-  const result = checkEnv({ app: "api", env: { RENDER: "true" } });
-  assert.match(messages(result.errors), /DATABASE_URL is not set/);
-  assert.match(messages(result.warnings), /REDIS_URL is not set/);
-  assert.equal(result.ok, false);
+/** A complete, valid environment, so a case can change exactly one thing. */
+const completeApi = {
+  APP_ENV: "localhost",
+  DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/medinstru",
+  JWT_SECRET: "example-secret-of-suitable-length",
+  PORT: "4000",
+  REDIS_URL: "",
+  INQUIRY_IP_HASH_SECRET: "",
+  INQUIRY_TRUST_PROXY_HEADERS: "false",
+  BLOB_PROVIDER: "local",
+  BLOB_ACCESS_KEY_ID: "",
+  BLOB_SECRET_ACCESS_KEY: "",
+  NEXT_PUBLIC_SITE_URL: "http://localhost:3000",
+  WHATSAPP_ACCESS_TOKEN: "",
+  WHATSAPP_PHONE_NUMBER_ID: "",
+  WHATSAPP_TEMPLATE_NAME: "",
+  WHATSAPP_TEMPLATE_LANGUAGE: "",
+  WHATSAPP_ALLOW_FREE_FORM: "false",
+};
+
+const completeWeb = {
+  APP_ENV: "localhost",
+  NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql",
+  NEXT_PUBLIC_SITE_URL: "http://localhost:3000",
+  NEXT_PUBLIC_BLOB_BASE_URL: "",
+  SOURCEMAP_SIGNING_KEY: "",
+};
+
+test("a complete environment passes", () => {
+  const api = checkEnv({ app: "api", env: completeApi });
+  assert.equal(api.ok, true, formatReport(api));
+  const web = checkEnv({ app: "web", env: completeWeb });
+  assert.equal(web.ok, true, formatReport(web));
 });
 
-test("an empty string counts as absent, not as satisfied", () => {
-  // .env.example ships several variables as `NAME=` and dotenv loads those as
-  // "". Treating that as present would report a blank JWT_SECRET as fine.
-  const result = checkEnv({
-    app: "api",
-    env: { RENDER: "true", DATABASE_URL: "postgresql://u:p@h/db", JWT_SECRET: "" },
-  });
-  assert.match(messages(result.errors), /JWT_SECRET is not set/);
+test("EVERY variable is required in EVERY environment", () => {
+  // The point of the model. A per-environment severity table let a variable be
+  // "required on render, optional everywhere else", which means it is
+  // invisible in the four environments where you would actually notice it
+  // missing -- you find out on the deploy.
+  for (const environment of DEPLOY_ENVIRONMENTS) {
+    const result = checkEnv({ app: "web", env: { APP_ENV: environment }, environment });
+    const missing = messages(result.errors);
+    for (const rule of WEB_ENV_CONTRACT) {
+      if (rule.name === "APP_ENV") continue;
+      assert.match(
+        missing,
+        new RegExp(`${rule.name} is not declared`),
+        `${rule.name} must be required in ${environment}`,
+      );
+    }
+  }
 });
 
-test("a malformed value is an error even where the variable is optional", () => {
-  // Absence is often a deliberate, documented state. A present-but-malformed
-  // value never is.
-  const result = checkEnv({
-    app: "api",
-    env: { REDIS_URL: "http://localhost:6379" },
-    environment: "localhost",
-  });
-  assert.match(messages(result.errors), /REDIS_URL must use redis: or rediss:/);
+test("ABSENT and EMPTY are different things", () => {
+  // The distinction the whole model rests on. process.env gives undefined for
+  // a variable nobody wrote down and "" for one written as `NAME=`, so
+  // "deliberately off" and "forgotten" are actually distinguishable -- an
+  // earlier version collapsed them and threw that signal away.
+  const absent = { ...completeWeb };
+  delete absent.NEXT_PUBLIC_BLOB_BASE_URL;
+  const withAbsent = checkEnv({ app: "web", env: absent });
+  assert.match(messages(withAbsent.errors), /NEXT_PUBLIC_BLOB_BASE_URL is not declared/);
+
+  // Declared empty is a value, and a legal one for this variable.
+  const withEmpty = checkEnv({ app: "web", env: completeWeb });
+  assert.equal(withEmpty.ok, true, formatReport(withEmpty));
 });
 
-test("INQUIRY_TRUST_PROXY_HEADERS must be exactly true or false", () => {
-  const result = checkEnv({
-    app: "api",
-    env: { INQUIRY_TRUST_PROXY_HEADERS: "yes" },
-    environment: "localhost",
-  });
-  assert.match(messages(result.errors), /must be exactly one of "true", "false"/);
+test("empty is refused where empty means nothing", () => {
+  // A blank JWT_SECRET is not a decision anybody made on purpose.
+  const result = checkEnv({ app: "api", env: { ...completeApi, JWT_SECRET: "" } });
+  assert.match(messages(result.errors), /JWT_SECRET is declared but empty/);
+});
+
+test("the not-declared message says how to turn a variable off", () => {
+  // Being told a variable is missing is only useful with the next step
+  // attached, and for these the next step is often "set it to empty".
+  const env = { ...completeApi };
+  delete env.WHATSAPP_ACCESS_TOKEN;
+  const result = checkEnv({ app: "api", env });
+  assert.match(messages(result.errors), /Set it to empty \(WHATSAPP_ACCESS_TOKEN=\)/);
+  assert.match(messages(result.errors), /WhatsApp delivery is off/);
 });
 
 // ---------------------------------------------------------------------
-// The rule that protects the logs
+// Values differ by environment; variables do not
+// ---------------------------------------------------------------------
+
+test("a localhost URL is fine locally and refused in production", () => {
+  // The same variable, the same everywhere -- only what counts as a valid
+  // VALUE changes. That is the whole shape of the model.
+  const local = checkEnv({ app: "web", env: completeWeb, environment: "localhost" });
+  assert.equal(local.ok, true, formatReport(local));
+
+  const deployed = checkEnv({ app: "web", env: completeWeb, environment: "render" });
+  assert.match(messages(deployed.errors), /points at this machine/);
+});
+
+test("plain http is refused in production", () => {
+  const result = checkEnv({
+    app: "web",
+    env: { ...completeWeb, NEXT_PUBLIC_SITE_URL: "http://laxair.shop", NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql" },
+    environment: "render",
+  });
+  assert.match(messages(result.errors), /must use https:\/\//);
+});
+
+test("BLOB_PROVIDER=local is correct locally and refused in production", () => {
+  const local = checkEnv({ app: "api", env: completeApi, environment: "localhost" });
+  assert.equal(local.ok, true, formatReport(local));
+
+  const deployed = checkEnv({ app: "api", env: completeApi, environment: "render" });
+  assert.match(messages(deployed.errors), /must not be `local` in production/);
+});
+
+// ---------------------------------------------------------------------
+// Values that are set but wrong
+// ---------------------------------------------------------------------
+
+test("a trailing newline or stray space is caught on any variable", () => {
+  const result = checkEnv({
+    app: "api",
+    env: { ...completeApi, DATABASE_URL: "postgresql://u:p@h/db\n" },
+  });
+  assert.match(messages(result.errors), /has leading or trailing whitespace/);
+});
+
+test("quotes left around a value are caught", () => {
+  // A dashboard field is not a shell: quoting there stores the quotes, and a
+  // JWT_SECRET two characters longer than anyone believes still passes a
+  // length check.
+  const result = checkEnv({
+    app: "api",
+    env: { ...completeApi, JWT_SECRET: '"example-secret-of-suitable-length"' },
+  });
+  assert.match(messages(result.errors), /wrapped in quotes/);
+});
+
+test("the shipped placeholder secret warns locally and is refused in production", () => {
+  // docker-compose.yml ships dev-secret-change-me deliberately, so a hard
+  // error everywhere would fail docker-smoke for using the value it is
+  // supposed to use.
+  const env = { ...completeApi, JWT_SECRET: "dev-secret-change-me" };
+  const local = checkEnv({ app: "api", env, environment: "localhost" });
+  assert.equal(local.ok, true, formatReport(local));
+  assert.match(messages(local.warnings), /still looks like a placeholder/);
+
+  const deployed = checkEnv({ app: "api", env, environment: "render" });
+  assert.match(messages(deployed.errors), /is still a placeholder/);
+});
+
+test("a phone NUMBER pasted where Meta's numeric ID belongs is caught", () => {
+  const result = checkEnv({
+    app: "api",
+    env: { ...completeApi, WHATSAPP_PHONE_NUMBER_ID: "+91 98765 43210" },
+  });
+  assert.match(messages(result.errors), /not a phone number/);
+});
+
+test("a trailing slash on SITE_URL is caught", () => {
+  // Concatenates into https://laxair.shop//en -- which resolves, but
+  // publishes a different canonical URL than the sitemap emits. Two URLs for
+  // one page is exactly what canonical tags exist to prevent.
+  const result = checkEnv({
+    app: "web",
+    env: { ...completeWeb, NEXT_PUBLIC_SITE_URL: "http://localhost:3000/" },
+  });
+  assert.match(messages(result.errors), /must not end with a trailing slash/);
+});
+
+// ---------------------------------------------------------------------
+// Secrets never reach a log
 // ---------------------------------------------------------------------
 
 test("a secret's value is never echoed, but a non-secret's is", () => {
-  const secretResult = checkEnv({
+  const secret = checkEnv({
     app: "api",
-    env: { DATABASE_URL: "mysql://root:hunter2@db/app" },
-    environment: "localhost",
+    env: { ...completeApi, DATABASE_URL: "mysql://root:hunter2@db/app" },
   });
-  const text = messages(secretResult.errors);
+  const text = messages(secret.errors);
   assert.match(text, /DATABASE_URL/);
   assert.doesNotMatch(text, /hunter2/);
-  assert.match(text, /Value not shown/);
 
   // A URL is diagnostic rather than sensitive, and withholding it would make
   // the message useless.
-  const openResult = checkEnv({
-    app: "web",
-    env: { NEXT_PUBLIC_API_URL: "not-a-url" },
-    environment: "localhost",
-  });
-  assert.match(messages(openResult.errors), /not-a-url/);
+  const open = checkEnv({ app: "web", env: { ...completeWeb, NEXT_PUBLIC_API_URL: "not-a-url" } });
+  assert.match(messages(open.errors), /not-a-url/);
 });
 
-test("every rule marked secret withholds its value on every failure path", () => {
+test("every secret rule withholds its value on every failure path", () => {
   // Asserts the property across the whole table rather than the two rules a
   // hand-written test happens to name.
-  for (const rule of [...API_ENV_CONTRACT, ...WEB_ENV_CONTRACT]) {
-    if (!rule.secret || !rule.check) continue;
-    const canary = "CANARY-SECRET-VALUE-THAT-IS-INVALID";
-    const app = API_ENV_CONTRACT.includes(rule) ? "api" : "web";
-    const result = checkEnv({
-      app,
-      env: { [rule.name]: canary },
-      environment: "localhost",
-    });
-    assert.doesNotMatch(
-      messages(result.errors) + messages(result.warnings),
-      /CANARY-SECRET-VALUE/,
-      `${rule.name} leaked its value into a message`,
-    );
+  for (const [app, rules] of [["api", API_ENV_CONTRACT], ["web", WEB_ENV_CONTRACT]]) {
+    const base = app === "api" ? completeApi : completeWeb;
+    for (const rule of rules) {
+      if (!rule.secret) continue;
+      const canary = "CANARY-VALUE-THAT-IS-INVALID";
+      const result = checkEnv({ app, env: { ...base, [rule.name]: canary } });
+      assert.doesNotMatch(
+        messages(result.errors) + messages(result.warnings),
+        /CANARY-VALUE/,
+        `${rule.name} leaked its value into a message`,
+      );
+    }
   }
 });
 
 // ---------------------------------------------------------------------
-// Cross-field rules — where each variable looks fine on its own
+// The startup banner
 // ---------------------------------------------------------------------
 
-test("free-form WhatsApp with no template is refused", () => {
-  const result = checkEnv({
-    app: "api",
-    env: { WHATSAPP_ALLOW_FREE_FORM: "true" },
-    environment: "localhost",
+test("the banner shows every variable, masks secrets, and closes its box", () => {
+  const result = checkEnv({ app: "web", env: completeWeb });
+  const banner = formatStartupBanner(result, {
+    ...completeWeb,
+    SOURCEMAP_SIGNING_KEY: "k".repeat(43),
   });
-  assert.match(messages(result.errors), /marks every inquiry FAILED/);
+
+  for (const rule of WEB_ENV_CONTRACT) assert.match(banner, new RegExp(rule.name));
+  assert.match(banner, /environment: localhost/);
+
+  // Masked, with a length -- a wrong-length secret is a real and common
+  // misconfiguration, and a length on its own reveals nothing usable.
+  assert.match(banner, /\*\*\* \(43 chars\)/);
+  assert.doesNotMatch(banner, /kkkk/);
+
+  // Every line the same width, or the box does not close -- which reads as a
+  // rendering bug and undermines the one job a banner has.
+  const lines = banner.split("\n");
+  const widths = new Set(lines.map((l) => [...l].length));
+  assert.equal(widths.size, 1, `banner lines are ragged: ${[...widths].join(", ")}`);
 });
 
-test("a WhatsApp token with no template name is refused", () => {
-  const result = checkEnv({
-    app: "api",
-    env: { WHATSAPP_ACCESS_TOKEN: "tok" },
-    environment: "localhost",
-  });
-  assert.match(messages(result.errors), /WHATSAPP_TEMPLATE_NAME is not/);
+test("a secret is never shown even partially", () => {
+  // A masked prefix looks helpful and is not: it narrows a brute-force, and
+  // it is exactly the kind of thing that gets pasted into a bug report.
+  const rule = API_ENV_CONTRACT.find((r) => r.name === "JWT_SECRET");
+  const shown = displayValue(rule, "super-secret-value-here");
+  assert.doesNotMatch(shown, /super|secret-value/);
+  assert.match(shown, /^\*\*\*/);
 });
 
-test("a non-local blob provider without credentials is refused", () => {
-  const result = checkEnv({
-    app: "api",
-    env: { BLOB_PROVIDER: "r2" },
-    environment: "localhost",
-  });
-  assert.match(
-    messages(result.errors),
-    /BLOB_ACCESS_KEY_ID and BLOB_SECRET_ACCESS_KEY/,
-  );
-  // The point of the rule: without it this surfaces at the first upload,
-  // long after a green deploy.
-  assert.match(messages(result.errors), /not at boot/);
-});
-
-test("localhost URLs on Render are refused", () => {
-  const result = checkEnv({
-    app: "web",
-    env: {
-      RENDER: "true",
-      NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
-      NEXT_PUBLIC_SITE_URL: "http://localhost:3000",
-    },
-  });
-  assert.match(messages(result.errors), /NEXT_PUBLIC_SITE_URL point at localhost/);
-});
-
-test("plain http on Render is refused", () => {
-  const result = checkEnv({
-    app: "web",
-    env: {
-      RENDER: "true",
-      NEXT_PUBLIC_API_URL: "http://api.laxair.shop/graphql",
-      NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
-    },
-  });
-  assert.match(messages(result.errors), /use http:\/\/ on Render/);
+test("the banner distinguishes not-declared from empty", () => {
+  const rule = WEB_ENV_CONTRACT.find((r) => r.name === "NEXT_PUBLIC_BLOB_BASE_URL");
+  assert.equal(displayValue(rule, undefined), "(not declared)");
+  assert.equal(displayValue(rule, ""), "(empty)");
 });
 
 // ---------------------------------------------------------------------
-// Regression guards: this check must not break checks that are green today
+// Seeing the contract
 // ---------------------------------------------------------------------
 
-test("the CI web build passes with no environment at all", () => {
-  // `test-web` runs `pnpm build` with no env block and no `cp .env.example`.
-  // API_URL and SITE_URL have localhost defaults, so the build is fine --
-  // marking them required everywhere would turn a green required check red.
-  const result = checkEnv({ app: "web", env: { CI: "true" } });
-  assert.equal(result.ok, true, formatReport(result));
+test("the matrix lists every variable exactly once", () => {
+  const matrix = formatMatrix("api");
+  for (const rule of API_ENV_CONTRACT) {
+    const occurrences = matrix.split("\n").filter((l) => l.startsWith(rule.name));
+    assert.equal(occurrences.length, 1, `${rule.name} should appear once`);
+  }
 });
 
-test("the prod web image boots with no configuration", () => {
-  // docker-web-prod-boot runs the real production image with no env, and
-  // asserts a genuine 200. Nothing may be required in that state.
-  const result = checkEnv({
-    app: "web",
-    env: { NODE_ENV: "production" },
-  });
-  assert.equal(result.ok, true, formatReport(result));
-});
+test("expectationsFor describes an environment without a second table", () => {
+  // Derived from the rules, never maintained alongside them -- a hand-written
+  // summary drifts from what it summarises, silently.
+  const render = expectationsFor("api", "render");
+  assert.deepEqual(render.declared, API_ENV_CONTRACT.map((r) => r.name));
+  assert.ok(render.extraValueRules.includes("BLOB_PROVIDER"));
 
-test("the docker-compose dev stack satisfies the API contract", () => {
-  // The exact values docker-compose.yml sets, including the literal
-  // placeholder JWT secret -- which must stay acceptable outside Render.
-  const result = checkEnv({
-    app: "api",
-    env: {
-      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/medinstru?schema=public",
-      REDIS_URL: "redis://redis:6379",
-      JWT_SECRET: "dev-secret-change-me",
-      PORT: "4000",
-    },
-    environment: "localhost",
-  });
-  assert.equal(result.ok, true, formatReport(result));
-});
-
-test("a checkout using .env.example verbatim passes", () => {
-  // CI's api jobs run `cp .env.example .env`. REDIS_URL is blank there on
-  // purpose and must not be an error.
-  const result = checkEnv({
-    app: "api",
-    env: {
-      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/medinstru?schema=public",
-      REDIS_URL: "",
-      JWT_SECRET: "dev-secret-change-me",
-      PORT: "4000",
-      INQUIRY_IP_HASH_SECRET: "",
-      INQUIRY_TRUST_PROXY_HEADERS: "false",
-      WHATSAPP_ACCESS_TOKEN: "",
-      WHATSAPP_PHONE_NUMBER_ID: "",
-      WHATSAPP_TEMPLATE_NAME: "",
-      WHATSAPP_TEMPLATE_LANGUAGE: "en",
-      WHATSAPP_ALLOW_FREE_FORM: "false",
-    },
-    environment: "github-ci",
-  });
-  assert.equal(result.ok, true, formatReport(result));
+  const localhost = expectationsFor("api", "localhost");
+  assert.deepEqual(localhost.declared, render.declared, "the variable list never changes");
+  assert.equal(localhost.extraValueRules.length, 0, "only the value rules differ");
 });
 
 // ---------------------------------------------------------------------
-// A correctly configured production environment
+// APP_ENV
 // ---------------------------------------------------------------------
 
-test("a fully configured Render API reports clean", () => {
-  const result = checkEnv({
-    app: "api",
-    env: {
-      RENDER: "true",
-      DATABASE_URL: "postgresql://u:p@dpg-x/medinstru",
-      // "example" keeps scripts/lib/repo-hygiene.mjs's credential scanner
-      // from reading a long opaque string assigned to a *_SECRET name as a
-      // committed credential -- it fired on the previous fixture, correctly.
-      JWT_SECRET: "example-secret-of-sufficient-length",
-      REDIS_URL: "redis://red-x:6379",
-      INQUIRY_IP_HASH_SECRET: "0123456789abcdef0123",
-      INQUIRY_TRUST_PROXY_HEADERS: "false",
-      BLOB_PROVIDER: "r2",
-      BLOB_ACCESS_KEY_ID: "id",
-      BLOB_SECRET_ACCESS_KEY: "secret",
-      WHATSAPP_ACCESS_TOKEN: "tok",
-      WHATSAPP_PHONE_NUMBER_ID: "123",
-      WHATSAPP_TEMPLATE_NAME: "buyer_inquiry",
-      WHATSAPP_ALLOW_FREE_FORM: "false",
-    },
-  });
-  assert.equal(result.ok, true, formatReport(result));
-  assert.equal(result.warnings.length, 0, formatReport(result));
-});
-
-test("formatReport names the app and environment, and says it is refusing to start", () => {
-  const report = formatReport(checkEnv({ app: "api", env: { RENDER: "true" } }));
-  assert.match(report, /app: api, environment: render/);
-  assert.match(report, /Refusing to start/);
+test("a typo in APP_ENV is a hard error, not a silent downgrade", () => {
+  const result = checkEnv({ app: "web", env: { ...completeWeb, APP_ENV: "prod" } });
+  assert.equal(result.ok, false);
+  assert.match(messages(result.errors), /not a known environment/);
 });

@@ -164,6 +164,44 @@ export const SITE_URL = resolvePublicUrl(
   "http://localhost:3000",
 );
 
+// ---------------------------------------------------------------------
+// Development values
+// ---------------------------------------------------------------------
+
+/**
+ * The ports and URLs every NON-DEPLOYED environment uses.
+ *
+ * THESE ARE NOT FALLBACKS, and the distinction is the whole point. Nothing
+ * reads them automatically: `resolvePublicUrl` still refuses to invent a
+ * value, and a variable left unset is still reported by the environment
+ * contract. They exist so the config FILES that must state a value -- and
+ * there are six of them -- state the same one, instead of six separate
+ * `http://localhost:3000` literals drifting apart in silence.
+ *
+ * The URLs are DERIVED from the ports rather than written out again, so
+ * "the API listens on 4000" is one fact in one place. Changing the port
+ * cannot leave a URL behind pointing at the old one.
+ *
+ * Consumers that can import JavaScript do (playwright.config.ts,
+ * vitest.config.ts, apps/api/src/main.ts). The four that cannot -- both
+ * .env.example files, docker-compose.yml and ci.yml -- are pinned to these
+ * values by dev-defaults-drift.test.js instead, the same way
+ * cloudflare-locale-drift.test.mjs pins Terraform to LOCALES.
+ */
+export const API_DEFAULT_PORT = 4000;
+export const WEB_DEFAULT_PORT = 3000;
+
+export const DEV_API_URL = `http://localhost:${API_DEFAULT_PORT}/graphql`;
+export const DEV_SITE_URL = `http://localhost:${WEB_DEFAULT_PORT}`;
+
+/**
+ * Empty is the real "no blob storage configured" state, which is what every
+ * developer machine and CI runner actually has -- not a stand-in for a value
+ * somebody forgot. Named so the four files that must write it down are
+ * writing down a decision rather than an omission.
+ */
+export const DEV_BLOB_BASE_URL = "";
+
 // English + Hindi for MVP (TECHNICAL_PLAN.md §14) -- additional regional
 // languages land in Phase 3, prioritized by where signups concentrate.
 // Raw values live here, not in apps/web/src/i18n/routing.ts, so anything

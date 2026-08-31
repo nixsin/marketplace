@@ -10,6 +10,19 @@
 // would silently widen that union and break locale type-safety across the
 // whole web app.
 
+/**
+ * Ports and localhost URLs every non-deployed environment uses.
+ *
+ * NOT fallbacks -- nothing reads them automatically. They exist so the six
+ * config files that must state a value state the same one. The URLs are
+ * derived from the ports, so "the API listens on 4000" is one fact.
+ */
+export declare const API_DEFAULT_PORT: number;
+export declare const WEB_DEFAULT_PORT: number;
+export declare const DEV_API_URL: string;
+export declare const DEV_SITE_URL: string;
+export declare const DEV_BLOB_BASE_URL: string;
+
 export declare const API_URL: string;
 export declare const SITE_URL: string;
 

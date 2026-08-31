@@ -112,6 +112,27 @@ ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 # empty value is the "not configured" state everything already handles.
 ARG NEXT_PUBLIC_BLOB_BASE_URL=""
 ENV NEXT_PUBLIC_BLOB_BASE_URL=$NEXT_PUBLIC_BLOB_BASE_URL
+# Every environment declares every variable, and a Docker build is one of
+# them: next.config.ts runs the environment check at build AND at boot, so
+# both of these have to exist here or the image cannot be built.
+#
+# `unknown` is a real, named environment, not a shrug -- a bare `docker build`
+# genuinely is an unrecognised context, and saying so is more honest than
+# claiming to be a laptop. CI and Render both pass a real value.
+ARG APP_ENV=unknown
+ENV APP_ENV=$APP_ENV
+# ENV, deliberately NOT an ARG -- Docker's own linter flags the difference and
+# it is right: a build arg is recorded in the image's history, so passing a
+# real signing key at build time would publish it to anyone who can pull the
+# image. This variable is only ever needed at RUNTIME (the /sourcemaps route
+# verifies tokens with it), and a runtime value overrides an image ENV, so
+# Render's real key reaches the route without ever entering a layer.
+#
+# It is declared here anyway because next.config.ts runs the environment check
+# at build as well as at boot, and every environment declares every variable.
+# Empty is the honest value for a build: source maps are unavailable, the
+# route fails closed, and that is the safe state rather than a broken one.
+ENV SOURCEMAP_SIGNING_KEY=""
 # Same mechanism, same reason: next.config.ts's `deploymentId` gets baked
 # into the build the same way NEXT_PUBLIC_API_URL does, so it needs to be
 # a build arg too, not just a runtime env var -- a runtime-only value
@@ -178,6 +199,41 @@ RUN echo "alpine patch layer for ${RENDER_GIT_COMMIT:-local}" \
     && apk upgrade --no-cache
 WORKDIR /app
 ENV NODE_ENV=production
+
+# THE PROD STAGE IS A FRESH `FROM`, so it inherits NOTHING from the build
+# stage -- not its ARGs and not its ENVs. Re-declaring them here is not
+# duplication, it is the only way the running container has them at all.
+#
+# Found by building and booting the image rather than by reading it: the
+# container started, printed a banner reporting every variable as
+# "(not declared)", failed the environment check and exited. `next start`
+# loads next.config.ts at BOOT, so the check that guards a deploy runs here,
+# in this stage, with this stage's environment. This is the same class of bug
+# the docker-web-prod-boot job exists to catch -- the 2026-08-18 outage was a
+# prod stage missing something the build stage had.
+#
+# NEXT_PUBLIC_* are already inlined into the client bundle by now; these
+# declarations exist so the boot-time check can see them, and so a value
+# supplied at runtime (Render) has something to override.
+ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_SITE_URL=http://localhost:3000
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+ARG NEXT_PUBLIC_BLOB_BASE_URL=""
+ENV NEXT_PUBLIC_BLOB_BASE_URL=$NEXT_PUBLIC_BLOB_BASE_URL
+# `unknown` is a real, named environment rather than a shrug: an image booted
+# with no platform markers genuinely is an unrecognised context. CI and Render
+# both pass a real value.
+ARG APP_ENV=unknown
+ENV APP_ENV=$APP_ENV
+# ENV, never ARG -- a build arg is recorded in the image history, so a real
+# signing key passed at build time would be readable by anyone who can pull
+# the image. This is only needed at RUNTIME (the /sourcemaps route verifies
+# tokens with it) and a runtime value overrides an image ENV, so Render's real
+# key reaches the route without ever entering a layer. Empty means source maps
+# are unavailable, which is the safe state: the route fails closed.
+ENV SOURCEMAP_SIGNING_KEY=""
+
 # See apps/api/Dockerfile for why: node:22-alpine's bundled npm is never
 # invoked here (CMD below runs the `next` binary directly) but still
 # shows up as real CVEs in a vulnerability scan of the final image.

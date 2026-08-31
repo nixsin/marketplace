@@ -74,6 +74,91 @@ instead of on platform markers would do exactly that.
 lands in `unknown` and prints the hint. Either export `APP_ENV=localhost`, or
 ignore it — it is a warning, never a failure.
 
+## One variable list, shared by every environment
+
+**Every environment declares every variable.** What differs between a laptop,
+CI and production is the *value*, never which variables exist.
+
+This replaced a per-environment severity table, and the reason is worth
+keeping. That table let a variable be "required on Render, optional everywhere
+else" — which sounds careful and means the variable is invisible in the four
+environments where you would actually notice it missing. You find out on the
+deploy. Declaring everything everywhere moves that discovery to the laptop,
+which is the only place it is cheap.
+
+### Absent and empty are different things
+
+`process.env.FOO` is `undefined` when nobody wrote the variable down and `""`
+when somebody wrote `FOO=`. So "deliberately off" and "forgotten" *are*
+distinguishable, and the model rests on that:
+
+| State | Meaning | Result |
+|---|---|---|
+| `undefined` | nobody declared it | **error** — this environment is incomplete |
+| `""` | declared as off | a value, legal only where `emptyMeans` documents it |
+| a value | | checked, plus any stricter rule for this environment |
+
+An earlier version treated `""` as absent. That was wrong here: it threw away
+the one signal that separates a decision from an oversight.
+
+### Where the values live
+
+| Context | Declares its values in |
+|---|---|
+| Your machine | `apps/api/.env`, `apps/web/.env` (copy the `.env.example` next to each) |
+| Dev stack | `docker-compose.yml` |
+| GitHub Actions | one workflow-level `env:` block in `ci.yml` |
+| Vitest | `apps/web/vitest.config.ts` |
+| Playwright | `apps/web/playwright.config.ts` |
+| Docker image | `ARG`/`ENV` in `apps/web/Dockerfile` |
+| Render | the dashboard, mirrored in `render.yaml` |
+
+The localhost values themselves come from `@medinstru/config`
+(`DEV_API_URL`, `DEV_SITE_URL`, `API_DEFAULT_PORT`) so the files that can
+import JavaScript share one definition. **The four that cannot** — both
+`.env.example` files, `docker-compose.yml` and `ci.yml` — are pinned to the
+contract by `packages/config/src/env-example-drift.test.js`, which fails if a
+variable is missing from any of them. That test is the enforcement; without it
+the contract would be a claim about the code and a hope about the YAML.
+
+### Seeing it
+
+```bash
+node scripts/check-env.mjs api --list
+```
+
+prints every variable, whether empty is legal, which are secret, and which
+environments constrain the value further. `--show` prints the startup banner
+without booting anything.
+
+## The startup banner
+
+Every service prints its environment and every variable's value as it starts —
+on every boot, not only on failure. "What is this process actually configured
+with" gets asked far more often than "is the configuration valid", and this
+answers it in the first lines of the log with no shell on the box and no
+guessing about which `.env` won.
+
+```
+┌──────────────────────────────────────────────────┐
+│  API starting — environment: render              │
+├──────────────────────────────────────────────────┤
+│  DATABASE_URL             *** (61 chars)         │
+│  JWT_SECRET               *** (44 chars)         │
+│  PORT                     4000                   │
+│  WHATSAPP_ACCESS_TOKEN    (empty)  ← delivery off│
+└──────────────────────────────────────────────────┘
+```
+
+**A secret is never printed, not even partially.** A masked prefix looks
+helpful and is not: it narrows a brute-force, and it is exactly the kind of
+thing that gets pasted into a bug report. The length is shown because a
+wrong-length secret is a real and common misconfiguration and a length alone
+reveals nothing usable.
+
+It prints **once per process** — Next loads `next.config.ts` several times
+during a build, and a diagnostic repeated four times is one nobody reads.
+
 ## Overriding detection
 
 ```bash

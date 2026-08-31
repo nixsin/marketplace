@@ -14,6 +14,7 @@
 import 'dotenv/config';
 
 import { NestFactory } from '@nestjs/core';
+import { API_DEFAULT_PORT } from '@medinstru/config';
 import { assertEnvOrExit } from '@medinstru/config/env-contract';
 import { AppModule } from './app.module';
 import { configureApp } from './app.setup';
@@ -36,10 +37,15 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   configureApp(app);
 
-  // 4000, not the historical 3000 -- that fallback bound the API to the WEB
-  // app's port, so a missing PORT surfaced as the web dev server refusing to
-  // start rather than as anything about the API. PORT is also flagged by the
-  // check above rather than left to a default nobody notices.
-  await app.listen(process.env.PORT ?? 4000);
+  // API_DEFAULT_PORT, not a literal here. The number used to be written out
+  // in this file, in .env.example, in docker-compose.yml and in render.yaml,
+  // and the one in this file was 3000 -- the WEB app's port -- so a missing
+  // PORT bound the API on top of the web dev server and the failure surfaced
+  // as the web app refusing to start. One definition, in @medinstru/config,
+  // is what makes that class of drift impossible rather than unlikely.
+  //
+  // Reached only if PORT is genuinely absent, which the check above has
+  // already reported: every environment declares every variable.
+  await app.listen(process.env.PORT ?? API_DEFAULT_PORT);
 }
 bootstrap();

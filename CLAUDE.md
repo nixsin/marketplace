@@ -889,19 +889,66 @@ indistinguishable from one on a laptop. Both are developer stacks, so
 inferred from nothing. Playwright's `webServer` does the same, because
 `next build && next start` sets `NODE_ENV=production` on a developer machine.
 
-**Severity is per-environment, and a single "required" list would break three
-green checks.** `test-web` runs `pnpm build` with no environment at all,
-`docker-web-prod-boot` boots with none, and the dev stack deliberately uses the
-literal `dev-secret-change-me`. Tests pin each of those states explicitly, so a
-future tightening fails in `packages/config` rather than in CI.
+**ONE VARIABLE LIST, SHARED BY EVERY ENVIRONMENT.** Every environment declares
+every variable; what differs is the VALUE, never which variables exist. This
+replaced a per-environment severity table, and the reason is worth keeping:
+that table let a variable be "required on Render, optional everywhere else",
+which sounds careful and means the variable is invisible in the four
+environments where you would actually notice it missing — you find out on the
+deploy. Declaring everything everywhere moves that discovery to the laptop.
+
+**ABSENT AND EMPTY ARE DIFFERENT THINGS, and the model rests on it.**
+`process.env.FOO` is `undefined` when nobody wrote the variable down and `""`
+when somebody wrote `FOO=`. So `undefined` is always an error ("this
+environment is incomplete"), while `""` is a *value* meaning "off" — legal only
+where the rule's `emptyMeans` documents what off does. An earlier version of
+this file said an empty string counts as ABSENT; that was right under the old
+model and is wrong under this one, because it throws away the single signal
+that separates a decision from an oversight.
+
+**Per-environment rules are VALUE rules, not presence rules.** A localhost URL
+is correct on a laptop and catastrophic in production; `BLOB_PROVIDER=local` is
+correct locally and refused on Render. Those live in each rule's
+`perEnvironment` map, so the variable list stays identical everywhere.
+
+**The eight places that must declare values, and the test that holds them to
+it.** `apps/api/.env`, `apps/web/.env`, `docker-compose.yml`, `ci.yml`'s
+workflow-level `env:`, `vitest.config.ts`, `playwright.config.ts`,
+`apps/web/Dockerfile` (BOTH stages — see below), and Render. The localhost
+values come from `@medinstru/config` (`DEV_API_URL`, `DEV_SITE_URL`,
+`API_DEFAULT_PORT`) for everything that can import JavaScript; the four that
+cannot are pinned by `packages/config/src/env-example-drift.test.js`. Without
+that test the contract is a claim about the code and a hope about the YAML.
+
+**`apps/web/Dockerfile`'s prod stage is a fresh `FROM` and inherits NOTHING
+from the build stage — not its ARGs, not its ENVs.** Re-declaring every
+variable there is the only way the running container has them. Found by
+building and booting the image, not by reading it: the container started,
+printed a banner reporting every variable as `(not declared)`, failed the check
+and exited. Same class as the 2026-08-18 outage — a prod stage missing
+something the build stage had.
+
+**`SOURCEMAP_SIGNING_KEY` is an `ENV`, never an `ARG`.** A build arg is
+recorded in the image history, so a real key passed at build time is readable
+by anyone who can pull the image; Docker's own linter says so. It is only
+needed at runtime, and a runtime value overrides an image `ENV`.
 
 **A malformed value is an error at every severity, including `optional`.**
 Absence is frequently a deliberate, documented state — `REDIS_URL` blank in
 `.env.example` is load-bearing. A value that is present and malformed never is.
 
-**An empty string counts as ABSENT.** `.env.example` ships several variables as
-`NAME=` and dotenv loads those as `""`; treating that as set would report a
-blank `JWT_SECRET` as satisfied.
+**A startup banner prints on EVERY boot**, listing the detected environment and
+every variable's value. "What is this process actually configured with" gets
+asked far more often than "is the configuration valid". Secrets show as `***`
+with a length and NEVER partially — a masked prefix narrows a brute-force and
+is exactly what gets pasted into a bug report; a length alone reveals nothing
+and catches the common wrong-length misconfiguration. It prints once per
+process, because Next loads `next.config.ts` several times during a build and a
+diagnostic repeated four times is one nobody reads.
+
+**`node scripts/check-env.mjs <app> --list` prints the whole contract** —
+every variable, whether empty is legal, which are secret, which environments
+constrain the value further. Derived from the rules, never a second table.
 
 **Messages never echo a secret's value.** Each rule carries a `secret` flag and
 the formatter honours it — these strings land in Render logs and CI output.

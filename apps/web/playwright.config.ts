@@ -1,3 +1,9 @@
+import {
+  DEV_API_URL,
+  DEV_BLOB_BASE_URL,
+  DEV_SITE_URL,
+} from "@medinstru/config";
+import { DEPLOY_ENVIRONMENT } from "@medinstru/config/env-contract";
 import { defineConfig, devices } from "@playwright/test";
 
 // Chromium only, deliberately — this is the foundational single-browser
@@ -122,11 +128,21 @@ export default defineConfig({
     ? undefined
     : {
         command: "pnpm build && pnpm start",
-        // `next build` and `next start` both set NODE_ENV=production, so
-        // without this the env check sees a production-looking process with
-        // no platform markers and reports an unrecognised environment on
-        // every local run. It is a developer machine; say so.
-        env: { APP_ENV: "localhost" },
+        // Every contract variable, from @medinstru/config rather than as
+        // literals -- the same values docker-compose.yml and ci.yml use, so
+        // there is one definition of "the localhost API" instead of six.
+        //
+        // APP_ENV is stated because `next build` and `next start` both set
+        // NODE_ENV=production: without it the check sees a production-looking
+        // process with no platform markers and reports an unrecognised
+        // environment on every local run. It is a developer machine; say so.
+        env: {
+          APP_ENV: DEPLOY_ENVIRONMENT.LOCALHOST,
+          NEXT_PUBLIC_API_URL: DEV_API_URL,
+          NEXT_PUBLIC_SITE_URL: DEV_SITE_URL,
+          NEXT_PUBLIC_BLOB_BASE_URL: DEV_BLOB_BASE_URL,
+          SOURCEMAP_SIGNING_KEY: "",
+        },
         url: "http://localhost:3000",
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,

@@ -4,7 +4,7 @@ import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
 import { siteUrlErrorMessage, siteUrlProblem } from "./src/lib/site-url";
 import {
   assertEnvOrExit,
-  isRenderDeploy,
+  isDeployedEnvironment,
 } from "@medinstru/config/env-contract";
 import {
   CROSS_ORIGIN_OPENER_POLICY,
@@ -120,7 +120,13 @@ function blobRemotePatterns(baseUrl: string) {
 // hole of the two: it is the origin every visitor's browser fetches products
 // from AND the value connect-src is derived from, so a bad one misdirects
 // and blocks at the same time.
-if (isRenderDeploy()) {
+// `isDeployedEnvironment()`, not `isRenderDeploy()`. Which platform we are
+// on is @medinstru/config's business, not this app's -- app code naming the
+// hosting provider means a second platform is a grep across both apps
+// instead of one line in one package. Render is the only target today, so
+// drawing the boundary now costs nothing; after the second one it is a
+// refactor.
+if (isDeployedEnvironment()) {
   for (const [name, value] of [
     ["NEXT_PUBLIC_SITE_URL", process.env.NEXT_PUBLIC_SITE_URL],
     ["NEXT_PUBLIC_API_URL", process.env.NEXT_PUBLIC_API_URL],

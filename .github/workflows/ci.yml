@@ -17,6 +17,33 @@ on:
         type: string
         default: ""
 
+# EVERY environment declares EVERY variable -- see
+# packages/config/src/env-contract.js. CI is one of those environments, so it
+# states its values here rather than relying on anything to fill them in.
+#
+# Declared ONCE at workflow level, not per job. Six separate steps build or
+# boot the web app (test-web, docker-scan, docker-web-prod-boot, perf-budget,
+# and two in test-e2e-web); repeating these at each would be six places to
+# drift. Every job inherits them, so `pnpm build` picks them up from the
+# process environment with no extra step, and the `docker build` steps pass
+# `--build-arg NAME` with no `=value`, which tells Docker to read from here.
+#
+# packages/config/src/env-example-drift.test.js fails if a contract variable
+# is missing from this block.
+#
+# Localhost values because CI is not production; the real ones live in
+# render.yaml and the Render dashboard.
+env:
+  APP_ENV: github-ci
+  NEXT_PUBLIC_API_URL: http://localhost:4000/graphql
+  NEXT_PUBLIC_SITE_URL: http://localhost:3000
+  # Empty is a real value, not an omission: it means images are served from
+  # the app's own origin, which is exactly what CI has.
+  NEXT_PUBLIC_BLOB_BASE_URL: ""
+  # Empty means source maps are unavailable -- the /sourcemaps route fails
+  # closed, which is the safe state and the correct one for CI.
+  SOURCEMAP_SIGNING_KEY: ""
+
 jobs:
   # Split into small, independent jobs on purpose — GitHub runs jobs with
   # no `needs:` between them concurrently, on separate runners. Lint and
@@ -511,7 +538,12 @@ jobs:
       - name: Build prod images (build-only — no secrets available here to run them with)
         run: |
           docker build --target prod -f apps/api/Dockerfile -t marketplace-api:prod .
-          docker build --target prod -f apps/web/Dockerfile -t marketplace-web:prod .
+          docker build --target prod -f apps/web/Dockerfile \
+            --build-arg NEXT_PUBLIC_API_URL \
+            --build-arg NEXT_PUBLIC_SITE_URL \
+            --build-arg NEXT_PUBLIC_BLOB_BASE_URL \
+            --build-arg APP_ENV \
+            -t marketplace-web:prod .
 
       - name: Scan API prod image
         uses: aquasecurity/trivy-action@v0.36.0
@@ -629,7 +661,13 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Build web prod image
-        run: docker build --target prod -f apps/web/Dockerfile -t marketplace-web:prod-boot-test .
+        run: |
+          docker build --target prod -f apps/web/Dockerfile \
+            --build-arg NEXT_PUBLIC_API_URL \
+            --build-arg NEXT_PUBLIC_SITE_URL \
+            --build-arg NEXT_PUBLIC_BLOB_BASE_URL \
+            --build-arg APP_ENV \
+            -t marketplace-web:prod-boot-test .
 
       - name: Boot the prod image and verify it actually serves a request
         run: |

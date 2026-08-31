@@ -12,8 +12,17 @@ export interface EnvRule {
   /** Never echo this variable's value into a message — the file is committed and the messages reach logs. */
   secret: boolean;
   why: string;
-  levels: Partial<Record<DeployEnvironment, Severity>>;
-  check?: (value: string) => string | null;
+  /**
+   * What `NAME=` means for this variable, or null when empty is not a valid
+   * value. Absent is ALWAYS an error: every environment declares every
+   * variable, so `undefined` means somebody forgot rather than turned it off.
+   */
+  emptyMeans: string | null;
+  check: (value: string) => string | null;
+  /** Extra rules for the VALUE in specific environments. */
+  perEnvironment?: Partial<
+    Record<DeployEnvironment, (value: string) => string | null>
+  >;
 }
 
 export interface Finding {
@@ -36,6 +45,34 @@ export declare const UNKNOWN_ENVIRONMENT_HINT: string;
 export declare function isRenderDeploy(
   env?: Record<string, string | undefined>,
 ): boolean;
+
+/** The question app code should ask: am I deployed, whatever the platform? */
+export declare function isDeployedEnvironment(
+  env?: Record<string, string | undefined>,
+): boolean;
+
+export declare const DEPLOY_ENVIRONMENT: Record<string, DeployEnvironment>;
+
+export declare function displayValue(
+  rule: EnvRule,
+  raw: string | undefined,
+): string;
+
+export declare function formatStartupBanner(
+  result: CheckResult,
+  env: Record<string, string | undefined>,
+): string;
+
+export declare function formatMatrix(app: "api" | "web"): string;
+
+export declare function expectationsFor(
+  app: "api" | "web",
+  environment: DeployEnvironment,
+): {
+  declared: string[];
+  mayBeEmpty: { name: string; means: string }[];
+  extraValueRules: string[];
+};
 export declare const API_ENV_CONTRACT: EnvRule[];
 export declare const WEB_ENV_CONTRACT: EnvRule[];
 export declare const CONTRACTS: Record<"api" | "web", EnvRule[]>;
