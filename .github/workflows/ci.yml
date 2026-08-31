@@ -17,33 +17,6 @@ on:
         type: string
         default: ""
 
-# EVERY environment declares EVERY variable -- see
-# packages/config/src/env-contract.js. CI is one of those environments, so it
-# states its values here rather than relying on anything to fill them in.
-#
-# Declared ONCE at workflow level, not per job. Six separate steps build or
-# boot the web app (test-web, docker-scan, docker-web-prod-boot, perf-budget,
-# and two in test-e2e-web); repeating these at each would be six places to
-# drift. Every job inherits them, so `pnpm build` picks them up from the
-# process environment with no extra step, and the `docker build` steps pass
-# `--build-arg NAME` with no `=value`, which tells Docker to read from here.
-#
-# packages/config/src/env-example-drift.test.js fails if a contract variable
-# is missing from this block.
-#
-# Localhost values because CI is not production; the real ones live in
-# render.yaml and the Render dashboard.
-env:
-  APP_ENV: github-ci
-  NEXT_PUBLIC_API_URL: http://localhost:4000/graphql
-  NEXT_PUBLIC_SITE_URL: http://localhost:3000
-  # Empty is a real value, not an omission: it means images are served from
-  # the app's own origin, which is exactly what CI has.
-  NEXT_PUBLIC_BLOB_BASE_URL: ""
-  # Empty means source maps are unavailable -- the /sourcemaps route fails
-  # closed, which is the safe state and the correct one for CI.
-  SOURCEMAP_SIGNING_KEY: ""
-
 jobs:
   # Split into small, independent jobs on purpose — GitHub runs jobs with
   # no `needs:` between them concurrently, on separate runners. Lint and
@@ -497,6 +470,19 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+      # THE VALUES COME FROM THE CONTRACT, not from this file. GitHub Actions
+      # has no `env_file`, so ci.yml was the last place carrying hand-written
+      # copies of them -- held in step by a drift test, and a test catches
+      # drift rather than preventing it. `ci-env.mjs` reads
+      # packages/config/src/env-contract.js by RELATIVE path, so it needs no
+      # `pnpm install` and works in the jobs that only run `checkout`.
+      #
+      # Must come BEFORE any build or docker step: $GITHUB_ENV only affects
+      # SUBSEQUENT steps, never the one that writes it. The `docker build`
+      # steps then pass `--build-arg NAME` with no `=value`, which tells
+      # Docker to read the value from this environment.
+      - name: Declare the web app's environment
+        run: node scripts/ci-env.mjs web >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -539,6 +525,19 @@ jobs:
     if: needs.changes.outputs.docker == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'docker-scan'))
     steps:
       - uses: actions/checkout@v7
+      # THE VALUES COME FROM THE CONTRACT, not from this file. GitHub Actions
+      # has no `env_file`, so ci.yml was the last place carrying hand-written
+      # copies of them -- held in step by a drift test, and a test catches
+      # drift rather than preventing it. `ci-env.mjs` reads
+      # packages/config/src/env-contract.js by RELATIVE path, so it needs no
+      # `pnpm install` and works in the jobs that only run `checkout`.
+      #
+      # Must come BEFORE any build or docker step: $GITHUB_ENV only affects
+      # SUBSEQUENT steps, never the one that writes it. The `docker build`
+      # steps then pass `--build-arg NAME` with no `=value`, which tells
+      # Docker to read the value from this environment.
+      - name: Declare the web app's environment
+        run: node scripts/ci-env.mjs web >> "$GITHUB_ENV"
 
       - name: Build prod images (build-only — no secrets available here to run them with)
         run: |
@@ -664,6 +663,19 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+      # THE VALUES COME FROM THE CONTRACT, not from this file. GitHub Actions
+      # has no `env_file`, so ci.yml was the last place carrying hand-written
+      # copies of them -- held in step by a drift test, and a test catches
+      # drift rather than preventing it. `ci-env.mjs` reads
+      # packages/config/src/env-contract.js by RELATIVE path, so it needs no
+      # `pnpm install` and works in the jobs that only run `checkout`.
+      #
+      # Must come BEFORE any build or docker step: $GITHUB_ENV only affects
+      # SUBSEQUENT steps, never the one that writes it. The `docker build`
+      # steps then pass `--build-arg NAME` with no `=value`, which tells
+      # Docker to read the value from this environment.
+      - name: Declare the web app's environment
+        run: node scripts/ci-env.mjs web >> "$GITHUB_ENV"
 
       - name: Build web prod image
         run: |
@@ -769,6 +781,19 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+      # THE VALUES COME FROM THE CONTRACT, not from this file. GitHub Actions
+      # has no `env_file`, so ci.yml was the last place carrying hand-written
+      # copies of them -- held in step by a drift test, and a test catches
+      # drift rather than preventing it. `ci-env.mjs` reads
+      # packages/config/src/env-contract.js by RELATIVE path, so it needs no
+      # `pnpm install` and works in the jobs that only run `checkout`.
+      #
+      # Must come BEFORE any build or docker step: $GITHUB_ENV only affects
+      # SUBSEQUENT steps, never the one that writes it. The `docker build`
+      # steps then pass `--build-arg NAME` with no `=value`, which tells
+      # Docker to read the value from this environment.
+      - name: Declare the web app's environment
+        run: node scripts/ci-env.mjs web >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -883,6 +908,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+      # THE VALUES COME FROM THE CONTRACT, not from this file. GitHub Actions
+      # has no `env_file`, so ci.yml was the last place carrying hand-written
+      # copies of them -- held in step by a drift test, and a test catches
+      # drift rather than preventing it. `ci-env.mjs` reads
+      # packages/config/src/env-contract.js by RELATIVE path, so it needs no
+      # `pnpm install` and works in the jobs that only run `checkout`.
+      #
+      # Must come BEFORE any build or docker step: $GITHUB_ENV only affects
+      # SUBSEQUENT steps, never the one that writes it. The `docker build`
+      # steps then pass `--build-arg NAME` with no `=value`, which tells
+      # Docker to read the value from this environment.
+      - name: Declare the web app's environment
+        run: node scripts/ci-env.mjs web >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -923,11 +961,13 @@ jobs:
         env:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medinstru?schema=public
 
+      # No step-level `env:` any more. This used to re-declare
+      # NEXT_PUBLIC_API_URL with the same value the job now gets from
+      # scripts/ci-env.mjs -- a second copy that could disagree with the
+      # contract while looking deliberate.
       - name: Build web
         working-directory: apps/web
         run: pnpm build
-        env:
-          NEXT_PUBLIC_API_URL: http://localhost:4000/graphql
 
       - name: Start web
         working-directory: apps/web

@@ -67,11 +67,22 @@ const apps = target === "all" ? ["api", "web"] : [target];
  * wins over the file.
  */
 function loadAppEnv(app) {
-  try {
-    process.loadEnvFile(new URL(`../apps/${app}/.env`, import.meta.url));
-  } catch {
-    // No .env is a legitimate state -- CI and the containers declare their
-    // values in the environment itself. The check reports what is missing.
+  // `.env.local` FIRST, and the order is the whole point. Next loads both and
+  // gives .env.local precedence; `process.loadEnvFile` never overwrites a
+  // variable that is already set, so loading the higher-precedence file first
+  // reproduces Next's behaviour rather than inverting it.
+  //
+  // Reading only `.env` reported NEXT_PUBLIC_API_URL as missing on a machine
+  // where it was set in `.env.local` and Next was finding it perfectly well --
+  // a checker that disagrees with the thing it is checking is worse than no
+  // checker, because it teaches people to ignore it.
+  for (const file of [".env.local", ".env"]) {
+    try {
+      process.loadEnvFile(new URL(`../apps/${app}/${file}`, import.meta.url));
+    } catch {
+      // Absent is a legitimate state -- CI and the containers declare their
+      // values in the environment itself. The check reports what is missing.
+    }
   }
 }
 for (const app of apps) {

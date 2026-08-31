@@ -925,10 +925,35 @@ differ inside the Docker network (Postgres and Redis answer on service names).
 A test asserts that override list stays exactly those two, because a third
 appearing silently is how the dev stack starts diverging from a laptop.
 
-**`ci.yml` is the one file that still declares values inline**, because GitHub
-Actions has no `env_file`. It is a single workflow-level block feeding all six
-steps that build or boot the web app, and the drift test pins it to the
-contract and to `DEV_API_URL`/`DEV_SITE_URL`.
+**`ci.yml` declares nothing either.** GitHub Actions has no `env_file`, so
+every job that builds or boots the web app runs
+`node scripts/ci-env.mjs web >> "$GITHUB_ENV"` right after checkout, and the
+values come from the contract.
+
+Three things about that script are load-bearing, and two of them look like
+tidy-ups:
+
+- **It imports the contract by RELATIVE path**, not as
+  `@medinstru/config/env-contract`. `docker-scan` and `docker-web-prod-boot`
+  run only `actions/checkout` — no pnpm, no install — so the package specifier
+  would not resolve there. A test asserts the relative import, and a second
+  asserts `packages/config` itself has no external imports, since either would
+  break exactly those two jobs.
+- **It emits values from the contract rather than `cat`-ing `.env.example`.**
+  That file quotes its values, and `$GITHUB_ENV` takes everything after the
+  first `=` literally — so piping it through would set `APP_ENV` to
+  `"localhost"` WITH the quotes, which the environment check then rejects as a
+  value wrapped in quotes.
+- **The step must come BEFORE anything that consumes it.** `$GITHUB_ENV` only
+  affects *subsequent* steps, so a load step placed after the build is
+  invisible: the build runs with nothing and the step still reports success. A
+  test asserts the ordering per job.
+
+A fourth test asserts every job that builds or boots the web app has the step
+at all — detected narrowly (the path on a `docker build` line, a
+`working-directory: apps/web`, or `playwright test`), because a first version
+matched any mention of `apps/web/Dockerfile` and flagged the `changes` job,
+where it appears in a path filter.
 
 **The places that must declare values, and the test that holds them to
 it.** `apps/api/.env`, `apps/web/.env`, `docker-compose.yml`, `ci.yml`'s

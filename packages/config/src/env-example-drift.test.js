@@ -52,6 +52,50 @@ function declaredInYaml(contents) {
   return names;
 }
 
+/** Split a workflow into its jobs, so a per-job invariant can be asserted. */
+function splitJobs(contents) {
+  const jobs = {};
+  let name = null;
+  let body = [];
+  // Start AFTER the `jobs:` key. The `on:` block above it also contains
+  // two-space keys (`pull_request:`, `workflow_dispatch:`), so scanning the
+  // whole file swept the trigger config into the first "job" and every
+  // assertion then ran against the wrong text.
+  const jobsAt = contents.indexOf("\njobs:\n");
+  const body_text = jobsAt === -1 ? contents : contents.slice(jobsAt + "\njobs:\n".length);
+  for (const line of body_text.split("\n")) {
+    const match = /^  ([a-z][a-z0-9-]*):$/.exec(line);
+    if (match) {
+      if (name) jobs[name] = body.join("\n");
+      name = match[1];
+      body = [];
+    } else if (name) {
+      body.push(line);
+    }
+  }
+  if (name) jobs[name] = body.join("\n");
+  return jobs;
+}
+
+/**
+ * Does this job actually build or boot the web app?
+ *
+ * Deliberately narrow. A first version matched any mention of
+ * `apps/web/Dockerfile`, which flagged the `changes` job -- that path appears
+ * in its dorny/paths-filter config, not in a build command. A test that
+ * reports a job needing something it does not is a test people learn to edit
+ * rather than believe.
+ */
+function buildsWeb(body) {
+  return (
+    // The path must sit on the `docker build` line itself, not anywhere.
+    /docker build[^\n]*apps\/web\/Dockerfile/.test(body) ||
+    // Anything running inside apps/web loads next.config.ts.
+    /working-directory: apps\/web/.test(body) ||
+    /playwright test/.test(body)
+  );
+}
+
 const missing = (required, declared) =>
   required.map((r) => r.name).filter((name) => !declared.has(name));
 
@@ -101,22 +145,94 @@ test("the only compose overrides are the Docker-network hostnames", () => {
   );
 });
 
-test("ci.yml declares every web variable at workflow level", () => {
-  // apps/web is built or booted by six separate CI steps. They inherit one
-  // workflow-level env block; a variable missing from it is missing from all
-  // six. GitHub Actions has no env_file, so this one stays declared -- and
-  // therefore stays tested.
-  const declared = declaredInYaml(read(".github/workflows/ci.yml"));
-  assert.deepEqual(missing(WEB_ENV_CONTRACT, declared), []);
+test("every job that builds or boots the web app loads its environment", () => {
+  // ci.yml no longer declares these values -- `node scripts/ci-env.mjs web`
+  // emits them from the contract into $GITHUB_ENV. What can go wrong now is
+  // a NEW job that builds the web app and forgets the step, which fails in a
+  // way that looks like a code problem rather than a missing line of YAML.
+  const ci = read(".github/workflows/ci.yml");
+  const jobs = splitJobs(ci);
+
+  for (const [name, body] of Object.entries(jobs)) {
+    if (!buildsWeb(body)) continue;
+
+    assert.match(
+      body,
+      /node scripts\/ci-env\.mjs web >> "\$GITHUB_ENV"/,
+      `job "${name}" builds or boots the web app but never declares its environment`,
+    );
+  }
+});
+
+test("the environment is loaded BEFORE anything that consumes it", () => {
+  // $GITHUB_ENV only affects SUBSEQUENT steps, never the one that writes it.
+  // A load step placed after the build is invisible: the build runs with
+  // nothing and the step still reports success.
+  const ci = read(".github/workflows/ci.yml");
+  for (const [name, body] of Object.entries(splitJobs(ci))) {
+    const load = body.indexOf("scripts/ci-env.mjs web");
+    if (load === -1) continue;
+
+    for (const consumer of ["pnpm build", "apps/web/Dockerfile", "playwright test"]) {
+      const at = body.indexOf(consumer);
+      if (at === -1) continue;
+      assert.ok(
+        load < at,
+        `job "${name}" runs "${consumer}" before declaring the environment`,
+      );
+    }
+  }
+});
+
+test("ci.yml no longer hardcodes the values", () => {
+  // The point of the change. If these reappear it means somebody re-added a
+  // declaration block rather than using the emitter, and the two will drift.
+  const ci = read(".github/workflows/ci.yml");
+  assert.doesNotMatch(
+    ci,
+    /^\s*NEXT_PUBLIC_API_URL:\s/m,
+    "ci.yml should get this from scripts/ci-env.mjs, not declare it",
+  );
 });
 
 test("the localhost values are the ones @medinstru/config defines", () => {
   // The constants exist precisely so several files stop each carrying their
   // own literal. A file that drifts from the constant is the failure they
   // were added to prevent.
-  const ci = read(".github/workflows/ci.yml");
   const escape = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  assert.match(ci, new RegExp(escape(DEV_API_URL)));
-  assert.match(ci, new RegExp(escape(DEV_SITE_URL)));
+  const web = read("apps/web/.env.example");
+  assert.match(web, new RegExp(escape(DEV_API_URL)));
+  assert.match(web, new RegExp(escape(DEV_SITE_URL)));
   assert.match(read("apps/api/.env.example"), new RegExp(`PORT="?${API_DEFAULT_PORT}"?`));
+});
+
+test("ci-env.mjs imports the contract by relative path, not by package name", () => {
+  // LOAD-BEARING, and it looks exactly like something to tidy up.
+  // `docker-scan` and `docker-web-prod-boot` run only `actions/checkout` --
+  // no pnpm, no install -- so `@medinstru/config/env-contract` would not
+  // resolve there. A relative import needs nothing but node.
+  const script = read("scripts/ci-env.mjs");
+  assert.match(script, /from "\.\.\/packages\/config\/src\/env-contract\.js"/);
+  assert.doesNotMatch(
+    script,
+    /from "@medinstru\/config/,
+    "would break the CI jobs that never run pnpm install",
+  );
+});
+
+test("the config package itself has no external imports", () => {
+  // The reason the relative import above is enough. If either file grew a
+  // dependency, ci-env.mjs would start failing in exactly those two jobs.
+  for (const file of ["index.js", "env-contract.js"]) {
+    const source = read(`packages/config/src/${file}`);
+    const imports = [...source.matchAll(/^import[^"']*["']([^"']+)["']/gm)].map(
+      (m) => m[1],
+    );
+    for (const specifier of imports) {
+      assert.ok(
+        specifier.startsWith("."),
+        `${file} imports "${specifier}" — ci-env.mjs runs without node_modules`,
+      );
+    }
+  }
 });

@@ -48,10 +48,26 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Same mechanism as ci.yml: values come from the environment contract,
+      # not from this file. ci-env.mjs reads packages/config by relative path,
+      # so it needs no install -- this job only runs `checkout`.
+      #
+      # The image builds carry ARG defaults, so this is not what makes them
+      # work today. It is here so this workflow and ci.yml build the image the
+      # same way: an image scanned with different inputs than the one shipped
+      # is a scan of something else.
+      - name: Declare the web app's environment
+        run: node scripts/ci-env.mjs web >> "$GITHUB_ENV"
+
       - name: Build prod images (build-only — no secrets available here to run them with)
         run: |
           docker build --target prod -f apps/api/Dockerfile -t marketplace-api:prod .
-          docker build --target prod -f apps/web/Dockerfile -t marketplace-web:prod .
+          docker build --target prod -f apps/web/Dockerfile \
+            --build-arg NEXT_PUBLIC_API_URL \
+            --build-arg NEXT_PUBLIC_SITE_URL \
+            --build-arg NEXT_PUBLIC_BLOB_BASE_URL \
+            --build-arg APP_ENV \
+            -t marketplace-web:prod .
 
       - name: Scan API prod image
         uses: aquasecurity/trivy-action@v0.36.0
