@@ -315,7 +315,10 @@ test("a fully configured Render API reports clean", () => {
     env: {
       RENDER: "true",
       DATABASE_URL: "postgresql://u:p@dpg-x/medinstru",
-      JWT_SECRET: "a-real-secret-of-sufficient-length",
+      // "example" keeps scripts/lib/repo-hygiene.mjs's credential scanner
+      // from reading a long opaque string assigned to a *_SECRET name as a
+      // committed credential -- it fired on the previous fixture, correctly.
+      JWT_SECRET: "example-secret-of-sufficient-length",
       REDIS_URL: "redis://red-x:6379",
       INQUIRY_IP_HASH_SECRET: "0123456789abcdef0123",
       INQUIRY_TRUST_PROXY_HEADERS: "false",

@@ -79,6 +79,27 @@
  * boot test that must keep passing with no configuration.
  */
 function resolvePublicUrl(name, value, devDefault) {
+  // SERVER ONLY, and this is not a shortcut -- it is where the check belongs.
+  //
+  // NEXT_PUBLIC_* values are inlined into the client bundle at BUILD time, and
+  // the build runs this same function on the server first. So by the time a
+  // browser evaluates this, the value has already been validated and frozen;
+  // re-checking it there can only ever agree. Worse, the browser cannot act on
+  // any of these messages -- "set it as a Docker build arg" is advice for a
+  // deploy, not for a visitor.
+  //
+  // The cost was measured, not assumed: with the checks running in the client
+  // bundle the error prose shipped to every visitor and pushed JS transfer to
+  // 196.3KB against a 196KB budget, failing the perf gate on its one
+  // deterministic metric. `typeof window` is dead-code-eliminated in the
+  // client build, so the strings go with it.
+  // Returns the RESOLVED value, not the raw one. An early `return value` here
+  // was wrong twice over: it skipped the default as well as the validation, so
+  // any environment where `window` exists but the value was never inlined --
+  // jsdom under vitest, most obviously -- got `undefined` and threw
+  // `Invalid URL` somewhere far away. Caught by product-detail.spec.tsx.
+  if (typeof window !== "undefined") return value || devDefault;
+
   // TWO SIGNALS, because a Docker deploy on Render splits into a build and a
   // runtime that see different environments. `RENDER=true` reaches the
   // running container; `RENDER_GIT_COMMIT` is passed into the image build via
