@@ -86,14 +86,24 @@ variable "enable_key_value" {
   description = <<-EOT
     Create the Redis (Render Key Value) instance the API's shared cache uses.
 
-    OFF by default because turning it on CREATES a billable service. The API
-    treats the cache as optional -- an unset REDIS_URL yields a null cache and
-    every read falls through to Postgres -- so nothing breaks while this is
-    false. Enable it, apply, then set REDIS_URL on the API service from the
-    instance's connection info.
+    ON, and free. Render's Key Value has a free plan -- 25 MB, one instance
+    per workspace -- so this costs nothing at the plan defaults below. It was
+    off originally on the assumption that any Key Value instance is billable;
+    that turned out to be wrong, and the only thing the free plan actually
+    withholds is persistence (see `key_value_persistence_mode`).
+
+    Still a real switch rather than a hardcoded resource, because the API
+    treats the cache as OPTIONAL by construction: an unset REDIS_URL yields a
+    null cache and every read falls through to Postgres. Setting this to
+    false is a supported state, not a broken one.
+
+    Turning it on is the whole operation -- there is no dashboard step.
+    Terraform creates the instance, reads its internal connection string into
+    an env group, and links that group to the API service, so the credential
+    is never typed, pasted, or held by a person.
   EOT
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "key_value_plan" {
@@ -101,13 +111,15 @@ variable "key_value_plan" {
     Plan for the Key Value instance. The provider accepts `free`, `starter`,
     `standard`, `pro`, `pro_plus`.
 
-    Defaults to `free`, matching every other service in this project. Be aware
-    of one thing the provider schema cannot express: whether a given plan
-    accepts `persistence_mode`. Render's free tiers have rejected settings the
-    schema happily validates before -- `parameter_overrides` on free Postgres
-    is the same shape -- so if an apply is refused for persistence, that is
-    the plan talking, not the configuration. Move to `starter` or set
-    `key_value_persistence_mode = "off"`.
+    `free` is deliberate and sufficient, not a placeholder. It gives 25 MB and
+    allows one active instance per workspace; the cache holds a single small
+    counter key today, so neither limit is anywhere near binding. The one
+    thing free withholds is persistence, which `key_value_persistence_mode`
+    handles.
+
+    Note the free plan here is NOT the free-Postgres situation. Free Postgres
+    expires 30 days after creation; free Key Value carries no such clock, so
+    this instance is not on a deletion timer.
   EOT
   type        = string
   default     = "free"
@@ -119,11 +131,28 @@ variable "key_value_persistence_mode" {
     (Redis's AOF) alongside periodic snapshots -- and matches the dev stack's
     `--appendonly yes`.
 
-    Separated from the resource so it can be dropped to `off` without editing
-    main.tf if the chosen plan refuses it.
+    `off` by default, because the free plan does not offer the alternative:
+    Render's docs are explicit that "data persistence is not available for
+    free Key Value instances", and that a free instance loses all of its data
+    whenever it restarts. Sending `journal_snapshot` on `free` is the
+    documented shape of a refused apply -- the plan talking, not the
+    configuration.
+
+    THAT IS SAFE HERE, and for a structural reason rather than a tolerance for
+    risk: the catalogue version lives in Postgres (`CacheVersion`), not in
+    Redis. Redis only ever holds values ADDRESSED BY that version, so a wiped
+    instance cannot serve a stale answer -- it can only miss, and a miss is
+    the null-cache path the API already runs on. Losing the cache costs
+    latency, never correctness.
+
+    What `off` gives up is the warm-cache-after-restart property, which is why
+    a durable mode was wanted originally: a cold cache makes an outage worse
+    at exactly the wrong moment. On a few dozen products that is one COUNT(*)
+    against a tiny table. Raise this to `journal_snapshot` at the same time as
+    moving off `free`, not before -- the two settings are coupled by the plan.
   EOT
   type        = string
-  default     = "journal_snapshot"
+  default     = "off"
 
   validation {
     condition     = contains(["journal_snapshot", "snapshot", "off"], var.key_value_persistence_mode)
