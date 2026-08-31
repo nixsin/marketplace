@@ -94,12 +94,23 @@ COPY packages packages
 # `docker build --build-arg`) both translate matching env vars/build args
 # into this ARG automatically; the ENV line below is what actually exposes
 # it to the `next build` process.
-ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql
+#
+# NO DEFAULT, deliberately. This used to read
+# `ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql`, which meant a build
+# that failed to pass the value did not produce an EMPTY variable -- it
+# produced a populated, plausible, wrong one, and the resulting bundle told
+# every visitor's browser to fetch products from the visitor's own machine.
+# With no default the value is empty, @medinstru/config throws while
+# next.config.ts is loading it, and the build fails instead. Every caller now
+# passes it explicitly: docker-compose.yml, ci.yml and render.yaml.
+ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 # Same mechanism, same reason -- generateMetadata's metadataBase (needed
 # for the product-details page's OpenGraph images) is also inlined at
 # build time, not read at runtime.
-ARG NEXT_PUBLIC_SITE_URL=http://localhost:3000
+# No default, for the same reason -- and this one shipped unset once already,
+# putting http://localhost:3000 into every WhatsApp share link and og:image.
+ARG NEXT_PUBLIC_SITE_URL
 ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 # Same mechanism again, and it was missed once already. next.config.ts
 # reads this at build time to derive BOTH the CSP img-src entry and the
@@ -108,9 +119,9 @@ ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 # exactly as if no blob storage were configured. That failed silently:
 # the variable was set correctly in the dashboard, R2 was serving happily,
 # and every product still pointed at its local path with no error anywhere
-# to explain why. Empty default, since blob storage is optional and an
-# empty value is the "not configured" state everything already handles.
-ARG NEXT_PUBLIC_BLOB_BASE_URL=""
+# to explain why. No default now either: an empty value silently means
+# "not configured", which is exactly the state that failed invisibly above.
+ARG NEXT_PUBLIC_BLOB_BASE_URL
 ENV NEXT_PUBLIC_BLOB_BASE_URL=$NEXT_PUBLIC_BLOB_BASE_URL
 # Same mechanism, same reason: next.config.ts's `deploymentId` gets baked
 # into the build the same way NEXT_PUBLIC_API_URL does, so it needs to be

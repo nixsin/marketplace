@@ -6,6 +6,7 @@ import {
   assertEnvOrExit,
   isRenderDeploy,
 } from "@medinstru/config/env-contract";
+import { API_URL, SITE_URL } from "@medinstru/config/web";
 import {
   CROSS_ORIGIN_OPENER_POLICY,
   FAVICON_MAX_AGE_SECONDS,
@@ -42,10 +43,19 @@ const BLOB_BASE_URL = process.env.NEXT_PUBLIC_BLOB_BASE_URL ?? "";
 // connect-src is derived from NEXT_PUBLIC_API_URL, why
 // upgrade-insecure-requests and 'unsafe-eval' are environment-gated, why
 // HSTS omits preload, why Trusted Types is a deliberate, documented gap).
+// API_URL and SITE_URL come from @medinstru/config/web, NOT from
+// process.env. That import is what makes this file fail fast: the subpath
+// throws when either variable is unset, and Next transpiles and loads
+// next.config.ts at container BOOT as well as at build -- so a misconfigured
+// deploy never binds a port, Render marks it failed, and the previous healthy
+// version stays live.
+//
+// Reading process.env here instead would defer the failure to whichever page
+// first rendered, which is a 500 per request rather than a refused deploy.
 const cspHeader = buildCspHeader({
   isDev,
-  siteUrl: process.env.NEXT_PUBLIC_SITE_URL,
-  apiUrl: process.env.NEXT_PUBLIC_API_URL,
+  siteUrl: SITE_URL,
+  apiUrl: API_URL,
   blobBaseUrl: BLOB_BASE_URL,
 });
 

@@ -926,12 +926,12 @@ fresh clone got no record of what `apps/web` needs. `apps/api/.gitignore`
 ignores only `.env` and never had the problem. Both are worth checking whenever
 a file is added next to existing ones and "just works" locally.
 
-### `API_URL` and `SITE_URL` now THROW on Render instead of falling back
+### `API_URL` and `SITE_URL` THROW when unset — there is no fallback anywhere
 
-`packages/config`'s localhost defaults are correct for local dev, CI and the
-prod-image boot test — all three run unconfigured by design. They are never
-correct on Render, and applying them there silently is this app's worst
-configuration failure: a web service that lost `NEXT_PUBLIC_SITE_URL` serves
+The localhost defaults are **gone**, not narrowed. A default cannot tell "the
+developer has not configured this yet" from "production lost this variable",
+and only one of those was ever cheap to fix. Applying one silently was this
+app's worst configuration failure: a web service that lost `NEXT_PUBLIC_SITE_URL` serves
 canonical URLs, hreflang alternates and OpenGraph images pointing at
 `http://localhost:3000`, to real crawlers, with every page still returning 200.
 

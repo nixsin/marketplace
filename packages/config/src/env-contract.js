@@ -167,6 +167,61 @@ export const UNKNOWN_ENVIRONMENT_HINT =
 // severity table's business, not theirs.
 // ---------------------------------------------------------------------
 
+/**
+ * Mistakes that are worth catching on EVERY variable, whatever it is for.
+ *
+ * These run before a rule's own check, because each one produces a value that
+ * is subtly wrong in a way the specific check cannot see. A DATABASE_URL with
+ * a trailing newline still parses as a URL. A JWT_SECRET wrapped in literal
+ * quotes still passes a length check -- and then signs tokens with a secret
+ * two characters longer than anyone believes.
+ *
+ * @param {string} value
+ * @returns {string | null}
+ */
+function universalProblem(value) {
+  if (value !== value.trim()) {
+    // Overwhelmingly a copy-paste or a here-doc that kept its newline. Shells
+    // and dotenv both preserve it, and nothing downstream trims.
+    return "has leading or trailing whitespace";
+  }
+
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    // A dashboard field is not a shell. Quoting there stores the quotes.
+    return "is wrapped in quotes — a dashboard or CI field stores them as part of the value";
+  }
+
+  return null;
+}
+
+/**
+ * Does this value still look like nobody filled it in?
+ *
+ * SEVERITY DEPENDS ON THE ENVIRONMENT, which the whitespace and quote checks
+ * above do not: `dev-secret-change-me` is the value .env.example and
+ * docker-compose.yml deliberately ship, so it is correct on a laptop and
+ * catastrophic in production. An error everywhere would fail the dev stack
+ * and docker-smoke for doing exactly what they are supposed to do.
+ *
+ * @param {string} value
+ */
+function looksLikePlaceholder(value) {
+  return PLACEHOLDER_PATTERN.test(value);
+}
+
+/**
+ * Values that mean "nobody filled this in". Deliberately matched anywhere in
+ * the string rather than anchored: `dev-secret-change-me` is the literal this
+ * repo ships in .env.example, and the whole point is that it must never reach
+ * production wearing a longer name.
+ */
+const PLACEHOLDER_PATTERN =
+  /(change[-_]?me|your[-_]?(key|secret|token|value|url)|replace[-_]?me|todo|fixme|xxxx+|<[^>]+>)/i;
+
 /** @param {string[]} protocols */
 const isUrl = (protocols) => (value) => {
   let parsed;
@@ -197,22 +252,82 @@ const isPort = (value) => {
 const atLeast = (n) => (value) =>
   value.length >= n ? null : `must be at least ${n} characters`;
 
+/**
+ * @param {RegExp} pattern
+ * @param {string} describe
+ */
+const matches = (pattern, describe) => (value) =>
+  pattern.test(value) ? null : describe;
+
+/** Run several checks, reporting the first problem. */
+const all =
+  (...checks) =>
+  (value) => {
+    for (const check of checks) {
+      const problem = check(value);
+      if (problem) return problem;
+    }
+    return null;
+  };
+
+/**
+ * A public URL, and NOT one pointing at the machine it is running on.
+ *
+ * Separate from `isUrl` because the localhost case is not a malformed value --
+ * it is a perfectly valid URL that is correct in development and catastrophic
+ * in production, which is why it is a per-environment concern rather than a
+ * blanket one. Applied through the cross-checks, not here.
+ */
+const isNotBlank = (value) =>
+  value.length > 0 ? null : "must not be empty";
+
 // ---------------------------------------------------------------------
 // The contracts
 // ---------------------------------------------------------------------
 
 /**
- * `levels` is keyed by environment. Anything omitted defaults to "optional",
- * which keeps the tables readable: only deviations from "we do not care" are
- * written down.
+ * EVERY environment is spelled out on EVERY rule. There is no default and no
+ * omission, and `assertContractsAreExhaustive()` fails the test suite if one
+ * appears.
+ *
+ * That verbosity is the point. The first version of this table let `levels`
+ * be partial and treated anything missing as "optional", which meant a new
+ * variable added without thinking was silently unchecked everywhere -- the
+ * same failure the whole module exists to remove, reintroduced in the
+ * mechanism meant to prevent it.
+ *
+ * `softenedBecause` is MANDATORY on any rule that is not `required` on
+ * render. Production is the environment that matters; anything less than
+ * required there is a deliberate exception and has to say why, in code, next
+ * to the decision. A test enforces it.
  *
  * @typedef {object} EnvRule
  * @property {string} name
  * @property {boolean} secret        Never echo this value into a message.
  * @property {string} why            What actually breaks, in one line.
- * @property {Partial<Record<DeployEnvironment, Severity>>} levels
- * @property {(value: string) => string | null} [check]
+ * @property {Record<DeployEnvironment, Severity>} levels
+ * @property {(value: string) => string | null} check
+ * @property {string} [softenedBecause] Required when levels.render !== "required".
  */
+
+/** Everything a developer machine, CI runner or test process does not need. */
+const DEV_OPTIONAL = /** @type {const} */ ({
+  localhost: "optional",
+  "github-ci": "optional",
+  "ci-local": "optional",
+  test: "optional",
+  unknown: "optional",
+});
+
+/** Needed to run at all, anywhere a real process starts. */
+const NEEDED_TO_RUN = /** @type {const} */ ({
+  localhost: "required",
+  "github-ci": "required",
+  "ci-local": "required",
+  // Test suites build their own module fixtures and never read these.
+  test: "optional",
+  unknown: "required",
+});
 
 /** @type {EnvRule[]} */
 export const API_ENV_CONTRACT = [
@@ -220,108 +335,162 @@ export const API_ENV_CONTRACT = [
     name: "DATABASE_URL",
     secret: true, // contains the password
     why: "Nothing works without it; Prisma cannot connect.",
-    levels: {
-      render: "required",
-      localhost: "required",
-      "github-ci": "required",
-      "ci-local": "required",
-    },
+    levels: { render: "required", ...NEEDED_TO_RUN },
     check: isUrl(["postgresql:", "postgres:"]),
   },
   {
     name: "JWT_SECRET",
     secret: true,
     why: "Signs session tokens. A guessable one is a full authentication bypass.",
-    // Not required in `test`: the e2e suite builds its own module fixtures.
-    levels: {
-      render: "required",
-      localhost: "required",
-      "github-ci": "required",
-      "ci-local": "required",
-    },
+    levels: { render: "required", ...NEEDED_TO_RUN },
+    // The placeholder check in universalProblem() is what actually matters
+    // here: .env.example and docker-compose.yml both ship
+    // `dev-secret-change-me`, so the realistic production failure is not an
+    // absent secret but the development one copied forward.
     check: atLeast(16),
   },
   {
     name: "PORT",
     secret: false,
-    // Worth flagging even though it has a fallback, because the fallback is
-    // actively wrong here: main.ts uses `process.env.PORT ?? 3000`, and 3000
-    // is the WEB app's port. Unset locally, the API quietly binds the port
-    // the web dev server wants, and the failure surfaces as the web app
-    // refusing to start rather than as anything about the API.
-    why: "Unset, the API falls back to 3000 — the web app's port.",
-    levels: { localhost: "recommended" },
+    why: "Unset, the API binds 4000 by default — and Render's health check expects the port it assigned.",
+    levels: {
+      render: "required",
+      localhost: "recommended",
+      "github-ci": "optional",
+      "ci-local": "optional",
+      test: "optional",
+      unknown: "optional",
+    },
     check: isPort,
   },
   {
     name: "REDIS_URL",
     secret: true, // Render's connection string carries credentials
     why: "Absent, the shared cache silently does not run and every read hits Postgres.",
-    // Deliberately NOT required anywhere. The API treats the cache as
-    // optional by construction, `.env.example` ships it blank so CI's
-    // `cp .env.example .env` does not point at a Redis no job runs, and a
-    // bare checkout must work. On Render it is `recommended`, because there
-    // it is Terraform-provisioned and its absence means the cache the
-    // catalogue depends on is not actually wired up.
-    levels: { render: "recommended" },
+    levels: { render: "recommended", ...DEV_OPTIONAL },
+    softenedBecause:
+      "The API treats the cache as optional BY CONSTRUCTION -- no URL yields a null " +
+      "cache and every read falls through to Postgres -- and .env.example ships it " +
+      "blank so CI's `cp .env.example .env` does not point at a Redis no job runs. " +
+      "Promote to required once Terraform's enable_key_value has been applied and " +
+      "the env group is attached; requiring it before that refuses to boot production " +
+      "over a cache the app is designed to live without.",
     check: isUrl(["redis:", "rediss:"]),
   },
   {
     name: "INQUIRY_IP_HASH_SECRET",
     secret: true,
     why: "Without it the per-IP rate limit does not run at all — silently, on an unauthenticated endpoint.",
-    levels: { render: "required" },
+    levels: { render: "required", ...DEV_OPTIONAL },
     check: atLeast(16),
   },
   {
     name: "INQUIRY_TRUST_PROXY_HEADERS",
     secret: false,
-    why: 'Only the exact string "true" enables it; anything else reads as off.',
-    levels: {},
+    why: 'Only the exact string "true" enables it; anything else reads as off. Required on Render so the decision is made rather than defaulted.',
+    levels: { render: "required", ...DEV_OPTIONAL },
     check: isOneOf(["true", "false"]),
   },
   {
     name: "BLOB_PROVIDER",
     secret: false,
     why: "Defaults to `local`, which on Render writes uploads into the container filesystem — no CDN serves them and a redeploy discards them.",
-    levels: { render: "required" },
+    levels: { render: "required", ...DEV_OPTIONAL },
     check: isOneOf(["r2", "s3", "b2", "spaces", "minio", "local"]),
   },
   {
     name: "BLOB_ACCESS_KEY_ID",
     secret: true,
-    why: "Required once BLOB_PROVIDER is not `local`.",
-    levels: {},
+    why: "Required once BLOB_PROVIDER is not `local` — enforced by a cross-check, since it depends on another variable.",
+    levels: { render: "recommended", ...DEV_OPTIONAL },
+    softenedBecause:
+      "Conditional on BLOB_PROVIDER, which a per-variable severity cannot express. " +
+      "The cross-check below turns a non-local provider without credentials into a " +
+      "hard error, which is strictly stronger than making this unconditionally required.",
+    check: isNotBlank,
   },
   {
     name: "BLOB_SECRET_ACCESS_KEY",
     secret: true,
-    why: "Required once BLOB_PROVIDER is not `local`.",
-    levels: {},
+    why: "Required once BLOB_PROVIDER is not `local` — enforced by a cross-check, since it depends on another variable.",
+    levels: { render: "recommended", ...DEV_OPTIONAL },
+    softenedBecause: "Same as BLOB_ACCESS_KEY_ID: conditional on BLOB_PROVIDER.",
+    check: isNotBlank,
+  },
+  {
+    name: "NEXT_PUBLIC_SITE_URL",
+    secret: false,
+    // Easy to miss on the API service because the name says NEXT_PUBLIC. The
+    // API embeds a product link built from it in every outbound WhatsApp
+    // inquiry -- the one message this whole feature exists to send.
+    why: "Outbound inquiries embed a product link built from it; without it the link is omitted and the seller has to search instead of clicking.",
+    levels: { render: "required", ...DEV_OPTIONAL },
+    check: all(
+      isUrl(["http:", "https:"]),
+      (value) =>
+        value.endsWith("/")
+          ? "must not end with a trailing slash — it is concatenated with paths"
+          : null,
+    ),
   },
   {
     name: "WHATSAPP_ACCESS_TOKEN",
     secret: true,
     why: "Absent, inquiries are still recorded but never delivered to the seller.",
-    levels: { render: "recommended" },
+    levels: { render: "recommended", ...DEV_OPTIONAL },
+    softenedBecause:
+      "WhatsApp delivery is not configured in production yet -- render.yaml declares " +
+      "none of these and no Meta credentials exist. Requiring it would refuse to boot " +
+      "the API over a feature that has never been switched on, which is a different " +
+      "thing from a variable somebody forgot. The all-or-nothing cross-check below is " +
+      "what stops a PARTIAL configuration, which is the state that actually breaks.",
+    check: all(isNotBlank, matches(/^\S+$/, "must not contain whitespace")),
   },
   {
     name: "WHATSAPP_PHONE_NUMBER_ID",
     secret: false,
     why: "Absent, inquiries are still recorded but never delivered to the seller.",
-    levels: { render: "recommended" },
+    levels: { render: "recommended", ...DEV_OPTIONAL },
+    softenedBecause: "Same as WHATSAPP_ACCESS_TOKEN: the feature is not configured yet.",
+    // Meta's phone number id is a numeric string. A phone NUMBER pasted here
+    // instead of the id is the classic mistake, and it carries +/spaces.
+    check: matches(
+      /^\d{5,}$/,
+      "must be Meta's numeric phone number ID, not a phone number (digits only)",
+    ),
   },
   {
     name: "WHATSAPP_TEMPLATE_NAME",
     secret: false,
     why: "Business-initiated WhatsApp messages REQUIRE a pre-approved template; free-form text is rejected outside a 24h window the buyer opens.",
-    levels: {},
+    levels: { render: "recommended", ...DEV_OPTIONAL },
+    softenedBecause:
+      "Meaningless without WHATSAPP_ACCESS_TOKEN, so it is enforced together with it " +
+      "by the cross-check below rather than on its own.",
+    // Meta requires lowercase letters, digits and underscores.
+    check: matches(
+      /^[a-z0-9_]+$/,
+      "must be lowercase letters, digits and underscores only — Meta rejects anything else",
+    ),
+  },
+  {
+    name: "WHATSAPP_TEMPLATE_LANGUAGE",
+    secret: false,
+    why: "The template's approved locale. A mismatch is rejected at send time, not at boot.",
+    levels: { render: "recommended", ...DEV_OPTIONAL },
+    softenedBecause:
+      "The service falls back to a documented default, and the feature is not " +
+      "configured in production yet.",
+    check: matches(
+      /^[a-z]{2}(_[A-Z]{2})?$/,
+      'must be a language code such as "en" or "en_US"',
+    ),
   },
   {
     name: "WHATSAPP_ALLOW_FREE_FORM",
     secret: false,
     why: "An opt-in for a known-open service window, never a fallback for a missing template.",
-    levels: {},
+    levels: { render: "required", ...DEV_OPTIONAL },
     check: isOneOf(["true", "false"]),
   },
 ];
@@ -331,7 +500,7 @@ export const API_ENV_CONTRACT = [
  *
  * On Render, `@medinstru/config` throws while it is being IMPORTED if
  * NEXT_PUBLIC_API_URL or NEXT_PUBLIC_SITE_URL is missing or points at
- * localhost — and next.config.ts imports it, so that throw happens before
+ * localhost -- and next.config.ts imports it, so that throw happens before
  * any code in this file runs. These two rules are therefore usually
  * unreachable during a real boot, and that is fine: they exist so
  * `scripts/check-env.mjs --env render` can answer "would this pass on
@@ -349,36 +518,49 @@ export const WEB_ENV_CONTRACT = [
   {
     name: "NEXT_PUBLIC_API_URL",
     secret: false,
-    // The default is what makes this dangerous rather than obvious: a build
-    // with no value produces a bundle that calls localhost:4000 from the
-    // visitor's browser. It also feeds the CSP's connect-src, so a wrong
-    // value blocks the requests as well as misdirecting them.
     why: "On Render the config REFUSES to fall back and throws; anywhere else it defaults to http://localhost:4000/graphql.",
-    levels: { render: "required" },
+    levels: { render: "required", ...DEV_OPTIONAL },
     check: isUrl(["http:", "https:"]),
   },
   {
     name: "NEXT_PUBLIC_SITE_URL",
     secret: false,
     why: "On Render the config REFUSES to fall back and throws; anywhere else it defaults to http://localhost:3000.",
-    levels: { render: "required" },
-    check: isUrl(["http:", "https:"]),
+    levels: { render: "required", ...DEV_OPTIONAL },
+    check: all(
+      isUrl(["http:", "https:"]),
+      // A trailing slash here concatenates into `https://laxair.shop//en`,
+      // which resolves but publishes a different canonical URL than the one
+      // the sitemap emits -- two URLs for one page, which is the specific
+      // thing canonical tags exist to prevent.
+      (value) =>
+        value.endsWith("/")
+          ? "must not end with a trailing slash — it is concatenated with paths and would produce a double slash"
+          : null,
+    ),
   },
   {
     name: "NEXT_PUBLIC_BLOB_BASE_URL",
     secret: false,
-    why: "The public base for product images; without it they resolve against the app's own origin.",
-    levels: { render: "recommended" },
-    check: isUrl(["http:", "https:"]),
+    why: "The public base for product images; without it they resolve against the app's own origin and 404.",
+    levels: { render: "required", ...DEV_OPTIONAL },
+    check: all(
+      isUrl(["http:", "https:"]),
+      (value) =>
+        value.endsWith("/")
+          ? "must not end with a trailing slash — it is concatenated with image paths"
+          : null,
+    ),
   },
   {
     name: "SOURCEMAP_SIGNING_KEY",
     secret: true,
-    // Genuinely optional: the route fails closed, so unset means maps are
-    // unavailable rather than public. That is the safe state, so its absence
-    // is not even a warning -- only a malformed value is.
     why: "Unset means source maps are unavailable, which is the safe default. A short key weakens the signature.",
-    levels: {},
+    levels: { render: "recommended", ...DEV_OPTIONAL },
+    softenedBecause:
+      "The /sourcemaps route FAILS CLOSED: unset means maps are unavailable, not " +
+      "public. Requiring it would refuse to boot production to enable a debugging " +
+      "aid -- the exact inversion of what this key is for.",
     check: atLeast(32),
   },
 ];
@@ -566,8 +748,28 @@ export function checkEnv({ app, env = process.env, environment }) {
       continue;
     }
 
-    if (!rule.check) continue;
-    const problem = rule.check(raw);
+    // A placeholder is an ERROR in production and a WARNING everywhere else.
+    // The dev stack ships `dev-secret-change-me` on purpose; production
+    // inheriting it is the realistic failure, not an absent secret.
+    if (looksLikePlaceholder(raw)) {
+      const message =
+        `${rule.name} still looks like a placeholder rather than a real value` +
+        (rule.secret ? " (value not shown — this variable is a secret)." : `. Found: ${JSON.stringify(raw)}`);
+      if (target === "render") {
+        errors.push({ level: "error", message });
+        continue;
+      }
+      warnings.push({ level: "warning", message });
+      // Deliberately falls through: a placeholder can ALSO be malformed, and
+      // the caller should learn both at once rather than in two rounds.
+    }
+
+    // Universal mistakes next. Each produces a value that is subtly wrong in
+    // a way the rule's own check cannot see -- a DATABASE_URL with a trailing
+    // newline still parses as a URL, and a JWT_SECRET wrapped in literal
+    // quotes still passes a length check while signing tokens with a secret
+    // two characters longer than anyone believes.
+    const problem = universalProblem(raw) ?? rule.check(raw);
     if (!problem) continue;
 
     // A malformed value is an ERROR at every severity, including "optional".
@@ -582,6 +784,26 @@ export function checkEnv({ app, env = process.env, environment }) {
       message: rule.secret
         ? `${rule.name} ${problem}. (Value not shown — this variable is a secret.)`
         : `${rule.name} ${problem}. Found: ${JSON.stringify(raw)}`,
+    });
+  }
+
+  // A TYPO IN APP_ENV IS A HARD ERROR, never a silent downgrade.
+  //
+  // detectEnvironment() ignores an unrecognised value and carries on
+  // inferring, so that a bad override cannot crash a tool that only wanted to
+  // print a report. But "ignored" must not mean "unnoticed": APP_ENV exists to
+  // state the environment outright, and `APP_ENV=prod` (not a value this
+  // accepts) silently getting localhost's permissive rules is precisely the
+  // failure this module exists to remove.
+  const override = env[APP_ENV_OVERRIDE];
+  if (override && !DEPLOY_ENVIRONMENTS.includes(override)) {
+    errors.push({
+      level: "error",
+      message:
+        `${APP_ENV_OVERRIDE} is set to ${JSON.stringify(override)}, which is not a ` +
+        `known environment. It was IGNORED and the environment was inferred as ` +
+        `"${target}" instead — which may be more permissive than you intended. ` +
+        `Use one of: ${DEPLOY_ENVIRONMENTS.join(", ")}.`,
     });
   }
 
@@ -657,4 +879,61 @@ export function assertEnvOrExit({
 
   if (!result.ok) exit(1);
   return result;
+}
+
+/**
+ * Fails loudly if any rule is under-specified.
+ *
+ * Called from the test suite rather than at import, because this is a
+ * property of the SOURCE, not of any particular run -- a violation should
+ * fail CI once, not every process that boots.
+ *
+ * Three properties, and each exists because its absence is silent:
+ *
+ * 1. Every rule names every environment. The first version let `levels` be
+ *    partial and treated omissions as "optional", so a variable added without
+ *    thinking was unchecked everywhere -- the same silent-permissiveness this
+ *    module exists to remove, reintroduced in the mechanism meant to prevent
+ *    it.
+ * 2. Every rule has a value check. "Is it set?" catches the easy half; a set
+ *    but wrong value is the half that reaches production, because it looks
+ *    exactly like success.
+ * 3. Anything not `required` on render carries `softenedBecause`. Production
+ *    is the environment that matters, so a weaker severity there is a
+ *    deliberate exception and has to justify itself in code, next to the
+ *    decision, where the next reader will actually find it.
+ */
+export function assertContractsAreExhaustive() {
+  const problems = [];
+
+  for (const [app, rules] of Object.entries(CONTRACTS)) {
+    for (const rule of rules) {
+      const missing = DEPLOY_ENVIRONMENTS.filter(
+        (name) => !(name in rule.levels),
+      );
+      if (missing.length) {
+        problems.push(
+          `${app}.${rule.name} does not declare a severity for: ${missing.join(", ")}`,
+        );
+      }
+
+      if (typeof rule.check !== "function") {
+        problems.push(
+          `${app}.${rule.name} has no value check — "is it set?" does not catch a set-but-wrong value`,
+        );
+      }
+
+      if (rule.levels.render !== "required" && !rule.softenedBecause) {
+        problems.push(
+          `${app}.${rule.name} is "${rule.levels.render}" on render without a softenedBecause explaining why it is not required`,
+        );
+      }
+    }
+  }
+
+  if (problems.length) {
+    throw new Error(
+      `The environment contract is under-specified:\n  - ${problems.join("\n  - ")}`,
+    );
+  }
 }

@@ -20,11 +20,12 @@ describe("computeApiOrigin", () => {
     );
   });
 
-  it("falls back to the local API origin when no URL is given", () => {
-    // Matches src/lib/api.ts's own identical fallback -- this is the value
-    // that must stay in sync so CSP's connect-src always allows whatever
-    // the app itself is actually configured to fetch.
-    expect(computeApiOrigin(undefined)).toBe("http://localhost:4000");
+  it("THROWS rather than inventing a localhost origin", () => {
+    // This used to assert a localhost fallback. That fallback silently
+    // produced a CSP whose connect-src allowed localhost and nothing else,
+    // so the browser blocked every real API call -- and the header that
+    // caused it looked entirely deliberate.
+    expect(() => computeApiOrigin("")).toThrow(/There is no default/);
   });
 });
 
@@ -36,6 +37,7 @@ describe("buildCspHeader", () => {
     // connect-src origin to https, breaking local dev against a plain
     // local API server.
     const csp = buildCspHeader({
+      siteUrl: "",
       isDev: true,
       apiUrl: "http://localhost:4000/graphql",
     });
@@ -57,6 +59,7 @@ describe("buildCspHeader", () => {
 
   it("scopes connect-src to 'self' plus exactly the given API's origin", () => {
     const csp = buildCspHeader({
+      siteUrl: "",
       isDev: false,
       apiUrl: "https://medinstru-api.onrender.com/graphql",
     });
@@ -72,14 +75,26 @@ describe("buildCspHeader", () => {
     // regardless of environment. A silent drop of either would either
     // break the app (script-src) or just stop protecting against
     // injected <style> (style-src) -- neither should happen unnoticed.
-    const csp = buildCspHeader({ isDev: false, apiUrl: undefined });
+    const csp = buildCspHeader({
+      siteUrl: "",
+      isDev: false,
+      apiUrl: "http://localhost:4000/graphql",
+    });
     expect(csp).toContain("script-src 'self' 'unsafe-inline'");
     expect(csp).toContain("style-src 'self' 'unsafe-inline'");
   });
 
   it("always sets frame-ancestors 'none' and object-src 'none'", () => {
-    const cspDev = buildCspHeader({ isDev: true, apiUrl: undefined });
-    const cspProd = buildCspHeader({ isDev: false, apiUrl: undefined });
+    const cspDev = buildCspHeader({
+      siteUrl: "",
+      isDev: true,
+      apiUrl: "http://localhost:4000/graphql",
+    });
+    const cspProd = buildCspHeader({
+      siteUrl: "",
+      isDev: false,
+      apiUrl: "http://localhost:4000/graphql",
+    });
     for (const csp of [cspDev, cspProd]) {
       expect(csp).toContain("frame-ancestors 'none'");
       expect(csp).toContain("object-src 'none'");
@@ -120,17 +135,24 @@ describe("blob image host in CSP", () => {
   it("adds no img-src entry when no blob host is configured", () => {
     // Today's state. The policy must stay exactly as tight as it is now
     // until a provider is actually switched on.
-    const csp = buildCspHeader({ isDev: false, apiUrl: undefined });
+    const csp = buildCspHeader({
+      siteUrl: "",
+      isDev: false,
+      apiUrl: "http://localhost:4000/graphql",
+    });
     expect(csp).toContain("img-src 'self' blob: data:;");
   });
 
   it("allows the blob host once configured", () => {
     const csp = buildCspHeader({
+      siteUrl: "",
       isDev: false,
-      apiUrl: undefined,
+      apiUrl: "http://localhost:4000/graphql",
       blobBaseUrl: "https://images.laxair.shop",
     });
-    expect(csp).toContain("img-src 'self' blob: data: https://images.laxair.shop;");
+    expect(csp).toContain(
+      "img-src 'self' blob: data: https://images.laxair.shop;",
+    );
   });
 
   it("allows only the origin, never a path", () => {
@@ -138,8 +160,9 @@ describe("blob image host in CSP", () => {
     // more than it reads like it does -- a classic way to write a policy
     // that looks tight and is not.
     const csp = buildCspHeader({
+      siteUrl: "",
       isDev: false,
-      apiUrl: undefined,
+      apiUrl: "http://localhost:4000/graphql",
       blobBaseUrl: "https://images.laxair.shop/bucket/media",
     });
     expect(csp).toContain("data: https://images.laxair.shop;");
@@ -149,17 +172,21 @@ describe("blob image host in CSP", () => {
   it("falls back to a stricter policy on an unparseable value", () => {
     // A bad env var must degrade to stricter, never to broken.
     const csp = buildCspHeader({
+      siteUrl: "",
       isDev: false,
-      apiUrl: undefined,
+      apiUrl: "http://localhost:4000/graphql",
       blobBaseUrl: "not a url",
     });
     expect(csp).toContain("img-src 'self' blob: data:;");
   });
 });
 
-
 describe("upgrade-insecure-requests is gated on the real protocol", () => {
-  const base = { isDev: false, apiUrl: "https://api.example.com/graphql", blobBaseUrl: "" };
+  const base = {
+    isDev: false,
+    apiUrl: "https://api.example.com/graphql",
+    blobBaseUrl: "",
+  };
 
   it("is emitted for a real HTTPS deployment", () => {
     expect(
@@ -183,7 +210,7 @@ describe("upgrade-insecure-requests is gated on the real protocol", () => {
     // CI's e2e build sets NEXT_PUBLIC_API_URL but not SITE_URL. Absent a
     // stated origin there is no basis to claim the site is HTTPS, and
     // claiming it wrongly breaks the page rather than degrading it.
-    expect(buildCspHeader({ ...base, siteUrl: undefined })).not.toContain(
+    expect(buildCspHeader({ ...base, siteUrl: "" })).not.toContain(
       "upgrade-insecure-requests",
     );
   });
@@ -228,7 +255,13 @@ describe("the header set next.config.ts actually emits", () => {
     // apps/web/src for geolocation, camera, microphone, getUserMedia,
     // payment and navigator.usb, all zero hits -- so a permissive value
     // here would only ever be an accident.
-    for (const feature of ["camera", "microphone", "geolocation", "payment", "usb"]) {
+    for (const feature of [
+      "camera",
+      "microphone",
+      "geolocation",
+      "payment",
+      "usb",
+    ]) {
       expect(PERMISSIONS_POLICY).toContain(`${feature}=()`);
     }
     expect(PERMISSIONS_POLICY).not.toMatch(/=\(\s*\*\s*\)/);

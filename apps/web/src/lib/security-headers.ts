@@ -28,12 +28,19 @@ export interface SecurityHeadersInput {
    * the other. CLAUDE.md had flagged the localhost exemption as unverified
    * -- it is now verified, and engine-dependent.
    */
-  siteUrl?: string;
-  // Matches src/lib/api.ts's own NEXT_PUBLIC_API_URL fallback exactly --
-  // callers should pass process.env.NEXT_PUBLIC_API_URL as-is (including
-  // undefined) rather than pre-resolving the fallback themselves, so both
-  // places only ever have one definition of what "no env var set" means.
-  apiUrl: string | undefined;
+  siteUrl: string;
+  /**
+   * REQUIRED, and not `string | undefined` any more.
+   *
+   * It used to be optional so callers could pass
+   * `process.env.NEXT_PUBLIC_API_URL` straight through, with the fallback
+   * resolved here -- one definition of "no env var set", shared with
+   * src/lib/api.ts. That reasoning stopped holding when the fallback was
+   * removed: there is now no such thing as "no env var set" that anything
+   * downstream should tolerate, so the type says so and callers pass
+   * `API_URL` from `@medinstru/config/web`, which throws when it is unset.
+   */
+  apiUrl: string;
   /**
    * Public base URL for blob-stored images, when one is configured.
    *
@@ -63,8 +70,24 @@ export function blobImgSrcEntry(blobBaseUrl: string | undefined): string {
   }
 }
 
-export function computeApiOrigin(apiUrl: string | undefined): string {
-  return new URL(apiUrl ?? "http://localhost:4000/graphql").origin;
+/**
+ * NO FALLBACK. This used to read `apiUrl ?? "http://localhost:4000/graphql"`,
+ * which meant a missing NEXT_PUBLIC_API_URL silently produced a CSP whose
+ * `connect-src` allowed localhost and nothing else -- so the browser blocked
+ * every real API call, and the header that caused it looked deliberate.
+ *
+ * The value is now required at the type level and at runtime, and callers get
+ * it from `@medinstru/config/web`, which throws when it is unset.
+ */
+export function computeApiOrigin(apiUrl: string): string {
+  if (!apiUrl) {
+    throw new Error(
+      "computeApiOrigin needs NEXT_PUBLIC_API_URL. There is no default: a " +
+        "localhost fallback here produces a CSP that blocks every real API " +
+        "call while looking intentional.",
+    );
+  }
+  return new URL(apiUrl).origin;
 }
 
 export function buildCspHeader({
@@ -77,7 +100,7 @@ export function buildCspHeader({
   // Emitted only when the site is genuinely served over HTTPS. Upgrading
   // sub-resources on an http:// origin cannot succeed -- there is nothing
   // listening on TLS -- so the directive would only ever break the page.
-  const upgradeInsecure = !isDev && (siteUrl ?? "").startsWith("https://");
+  const upgradeInsecure = !isDev && siteUrl.startsWith("https://");
   const blobImgSrc = blobImgSrcEntry(blobBaseUrl);
   return `
     default-src 'self';

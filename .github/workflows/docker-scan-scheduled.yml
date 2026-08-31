@@ -41,6 +41,16 @@ on:
     - cron: "37 4 * * 1"
   workflow_dispatch: {}
 
+# apps/web has NO fallbacks for these -- @medinstru/config throws at import if
+# NEXT_PUBLIC_API_URL or NEXT_PUBLIC_SITE_URL is missing, and the web
+# Dockerfile no longer defaults its ARGs to localhost values. Mirrors the
+# identical block in ci.yml; this workflow builds the same prod image on a
+# weekly schedule, so it needs the same inputs.
+env:
+  NEXT_PUBLIC_API_URL: http://localhost:4000/graphql
+  NEXT_PUBLIC_SITE_URL: http://localhost:3000
+  NEXT_PUBLIC_BLOB_BASE_URL: ""
+
 jobs:
   docker-scan-scheduled:
     name: Docker image vulnerability scan (scheduled)
@@ -51,7 +61,11 @@ jobs:
       - name: Build prod images (build-only — no secrets available here to run them with)
         run: |
           docker build --target prod -f apps/api/Dockerfile -t marketplace-api:prod .
-          docker build --target prod -f apps/web/Dockerfile -t marketplace-web:prod .
+          docker build --target prod -f apps/web/Dockerfile \
+            --build-arg NEXT_PUBLIC_API_URL \
+            --build-arg NEXT_PUBLIC_SITE_URL \
+            --build-arg NEXT_PUBLIC_BLOB_BASE_URL \
+            -t marketplace-web:prod .
 
       - name: Scan API prod image
         uses: aquasecurity/trivy-action@v0.36.0

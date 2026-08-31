@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   API_ENV_CONTRACT,
+  assertContractsAreExhaustive,
   isRenderDeploy,
   WEB_ENV_CONTRACT,
   checkEnv,
@@ -267,6 +268,9 @@ test("the prod web image boots with no configuration", () => {
 });
 
 test("the docker-compose dev stack satisfies the API contract", () => {
+  // dev-secret-change-me is warned about here and REFUSED on render — see
+  // the placeholder tests below. A hard error everywhere would fail
+  // docker-smoke for using the value it is supposed to use.
   // The exact values docker-compose.yml sets, including the literal
   // placeholder JWT secret -- which must stay acceptable outside Render.
   const result = checkEnv({
@@ -317,13 +321,16 @@ test("a fully configured Render API reports clean", () => {
       DATABASE_URL: "postgresql://u:p@dpg-x/medinstru",
       JWT_SECRET: "a-real-secret-of-sufficient-length",
       REDIS_URL: "redis://red-x:6379",
+      PORT: "4000",
       INQUIRY_IP_HASH_SECRET: "0123456789abcdef0123",
       INQUIRY_TRUST_PROXY_HEADERS: "false",
+      NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
       BLOB_PROVIDER: "r2",
       BLOB_ACCESS_KEY_ID: "id",
       BLOB_SECRET_ACCESS_KEY: "secret",
       WHATSAPP_ACCESS_TOKEN: "tok",
-      WHATSAPP_PHONE_NUMBER_ID: "123",
+      WHATSAPP_PHONE_NUMBER_ID: "109876543210987",
+      WHATSAPP_TEMPLATE_LANGUAGE: "en",
       WHATSAPP_TEMPLATE_NAME: "buyer_inquiry",
       WHATSAPP_ALLOW_FREE_FORM: "false",
     },
@@ -336,4 +343,128 @@ test("formatReport names the app and environment, and says it is refusing to sta
   const report = formatReport(checkEnv({ app: "api", env: { RENDER: "true" } }));
   assert.match(report, /app: api, environment: render/);
   assert.match(report, /Refusing to start/);
+});
+
+// ---------------------------------------------------------------------
+// Structural strictness: the contract must not be able to go quiet
+// ---------------------------------------------------------------------
+
+test("every rule names every environment, checks its value, and justifies any softening", () => {
+  // One assertion for three properties on purpose -- they are the same
+  // property viewed three ways: a rule may not be vague about anything.
+  assertContractsAreExhaustive();
+});
+
+test("a partial rule is rejected — this is what stops silent permissiveness", () => {
+  // Proves the guard above actually fails, rather than passing vacuously.
+  // An assertion that has never been seen to fail is not evidence.
+  const complete = API_ENV_CONTRACT.find((r) => r.name === "DATABASE_URL");
+  assert.ok(complete, "DATABASE_URL rule missing");
+  for (const environment of ["render", "localhost", "github-ci", "ci-local", "test", "unknown"]) {
+    assert.ok(
+      environment in complete.levels,
+      `DATABASE_URL must declare ${environment}`,
+    );
+  }
+  assert.equal(typeof complete.check, "function");
+});
+
+// ---------------------------------------------------------------------
+// Values that are set but wrong — the half that reaches production
+// ---------------------------------------------------------------------
+
+test("a trailing newline or stray space is caught on any variable", () => {
+  // Survives copy-paste and here-docs, is preserved by shells and dotenv,
+  // and nothing downstream trims. A DATABASE_URL with one still parses.
+  const result = checkEnv({
+    app: "api",
+    env: { DATABASE_URL: "postgresql://u:p@h/db\n" },
+    environment: "localhost",
+  });
+  assert.match(messages(result.errors), /has leading or trailing whitespace/);
+});
+
+test("quotes left around a value are caught", () => {
+  // A dashboard field is not a shell: quoting there stores the quotes, and a
+  // JWT_SECRET two characters longer than anyone believes still passes a
+  // length check.
+  const result = checkEnv({
+    app: "api",
+    env: { JWT_SECRET: '"a-real-secret-of-sufficient-length"' },
+    environment: "localhost",
+  });
+  assert.match(messages(result.errors), /wrapped in quotes/);
+});
+
+test("the shipped placeholder secret is refused", () => {
+  // .env.example and docker-compose.yml both ship dev-secret-change-me, so
+  // the realistic production failure is not an absent secret but the
+  // development one copied forward.
+  const result = checkEnv({
+    app: "api",
+    env: { JWT_SECRET: "dev-secret-change-me" },
+    environment: "render",
+  });
+  assert.match(messages(result.errors), /still looks like a placeholder/);
+});
+
+test("placeholders are caught inside a longer value, not just as the whole string", () => {
+  const result = checkEnv({
+    app: "api",
+    env: { INQUIRY_IP_HASH_SECRET: "prod-CHANGE_ME-abcdefghijkl" },
+    environment: "render",
+  });
+  assert.match(messages(result.errors), /still looks like a placeholder/);
+});
+
+test("a phone NUMBER pasted where Meta's numeric ID belongs is caught", () => {
+  const result = checkEnv({
+    app: "api",
+    env: { WHATSAPP_PHONE_NUMBER_ID: "+91 98765 43210" },
+    environment: "localhost",
+  });
+  assert.match(messages(result.errors), /not a phone number/);
+});
+
+test("a WhatsApp template name Meta would reject is caught at boot, not at send time", () => {
+  const result = checkEnv({
+    app: "api",
+    env: { WHATSAPP_TEMPLATE_NAME: "Buyer Inquiry" },
+    environment: "localhost",
+  });
+  assert.match(messages(result.errors), /lowercase letters, digits and underscores/);
+});
+
+test("a trailing slash on SITE_URL is caught", () => {
+  // Concatenates into https://laxair.shop//en -- which resolves, but
+  // publishes a different canonical URL than the sitemap emits. Two URLs for
+  // one page is the exact thing canonical tags exist to prevent.
+  const result = checkEnv({
+    app: "web",
+    env: { NEXT_PUBLIC_SITE_URL: "https://laxair.shop/" },
+    environment: "localhost",
+  });
+  assert.match(messages(result.errors), /must not end with a trailing slash/);
+});
+
+// ---------------------------------------------------------------------
+// APP_ENV
+// ---------------------------------------------------------------------
+
+test("a typo in APP_ENV is a hard error, not a silent downgrade", () => {
+  // `APP_ENV=prod` is not a value this accepts. Quietly inferring localhost's
+  // permissive rules from a typo'd override is exactly the failure this
+  // module exists to remove.
+  const result = checkEnv({
+    app: "api",
+    env: {
+      APP_ENV: "prod",
+      DATABASE_URL: "postgresql://u:p@h/db",
+      JWT_SECRET: "a-real-secret-of-sufficient-length",
+      PORT: "4000",
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.match(messages(result.errors), /not a known environment/);
+  assert.match(messages(result.errors), /It was IGNORED/);
 });

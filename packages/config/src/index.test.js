@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import {
   AI_ROLES,
   ANTHROPIC_ANALYSIS_MODEL,
-  API_URL,
   CORRELATION_HEADERS,
   CORRELATION_ID_MAX_LENGTH,
   CORRELATION_ID_PATTERN,
@@ -15,7 +14,6 @@ import {
   OPENAI_REVIEW_MODEL,
   SERVICE_WORKER_CACHE_CONTROL,
   SHARED_MAX_AGE_SECONDS,
-  SITE_URL,
   STALE_WHILE_REVALIDATE_SECONDS,
   publicCacheControl,
   resolveApiKey,
@@ -42,7 +40,7 @@ async function importWithEnv(overrides) {
   for (const key of Object.keys(saved)) delete process.env[key];
   Object.assign(process.env, overrides);
   try {
-    return await import(`./index.js?case=${Math.random()}`);
+    return await import(`./web-runtime.js?case=${Math.random()}`);
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];
@@ -52,12 +50,30 @@ async function importWithEnv(overrides) {
 }
 
 describe("web config", () => {
-  test("falls back to local defaults when env vars are unset", async () => {
-    // The exact fallbacks apps/web relied on before this package existed --
-    // changing one silently changes local dev for everyone.
-    const cfg = await importWithEnv({});
-    assert.equal(cfg.API_URL, "http://localhost:4000/graphql");
-    assert.equal(cfg.SITE_URL, "http://localhost:3000");
+  test("THROWS when unset — there is no fallback, in any environment", async () => {
+    // This used to assert a localhost fallback. That fallback was the app's
+    // worst configuration failure: a deploy that lost NEXT_PUBLIC_SITE_URL
+    // served canonical URLs and OpenGraph images pointing at localhost, to
+    // real crawlers, with every page still returning 200.
+    //
+    // A default cannot tell "not configured yet" from "production lost it".
+    // Removing it makes both loud, and only one of them was ever cheap to fix.
+    await assert.rejects(
+      () => importWithEnv({}),
+      /NEXT_PUBLIC_API_URL is not set. There is no default/,
+    );
+  });
+
+  test("the error says how to fix it, for both local and Render", async () => {
+    // A hard failure at boot is only an improvement if it is actionable.
+    await assert.rejects(
+      () => importWithEnv({}),
+      (error) => {
+        assert.match(error.message, /copy apps\/web\/.env.example/);
+        assert.match(error.message, /pass it as a Docker build arg/);
+        return true;
+      },
+    );
   });
 
   test("prefers the environment over the fallback when set", async () => {
@@ -78,7 +94,7 @@ describe("web config", () => {
     // every page still returns 200.
     await assert.rejects(
       () => importWithEnv({ RENDER: "true" }),
-      /NEXT_PUBLIC_API_URL is not set, and this process is running on Render/,
+      /NEXT_PUBLIC_API_URL is not set. There is no default/,
     );
   });
 
@@ -108,14 +124,28 @@ describe("web config", () => {
     assert.equal(cfg.SITE_URL, "https://laxair.shop");
   });
 
-  test("the localhost defaults still apply everywhere that is not Render", async () => {
-    // Three green checks depend on this: `test-web` builds with no env at
-    // all, `docker-web-prod-boot` boots the real prod image with none, and a
-    // bare `pnpm dev` has none either. NODE_ENV=production must NOT trigger
-    // the strict path -- the prod image sets it wherever it is built.
-    const cfg = await importWithEnv({ NODE_ENV: "production" });
+  test("localhost values are accepted off Render, and only there", async () => {
+    // Localhost is the CORRECT value on a laptop and in CI -- it is only
+    // catastrophic in production, which is why the hostname check is keyed on
+    // Render rather than applied everywhere.
+    const cfg = await importWithEnv({
+      NODE_ENV: "production",
+      NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql",
+      NEXT_PUBLIC_SITE_URL: "http://localhost:3000",
+    });
     assert.equal(cfg.API_URL, "http://localhost:4000/graphql");
     assert.equal(cfg.SITE_URL, "http://localhost:3000");
+  });
+
+  test("a malformed URL is rejected before anything uses it", async () => {
+    await assert.rejects(
+      () =>
+        importWithEnv({
+          NEXT_PUBLIC_API_URL: "api.laxair.shop/graphql",
+          NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+        }),
+      /NEXT_PUBLIC_API_URL is not a valid URL/,
+    );
   });
 
   test("locales are en + hi with en as the default", () => {

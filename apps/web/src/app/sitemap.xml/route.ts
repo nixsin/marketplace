@@ -1,4 +1,4 @@
-import { SITE_URL } from "@medinstru/config";
+import { SITE_URL } from "@medinstru/config/web";
 import {
   loadSitemapProductCount,
   PRODUCTS_PER_SITEMAP,

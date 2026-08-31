@@ -74,6 +74,49 @@ instead of on platform markers would do exactly that.
 lands in `unknown` and prints the hint. Either export `APP_ENV=localhost`, or
 ignore it — it is a warning, never a failure.
 
+## There are no fallbacks, so every environment supplies its own values
+
+`NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SITE_URL` used to default to localhost
+whenever they were unset. That default was the app's worst configuration
+failure: a deploy that lost `NEXT_PUBLIC_SITE_URL` published localhost
+canonical URLs, hreflang alternates and OpenGraph images to real crawlers,
+while every page still returned 200.
+
+Both defaults are gone. `@medinstru/config/web` throws when either is unset,
+in **every** environment — a default cannot tell "the developer has not
+configured this yet" from "production lost this variable", and only one of
+those was ever cheap to fix.
+
+So each context now states its values, and there are exactly four places to
+look:
+
+| Context | Where the values come from |
+|---|---|
+| Your machine | `apps/web/.env` — `cp apps/web/.env.example apps/web/.env` |
+| Dev stack | `docker-compose.yml`, in the web service's `environment:` |
+| GitHub Actions | one workflow-level `env:` block in `ci.yml`, inherited by every job |
+| Render | the dashboard, mirrored in `render.yaml` |
+
+The `docker build` steps pass `--build-arg NEXT_PUBLIC_API_URL` with **no
+`=value`**, which tells Docker to take it from the environment — so the
+workflow-level block is the single source for the six CI steps that build or
+boot the web app.
+
+**`apps/web/Dockerfile` no longer defaults its ARGs either**, and that was the
+subtler half. It declared `ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql`,
+so a build that failed to pass the value did not produce an *empty* variable —
+it produced a populated, plausible, wrong one, and no absence check would ever
+have fired. The ARGs are now bare.
+
+**`apps/api` deliberately does not use the throwing export.** It reads
+`NEXT_PUBLIC_SITE_URL` directly, because it already handles absence better
+than a throw would: `publicSiteUrl()` returns null, the outbound WhatsApp
+message omits the link, and a warning naming the variable is logged — the
+seller still gets the buyer's name, number and Ref. Refusing to boot the whole
+API would trade a degraded message for no message. The hard failure still
+exists, at the right layer: the contract marks the variable **required on
+render**, so a real deploy refuses to start without it.
+
 ## Overriding detection
 
 ```bash

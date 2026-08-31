@@ -9,7 +9,9 @@ import { Header } from "@/components/header";
 import { Footer } from "@/components/footer";
 import { ServiceWorkerRegistration } from "@/components/service-worker-registration";
 import { PageViewTracker } from "@/components/page-view-tracker";
-import { API_URL, BUILD_COMMIT, BUILD_TIME, SITE_URL } from "@medinstru/config";
+import { BUILD_COMMIT, BUILD_TIME } from "@medinstru/config";
+// Separate entry because these two THROW when unset -- see web-runtime.js.
+import { API_URL, SITE_URL } from "@medinstru/config/web";
 import "../globals.css";
 import { OG_IMAGE_HEIGHT, OG_IMAGE_WIDTH } from "@/lib/og-image";
 
