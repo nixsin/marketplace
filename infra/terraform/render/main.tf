@@ -302,3 +302,76 @@ resource "render_env_group_link" "cache_api" {
   env_group_id = render_env_group.cache[0].id
   service_ids  = [local.api_service_id]
 }
+
+# ---------------------------------------------------------------------
+# The environment contract, delivered to both services
+# ---------------------------------------------------------------------
+
+# Every variable packages/config/src/env-contract.js requires, for both apps.
+#
+# WHY THIS EXISTS: the contract requires EVERY environment to declare EVERY
+# variable, and a deployment missing one refuses to boot rather than running
+# misconfigured. Render had five of them. Without this group the next deploy
+# after that contract merges would fail -- not an outage, since Render keeps
+# the previous healthy version, but no deploy would succeed either.
+#
+# AN ENV GROUP RATHER THAN `env_vars` ON THE SERVICES, for the same reason
+# the cache group above uses one: both render_web_service resources carry
+# `ignore_changes = all`, because provider v1.9.1 sends maintenance_mode
+# fields Render rejects for free services. A group sidesteps that entirely.
+#
+# ONE GROUP FOR BOTH SERVICES. A few variables are only meaningful to one app
+# (SOURCEMAP_SIGNING_KEY to web, the WhatsApp set to api), and an extra
+# variable a service ignores costs nothing -- the check only ever looks at its
+# own app's list. Two groups would mean two places to add the next variable.
+#
+# EMPTY IS A VALUE HERE, not an omission. The contract distinguishes them:
+# absent means somebody forgot, `NAME=` means a documented "off" state. Each
+# empty default below is one of those documented states, and every one is
+# described on its variable in variables.tf.
+resource "render_env_group" "app_env" {
+  name           = "medinstru-app-env"
+  environment_id = var.environment_id
+
+  env_vars = merge(
+    {
+      # Stated outright rather than inferred. Detection would get this right
+      # from RENDER=true anyway, but the contract treats a declared value as
+      # the answer and an inferred one as a guess.
+      APP_ENV = { value = "render" }
+
+      INQUIRY_IP_HASH_SECRET      = { value = var.inquiry_ip_hash_secret }
+      INQUIRY_TRUST_PROXY_HEADERS = { value = var.inquiry_trust_proxy_headers }
+
+      BLOB_PROVIDER          = { value = var.blob_provider }
+      BLOB_ACCESS_KEY_ID     = { value = var.blob_access_key_id }
+      BLOB_SECRET_ACCESS_KEY = { value = var.blob_secret_access_key }
+
+      WHATSAPP_ACCESS_TOKEN      = { value = var.whatsapp_access_token }
+      WHATSAPP_PHONE_NUMBER_ID   = { value = var.whatsapp_phone_number_id }
+      WHATSAPP_TEMPLATE_NAME     = { value = var.whatsapp_template_name }
+      WHATSAPP_TEMPLATE_LANGUAGE = { value = var.whatsapp_template_language }
+      # An opt-in for a known-open 24h window, never a fallback for a missing
+      # template: "true" with no template name sends a request Meta rejects
+      # and marks every inquiry FAILED. The contract refuses that pairing.
+      WHATSAPP_ALLOW_FREE_FORM = { value = "false" }
+
+      SOURCEMAP_SIGNING_KEY = { value = var.sourcemap_signing_key }
+    },
+
+    # REDIS_URL is defined in EXACTLY ONE group, never two.
+    #
+    # When the cache exists, render_env_group.cache carries the real
+    # connection string. Defining it here as well would leave which one wins
+    # to Render's ordering between groups, which is not documented -- so this
+    # supplies the empty "no shared cache" value only when there is no cache
+    # group to supply the real one.
+    var.enable_key_value ? {} : { REDIS_URL = { value = "" } },
+  )
+}
+
+# Linked to BOTH services: APP_ENV alone is required by each.
+resource "render_env_group_link" "app_env" {
+  env_group_id = render_env_group.app_env.id
+  service_ids  = [local.api_service_id, local.web_service_id]
+}

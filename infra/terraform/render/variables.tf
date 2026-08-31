@@ -174,3 +174,117 @@ variable "postgres_parameter_overrides" {
   type        = map(string)
   default     = {}
 }
+
+# ---------------------------------------------------------------------
+# The environment contract's variables, delivered to both services
+# ---------------------------------------------------------------------
+
+variable "inquiry_ip_hash_secret" {
+  description = <<-EOT
+    Keys the HMAC that stores an inquiry submitter's IP as a hash.
+
+    EMPTY BY DEFAULT, and empty is a real, documented state rather than a
+    gap: the per-IP rate limit simply does not run. That is the honest
+    option, because an unkeyed digest over IPv4's 2^32 space is reversible
+    by anyone holding the table -- storing nothing beats storing something
+    that only looks protected.
+
+    Supply a real value through TF_VAR_inquiry_ip_hash_secret when you want
+    the limit on; never commit one. Generate with `openssl rand -hex 24`.
+  EOT
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "sourcemap_signing_key" {
+  description = <<-EOT
+    Signs source-map access tokens for apps/web.
+
+    EMPTY BY DEFAULT: the /sourcemaps route fails closed, so maps are
+    unavailable rather than public. That is the safe state, not a broken
+    one -- see CLAUDE.md's source-map section.
+
+    Supply through TF_VAR_sourcemap_signing_key; never commit one. Generate
+    with `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`.
+  EOT
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "blob_provider" {
+  description = <<-EOT
+    Object-storage provider for uploads: r2, s3, b2, spaces, minio, or local.
+
+    `local` is the default and IS permitted on a deployment -- the refusal
+    lives at the write instead. Nothing in the app injects BLOB_STORE yet, so
+    blocking a deploy here would be an error over a capability with no call
+    sites; `LocalBlobStore.put()` throws on a deployment instead, naming this
+    variable, at the moment an upload is first attempted. See CLAUDE.md.
+  EOT
+  type        = string
+  default     = "local"
+
+  validation {
+    condition     = contains(["r2", "s3", "b2", "spaces", "minio", "local"], var.blob_provider)
+    error_message = "Must be one of r2, s3, b2, spaces, minio, local — the providers apps/api has an adapter for."
+  }
+}
+
+variable "blob_access_key_id" {
+  description = "Object-storage access key id. Empty is correct while blob_provider is `local`. Supply through TF_VAR_blob_access_key_id."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "blob_secret_access_key" {
+  description = "Object-storage secret. Empty is correct while blob_provider is `local`. Supply through TF_VAR_blob_secret_access_key."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "whatsapp_access_token" {
+  description = "Meta Cloud API token. EMPTY means WhatsApp delivery is off: inquiries are still recorded, just not sent. Supply through TF_VAR_whatsapp_access_token."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "whatsapp_phone_number_id" {
+  description = "Meta's NUMERIC sender id -- not a phone number. Empty means delivery is off."
+  type        = string
+  default     = ""
+}
+
+variable "whatsapp_template_name" {
+  description = "The approved template name (lowercase, digits, underscores). Empty means delivery is off."
+  type        = string
+  default     = ""
+}
+
+variable "whatsapp_template_language" {
+  description = "The template's approved locale, e.g. `en` or `en_US`. Empty falls back to the service's documented default."
+  type        = string
+  default     = ""
+}
+
+variable "inquiry_trust_proxy_headers" {
+  description = <<-EOT
+    Whether to derive a submitter's address from cf-connecting-ip.
+
+    "false" by default and deliberately so: this origin also answers directly
+    on its .onrender.com hostname, so a caller who skips the edge can set the
+    header themselves. Setting "true" asserts the origin now REFUSES traffic
+    that did not arrive through Cloudflare -- not merely that a proxy exists.
+  EOT
+  type        = string
+  default     = "false"
+
+  validation {
+    condition     = contains(["true", "false"], var.inquiry_trust_proxy_headers)
+    error_message = "Must be exactly \"true\" or \"false\" — the app compares the string."
+  }
+}

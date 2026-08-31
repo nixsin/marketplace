@@ -49,6 +49,25 @@ override_resource {
 # which is the intended protection and was confirmed by writing this test in
 # the other order first. So this pins the gating expression, not a supported
 # way to tear a live cache down.
+# ...and it must still be declared when there is no cache, or the contract
+# reports it absent and the API refuses to start.
+run "redis_url_is_declared_empty_when_there_is_no_cache" {
+  command = plan
+
+  variables {
+    jwt_secret       = "test"
+    enable_key_value = false
+  }
+
+  assert {
+    condition = (
+      contains(keys(render_env_group.app_env.env_vars), "REDIS_URL") &&
+      render_env_group.app_env.env_vars["REDIS_URL"].value == ""
+    )
+    error_message = "With no cache, REDIS_URL must be declared empty — absent means 'forgotten', empty means 'no shared cache'."
+  }
+}
+
 run "cache_gating_is_all_or_nothing" {
   command = plan
 
@@ -175,5 +194,65 @@ run "cache_defaults_are_free_and_non_persistent" {
       contains(render_env_group_link.cache_api[0].service_ids, "srv-da02lnojo6nc73djh9bg")
     )
     error_message = "REDIS_URL must be delivered to the API service via a linked env group."
+  }
+}
+
+# The env group must carry EVERY variable the contract requires, or the next
+# deploy refuses to boot. Terraform cannot import the contract, so this pins
+# the names; scripts/terraform-env-drift.test.mjs asserts the same list
+# against packages/config, which is what catches a variable added there and
+# not here.
+run "app_env_group_carries_the_whole_contract" {
+  command = plan
+
+  variables {
+    jwt_secret = "test"
+  }
+
+  assert {
+    condition = alltrue([
+      for name in [
+        "APP_ENV",
+        "INQUIRY_IP_HASH_SECRET",
+        "INQUIRY_TRUST_PROXY_HEADERS",
+        "BLOB_PROVIDER",
+        "BLOB_ACCESS_KEY_ID",
+        "BLOB_SECRET_ACCESS_KEY",
+        "WHATSAPP_ACCESS_TOKEN",
+        "WHATSAPP_PHONE_NUMBER_ID",
+        "WHATSAPP_TEMPLATE_NAME",
+        "WHATSAPP_TEMPLATE_LANGUAGE",
+        "WHATSAPP_ALLOW_FREE_FORM",
+        "SOURCEMAP_SIGNING_KEY",
+      ] : contains(keys(render_env_group.app_env.env_vars), name)
+    ])
+    error_message = "medinstru-app-env is missing a variable the environment contract requires; the next deploy would refuse to boot."
+  }
+
+  # Linked to BOTH services -- APP_ENV alone is required by each, so a link
+  # covering only the API leaves the web service failing its own check.
+  assert {
+    condition = (
+      contains(render_env_group_link.app_env.service_ids, "srv-da02lnojo6nc73djh9bg") &&
+      contains(render_env_group_link.app_env.service_ids, "srv-da02mt61egvs73fopb00")
+    )
+    error_message = "The app env group must be linked to both the API and the web service."
+  }
+}
+
+# REDIS_URL must be defined in exactly ONE group. With the cache enabled the
+# cache group carries the real connection string; defining it here too would
+# leave precedence to Render's undocumented ordering between groups.
+run "redis_url_is_never_defined_twice" {
+  command = plan
+
+  variables {
+    jwt_secret       = "test"
+    enable_key_value = true
+  }
+
+  assert {
+    condition     = !contains(keys(render_env_group.app_env.env_vars), "REDIS_URL")
+    error_message = "REDIS_URL must come from the cache env group when the cache exists, not from both."
   }
 }

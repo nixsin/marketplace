@@ -153,6 +153,75 @@ line to look for. The signal is the *absence* of
 logs after the redeploy. For positive confirmation, the instance's own
 dashboard shows keys once the catalogue is hit.
 
+## The environment contract (`medinstru-app-env`)
+
+`packages/config/src/env-contract.js` requires **every environment to declare
+every variable**, and a deployment missing one refuses to boot rather than
+running misconfigured. Render had five of the fourteen. `render_env_group.app_env`
+supplies the rest and is linked to **both** services.
+
+```bash
+cd infra/terraform/render
+terraform apply
+```
+
+Everything defaults to a value that is correct for a deployment with no
+optional services configured, so a bare `apply` is enough:
+
+| Variable | Default | What it means |
+|---|---|---|
+| `APP_ENV` | `render` | stated outright rather than inferred |
+| `INQUIRY_TRUST_PROXY_HEADERS` | `false` | no header is trusted |
+| `BLOB_PROVIDER` | `local` | see below |
+| `WHATSAPP_ALLOW_FREE_FORM` | `false` | template-only, as Meta requires |
+| everything else | empty | a documented "off" state, never a gap |
+
+**Empty is a value, not an omission.** The contract distinguishes `undefined`
+(somebody forgot) from `""` (a documented off state) — so each empty entry
+above is a decision, and every one is described on its variable in
+`variables.tf`.
+
+### Turning something on
+
+Supply it at apply time; never commit one:
+
+```bash
+export TF_VAR_inquiry_ip_hash_secret="$(openssl rand -hex 24)"
+terraform apply
+```
+
+The same pattern covers `sourcemap_signing_key`, `blob_access_key_id`,
+`blob_secret_access_key` and `whatsapp_access_token`. All five are
+`sensitive = true` with an empty default, and
+`scripts/terraform-env-drift.test.mjs` fails if any gains a committed value.
+
+A value set by hand on the service takes precedence over an env group, so the
+dashboard remains available for anything you would rather not route through
+Terraform at all.
+
+### `BLOB_PROVIDER=local` is permitted here
+
+The invariant is *never write data to storage the CDN does not serve*, which
+`local` violates only when something **writes**. Nothing in the app injects
+`BLOB_STORE` yet, so refusing at boot would block a deploy over a capability
+with no call sites. `LocalBlobStore.put()` throws on a deployment instead,
+naming this variable, at the moment an upload is first attempted.
+
+### REDIS_URL is defined in exactly one place
+
+`render_env_group.cache` carries the real connection string when the cache
+exists; `app_env` supplies the empty "no shared cache" value only when it does
+not. Defining it in both would leave precedence to Render's undocumented
+ordering between groups, and `main.tftest.hcl` asserts both directions.
+
+### What keeps this in step
+
+Terraform cannot import the contract, so two tests do it instead:
+`main.tftest.hcl` pins the group's contents and its link to both services, and
+`scripts/terraform-env-drift.test.mjs` (in `test-ci-scripts`) compares the
+group against `packages/config` in both directions — a contract variable
+missing from Terraform, and a Terraform variable no app reads.
+
 ## Adopt Cloudflare
 
 Create the scoped API token in Cloudflare, export it without writing it to a

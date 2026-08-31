@@ -334,6 +334,11 @@ jobs:
       # regression here silently changes what gets reviewed.
       - run: node --test scripts/lib/diff-ordering.test.mjs
       - run: node --test scripts/lib/terraform-postgres-guard.test.mjs
+      # Terraform cannot import the environment contract, so nothing but this
+      # keeps the Render env group in step with it. A variable added to the
+      # contract and not to the group makes the next production deploy refuse
+      # to boot -- discovered from a log rather than from a diff.
+      - run: node --test scripts/terraform-env-drift.test.mjs
       # @medinstru/config is the single source of truth for both the web
       # app's runtime values and every AI automation's settings, so a
       # regression here reaches further than any other script in this list.
