@@ -41,10 +41,6 @@ const SUPPLIED_ELSEWHERE = new Set([
   "NEXT_PUBLIC_API_URL",
   "NEXT_PUBLIC_SITE_URL",
   "NEXT_PUBLIC_BLOB_BASE_URL",
-  // Carried by render_env_group.cache when the cache exists, and by this
-  // group only when it does not -- defining it in both would leave
-  // precedence to Render's undocumented ordering between groups.
-  "REDIS_URL",
 ]);
 
 test("the Terraform env group carries every contract variable", () => {

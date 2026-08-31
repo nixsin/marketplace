@@ -40,8 +40,9 @@ override_resource {
   }
 }
 
-# Gating must be ALL-OR-NOTHING: a half-gated set would leave an env group
-# pointing at an instance that does not exist.
+# Gating covers the Key Value INSTANCE. The env group is not gated -- it
+# carries the whole environment contract, not just the cache -- so what
+# changes is REDIS_URL's value, not whether the group exists.
 #
 # Deliberately placed BEFORE the apply run below, because it must plan against
 # an EMPTY state. Once the instance exists, `enable_key_value = false` does not
@@ -49,9 +50,12 @@ override_resource {
 # which is the intended protection and was confirmed by writing this test in
 # the other order first. So this pins the gating expression, not a supported
 # way to tear a live cache down.
-# ...and it must still be declared when there is no cache, or the contract
-# reports it absent and the API refuses to start.
-run "redis_url_is_declared_empty_when_there_is_no_cache" {
+# REDIS_URL lives in the ONE app env group, whether or not a cache exists --
+# empty means "no shared cache", a real connection string means there is one.
+# It had its own group at first; two groups meant two links touching the same
+# service in one apply, and Render refused with "Unable to add service to
+# environment group".
+run "redis_url_is_declared_even_with_no_cache" {
   command = plan
 
   variables {
@@ -64,7 +68,21 @@ run "redis_url_is_declared_empty_when_there_is_no_cache" {
       contains(keys(render_env_group.app_env.env_vars), "REDIS_URL") &&
       render_env_group.app_env.env_vars["REDIS_URL"].value == ""
     )
-    error_message = "With no cache, REDIS_URL must be declared empty — absent means 'forgotten', empty means 'no shared cache'."
+    error_message = "REDIS_URL must be declared empty with no cache — absent means 'forgotten', empty means 'no shared cache'."
+  }
+}
+
+# Exactly ONE env group and ONE link, for the reason above.
+run "there_is_a_single_env_group" {
+  command = plan
+
+  variables {
+    jwt_secret = "test"
+  }
+
+  assert {
+    condition     = render_env_group.app_env.name == "medinstru-app-env"
+    error_message = "The app env group should be the only one; a second means two links racing on the same service."
   }
 }
 
@@ -77,12 +95,16 @@ run "cache_gating_is_all_or_nothing" {
   }
 
   assert {
-    condition = (
-      length(render_keyvalue.cache) == 0 &&
-      length(render_env_group.cache) == 0 &&
-      length(render_env_group_link.cache_api) == 0
-    )
-    error_message = "enable_key_value = false must gate the instance, the env group and the link together."
+    condition     = length(render_keyvalue.cache) == 0
+    error_message = "enable_key_value = false must gate the Key Value instance."
+  }
+
+  # The env group is NOT gated -- it carries the whole contract, not just the
+  # cache, so it exists either way. What changes is REDIS_URL's value, which
+  # `redis_url_is_declared_even_with_no_cache` above asserts.
+  assert {
+    condition     = render_env_group.app_env.env_vars["REDIS_URL"].value == ""
+    error_message = "With the cache gated off, REDIS_URL must still be declared, and empty."
   }
 }
 
@@ -184,16 +206,16 @@ run "cache_defaults_are_free_and_non_persistent" {
     error_message = "Key Value must default to the free plan with persistence off; free Render Key Value refuses persistence and the apply would fail."
   }
 
-  # The credential reaches the API through an env group rather than the
+  # The credential reaches the API through the app env group rather than the
   # service's own env_vars, because render_web_service.api carries
-  # ignore_changes = all -- setting it there would be silently dropped.
+  # ignore_changes = all -- setting it there would be silently dropped. And
+  # it is read straight off the Key Value resource, so no person handles it.
   assert {
     condition = (
-      length(render_env_group.cache) == 1 &&
-      length(render_env_group_link.cache_api) == 1 &&
-      contains(render_env_group_link.cache_api[0].service_ids, "srv-da02lnojo6nc73djh9bg")
+      render_env_group.app_env.env_vars["REDIS_URL"].value != "" &&
+      contains(render_env_group_link.app_env.service_ids, "srv-da02lnojo6nc73djh9bg")
     )
-    error_message = "REDIS_URL must be delivered to the API service via a linked env group."
+    error_message = "REDIS_URL must reach the API through the linked app env group."
   }
 }
 
@@ -243,16 +265,3 @@ run "app_env_group_carries_the_whole_contract" {
 # REDIS_URL must be defined in exactly ONE group. With the cache enabled the
 # cache group carries the real connection string; defining it here too would
 # leave precedence to Render's undocumented ordering between groups.
-run "redis_url_is_never_defined_twice" {
-  command = plan
-
-  variables {
-    jwt_secret       = "test"
-    enable_key_value = true
-  }
-
-  assert {
-    condition     = !contains(keys(render_env_group.app_env.env_vars), "REDIS_URL")
-    error_message = "REDIS_URL must come from the cache env group when the cache exists, not from both."
-  }
-}

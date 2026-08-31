@@ -207,12 +207,31 @@ The invariant is *never write data to storage the CDN does not serve*, which
 with no call sites. `LocalBlobStore.put()` throws on a deployment instead,
 naming this variable, at the moment an upload is first attempted.
 
-### REDIS_URL is defined in exactly one place
+### One env group, not two — learned from a failed apply
 
-`render_env_group.cache` carries the real connection string when the cache
-exists; `app_env` supplies the empty "no shared cache" value only when it does
-not. Defining it in both would leave precedence to Render's undocumented
-ordering between groups, and `main.tftest.hcl` asserts both directions.
+`REDIS_URL` had its own group at first. That meant two groups and two links
+touching the same service in a single apply, and Render refused with
+**"Unable to add service to environment group"**. One group removes the
+concurrency, and with it the question of which group wins when two define the
+same key — which Render does not document.
+
+The credential is still never handled by a person: Terraform reads the
+**internal** connection string straight off the Key Value resource, so the
+traffic also stays off the public network. With `enable_key_value = false`,
+the same key is declared empty, which the contract reads as "no shared cache"
+rather than "forgotten".
+
+### `parameter_overrides` must be null on a free database
+
+Render refuses the field for being **present**, not for being non-empty:
+*"parameter overrides are not available on free tier databases"*. Passing an
+empty map still sends the attribute, so the apply failed with the variable at
+its default. It is `null` when empty now.
+
+Worth noting how that was found: `terraform validate` and `plan` both accept
+the empty map, because this is Render's constraint rather than the provider
+schema's. Same shape as the `persistence_mode` lesson above — a provider
+accepting a value is not the platform accepting it.
 
 ### What keeps this in step
 

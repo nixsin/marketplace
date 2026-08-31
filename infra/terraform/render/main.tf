@@ -78,7 +78,23 @@ resource "render_postgres" "main" {
   #
   # Render manages backups and PITR at the plan level rather than through
   # parameters, so those are a plan decision, not a setting.
-  parameter_overrides = var.postgres_parameter_overrides
+  # NULL, not `{}`, when there is nothing to override.
+  #
+  # Render refuses the field outright on a free database -- "parameter
+  # overrides are not available on free tier databases" -- and it refuses it
+  # for being PRESENT, not for being non-empty. Passing an empty map still
+  # sends the attribute, so the apply failed with the variable at its default.
+  # `null` makes the provider omit it entirely.
+  #
+  # Found by running a real apply; `terraform validate` and `plan` both
+  # accept the empty map, because this is Render's constraint rather than the
+  # schema's. The same shape as the `persistence_mode` lesson above: a
+  # provider accepting a value is not the platform accepting it.
+  parameter_overrides = (
+    length(var.postgres_parameter_overrides) > 0
+    ? var.postgres_parameter_overrides
+    : null
+  )
 
   lifecycle {
     prevent_destroy = true
@@ -265,44 +281,6 @@ resource "render_keyvalue" "cache" {
   }
 }
 
-# REDIS_URL, delivered to the API without anyone handling the credential.
-#
-# This is the whole point of doing it in Terraform rather than the dashboard:
-# the connection string is read straight off the Key Value resource above and
-# written into an env group. It is never typed, never pasted, never in a shell
-# history, and never in this repository -- Render generates it, Terraform
-# moves it, and the API receives it.
-#
-# The INTERNAL connection string, not the external one. Both services live in
-# the same Render environment, so internal keeps the traffic off the public
-# network and out of egress accounting. The external string exists for
-# connecting from a laptop, which is not what the API is doing.
-#
-# An env group rather than setting env_vars on the service directly, because
-# render_web_service.api carries `ignore_changes = all` -- provider v1.9.1
-# sends maintenance_mode fields that Render rejects for free services, which
-# produced a partial apply. Linking a group sidesteps that entirely: the
-# service resource is untouched, and the link is its own resource.
-resource "render_env_group" "cache" {
-  count = var.enable_key_value ? 1 : 0
-
-  name           = "medinstru-cache-env"
-  environment_id = var.environment_id
-
-  env_vars = {
-    REDIS_URL = {
-      value = render_keyvalue.cache[0].connection_info.internal_connection_string
-    }
-  }
-}
-
-resource "render_env_group_link" "cache_api" {
-  count = var.enable_key_value ? 1 : 0
-
-  env_group_id = render_env_group.cache[0].id
-  service_ids  = [local.api_service_id]
-}
-
 # ---------------------------------------------------------------------
 # The environment contract, delivered to both services
 # ---------------------------------------------------------------------
@@ -359,14 +337,26 @@ resource "render_env_group" "app_env" {
       SOURCEMAP_SIGNING_KEY = { value = var.sourcemap_signing_key }
     },
 
-    # REDIS_URL is defined in EXACTLY ONE group, never two.
+    # REDIS_URL lives in THIS group too, not a second one.
     #
-    # When the cache exists, render_env_group.cache carries the real
-    # connection string. Defining it here as well would leave which one wins
-    # to Render's ordering between groups, which is not documented -- so this
-    # supplies the empty "no shared cache" value only when there is no cache
-    # group to supply the real one.
-    var.enable_key_value ? {} : { REDIS_URL = { value = "" } },
+    # It had its own env group at first, which meant two groups and two links
+    # touching the same service in one apply -- and that apply failed with
+    # "Unable to add service to environment group". One group removes the
+    # concurrency entirely, and with it the question of which group wins when
+    # two define the same key, which Render does not document.
+    #
+    # The credential is still never handled by a person: Terraform reads it
+    # straight off the Key Value resource. The INTERNAL string, so the traffic
+    # stays off the public network.
+    {
+      REDIS_URL = {
+        value = (
+          var.enable_key_value
+          ? render_keyvalue.cache[0].connection_info.internal_connection_string
+          : ""
+        )
+      }
+    },
   )
 }
 

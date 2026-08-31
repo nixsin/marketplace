@@ -2623,6 +2623,19 @@ from planning duplicate production resources. Keep service settings managed
 via the Render dashboard/API until the services are upgraded or the provider
 fixes this behavior. Render Postgres is still fully managed.
 
+**Two things a real `terraform apply` refused that `validate` and `plan` both
+accepted**, which is the general lesson: a provider accepting a value is not
+the platform accepting it.
+
+- `parameter_overrides` on a FREE Postgres is refused for being **present**,
+  not for being non-empty — "parameter overrides are not available on free
+  tier databases". An empty map still sends the attribute, so it must be
+  `null` when there is nothing to override.
+- Two env groups each linking the same service in one apply failed with
+  "Unable to add service to environment group". The environment contract and
+  `REDIS_URL` now share ONE group, which also removes the undocumented
+  question of which group wins when two define the same key.
+
 Render Postgres must explicitly keep `ip_allow_list = 0.0.0.0/0` while GitHub
 Actions applies migrations through its external endpoint. Provider v1.9.1
 cleared the imported allow-all entry when this optional-computed field was
