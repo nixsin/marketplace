@@ -256,6 +256,30 @@ test("the localhost values are the ones @medinstru/config defines", () => {
   assert.match(read("apps/api/.env.example"), new RegExp(`PORT="?${API_DEFAULT_PORT}"?`));
 });
 
+test("every script importing the contract does so by relative path", () => {
+  // LOAD-BEARING for all of them, and it looks exactly like something to tidy
+  // up. `test-ci-scripts` runs checkout and setup-node and NOTHING else -- no
+  // pnpm, no install -- and `docker-scan` / `docker-web-prod-boot` are the
+  // same. A package specifier resolves locally, because pnpm links the
+  // workspace package into the root node_modules, and then fails in CI.
+  //
+  // That is not hypothetical: generate-env-example.mjs shipped with
+  // `@medinstru/config/env-contract` and failed test-ci-scripts with
+  // ERR_MODULE_NOT_FOUND on the first run that reached it.
+  for (const script of ["ci-env.mjs", "generate-env-example.mjs", "check-env.mjs"]) {
+    const source = read(`scripts/${script}`);
+    const specifiers = [...source.matchAll(/^import[\s\S]*?from "([^"]+)";/gm)].map(
+      (m) => m[1],
+    );
+    for (const specifier of specifiers) {
+      assert.ok(
+        specifier.startsWith(".") || specifier.startsWith("node:"),
+        `scripts/${script} imports "${specifier}" — it must run without node_modules`,
+      );
+    }
+  }
+});
+
 test("ci-env.mjs imports the contract by relative path, not by package name", () => {
   // LOAD-BEARING, and it looks exactly like something to tidy up.
   // `docker-scan` and `docker-web-prod-boot` run only `actions/checkout` --

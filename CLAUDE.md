@@ -934,6 +934,16 @@ the shell **inside** the container expands it, rather than adding a third copy
 of the name. Verified by booting the service and watching it report healthy,
 because a broken healthcheck fails `docker-smoke`.
 
+**`${{ env.X }}` works in `services.<id>.env.<name>` and NOT in
+`services.<id>.options`** — GitHub's own context-availability table draws the
+line exactly there. Getting it wrong does not fail a job: it rejects the whole
+workflow, producing a run with **zero jobs** and the message "This run likely
+failed because of a workflow file issue", which points at no line. Diagnose it
+by counting jobs — `gh api .../runs/<id>/jobs --jq .total_count` returning `0`
+is the signature. The health command therefore uses a plain `$POSTGRES_USER`,
+expanded by the shell *inside* the container, the same trick as
+`docker-compose.yml`'s `$$`.
+
 **Two things genuinely cannot be generated, and both are pinned by tests
 instead.** GitHub Actions evaluates `services:` when a JOB STARTS, before any
 step runs, so nothing written to `$GITHUB_ENV` can reach it and there is no
@@ -953,9 +963,16 @@ Three things about that script are load-bearing, and two of them look like
 tidy-ups:
 
 - **It imports the contract by RELATIVE path**, not as
-  `@medinstru/config/env-contract`. `docker-scan` and `docker-web-prod-boot`
-  run only `actions/checkout` — no pnpm, no install — so the package specifier
-  would not resolve there. A test asserts the relative import, and a second
+  `@medinstru/config/env-contract`. `docker-scan`, `docker-web-prod-boot` and
+  `test-ci-scripts` run only `actions/checkout` (plus `setup-node`) — no pnpm,
+  no install — so the package specifier does not resolve there. It *does*
+  resolve locally, because pnpm links the workspace package into the root
+  `node_modules`, which is what makes this a "works on my machine" trap:
+  `generate-env-example.mjs` shipped with the package specifier and failed
+  `test-ci-scripts` with `ERR_MODULE_NOT_FOUND` on the first run that reached
+  it. A test now asserts every script under `scripts/` that imports the
+  contract uses a relative path. Reproduce the CI environment with
+  `git archive HEAD | tar -x -C /tmp/x` and run the script there. A test asserts the relative import, and a second
   asserts `packages/config` itself has no external imports, since either would
   break exactly those two jobs.
 - **It emits values from the contract rather than `cat`-ing `.env.example`.**

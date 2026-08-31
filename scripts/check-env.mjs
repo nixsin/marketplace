@@ -9,8 +9,12 @@
  * enforcement lives in apps/api/src/main.ts and apps/web/next.config.ts,
  * which always run.
  *
- * All the decisions live in @medinstru/config/env-contract, so this file and
- * both boot hooks share one implementation rather than three that drift.
+ * All the decisions live in the environment contract, so this file and both
+ * boot hooks share one implementation rather than three that drift.
+ *
+ * Imported by RELATIVE path for the same reason ci-env.mjs is: nothing under
+ * scripts/ can rely on the workspace package being linked into the root
+ * node_modules, and a checkout with no install must still be able to run it.
  *
  *   node scripts/check-env.mjs api
  *   node scripts/check-env.mjs web
@@ -36,7 +40,7 @@ import {
   formatMatrix,
   formatReport,
   formatStartupBanner,
-} from "@medinstru/config/env-contract";
+} from "../packages/config/src/env-contract.js";
 
 const argv = process.argv.slice(2);
 const target = argv.find((a) => !a.startsWith("-")) ?? "all";

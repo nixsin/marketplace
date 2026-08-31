@@ -20,6 +20,18 @@ on:
 # The Postgres service containers' account, and the ONE thing in this file
 # that still has to be written by hand.
 #
+# WHERE `${{ env.X }}` MAY AND MAY NOT BE USED, because getting this wrong
+# does not fail a job -- it rejects the whole workflow, producing a run with
+# ZERO jobs and the message "This run likely failed because of a workflow file
+# issue". Nothing points at the offending line.
+#
+#   services.<id>.env.<name>   -- `env` IS available. The block below uses it.
+#   services.<id>.options      -- `env` is NOT available. The health command
+#                                 therefore uses a plain `$POSTGRES_USER`,
+#                                 which the shell INSIDE the container expands
+#                                 from the variable postgres was created with.
+#                                 Same trick as docker-compose.yml's `$$`.
+#
 # `services:` is evaluated when a JOB STARTS, before any step runs -- so
 # nothing a step writes to $GITHUB_ENV can reach it, and GitHub Actions has no
 # `env_file`. Consolidating to a single workflow-level declaration is the best
@@ -452,7 +464,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ${{ env.POSTGRES_USER }}"
+          --health-cmd "pg_isready -U $POSTGRES_USER"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -925,7 +937,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ${{ env.POSTGRES_USER }}"
+          --health-cmd "pg_isready -U $POSTGRES_USER"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -1168,7 +1180,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U ${{ env.POSTGRES_USER }}"
+          --health-cmd "pg_isready -U $POSTGRES_USER"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10

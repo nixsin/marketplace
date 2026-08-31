@@ -16,10 +16,16 @@
  */
 import { writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+// RELATIVE, not `@medinstru/config/env-contract`. The `--check` mode runs in
+// test-ci-scripts, a job with no `pnpm install` at all -- checkout and
+// setup-node only -- so the package specifier does not resolve there. It
+// resolved locally because pnpm happens to link the workspace package into
+// the root node_modules, which is exactly the "works on my machine" shape
+// this repo keeps getting caught by.
 import {
   renderDockerEnv,
   renderEnvExample,
-} from "@medinstru/config/env-contract";
+} from "../packages/config/src/env-contract.js";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
 const check = process.argv.includes("--check");
