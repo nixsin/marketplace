@@ -195,23 +195,65 @@ test("ci.yml carries no connection strings", () => {
   }
 });
 
-test("every job that builds or boots the web app loads its environment", () => {
-  // ci.yml no longer declares these values -- `node scripts/ci-env.mjs web`
-  // emits them from the contract into $GITHUB_ENV. What can go wrong now is
-  // a NEW job that builds the web app and forgets the step, which fails in a
-  // way that looks like a code problem rather than a missing line of YAML.
+test("every job that USES a web variable declares it", () => {
+  // Keyed on USAGE, not on my guess about which jobs build the web app.
+  //
+  // The first version asked "does this job build web?" and answered with
+  // three heuristics. docker-smoke slipped through all of them: it boots the
+  // stack through ./scripts/dev.sh rather than building anything, yet its
+  // verification step curls "$NEXT_PUBLIC_SITE_URL/en". curl got an empty URL
+  // and exited 3, which reads like a broken stack rather than an unset
+  // variable. Asking "does this job reference the variable?" cannot miss that.
   const ci = read(".github/workflows/ci.yml");
-  const jobs = splitJobs(ci);
-
-  for (const [name, body] of Object.entries(jobs)) {
-    if (!buildsWeb(body)) continue;
-
+  for (const [name, body] of Object.entries(splitJobs(ci))) {
+    const uses = WEB_ENV_CONTRACT.some(
+      (rule) =>
+        body.includes(`$${rule.name}`) || body.includes(`{${rule.name}}`),
+    );
+    if (!uses) continue;
     assert.match(
       body,
       /node scripts\/ci-env\.mjs web >> "\$GITHUB_ENV"/,
-      `job "${name}" builds or boots the web app but never declares its environment`,
+      `job "${name}" references a web variable but never declares one`,
     );
   }
+});
+
+test("the API e2e job never takes DATABASE_URL from the contract", () => {
+  // THE DANGEROUS ONE. That suite TRUNCATEs between tests and relies on
+  // .env.test pointing it at medinstru_test. dotenv does not overwrite a
+  // variable that is already set, so a contract DATABASE_URL in $GITHUB_ENV
+  // silently wins and aims the truncation at the DEV database.
+  //
+  // That is the 2026-08-18 incident's exact mechanism. Adding the step
+  // reproduced it; assertConnectedToTestDatabase caught it. This asserts the
+  // arrangement rather than relying on that guard firing again.
+  const jobs = splitJobs(read(".github/workflows/ci.yml"));
+  for (const [name, body] of Object.entries(jobs)) {
+    if (!/pnpm test:e2e\b/.test(body)) continue;
+    // The RUN LINE, not any mention -- the job carries a comment explaining
+    // why the step is deliberately absent, and matching that comment made
+    // this assertion fail on the very arrangement it exists to require.
+    // Same mistake as the first web-build detector: a mention is not a call.
+    assert.doesNotMatch(
+      body,
+      /run: node scripts\/ci-env\.mjs api/,
+      `job "${name}" runs the truncating e2e suite and must let .env.test win`,
+    );
+  }
+});
+
+test("the API readiness probe hits the origin, not the GraphQL path", () => {
+  // A GET to /graphql with no query is a 400, so `curl -sf` fails and a
+  // healthy API reads as never having started -- which is exactly how this
+  // failed once, with "API did not become ready in time" and a log showing
+  // the API up and serving.
+  const ci = read(".github/workflows/ci.yml");
+  assert.doesNotMatch(
+    ci,
+    /curl -sf "\$NEXT_PUBLIC_API_URL"/,
+    "probe the origin: ${NEXT_PUBLIC_API_URL%/graphql}/",
+  );
 });
 
 test("the environment is loaded BEFORE anything that consumes it", () => {

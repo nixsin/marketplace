@@ -944,6 +944,38 @@ is the signature. The health command therefore uses a plain `$POSTGRES_USER`,
 expanded by the shell *inside* the container, the same trick as
 `docker-compose.yml`'s `$$`.
 
+**`test-api-e2e` deliberately does NOT load the contract's environment, and
+that is the most dangerous line in this whole arrangement.** The suite
+TRUNCATEs between tests and relies on `.env.test` pointing it at
+`medinstru_test`. `dotenv` never overwrites a variable that is already set, so
+putting the contract's `DATABASE_URL` (which is `medinstru`, the DEV database)
+into `$GITHUB_ENV` silently wins over `.env.test` and aims the truncation at
+real data — the exact mechanism of the 2026-08-18 incident recorded below.
+Adding the step reproduced it, and `assertConnectedToTestDatabase` — the guard
+written after that incident — refused to run and failed the job instead. A
+test now asserts the step's absence rather than relying on the guard firing
+again.
+
+**The API readiness probe must hit the ORIGIN, not `/graphql`.** A GET to the
+GraphQL path with no query is a 400, so `curl -sf` fails and a perfectly
+healthy API reads as never having started — "API did not become ready in time"
+with a log showing it up and serving. `${NEXT_PUBLIC_API_URL%/graphql}/`
+derives the origin without writing the host out again.
+
+**A detector must match a COMMAND, not a mention** — this has now cost two
+rounds. A check for `apps/web/Dockerfile` anywhere flagged the `changes` job,
+where the path appears in a filter; a check for `ci-env.mjs api` anywhere
+flagged the job carrying a comment about why that step is deliberately
+missing. Anchor on `run:` or the surrounding command.
+
+**Detect on USAGE, not on a guess about which jobs need something.** The first
+version of the "does this job declare the web variables" test asked "does it
+build the web app?" and answered with three heuristics; `docker-smoke` slipped
+through all of them, because it boots the stack through `./scripts/dev.sh` yet
+curls `"$NEXT_PUBLIC_SITE_URL/en"`. curl received an empty URL and exited 3,
+which reads like a broken stack rather than an unset variable. Asking "does
+this job reference the variable?" cannot miss that.
+
 **Two things genuinely cannot be generated, and both are pinned by tests
 instead.** GitHub Actions evaluates `services:` when a JOB STARTS, before any
 step runs, so nothing written to `$GITHUB_ENV` can reach it and there is no

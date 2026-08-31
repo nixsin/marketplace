@@ -478,12 +478,19 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      # This job runs the real API as well as the web app, so it declares
-      # BOTH environments. Same emitter, same contract -- the api list
-      # includes DATABASE_URL, which two steps below used to hardcode.
-      - name: Declare the API's environment
-        run: node scripts/ci-env.mjs api >> "$GITHUB_ENV"
-
+      # DELIBERATELY NO `ci-env.mjs api` HERE, unlike every other job that
+      # runs the API.
+      #
+      # This suite TRUNCATEs between tests, so it must connect to
+      # medinstru_test -- which it gets from .env.test via test/setup-env.ts.
+      # dotenv never overwrites a variable that is ALREADY SET, so putting the
+      # contract's DATABASE_URL (medinstru, the DEV database) into $GITHUB_ENV
+      # silently wins over .env.test and points the truncation at real data.
+      #
+      # Not hypothetical and not new: that is the exact mechanism behind the
+      # 2026-08-18 incident in CLAUDE.md. Adding the step here reproduced it,
+      # and assertConnectedToTestDatabase -- the guard written after that
+      # incident -- refused to run and failed the job instead of truncating.
       - name: Configure API env
         working-directory: apps/api
         run: cp .env.example .env
@@ -609,6 +616,13 @@ jobs:
     if: needs.changes.outputs.docker == 'true' || (github.event_name == 'workflow_dispatch' && contains(github.event.inputs.force_jobs, 'docker-smoke'))
     steps:
       - uses: actions/checkout@v7
+      # docker-smoke's verification step curls "$NEXT_PUBLIC_SITE_URL/en" and
+      # "$NEXT_PUBLIC_API_URL", so it needs them declared even though it never
+      # builds the web app itself -- it boots the stack through
+      # ./scripts/dev.sh. Missing this made curl receive an empty URL and exit
+      # 3, which reads like a stack failure rather than an unset variable.
+      - name: Declare the web app's environment
+        run: node scripts/ci-env.mjs web >> "$GITHUB_ENV"
 
       # scripts/dev.sh builds its own `dev`-target images from scratch —
       # entirely independent of docker-scan's `prod`-target build above,
@@ -992,7 +1006,11 @@ jobs:
           pnpm build
           nohup node --enable-source-maps dist/src/main.js > /tmp/api.log 2>&1 &
           for i in $(seq 1 30); do
-            curl -sf "$NEXT_PUBLIC_API_URL" > /dev/null && exit 0
+            # The ORIGIN, not the GraphQL path: a GET to /graphql with no
+            # query is a 400, so `curl -sf` fails and a perfectly healthy API
+            # reads as never having started. Derived from the declared URL
+            # rather than written out again.
+            curl -sf "${NEXT_PUBLIC_API_URL%/graphql}/" > /dev/null && exit 0
             sleep 1
           done
           echo "API did not become ready in time:"
