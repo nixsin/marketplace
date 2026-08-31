@@ -319,7 +319,10 @@ test("a fully configured Render API reports clean", () => {
     env: {
       RENDER: "true",
       DATABASE_URL: "postgresql://u:p@dpg-x/medinstru",
-      JWT_SECRET: "a-real-secret-of-sufficient-length",
+      // "example" keeps scripts/lib/repo-hygiene.mjs's credential scanner
+      // from reading a long opaque string assigned to a *_SECRET name as a
+      // committed credential -- it fired on the previous fixture, correctly.
+      JWT_SECRET: "example-secret-of-sufficient-length",
       REDIS_URL: "redis://red-x:6379",
       PORT: "4000",
       INQUIRY_IP_HASH_SECRET: "0123456789abcdef0123",
@@ -390,7 +393,7 @@ test("quotes left around a value are caught", () => {
   // length check.
   const result = checkEnv({
     app: "api",
-    env: { JWT_SECRET: '"a-real-secret-of-sufficient-length"' },
+    env: { JWT_SECRET: '"example-secret-of-suitable-length"' },
     environment: "localhost",
   });
   assert.match(messages(result.errors), /wrapped in quotes/);
@@ -411,7 +414,7 @@ test("the shipped placeholder secret is refused", () => {
 test("placeholders are caught inside a longer value, not just as the whole string", () => {
   const result = checkEnv({
     app: "api",
-    env: { INQUIRY_IP_HASH_SECRET: "prod-CHANGE_ME-abcdefghijkl" },
+    env: { INQUIRY_IP_HASH_SECRET: "prod-CHANGE_ME-abc" },
     environment: "render",
   });
   assert.match(messages(result.errors), /still looks like a placeholder/);
@@ -460,7 +463,7 @@ test("a typo in APP_ENV is a hard error, not a silent downgrade", () => {
     env: {
       APP_ENV: "prod",
       DATABASE_URL: "postgresql://u:p@h/db",
-      JWT_SECRET: "a-real-secret-of-sufficient-length",
+      JWT_SECRET: "example-secret-of-suitable-length",
       PORT: "4000",
     },
   });

@@ -15,6 +15,20 @@ export default defineConfig({
     // of node:test since these run inside the web app's own suite.
     include: ["test/**/*.spec.ts", "src/**/*.spec.ts", "src/**/*.spec.tsx"],
     setupFiles: ["./vitest.setup.ts"],
+    // The test environment states its own values, like docker-compose.yml and
+    // ci.yml do. @medinstru/config/web has NO fallback -- it throws when these
+    // are unset -- so a suite that renders a component reading SITE_URL needs
+    // them declared somewhere, and a default inside the config would put back
+    // exactly the silent localhost fallback this repo just removed.
+    //
+    // Localhost values because these are tests, not a deployment. APP_ENV is
+    // stated for the same reason it is stated in playwright.config.ts:
+    // detection would otherwise have to infer it from nothing.
+    env: {
+      APP_ENV: "test",
+      NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql",
+      NEXT_PUBLIC_SITE_URL: "http://localhost:3000",
+    },
     testTimeout: 30_000,
     hookTimeout: 30_000,
     // Each spec file in test/ boots its own `next start` on a fixed port —

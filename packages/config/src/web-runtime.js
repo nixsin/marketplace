@@ -44,6 +44,23 @@
  * 200 with localhost links.
  */
 function requirePublicUrl(name, value) {
+  // SERVER ONLY, and this is where the check belongs rather than a shortcut.
+  //
+  // NEXT_PUBLIC_* values are inlined into the client bundle at BUILD time, and
+  // the build runs this same function on the server first -- so by the time a
+  // browser evaluates this, the value has already been validated and frozen.
+  // Re-checking it there can only ever agree, and the browser cannot act on
+  // any of these messages: "set it as a Docker build arg" is advice for a
+  // deploy, not for a visitor.
+  //
+  // The cost was measured, not assumed. With the checks running in the client
+  // bundle the error prose shipped to every visitor and pushed JS transfer to
+  // 196.3KB against a 196KB budget, failing the perf gate on its one
+  // deterministic metric. `typeof window` is dead-code-eliminated in the
+  // client build, so the strings go with it. Verified by grepping the built
+  // chunks before and after, not by trusting that the bundler would.
+  if (typeof window !== "undefined") return value;
+
   if (!value) {
     throw new Error(
       `${name} is not set. There is no default -- a localhost fallback here ` +
