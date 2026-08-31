@@ -3,6 +3,10 @@ import createNextIntlPlugin from "next-intl/plugin";
 import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
 import { siteUrlErrorMessage, siteUrlProblem } from "./src/lib/site-url";
 import {
+  assertEnvOrExit,
+  isRenderDeploy,
+} from "@medinstru/config/env-contract";
+import {
   CROSS_ORIGIN_OPENER_POLICY,
   FAVICON_MAX_AGE_SECONDS,
   FRAME_OPTIONS,
@@ -98,10 +102,39 @@ function blobRemotePatterns(baseUrl: string) {
 // an unset value -- a present-but-wrong one (leftover localhost, stray
 // paste, whitespace) produces identical dead links while satisfying a
 // guard that only checks for absence.
-if (process.env.RENDER_GIT_COMMIT) {
-  const problem = siteUrlProblem(process.env.NEXT_PUBLIC_SITE_URL);
-  if (problem) throw new Error(siteUrlErrorMessage(problem));
+// Runs at BUILD and at every container BOOT. Next transpiles and loads this
+// file at container start, not only during `next build` (visible in a crash
+// stack as next-config-ts/transpile-config.js) -- which is why this is the
+// hook, and why a `prestart` npm script would not be: the prod image's CMD is
+// `node_modules/.bin/next start`, so npm lifecycle hooks never run there.
+//
+// Checked first and separately from the sweep below, because these two are
+// inlined into the client bundle at build time and cannot be corrected at
+// runtime, and because siteUrlProblem produces a far better message than a
+// generic presence check -- it covers private ranges, CGNAT, IPv4-mapped
+// IPv6, embedded credentials and trailing dots, and never echoes the raw
+// value into a build log.
+//
+// NEXT_PUBLIC_API_URL is checked with the same function as
+// NEXT_PUBLIC_SITE_URL. It was previously unguarded, which was the larger
+// hole of the two: it is the origin every visitor's browser fetches products
+// from AND the value connect-src is derived from, so a bad one misdirects
+// and blocks at the same time.
+if (isRenderDeploy()) {
+  for (const [name, value] of [
+    ["NEXT_PUBLIC_SITE_URL", process.env.NEXT_PUBLIC_SITE_URL],
+    ["NEXT_PUBLIC_API_URL", process.env.NEXT_PUBLIC_API_URL],
+  ] as const) {
+    const problem = siteUrlProblem(value);
+    if (problem) throw new Error(`${name}: ${siteUrlErrorMessage(problem)}`);
+  }
 }
+
+// Everything else this app reads, reported in one pass rather than one
+// failure at a time. Exits non-zero on a real problem, so a misconfigured
+// deploy never binds a port and Render keeps the previous healthy version
+// live -- strictly better than serving a broken site with a 200.
+assertEnvOrExit({ app: "web" });
 
 const nextConfig: NextConfig = {
   // Ships .map files alongside minified prod JS — DevTools loads them only

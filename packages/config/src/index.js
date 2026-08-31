@@ -44,13 +44,104 @@
 // Web app
 // ---------------------------------------------------------------------
 
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql";
+/**
+ * Resolve a public URL that has a localhost development default.
+ *
+ * THE DEFAULT IS NOT A FALLBACK ON RENDER -- there it throws.
+ *
+ * The default is correct for local dev, for CI (`test-web` runs `pnpm build`
+ * with no environment at all) and for `docker-web-prod-boot` (which boots the
+ * real production image with no configuration, on purpose). It is NEVER
+ * correct in production, and applying it there silently is the single worst
+ * configuration failure this app has: a web service that lost
+ * NEXT_PUBLIC_SITE_URL serves canonical URLs, hreflang alternates and
+ * OpenGraph images pointing at `http://localhost:3000` -- to real crawlers,
+ * with every page still returning 200 and nothing failing anywhere.
+ * NEXT_PUBLIC_API_URL is the same shape and worse: the visitor's own browser
+ * is told to fetch products from the visitor's own machine, and the value
+ * also derives the CSP's connect-src, so it misdirects and blocks at once.
+ *
+ * A LOCALHOST VALUE IS REJECTED, not just a missing one, and that is the half
+ * that actually bites. `apps/web/Dockerfile` declares
+ * `ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql`, so a Render build
+ * that fails to pass the value does not produce an EMPTY variable -- it
+ * produces a populated, plausible, wrong one. Checking only for absence would
+ * miss every real occurrence of this.
+ *
+ * Throwing here means a misconfigured deploy FAILS TO BOOT rather than
+ * serving a broken site: Next loads next.config.ts at container start (not
+ * only at build), so this runs on every production boot, the deploy is marked
+ * failed, and Render keeps the previous healthy version live. That is a
+ * strictly better outcome than answering 200 with localhost links.
+ *
+ * Deliberately keyed on RENDER rather than NODE_ENV=production: the prod
+ * image sets NODE_ENV=production wherever it is built, including in the CI
+ * boot test that must keep passing with no configuration.
+ */
+function resolvePublicUrl(name, value, devDefault) {
+  // TWO SIGNALS, because a Docker deploy on Render splits into a build and a
+  // runtime that see different environments. `RENDER=true` reaches the
+  // running container; `RENDER_GIT_COMMIT` is passed into the image build via
+  // an explicit ARG (Render hands a Docker build nothing else). Checking both
+  // means a bad value is caught at build -- while it can still be fixed
+  // before being inlined into the bundle -- and again at every boot.
+  //
+  // Neither is inlined into the client bundle (only NEXT_PUBLIC_* are), so
+  // this is false in the browser and the browser never throws; it receives
+  // whatever the server already validated.
+  const onRender =
+    process.env.RENDER === "true" || Boolean(process.env.RENDER_GIT_COMMIT);
+  if (!onRender) return value || devDefault;
+
+  if (!value) {
+    throw new Error(
+      `${name} is not set, and this process is running on Render. ` +
+        `Refusing to fall back to ${devDefault}: that would publish localhost ` +
+        `links to real visitors and crawlers. Set it on the Render service ` +
+        `AND pass it as a Docker build arg -- NEXT_PUBLIC_* values are inlined ` +
+        `into the client bundle at build time.`,
+    );
+  }
+
+  let hostname;
+  try {
+    ({ hostname } = new URL(value));
+  } catch {
+    throw new Error(`${name} is not a valid URL. Found: ${JSON.stringify(value)}`);
+  }
+
+  // A COARSE last line of defence, deliberately. The thorough version --
+  // private ranges, CGNAT, IPv4-mapped IPv6, embedded credentials, trailing
+  // dots -- lives in apps/web/src/lib/site-url.ts and runs from
+  // next.config.ts, where it can produce a much better message. This exists
+  // so the value is still checked on any path that reaches the config without
+  // going through next.config.ts, and covers the case that actually happens:
+  // the Dockerfile ARG default surviving because the build arg was not passed.
+  if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname)) {
+    throw new Error(
+      `${name} points at ${hostname} while running on Render. ` +
+        `This is almost certainly apps/web/Dockerfile's ARG default surviving ` +
+        `because the build arg was not passed -- the variable looks set, but ` +
+        `every visitor would resolve it to their own machine.`,
+    );
+  }
+
+  return value;
+}
+
+export const API_URL = resolvePublicUrl(
+  "NEXT_PUBLIC_API_URL",
+  process.env.NEXT_PUBLIC_API_URL,
+  "http://localhost:4000/graphql",
+);
 
 // Used as `metadataBase` and for absolute OpenGraph image URLs. Next
 // requires this once any route uses a relative OG image path.
-export const SITE_URL =
-  process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+export const SITE_URL = resolvePublicUrl(
+  "NEXT_PUBLIC_SITE_URL",
+  process.env.NEXT_PUBLIC_SITE_URL,
+  "http://localhost:3000",
+);
 
 // English + Hindi for MVP (TECHNICAL_PLAN.md §14) -- additional regional
 // languages land in Phase 3, prioritized by where signups concentrate.

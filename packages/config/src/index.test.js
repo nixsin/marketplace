@@ -34,6 +34,10 @@ async function importWithEnv(overrides) {
   const saved = {
     NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
     NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
+    // RENDER decides whether the localhost defaults are a fallback or a hard
+    // error, so a case must be able to set it -- and it must be cleared for
+    // every other case, or a developer with it exported would fail the suite.
+    RENDER: process.env.RENDER,
   };
   for (const key of Object.keys(saved)) delete process.env[key];
   Object.assign(process.env, overrides);
@@ -66,6 +70,52 @@ describe("web config", () => {
     });
     assert.equal(cfg.API_URL, "https://api.example.test/graphql");
     assert.equal(cfg.SITE_URL, "https://example.test");
+  });
+
+  test("throws instead of falling back to localhost when running on Render", async () => {
+    // The whole point. Silently defaulting here publishes localhost canonical
+    // URLs, hreflang alternates and OpenGraph images to real crawlers while
+    // every page still returns 200.
+    await assert.rejects(
+      () => importWithEnv({ RENDER: "true" }),
+      /NEXT_PUBLIC_API_URL is not set, and this process is running on Render/,
+    );
+  });
+
+  test("rejects a localhost value on Render, not just a missing one", async () => {
+    // This is the case that actually occurs. apps/web/Dockerfile declares
+    // `ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql`, so a build that
+    // loses the value produces a POPULATED, plausible, wrong variable rather
+    // than an empty one -- an absence check alone would never fire.
+    await assert.rejects(
+      () =>
+        importWithEnv({
+          RENDER: "true",
+          NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql",
+          NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+        }),
+      /points at localhost while running on Render/,
+    );
+  });
+
+  test("accepts real values on Render", async () => {
+    const cfg = await importWithEnv({
+      RENDER: "true",
+      NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+      NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+    });
+    assert.equal(cfg.API_URL, "https://api.laxair.shop/graphql");
+    assert.equal(cfg.SITE_URL, "https://laxair.shop");
+  });
+
+  test("the localhost defaults still apply everywhere that is not Render", async () => {
+    // Three green checks depend on this: `test-web` builds with no env at
+    // all, `docker-web-prod-boot` boots the real prod image with none, and a
+    // bare `pnpm dev` has none either. NODE_ENV=production must NOT trigger
+    // the strict path -- the prod image sets it wherever it is built.
+    const cfg = await importWithEnv({ NODE_ENV: "production" });
+    assert.equal(cfg.API_URL, "http://localhost:4000/graphql");
+    assert.equal(cfg.SITE_URL, "http://localhost:3000");
   });
 
   test("locales are en + hi with en as the default", () => {

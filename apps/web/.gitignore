@@ -35,6 +35,13 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the example, which is documentation and carries NAMES ONLY, never
+# values. `.env*` above is create-next-app's default and it silently swallowed
+# this file: apps/web/.env.example has existed on disk for a while, is
+# referenced by CLAUDE.md, and has never once been committed -- so a fresh
+# clone gets no record of what apps/web actually needs. apps/api/.gitignore
+# ignores only `.env` and has never had the problem.
+!.env.example
 
 # vercel
 .vercel

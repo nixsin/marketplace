@@ -835,6 +835,126 @@ CommonJS test run and fails with `Unexpected token 'export'` — which looks
 exactly like a file that was never transformed.
 
 
+## Startup environment check, and why it is not a `prestart` hook
+
+`packages/config/src/env-contract.js` holds the rules; the enforcement runs at
+boot in `apps/api/src/main.ts` and `apps/web/next.config.ts`. Full matrix of
+every context this code runs in and what detection returns there:
+[docs/environments.md](./docs/environments.md).
+
+**It exists because almost every variable here fails SILENTLY.**
+`INQUIRY_IP_HASH_SECRET` missing does not error — the per-IP limit simply stops
+running on an unauthenticated endpoint. `BLOB_PROVIDER` left at its default
+makes production write uploads to a container directory no CDN serves.
+`WHATSAPP_TEMPLATE_NAME` missing refuses every send. None of them fail loudly,
+and several are only discoverable by noticing an absence weeks later.
+
+**A `prestart` npm hook would be a silent no-op in production, which is the
+whole reason the check lives in code.** Both prod images bypass npm scripts:
+the API's `CMD` is `node dist/src/main.js` and the web's is `next start`. So a
+lifecycle hook works perfectly on a laptop and never runs in the container —
+the exact silent-skip shape this file already documents for path filters and
+badge permissions. `next.config.ts` is the web hook because Next transpiles and
+loads it at container **boot**, not only at build.
+
+**`scripts/check-env.mjs` is the by-hand entry point, not the enforcement.**
+Its `--env` flag checks the environment you *have* against the rules for one
+you are *not in* — `node scripts/check-env.mjs all --env render` answers "would
+this pass on Render?" from a laptop, which is the question worth asking before
+a deploy. That is deliberately different from `APP_ENV`, which changes what you
+*are*.
+
+**Render is TWO environments that see different variables, and only one sees
+`RENDER`.** `RENDER=true` is injected into the running container.
+`RENDER_GIT_COMMIT` is passed into the Docker *build* via an explicit `ARG` —
+Render hands a Docker build nothing else, so `RENDER` is absent while the image
+is built. `isRenderDeploy()` accepts either. The build-time half matters most:
+`NEXT_PUBLIC_*` are inlined into the client bundle then and cannot be corrected
+afterwards. `apps/web/src/lib/site-url.ts` has gated on `RENDER_GIT_COMMIT`
+since it was written; this generalises that precedent rather than inventing one.
+
+**`unknown` is a named state, not a fallback.** `next build` and `next start`
+both set `NODE_ENV=production`, so a production-looking process with no
+platform markers is genuinely ambiguous. It is permissive — nothing is required
+— but it warns every time, because "unrecognised, so we assumed the most
+permissive rules" is the failure this check exists to remove. Do **not** make
+strictness key on `NODE_ENV=production`: `docker-web-prod-boot` boots the real
+production image with no configuration on purpose, and would fail a required
+check for doing its job.
+
+**Containers do not inherit the runner's identity.** Compose forwards neither
+`CI` nor `GITHUB_ACTIONS`, so the dev stack inside GitHub Actions is
+indistinguishable from one on a laptop. Both are developer stacks, so
+`docker-compose.yml` declares `APP_ENV=localhost` rather than leaving it to be
+inferred from nothing. Playwright's `webServer` does the same, because
+`next build && next start` sets `NODE_ENV=production` on a developer machine.
+
+**Severity is per-environment, and a single "required" list would break three
+green checks.** `test-web` runs `pnpm build` with no environment at all,
+`docker-web-prod-boot` boots with none, and the dev stack deliberately uses the
+literal `dev-secret-change-me`. Tests pin each of those states explicitly, so a
+future tightening fails in `packages/config` rather than in CI.
+
+**A malformed value is an error at every severity, including `optional`.**
+Absence is frequently a deliberate, documented state — `REDIS_URL` blank in
+`.env.example` is load-bearing. A value that is present and malformed never is.
+
+**An empty string counts as ABSENT.** `.env.example` ships several variables as
+`NAME=` and dotenv loads those as `""`; treating that as set would report a
+blank `JWT_SECRET` as satisfied.
+
+**Messages never echo a secret's value.** Each rule carries a `secret` flag and
+the formatter honours it — these strings land in Render logs and CI output.
+Same discipline as `resolveApiKey()`, whose error text names only the variable.
+A test asserts the property across the whole table rather than the two rules
+someone thought to name.
+
+**`dotenv` is imported in `main.ts` before the check, and that ordering was a
+real bug.** `ConfigModule.forRoot()` is what loads `.env`, and it runs inside
+`NestFactory.create()` — so a check placed before Nest boots saw an empty
+environment and failed every local start despite a valid `.env` sitting there.
+Found by running it, not by reading it.
+
+**Two silent-skip bugs were found while wiring this up, both the same shape as
+the path-filter regression above.** `test-ci-scripts` ran
+`node --test packages/config/src/index.test.js` — a NAMED file, so a new suite
+in that directory would have passed locally and never run in CI. It is a glob
+now. And `apps/web/.gitignore` carried create-next-app's default `.env*`, which
+swallowed `.env.example`: that file has existed on disk for a while, is
+referenced from this document, and had **never once been committed**, so a
+fresh clone got no record of what `apps/web` needs. `apps/api/.gitignore`
+ignores only `.env` and never had the problem. Both are worth checking whenever
+a file is added next to existing ones and "just works" locally.
+
+### `API_URL` and `SITE_URL` now THROW on Render instead of falling back
+
+`packages/config`'s localhost defaults are correct for local dev, CI and the
+prod-image boot test — all three run unconfigured by design. They are never
+correct on Render, and applying them there silently is this app's worst
+configuration failure: a web service that lost `NEXT_PUBLIC_SITE_URL` serves
+canonical URLs, hreflang alternates and OpenGraph images pointing at
+`http://localhost:3000`, to real crawlers, with every page still returning 200.
+
+**A localhost value is rejected, not just a missing one — and that is the half
+that actually bites.** `apps/web/Dockerfile` declares
+`ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql`, so a Render build that
+fails to pass the value does not produce an *empty* variable, it produces a
+populated, plausible, wrong one. A check for absence alone would miss every
+real occurrence.
+
+Throwing means a misconfigured deploy **fails to boot** rather than serving a
+broken site, so Render marks the deploy failed and keeps the previous healthy
+version live — strictly better than answering 200 with localhost links.
+
+**Three layers, each catching what the others cannot**, and this is
+intentional rather than redundant: `next.config.ts`'s `siteUrlProblem` (richest
+message — private ranges, CGNAT, IPv4-mapped IPv6, embedded credentials, and
+it never echoes the raw value), the config's own throw (covers every import
+path, not just `next.config.ts`), and the contract table (reports everything at
+once, and can be run against an environment you are not in). On a real Render
+boot the config's throw usually fires first, since `next.config.ts` imports it.
+
+
 ## Buyer product inquiries (#91)
 
 Shipped in three parts. This is part 2, **capture**: a buyer submits a question

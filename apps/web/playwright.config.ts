@@ -122,6 +122,11 @@ export default defineConfig({
     ? undefined
     : {
         command: "pnpm build && pnpm start",
+        // `next build` and `next start` both set NODE_ENV=production, so
+        // without this the env check sees a production-looking process with
+        // no platform markers and reports an unrecognised environment on
+        // every local run. It is a developer machine; say so.
+        env: { APP_ENV: "localhost" },
         url: "http://localhost:3000",
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,

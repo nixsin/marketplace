@@ -64,6 +64,12 @@ services:
     environment:
       # Server-side only (this process runs inside the Docker network), so
       # these use the compose service names, not localhost.
+      # Explicit rather than inferred. Container environments are exactly
+      # where detection has least to go on -- compose forwards neither CI nor
+      # GITHUB_ACTIONS, so a dev stack running inside GitHub Actions
+      # (docker-smoke) looks identical to one on a laptop. Both ARE developer
+      # stacks, so saying so beats inferring it twice.
+      APP_ENV: "localhost"
       DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/medinstru?schema=public"
       REDIS_URL: "redis://redis:6379"
       JWT_SECRET: "dev-secret-change-me"
@@ -97,6 +103,7 @@ services:
       # which runs on the host, not inside the Docker network — so this
       # must be the host-published port (localhost:4000), never the
       # Docker-internal `api` hostname, which the browser can't resolve.
+      APP_ENV: "localhost"
       NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql"
     ports:
       - "3000:3000"

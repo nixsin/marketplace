@@ -6,7 +6,8 @@
   "main": "./src/index.js",
   "exports": {
     ".": "./src/index.js",
-    "./sourcemap-token": "./src/sourcemap-token.js"
+    "./sourcemap-token": "./src/sourcemap-token.js",
+    "./env-contract": "./src/env-contract.js"
   },
   "scripts": {
     "test": "node --test src/*.test.js"
