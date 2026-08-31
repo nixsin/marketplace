@@ -2339,15 +2339,32 @@ reason that looks like caching.
 ### Durability declared as code, for both stores
 
 **Redis:** `--appendonly yes --appendfsync everysec --save ""` in
-`docker-compose.yml`, and `persistence_mode = "journal_snapshot"` on the
-Render Key Value instance. Note the vocabulary gap: Render does **not** accept
-`"aof"`, and `terraform validate` is what surfaced that — the accepted set is
-`["journal_snapshot" "snapshot" "off"]`. Do not assume a provider mirrors the
-underlying engine's names.
+`docker-compose.yml`, and `persistence_mode` on the Render Key Value instance.
+Note the vocabulary gap: Render does **not** accept `"aof"`, and `terraform
+validate` is what surfaced that — the accepted set is `["journal_snapshot"
+"snapshot" "off"]`. Do not assume a provider mirrors the underlying engine's
+names.
 
-Worth being honest about what this buys: everything cached is derivable from
-Postgres, so losing it costs latency, not data. It is set because a cold cache
-after every restart makes an outage worse at exactly the wrong moment.
+**On Render that value is `off`, because the free plan offers nothing else.**
+Render documents persistence as unavailable on free Key Value and says a free
+instance loses all of its data whenever it restarts, so `journal_snapshot` on
+`free` is the documented shape of a refused apply. The two settings are
+coupled by the plan — raise them together or not at all.
+
+**That inverts the reason the dev stack sets `--appendonly yes`**, and the
+inversion is deliberate rather than an oversight: dev now persists while
+production does not. The dev stack is left alone rather than crippled to
+match, because here the asymmetry runs in the *safe* direction. A wiped cache
+cannot produce a wrong answer at all — the catalogue version lives in
+Postgres (`CacheVersion`) and Redis only ever holds values **addressed by**
+that version, so an empty instance can only miss, and a miss is the null-cache
+path the API already runs on. What differs between the environments is how
+often a miss happens, never what an answer says.
+
+What `off` gives up is the warm cache after a restart, which was the whole
+reason to want a durable mode: a cold cache makes an outage worse at exactly
+the wrong moment. At today's catalogue that is one `COUNT(*)` against a small
+table.
 
 **Postgres:** `parameter_overrides` on `render_postgres` is where WAL settings
 belong, and it is **empty by default on purpose** — the free tier does not
@@ -2374,16 +2391,30 @@ sends `maintenance_mode` fields Render rejects for free services, which
 produced a partial apply. Linking a group sidesteps it: the service resource
 is untouched and the link is its own resource.
 
-**`plan` defaults to `free`**, matching every other service here — the
-provider accepts `free`, `starter`, `standard`, `pro`, `pro_plus`. One caveat
-the schema cannot express: whether a plan accepts `persistence_mode`. Free
-tiers on Render have rejected settings the schema validates happily before
-(`parameter_overrides` on free Postgres is the same shape), so a refused apply
-there is the plan talking, not the configuration — drop
-`key_value_persistence_mode` to `"off"` or move to `starter`.
+**`plan` defaults to `free` and that is sufficient, not a placeholder** —
+25 MB and one active instance per workspace. The cache holds a single small
+counter key today, so neither limit is close to binding. The provider also
+accepts `starter`, `standard`, `pro`, `pro_plus`.
 
-`enable_key_value` still defaults to **false**, so a plan creates nothing
-until someone decides to. The API runs without a cache by design.
+**This free plan is NOT the free-Postgres situation.** Free Postgres expires
+30 days after creation; free Key Value carries no such clock, so this instance
+is not on a deletion timer.
+
+**`enable_key_value` defaults to `true`.** It was `false` originally on the
+belief that *any* Key Value instance is billable — simply wrong, and worth
+recording because it kept a free, already-written cache switched off. It stays
+a switch rather than an unconditional resource because the API treats the
+cache as optional by construction: `false` is a supported state, not a broken
+one.
+
+**Turning it off again is NOT symmetric, and a test pins this.**
+`prevent_destroy` means that once the instance exists, `enable_key_value =
+false` does not quietly remove it — Terraform refuses the plan with `Instance
+cannot be destroyed`. Removing a live cache is a deliberate act: drop the
+lifecycle block in the same change that removes the resource. The gating
+assertion in `main.tftest.hcl` therefore has to run against an **empty state**
+and is ordered before the apply run for that reason; written in the obvious
+order it fails on `prevent_destroy` instead of testing the gate.
 
 ## Deployment
 
@@ -2547,3 +2578,9 @@ Render dashboard first — if it hasn't been upgraded to a paid tier or
 recreated, flag it immediately before doing anything else; expiry means the
 production database and everything in it gets deleted. Don't assume it's
 still fine just because CI is green.
+
+Render's own docs add a detail this entry used to omit: expiry is followed by
+a **14-day grace period** to upgrade before the database is deleted outright,
+which puts real deletion around 2026-09-28. Do not read that as two weeks of
+slack — the database expires on the 14th regardless, and the grace period is
+a window to pay, not a window in which the site keeps working.
