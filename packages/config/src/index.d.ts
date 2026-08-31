@@ -17,6 +17,15 @@
  * config files that must state a value state the same one. The URLs are
  * derived from the ports, so "the API listens on 4000" is one fact.
  */
+export declare const POSTGRES_PORT: number;
+export declare const REDIS_PORT: number;
+export declare const DEV_POSTGRES_USER: string;
+export declare const DEV_POSTGRES_PASSWORD: string;
+export declare const DEV_POSTGRES_DB: string;
+export declare const DEV_DATABASE_URL: string;
+export declare const DOCKER_DATABASE_URL: string;
+export declare const DOCKER_REDIS_URL: string;
+
 export declare const API_DEFAULT_PORT: number;
 export declare const WEB_DEFAULT_PORT: number;
 export declare const DEV_API_URL: string;

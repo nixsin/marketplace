@@ -16,35 +16,50 @@
  */
 import { writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { renderEnvExample } from "@medinstru/config/env-contract";
+import {
+  renderDockerEnv,
+  renderEnvExample,
+} from "@medinstru/config/env-contract";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
 const check = process.argv.includes("--check");
 
 let stale = false;
-for (const app of ["api", "web"]) {
-  const path = join(repoRoot, "apps", app, ".env.example");
-  const generated = renderEnvExample(app);
 
+/** Compare or write one generated file. */
+function emit(path, generated, label) {
   if (!check) {
     writeFileSync(path, generated);
-    console.log(`wrote apps/${app}/.env.example`);
-    continue;
+    console.log(`wrote ${label}`);
+    return false;
   }
-
   let current = "";
   try {
     current = readFileSync(path, "utf8");
   } catch {
     // Missing counts as stale rather than crashing: the fix is the same.
   }
+  if (current === generated) return false;
+  console.error(`${label} is out of date. Run: node scripts/generate-env-example.mjs`);
+  return true;
+}
 
-  if (current !== generated) {
-    console.error(
-      `apps/${app}/.env.example is out of date. Run: node scripts/generate-env-example.mjs`,
-    );
-    stale = true;
-  }
+// The two Docker-network overrides, so docker-compose.yml carries no env
+// literals of its own.
+stale =
+  emit(
+    join(repoRoot, "apps", "api", ".env.docker"),
+    renderDockerEnv(),
+    "apps/api/.env.docker",
+  ) || stale;
+
+for (const app of ["api", "web"]) {
+  stale =
+    emit(
+      join(repoRoot, "apps", app, ".env.example"),
+      renderEnvExample(app),
+      `apps/${app}/.env.example`,
+    ) || stale;
 }
 
 process.exit(stale ? 1 : 0);

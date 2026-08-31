@@ -10,7 +10,13 @@ import {
 import {
   API_DEFAULT_PORT,
   DEV_API_URL,
+  DEV_POSTGRES_DB,
+  DEV_POSTGRES_PASSWORD,
+  DEV_POSTGRES_USER,
   DEV_SITE_URL,
+  POSTGRES_PORT,
+  REDIS_PORT,
+  WEB_DEFAULT_PORT,
 } from "./index.js";
 
 /**
@@ -129,20 +135,64 @@ test("docker-compose reads the generated files rather than copying them", () => 
   assert.match(compose, /env_file:\s*\n\s*- \.\/apps\/web\/\.env\.example/);
 });
 
-test("the only compose overrides are the Docker-network hostnames", () => {
-  // An override is a value that is NOT the development one, so each is a
-  // small divergence worth keeping deliberate. Two is correct: Postgres and
-  // Redis answer on service names inside the network. A third appearing
-  // silently is how the dev stack starts differing from a laptop.
+test("docker-compose.yml declares no environment values of its own", () => {
+  // Every value now arrives through a generated env_file. An `environment:`
+  // block reappearing means somebody wrote a literal back in, and a literal
+  // is what drifts.
   const compose = read("docker-compose.yml");
-  const overrides = [...compose.matchAll(/^\s{6}([A-Z][A-Z0-9_]*): /gm)].map(
-    (m) => m[1],
+  assert.doesNotMatch(
+    compose,
+    /^\s{4}environment:/m,
+    "compose should get values from env_file, not declare them",
   );
-  assert.deepEqual(
-    [...new Set(overrides)].sort(),
-    ["DATABASE_URL", "POSTGRES_DB", "POSTGRES_PASSWORD", "POSTGRES_USER", "REDIS_URL"],
-    "unexpected compose override — should the value differ from a laptop's?",
-  );
+});
+
+test("the compose port mappings are the ports @medinstru/config defines", () => {
+  // These CANNOT come from a generated file: compose resolves `ports:` from
+  // the file itself, and variable substitution would still need a literal
+  // default. So they are pinned instead -- a port changed in one place and
+  // not the other produces a stack that starts and cannot talk to itself.
+  const compose = read("docker-compose.yml");
+  for (const port of [POSTGRES_PORT, REDIS_PORT, API_DEFAULT_PORT, WEB_DEFAULT_PORT]) {
+    assert.match(
+      compose,
+      new RegExp(`"${port}:${port}"`),
+      `docker-compose.yml should map port ${port}`,
+    );
+  }
+});
+
+test("CI's Postgres service account matches what the app connects with", () => {
+  // The one hand-written declaration left in ci.yml. `services:` is evaluated
+  // when a JOB STARTS, before any step runs, so nothing a step writes to
+  // $GITHUB_ENV can reach it and Actions has no env_file -- consolidating to
+  // one workflow-level block and pinning it here is the best available.
+  //
+  // If these drift from the URL the app uses, every API job fails to connect
+  // with an authentication error that names neither file.
+  const ci = read(".github/workflows/ci.yml");
+  assert.match(ci, new RegExp(`^  POSTGRES_USER: ${DEV_POSTGRES_USER}$`, "m"));
+  assert.match(ci, new RegExp(`^  POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD}$`, "m"));
+  assert.match(ci, new RegExp(`^  POSTGRES_DB: ${DEV_POSTGRES_DB}$`, "m"));
+
+  // And declared exactly once: three jobs used to carry their own copy.
+  const declarations = [...ci.matchAll(/^\s*POSTGRES_USER: (?!\$\{\{)/gm)];
+  assert.equal(declarations.length, 1, "POSTGRES_USER should be declared once");
+});
+
+test("ci.yml carries no connection strings", () => {
+  // DATABASE_URL used to be written out in three jobs. It comes from
+  // scripts/ci-env.mjs now; the only remaining occurrence is the production
+  // secret reference, which is not a value.
+  const ci = read(".github/workflows/ci.yml");
+  const literals = [...ci.matchAll(/^\s*DATABASE_URL: (.+)$/gm)].map((m) => m[1]);
+  for (const value of literals) {
+    assert.match(
+      value,
+      /^\$\{\{ secrets\./,
+      `ci.yml hardcodes a connection string: ${value}`,
+    );
+  }
 });
 
 test("every job that builds or boots the web app loads its environment", () => {

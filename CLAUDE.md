@@ -918,12 +918,31 @@ list, and a copy drifts: a rule added without touching them left CI copying an
 example missing the new variable. Each rule carries a `devValue`, so adding a
 variable produces its example entry and its comment automatically.
 
-**`docker-compose.yml` points at those generated files via `env_file`** rather
-than repeating them. It used to duplicate ~16 values held in step only by a
-test; now the only `environment:` entries are the two hostnames that genuinely
-differ inside the Docker network (Postgres and Redis answer on service names).
-A test asserts that override list stays exactly those two, because a third
-appearing silently is how the dev stack starts diverging from a laptop.
+**`docker-compose.yml` declares NO environment values at all.** Every service
+reads generated `env_file`s: `.env.example` for the shared list, then
+`.env.docker` for the two variables that genuinely differ inside the network
+(Postgres and Redis answer on service names there). `env_file` entries apply
+in order, so the second overrides exactly those two and nothing else — and
+both URLs are built from the same parts in `packages/config`, so the pair
+cannot drift apart while each keeps working perfectly in its own context.
+
+The Postgres service reads the same generated file for the account it creates,
+so the credentials it is created with and the URL the API connects with are
+one fact rather than two literals. Its healthcheck uses
+`pg_isready -U $$POSTGRES_USER` — `$$` escapes compose's own substitution so
+the shell **inside** the container expands it, rather than adding a third copy
+of the name. Verified by booting the service and watching it report healthy,
+because a broken healthcheck fails `docker-smoke`.
+
+**Two things genuinely cannot be generated, and both are pinned by tests
+instead.** GitHub Actions evaluates `services:` when a JOB STARTS, before any
+step runs, so nothing written to `$GITHUB_ENV` can reach it and there is no
+`env_file` equivalent — the Postgres account is therefore declared once at
+workflow level (down from three copies) and asserted to match
+`@medinstru/config`. And compose resolves `ports:` from the file itself, where
+substitution would still need a literal default — so the port mappings are
+asserted against `POSTGRES_PORT`, `REDIS_PORT`, `API_DEFAULT_PORT` and
+`WEB_DEFAULT_PORT`.
 
 **`ci.yml` declares nothing either.** GitHub Actions has no `env_file`, so
 every job that builds or boots the web app runs

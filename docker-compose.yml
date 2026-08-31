@@ -2,16 +2,20 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: medinstru
+    # Generated, like everything else here. The account this container creates
+    # for itself and the URL the API connects with are two halves of one fact,
+    # and they used to be two literals in two places.
+    env_file:
+      - ./apps/api/.env.docker
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      # `$$` escapes compose's own substitution so the shell INSIDE the
+      # container expands it, reading the user the container was created with
+      # rather than a third copy of the name.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -68,13 +72,19 @@ services:
     # contract -- so a variable added to the contract reaches this stack with
     # no edit to this file at all. Before this, ~16 values were duplicated
     # here and held in step only by a test.
+    # BOTH files are generated, and the ORDER is the whole mechanism: compose
+    # applies env_file entries in sequence, so .env.docker overrides exactly
+    # the two variables that differ inside the network (Postgres and Redis
+    # answer on service names here) and touches nothing else.
+    #
+    # This file now contains NO environment values of its own. Both URLs are
+    # built from the same parts as their localhost counterparts in
+    # packages/config, so the pair cannot drift apart -- which it could when
+    # they were separate literals, silently, because each works perfectly in
+    # its own context.
     env_file:
       - ./apps/api/.env.example
-    environment:
-      # The ONLY overrides: hostnames that differ inside the Docker network.
-      # Everything else is identical to a laptop, which is the point.
-      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/medinstru?schema=public"
-      REDIS_URL: "redis://redis:6379"
+      - ./apps/api/.env.docker
     ports:
       - "4000:4000"
     volumes:

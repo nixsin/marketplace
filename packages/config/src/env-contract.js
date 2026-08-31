@@ -36,7 +36,13 @@ import {
   API_DEFAULT_PORT,
   DEV_API_URL,
   DEV_BLOB_BASE_URL,
+  DEV_DATABASE_URL,
   DEV_SITE_URL,
+  DEV_POSTGRES_DB,
+  DEV_POSTGRES_PASSWORD,
+  DEV_POSTGRES_USER,
+  DOCKER_DATABASE_URL,
+  DOCKER_REDIS_URL,
 } from "./index.js";
 
 /** @typedef {"render" | "github-ci" | "ci-local" | "test" | "localhost" | "unknown"} DeployEnvironment */
@@ -382,7 +388,7 @@ export const API_ENV_CONTRACT = [
     secret: true, // contains the password
     why: "Nothing works without it; Prisma cannot connect.",
     emptyMeans: null,
-    devValue: `postgresql://postgres:postgres@localhost:5432/medinstru?schema=public`,
+    devValue: DEV_DATABASE_URL,
     check: isUrl(["postgresql:", "postgres:"]),
     perEnvironment: { render: notLoopback },
   },
@@ -1162,4 +1168,48 @@ export function renderEnvExample(app) {
   }
 
   return lines.join("\n");
+}
+
+/**
+ * The Docker-network overrides, as a dotenv file.
+ *
+ * Exactly two variables differ inside the compose network: Postgres and Redis
+ * answer on service names there, and a container cannot reach the host's
+ * `localhost`. Everything else is identical to a laptop.
+ *
+ * Generated rather than written into docker-compose.yml, so the last two env
+ * literals leave that file. Compose applies `env_file` entries in order, so
+ * listing this one after `.env.example` lets it override those two and
+ * nothing else -- and because both URLs are built from the same parts as
+ * their localhost counterparts, the pair cannot drift apart while each keeps
+ * working perfectly in its own context.
+ *
+ * @returns {string}
+ */
+export function renderDockerEnv() {
+  return [
+    "# GENERATED, do not edit by hand.",
+    "#",
+    "# Regenerate with:  node scripts/generate-env-example.mjs",
+    "# Source of truth:  packages/config/src/index.js",
+    "#",
+    "# The ONLY variables that differ inside the Docker network. Listed after",
+    "# .env.example in docker-compose.yml's env_file, so these two win and",
+    "# every other value stays identical to a laptop's.",
+    "",
+    "# The Postgres container creates this account for itself on first boot,",
+    "# and the API connects with it -- so both halves come from one definition",
+    "# rather than a literal in the service block and another in the URL.",
+    `POSTGRES_USER=${JSON.stringify(DEV_POSTGRES_USER)}`,
+    `POSTGRES_PASSWORD=${JSON.stringify(DEV_POSTGRES_PASSWORD)}`,
+    `POSTGRES_DB=${JSON.stringify(DEV_POSTGRES_DB)}`,
+    "",
+    "# Postgres answers on the compose service name, not the host's localhost.",
+    `DATABASE_URL=${JSON.stringify(DOCKER_DATABASE_URL)}`,
+    "",
+    "# Redis likewise. Note this is NON-EMPTY here while .env.example leaves it",
+    "# empty: the dev stack runs a real Redis, so the shared cache is on.",
+    `REDIS_URL=${JSON.stringify(DOCKER_REDIS_URL)}`,
+    "",
+  ].join("\n");
 }
