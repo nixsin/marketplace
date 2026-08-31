@@ -1045,6 +1045,27 @@ recorded in the image history, so a real key passed at build time is readable
 by anyone who can pull the image; Docker's own linter says so. It is only
 needed at runtime, and a runtime value overrides an image `ENV`.
 
+**`BLOB_PROVIDER=local` is ALLOWED on a deployment, and the refusal lives at
+the write instead.** The invariant is not "the provider must not be local in
+production" — it is *never write data to storage the CDN does not serve*,
+which `local` violates only when something **writes**. Nothing in this app
+injects `BLOB_STORE` yet: the module and both adapters exist and are tested,
+but no feature reads or writes a blob. A boot-time refusal would therefore
+block a deploy over a capability with **zero call sites**, and an error that
+cannot yet be true is the kind people learn to route around.
+
+So `createBlobStore()` passes a refusal reason to `LocalBlobStore` when
+`isDeployedEnvironment()`, and `put()` throws it — naming `BLOB_PROVIDER`. It
+fires at exactly the moment the dangerous thing is first attempted, and cannot
+be forgotten when uploads ship, which a note in a contract table can. Reads,
+deletes and existence checks are deliberately unguarded: only writing loses
+data, and a `get` for something never written already returns null.
+
+The reason is passed IN rather than read from `process.env`, because
+`LocalBlobStore` promises no dependency on global configuration — that is what
+keeps its tests pure units with no environment to arrange, and the provider
+decision already lives in the factory.
+
 **A malformed value is an error at every severity, including `optional`.**
 Absence is frequently a deliberate, documented state — `REDIS_URL` blank in
 `.env.example` is load-bearing. A value that is present and malformed never is.

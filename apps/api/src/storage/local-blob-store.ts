@@ -24,6 +24,17 @@ export class LocalBlobStore implements BlobStore {
   constructor(
     private readonly root: string,
     private readonly toPublicUrl: (key: string) => string,
+    /**
+     * When set, `put` refuses and throws this reason.
+     *
+     * PASSED IN rather than read from the environment, deliberately. The
+     * docstring above promises this adapter has no dependency on global
+     * configuration -- that is what keeps every test below a pure unit with
+     * no environment to arrange -- and a `process.env` lookup here would
+     * quietly break that. The decision belongs in createBlobStore(), which
+     * is already the one place that knows which provider is in play.
+     */
+    private readonly refuseWritesBecause?: string,
   ) {}
 
   /**
@@ -46,7 +57,25 @@ export class LocalBlobStore implements BlobStore {
     return full;
   }
 
+  /**
+   * THE GUARD IS HERE, at the write, and not at boot.
+   *
+   * Writing to a container filesystem in a deployment loses the data on the
+   * next redeploy and serves it through no CDN. But that is a property of
+   * WRITING, not of the provider being selected -- and today nothing in this
+   * app injects BLOB_STORE at all, so a boot-time refusal would block a
+   * deploy over a capability with zero call sites.
+   *
+   * Putting it on `put` makes the check fire at exactly the moment the
+   * dangerous thing is attempted -- the first upload on a deployment -- and
+   * never before. It also cannot be forgotten when uploads do ship, which a
+   * note in a contract table can.
+   *
+   * Reads, deletes and existence checks are NOT guarded: they cannot lose
+   * data, and a `get` for something never written already returns null.
+   */
   async put(key: string, body: Buffer | Uint8Array): Promise<void> {
+    if (this.refuseWritesBecause) throw new Error(this.refuseWritesBecause);
     const path = this.pathFor(key);
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, body);

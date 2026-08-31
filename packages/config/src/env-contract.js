@@ -463,12 +463,20 @@ export const API_ENV_CONTRACT = [
     emptyMeans: null,
     devValue: "local",
     check: isOneOf(["r2", "s3", "b2", "spaces", "minio", "local"]),
-    perEnvironment: {
-      render: (value) =>
-        value === "local"
-          ? "must not be `local` in production — uploads would go to a container directory no CDN serves and a redeploy discards"
-          : null,
-    },
+    // NO per-environment rule refusing `local`, and that is a decision.
+    //
+    // The invariant is not "BLOB_PROVIDER must not be local in production" --
+    // it is "never write data to storage the CDN does not serve", which
+    // `local` violates only when something WRITES. Nothing in this app
+    // injects BLOB_STORE yet, so refusing here would block a deploy over a
+    // capability with zero call sites, and an error that cannot yet be true
+    // is the kind people learn to route around.
+    //
+    // The refusal lives in createBlobStore()/LocalBlobStore.put() instead,
+    // where it fires at the first upload on a deployment and cannot be
+    // forgotten when uploads ship. This table still reports the state on
+    // every boot -- see the startup banner -- so it is visible without
+    // being fatal.
   },
   {
     name: "BLOB_ACCESS_KEY_ID",

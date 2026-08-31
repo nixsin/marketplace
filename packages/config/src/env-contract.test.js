@@ -220,12 +220,45 @@ test("plain http is refused in production", () => {
   assert.match(messages(result.errors), /must use https:\/\//);
 });
 
-test("BLOB_PROVIDER=local is correct locally and refused in production", () => {
+test("BLOB_PROVIDER=local is allowed everywhere — the WRITE path refuses it", () => {
+  // Deliberately NOT refused here, and the reasoning is worth keeping.
+  //
+  // The invariant is "never write data to storage the CDN does not serve",
+  // which `local` violates only when something WRITES. Nothing in this app
+  // injects BLOB_STORE yet, so refusing at boot would block a deploy over a
+  // capability with zero call sites -- and an error that cannot yet be true
+  // is the kind people learn to route around.
+  //
+  // createBlobStore() passes a refusal reason to LocalBlobStore on a
+  // deployment, so the first upload in production throws naming
+  // BLOB_PROVIDER. See blob-store.spec.ts. The value is still reported on
+  // every boot by the startup banner, so it is visible without being fatal.
   const local = checkEnv({ app: "api", env: completeApi, environment: "localhost" });
   assert.equal(local.ok, true, formatReport(local));
 
-  const deployed = checkEnv({ app: "api", env: completeApi, environment: "render" });
-  assert.match(messages(deployed.errors), /must not be `local` in production/);
+  // Production-shaped values, since localhost URLs are refused on render for
+  // their own (correct) reasons -- this case is about BLOB_PROVIDER alone.
+  const deployed = checkEnv({
+    app: "api",
+    env: {
+      ...completeApi,
+      APP_ENV: "render",
+      DATABASE_URL: "postgresql://u:p@dpg-x.render.com/medinstru",
+      JWT_SECRET: "a-real-production-secret-value",
+      NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      BLOB_PROVIDER: "local",
+    },
+    environment: "render",
+  });
+  assert.equal(deployed.ok, true, formatReport(deployed));
+
+  // A value that is not a known provider is still an error everywhere.
+  const bogus = checkEnv({
+    app: "api",
+    env: { ...completeApi, BLOB_PROVIDER: "dropbox" },
+    environment: "render",
+  });
+  assert.match(messages(bogus.errors), /must be exactly one of/);
 });
 
 // ---------------------------------------------------------------------
@@ -378,7 +411,9 @@ test("expectationsFor describes an environment without a second table", () => {
   // summary drifts from what it summarises, silently.
   const render = expectationsFor("api", "render");
   assert.deepEqual(render.declared, API_ENV_CONTRACT.map((r) => r.name));
-  assert.ok(render.extraValueRules.includes("BLOB_PROVIDER"));
+  // DATABASE_URL gains a loopback check in production; the variable list
+  // itself is identical everywhere.
+  assert.ok(render.extraValueRules.includes("DATABASE_URL"));
 
   const localhost = expectationsFor("api", "localhost");
   assert.deepEqual(localhost.declared, render.declared, "the variable list never changes");

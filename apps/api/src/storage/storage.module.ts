@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { isDeployedEnvironment } from '@medinstru/config/env-contract';
 import { join } from 'node:path';
 import {
   BLOB_PROVIDERS,
@@ -36,9 +37,26 @@ export function createBlobStore(): BlobStore {
     // Local development and CI. Files live under apps/web/public so the
     // dev server serves them at the same paths blobUrl() produces,
     // meaning the local path and the deployed path behave identically.
+    // On a DEPLOYMENT, local storage may be selected but must not be
+    // written to: a container filesystem loses its contents on the next
+    // redeploy and no CDN serves it.
+    //
+    // A refusal at the WRITE rather than at boot, because that is where the
+    // consequence is. Nothing in this app injects BLOB_STORE yet, so
+    // refusing to boot would block a deploy over a capability with no call
+    // sites -- while this fires the moment an upload is first attempted in
+    // production, and cannot be forgotten the way a note in a table can.
+    const refuseWrites = isDeployedEnvironment()
+      ? `BLOB_PROVIDER is "${providerName}", so uploads would be written to this ` +
+        `container's filesystem -- lost on the next redeploy, and served by no ` +
+        `CDN. Set BLOB_PROVIDER to an object-storage provider (r2, s3, b2, ` +
+        `spaces, minio) with credentials before enabling uploads in production.`
+      : undefined;
+
     return new LocalBlobStore(
       join(process.cwd(), '..', 'web', 'public'),
       blobUrl,
+      refuseWrites,
     );
   }
 

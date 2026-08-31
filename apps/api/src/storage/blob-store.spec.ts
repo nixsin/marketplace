@@ -38,6 +38,51 @@ describe('assertValidKey', () => {
   });
 });
 
+describe('LocalBlobStore: refusing writes on a deployment', () => {
+  // The invariant is "never write data to storage the CDN does not serve",
+  // and `local` violates it only when something WRITES. Enforced here rather
+  // than at boot: nothing in this app injects BLOB_STORE yet, so a boot-time
+  // refusal would block a deploy over a capability with zero call sites,
+  // while this fires at exactly the moment the dangerous thing is attempted
+  // -- and cannot be forgotten when uploads do ship.
+  const reason =
+    'BLOB_PROVIDER is "local", so uploads would be written to this container';
+
+  let root: string;
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('refuses to put, naming the variable to change', async () => {
+    root = await mkdtemp(join(tmpdir(), 'blob-'));
+    const store = new LocalBlobStore(root, (key) => `/${key}`, reason);
+    await expect(
+      store.put('products/x.png', Buffer.from('hello'), 'image/png'),
+    ).rejects.toThrow(/BLOB_PROVIDER/);
+  });
+
+  it('still reads, deletes and reports existence', async () => {
+    // Only writing loses data. A read of something never written already
+    // returns null, so guarding those would break local dev for no gain.
+    root = await mkdtemp(join(tmpdir(), 'blob-'));
+    const writable = new LocalBlobStore(root, (key) => `/${key}`);
+    await writable.put('products/x.png', Buffer.from('hello'), 'image/png');
+
+    const refusing = new LocalBlobStore(root, (key) => `/${key}`, reason);
+    expect((await refusing.get('products/x.png'))?.toString()).toBe('hello');
+    expect(await refusing.exists('products/x.png')).toBe(true);
+    await expect(refusing.delete('products/x.png')).resolves.toBeUndefined();
+  });
+
+  it('writes normally with no reason, leaving local dev untouched', async () => {
+    root = await mkdtemp(join(tmpdir(), 'blob-'));
+    const store = new LocalBlobStore(root, (key) => `/${key}`);
+    await expect(
+      store.put('products/x.png', Buffer.from('hello'), 'image/png'),
+    ).resolves.toBeUndefined();
+  });
+});
+
 describe('LocalBlobStore', () => {
   let root: string;
   // Typed as the PORT, not the concrete class: these tests are the
