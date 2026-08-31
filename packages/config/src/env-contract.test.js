@@ -394,3 +394,29 @@ test("a typo in APP_ENV is a hard error, not a silent downgrade", () => {
   assert.equal(result.ok, false);
   assert.match(messages(result.errors), /not a known environment/);
 });
+
+test("angle-bracket placeholders are caught without a quadratic regex", () => {
+  // CodeQL flagged the previous `<[^>]+>` alternative as js/polynomial-redos
+  // (high): unanchored, the engine retries `[^>]+` from every `<`, so
+  // "<<<<<<<<..." is quadratic. Two index lookups answer the same question.
+  const caught = checkEnv({
+    app: "api",
+    env: { ...completeApi, JWT_SECRET: "<your-key-here-padded>" },
+    environment: "render",
+  });
+  assert.match(messages(caught.errors), /is still a placeholder/);
+
+  // The shape that was slow. A regression would not fail this assertion, it
+  // would fail to finish -- which the runner reports as a timeout, and is the
+  // only honest way to assert "linear".
+  const start = Date.now();
+  checkEnv({
+    app: "api",
+    env: { ...completeApi, JWT_SECRET: "<".repeat(200_000) },
+    environment: "render",
+  });
+  assert.ok(
+    Date.now() - start < 1000,
+    "placeholder detection should be linear in the value's length",
+  );
+});

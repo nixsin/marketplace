@@ -264,10 +264,21 @@ const all =
  * wearing a longer name.
  */
 const PLACEHOLDER_PATTERN =
-  /(change[-_]?me|your[-_]?(key|secret|token|value|url)|replace[-_]?me|todo|fixme|xxxx+|<[^>]+>)/i;
+  /(change[-_]?me|your[-_]?(key|secret|token|value|url)|replace[-_]?me|todo|fixme|xxxx+)/i;
 
 /** @param {string} value */
 function looksLikePlaceholder(value) {
+  // The `<like-this>` case is tested WITHOUT a regex, and deliberately.
+  //
+  // This used to be a `<[^>]+>` alternative in the pattern above, which
+  // CodeQL flagged as js/polynomial-redos (high): unanchored, the engine
+  // retries `[^>]+` from every `<`, so input like "<<<<<<<<..." is quadratic.
+  // Not reachable by an attacker here -- the input is an environment variable
+  // an operator set -- but two index lookups answer exactly the same question
+  // in linear time, so there is nothing to trade off.
+  const open = value.indexOf("<");
+  if (open !== -1 && value.indexOf(">", open + 1) !== -1) return true;
+
   return PLACEHOLDER_PATTERN.test(value);
 }
 
