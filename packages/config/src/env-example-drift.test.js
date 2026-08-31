@@ -2,7 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { API_ENV_CONTRACT, WEB_ENV_CONTRACT } from "./env-contract.js";
+import {
+  API_ENV_CONTRACT,
+  WEB_ENV_CONTRACT,
+  renderEnvExample,
+} from "./env-contract.js";
 import {
   API_DEFAULT_PORT,
   DEV_API_URL,
@@ -51,45 +55,68 @@ function declaredInYaml(contents) {
 const missing = (required, declared) =>
   required.map((r) => r.name).filter((name) => !declared.has(name));
 
-test("apps/api/.env.example declares every API variable", () => {
-  const declared = declaredInEnvFile(read("apps/api/.env.example"));
-  assert.deepEqual(
-    missing(API_ENV_CONTRACT, declared),
-    [],
-    "every contract variable must appear in the example CI copies verbatim",
+test("both .env.example files are current", () => {
+  // They are GENERATED from the contract now, so the only way they can be
+  // wrong is being stale. `node scripts/generate-env-example.mjs` fixes it,
+  // and test-ci-scripts runs the same check with --check.
+  for (const [app, rules] of [["api", API_ENV_CONTRACT], ["web", WEB_ENV_CONTRACT]]) {
+    const committed = read(`apps/${app}/.env.example`);
+    assert.equal(
+      committed,
+      renderEnvExample(app),
+      `apps/${app}/.env.example is stale — run node scripts/generate-env-example.mjs`,
+    );
+    // Belt and braces: the generator is what guarantees completeness, so
+    // assert the property directly rather than trusting the generator's own
+    // loop. A generator bug would otherwise produce a file that matches
+    // itself and is missing half the contract.
+    const declared = declaredInEnvFile(committed);
+    assert.deepEqual(missing(rules, declared), []);
+  }
+});
+
+test("docker-compose reads the generated files rather than copying them", () => {
+  // Compose forwards nothing from the host, so every variable has to come
+  // from somewhere inside this file. It used to be ~16 duplicated literals
+  // held in step only by a test; now it is env_file pointing at the
+  // generated example, which is complete by construction.
+  const compose = read("docker-compose.yml");
+  assert.match(compose, /env_file:\s*\n\s*- \.\/apps\/api\/\.env\.example/);
+  assert.match(compose, /env_file:\s*\n\s*- \.\/apps\/web\/\.env\.example/);
+});
+
+test("the only compose overrides are the Docker-network hostnames", () => {
+  // An override is a value that is NOT the development one, so each is a
+  // small divergence worth keeping deliberate. Two is correct: Postgres and
+  // Redis answer on service names inside the network. A third appearing
+  // silently is how the dev stack starts differing from a laptop.
+  const compose = read("docker-compose.yml");
+  const overrides = [...compose.matchAll(/^\s{6}([A-Z][A-Z0-9_]*): /gm)].map(
+    (m) => m[1],
   );
-});
-
-test("apps/web/.env.example declares every web variable", () => {
-  const declared = declaredInEnvFile(read("apps/web/.env.example"));
-  assert.deepEqual(missing(WEB_ENV_CONTRACT, declared), []);
-});
-
-test("docker-compose.yml declares every variable for both services", () => {
-  // Compose forwards nothing from the host, so anything absent here is
-  // absent inside the container -- including in docker-smoke, a required
-  // check that would then be exercising a configuration nobody wrote down.
-  const declared = declaredInYaml(read("docker-compose.yml"));
-  assert.deepEqual(missing(API_ENV_CONTRACT, declared), [], "api service");
-  assert.deepEqual(missing(WEB_ENV_CONTRACT, declared), [], "web service");
+  assert.deepEqual(
+    [...new Set(overrides)].sort(),
+    ["DATABASE_URL", "POSTGRES_DB", "POSTGRES_PASSWORD", "POSTGRES_USER", "REDIS_URL"],
+    "unexpected compose override — should the value differ from a laptop's?",
+  );
 });
 
 test("ci.yml declares every web variable at workflow level", () => {
   // apps/web is built or booted by six separate CI steps. They inherit one
   // workflow-level env block; a variable missing from it is missing from all
-  // six, and @medinstru/config/web throws rather than invent a value.
+  // six. GitHub Actions has no env_file, so this one stays declared -- and
+  // therefore stays tested.
   const declared = declaredInYaml(read(".github/workflows/ci.yml"));
   assert.deepEqual(missing(WEB_ENV_CONTRACT, declared), []);
 });
 
 test("the localhost values are the ones @medinstru/config defines", () => {
-  // The URLs exist as constants precisely so six files stop each carrying
-  // their own literal. A file that drifts from the constant is the failure
-  // those constants were added to prevent.
-  const api = read("apps/api/.env.example");
-  const web = read("apps/web/.env.example");
-
-  assert.match(web, new RegExp(DEV_API_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(web, new RegExp(DEV_SITE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(api, new RegExp(`PORT="?${API_DEFAULT_PORT}"?`));
+  // The constants exist precisely so several files stop each carrying their
+  // own literal. A file that drifts from the constant is the failure they
+  // were added to prevent.
+  const ci = read(".github/workflows/ci.yml");
+  const escape = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  assert.match(ci, new RegExp(escape(DEV_API_URL)));
+  assert.match(ci, new RegExp(escape(DEV_SITE_URL)));
+  assert.match(read("apps/api/.env.example"), new RegExp(`PORT="?${API_DEFAULT_PORT}"?`));
 });

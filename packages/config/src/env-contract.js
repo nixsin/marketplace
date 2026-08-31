@@ -32,6 +32,13 @@
  *    that only means anything in production.
  */
 
+import {
+  API_DEFAULT_PORT,
+  DEV_API_URL,
+  DEV_BLOB_BASE_URL,
+  DEV_SITE_URL,
+} from "./index.js";
+
 /** @typedef {"render" | "github-ci" | "ci-local" | "test" | "localhost" | "unknown"} DeployEnvironment */
 /** @typedef {"required" | "recommended" | "optional"} Severity */
 
@@ -367,6 +374,7 @@ export const API_ENV_CONTRACT = [
     secret: false,
     why: "States which environment this is instead of leaving it inferred.",
     emptyMeans: null,
+    devValue: "localhost",
     check: isOneOf([...DEPLOY_ENVIRONMENTS]),
   },
   {
@@ -374,6 +382,7 @@ export const API_ENV_CONTRACT = [
     secret: true, // contains the password
     why: "Nothing works without it; Prisma cannot connect.",
     emptyMeans: null,
+    devValue: `postgresql://postgres:postgres@localhost:5432/medinstru?schema=public`,
     check: isUrl(["postgresql:", "postgres:"]),
     perEnvironment: { render: notLoopback },
   },
@@ -382,6 +391,7 @@ export const API_ENV_CONTRACT = [
     secret: true,
     why: "Signs session tokens. A guessable one is a full authentication bypass.",
     emptyMeans: null,
+    devValue: "dev-secret-change-me",
     check: atLeast(16),
     // .env.example and docker-compose.yml ship `dev-secret-change-me` on
     // purpose, so the realistic production failure is not an absent secret
@@ -393,6 +403,7 @@ export const API_ENV_CONTRACT = [
     secret: false,
     why: "The port this service listens on.",
     emptyMeans: null,
+    devValue: String(API_DEFAULT_PORT),
     check: isPort,
   },
   {
@@ -402,6 +413,7 @@ export const API_ENV_CONTRACT = [
     emptyMeans:
       "no shared cache — the API uses a null cache and reads Postgres directly, " +
       "which is a supported state rather than a degraded one",
+    devValue: "",
     check: isUrl(["redis:", "rediss:"]),
   },
   {
@@ -411,6 +423,7 @@ export const API_ENV_CONTRACT = [
     emptyMeans:
       "the per-IP rate limit does not run — storing nothing is the honest " +
       "option, because an unkeyed digest over IPv4's 2^32 space is reversible",
+    devValue: "",
     check: atLeast(16),
     perEnvironment: {
       // The one environment where "off" is not an acceptable answer: this is
@@ -423,6 +436,7 @@ export const API_ENV_CONTRACT = [
     secret: false,
     why: 'Only the exact string "true" enables it; anything else reads as off.',
     emptyMeans: null,
+    devValue: "false",
     check: isOneOf(["true", "false"]),
   },
   {
@@ -430,6 +444,7 @@ export const API_ENV_CONTRACT = [
     secret: false,
     why: "`local` writes uploads into the container filesystem — no CDN serves them and a redeploy discards them.",
     emptyMeans: null,
+    devValue: "local",
     check: isOneOf(["r2", "s3", "b2", "spaces", "minio", "local"]),
     perEnvironment: {
       render: (value) =>
@@ -443,6 +458,7 @@ export const API_ENV_CONTRACT = [
     secret: true,
     why: "Required once BLOB_PROVIDER is not `local` — enforced by a cross-check, since it depends on another variable.",
     emptyMeans: "no object-storage credentials, which is correct for BLOB_PROVIDER=local",
+    devValue: "",
     check: isNotBlank,
   },
   {
@@ -450,6 +466,7 @@ export const API_ENV_CONTRACT = [
     secret: true,
     why: "Required once BLOB_PROVIDER is not `local` — enforced by a cross-check, since it depends on another variable.",
     emptyMeans: "no object-storage credentials, which is correct for BLOB_PROVIDER=local",
+    devValue: "",
     check: isNotBlank,
   },
   {
@@ -460,6 +477,7 @@ export const API_ENV_CONTRACT = [
     emptyMeans:
       "outbound WhatsApp inquiries omit the product link and log " +
       "[NOT CONFIGURED] — the buyer's name, number and Ref still get through",
+    devValue: DEV_SITE_URL,
     check: all(isUrl(["http:", "https:"]), noTrailingSlash),
     perEnvironment: { render: all(notLoopback, mustBeHttps) },
   },
@@ -468,6 +486,7 @@ export const API_ENV_CONTRACT = [
     secret: true,
     why: "Absent, inquiries are still recorded but never delivered to the seller.",
     emptyMeans: "WhatsApp delivery is off; inquiries are recorded and not sent",
+    devValue: "",
     check: matches(/^\S+$/, "must not contain whitespace"),
   },
   {
@@ -477,6 +496,7 @@ export const API_ENV_CONTRACT = [
     emptyMeans: "WhatsApp delivery is off",
     // A phone NUMBER pasted here instead of the id is the classic mistake,
     // and it arrives carrying + and spaces.
+    devValue: "",
     check: matches(
       /^\d{5,}$/,
       "must be Meta's numeric phone number ID, not a phone number (digits only)",
@@ -487,6 +507,7 @@ export const API_ENV_CONTRACT = [
     secret: false,
     why: "Business-initiated WhatsApp messages REQUIRE a pre-approved template; free-form text is rejected outside a 24h window the buyer opens.",
     emptyMeans: "WhatsApp delivery is off",
+    devValue: "",
     check: matches(
       /^[a-z0-9_]+$/,
       "must be lowercase letters, digits and underscores only — Meta rejects anything else",
@@ -497,6 +518,7 @@ export const API_ENV_CONTRACT = [
     secret: false,
     why: "The template's approved locale. A mismatch is rejected at send time, not at boot.",
     emptyMeans: "the service falls back to its documented default locale",
+    devValue: "",
     check: matches(
       /^[a-z]{2}(_[A-Z]{2})?$/,
       'must be a language code such as "en" or "en_US"',
@@ -507,6 +529,7 @@ export const API_ENV_CONTRACT = [
     secret: false,
     why: "An opt-in for a known-open service window, never a fallback for a missing template.",
     emptyMeans: null,
+    devValue: "false",
     check: isOneOf(["true", "false"]),
   },
 ];
@@ -530,6 +553,7 @@ export const WEB_ENV_CONTRACT = [
     secret: false,
     why: "States which environment this is instead of leaving it inferred.",
     emptyMeans: null,
+    devValue: "localhost",
     check: isOneOf([...DEPLOY_ENVIRONMENTS]),
   },
   {
@@ -537,6 +561,7 @@ export const WEB_ENV_CONTRACT = [
     secret: false,
     why: "The origin every visitor's browser fetches products from, and the value connect-src is derived from — a wrong one misdirects and blocks at once.",
     emptyMeans: null,
+    devValue: DEV_API_URL,
     check: isUrl(["http:", "https:"]),
     perEnvironment: { render: all(notLoopback, mustBeHttps) },
   },
@@ -545,6 +570,7 @@ export const WEB_ENV_CONTRACT = [
     secret: false,
     why: "Canonical URLs, hreflang alternates and OpenGraph images are all built from it.",
     emptyMeans: null,
+    devValue: DEV_SITE_URL,
     check: all(isUrl(["http:", "https:"]), noTrailingSlash),
     perEnvironment: { render: all(notLoopback, mustBeHttps) },
   },
@@ -555,6 +581,7 @@ export const WEB_ENV_CONTRACT = [
     emptyMeans:
       "images are served from this app's own origin — the real state on a " +
       "laptop and in CI, where no object storage exists",
+    devValue: DEV_BLOB_BASE_URL,
     check: all(isUrl(["http:", "https:"]), noTrailingSlash),
     perEnvironment: { render: mustBeHttps },
   },
@@ -565,6 +592,7 @@ export const WEB_ENV_CONTRACT = [
     emptyMeans:
       "source maps are unavailable — the /sourcemaps route fails closed, " +
       "which is the safe state rather than a broken one",
+    devValue: "",
     check: atLeast(32),
   },
 ];
@@ -1041,4 +1069,97 @@ export function formatMatrix(app) {
     "stricter in = environments that constrain the VALUE further (for example",
     "              rejecting a localhost URL in production).",
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------
+// Generating the files that cannot import this one
+// ---------------------------------------------------------------------
+
+/** Wrap prose to a column, so generated comments do not run off the screen. */
+function wrap(text, width = 74) {
+  const words = text.split(/\s+/);
+  const lines = [];
+  let line = "";
+  for (const word of words) {
+    if (line && (line + " " + word).length > width) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = line ? line + " " + word : word;
+    }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+
+/**
+ * Render an app's `.env.example` from the contract.
+ *
+ * THE POINT: .env.example was the last hand-maintained copy of the variable
+ * list, and a copy is a thing that drifts. Generating it means the contract is
+ * the only place a variable is declared, described, or given a development
+ * value -- add a rule and the example file follows, including its comment.
+ *
+ * `scripts/generate-env-example.mjs --check` fails when the committed file
+ * differs from what this produces, so the generated output cannot rot either.
+ *
+ * @param {"api" | "web"} app
+ * @returns {string}
+ */
+export function renderEnvExample(app) {
+  const rules = CONTRACTS[app];
+  if (!rules) throw new Error(`Unknown app "${app}" — expected api or web`);
+
+  const lines = [
+    `# apps/${app} environment variables — GENERATED, do not edit by hand.`,
+    "#",
+    "# Regenerate with:  node scripts/generate-env-example.mjs",
+    "# Source of truth:  packages/config/src/env-contract.js",
+    "#",
+    "# HOW THIS FILE IS USED:",
+    ...(app === "api"
+      ? [
+          "#   * You:    cp apps/api/.env.example apps/api/.env  (dotenv loads it at boot)",
+          "#   * CI:     the API jobs run `cp .env.example .env` VERBATIM, so whatever",
+          "#             is written here IS the configuration those jobs run under.",
+          "#   * Docker: docker-compose.yml points at this file directly via env_file,",
+          "#             overriding only the hostnames that differ inside the network.",
+          "#   * Prod:   nothing reads this file. Render injects real values.",
+        ]
+      : [
+          "#   * You:    cp apps/web/.env.example apps/web/.env  (Next loads it itself)",
+          "#   * CI:     NOT copied — ci.yml declares these at workflow level so one",
+          "#             block feeds all six steps that build or boot the web app.",
+          "#   * Docker: docker-compose.yml points at this file via env_file.",
+          "#   * Prod:   nothing reads this file. Render injects real values — and for",
+          "#             NEXT_PUBLIC_*, they must ALSO be passed as Docker build args,",
+          "#             because those are inlined into the client bundle at build time.",
+        ]),
+    "#",
+    "# EVERY environment declares EVERY variable; only the VALUES differ. An",
+    "# ABSENT variable is an error. An EMPTY one (`NAME=`) is a real value",
+    "# meaning \"off\", and each one below says what off means.",
+    "#",
+    "# NAMES ONLY, never real values for anything secret — this file is",
+    "# committed, and a committed credential is permanent in git history.",
+    "",
+  ];
+
+  for (const rule of rules) {
+    lines.push(...wrap(rule.why).map((l) => `# ${l}`));
+    if (rule.emptyMeans) {
+      lines.push("#");
+      lines.push(...wrap(`EMPTY means: ${rule.emptyMeans}`).map((l) => `# ${l}`));
+    }
+    if (rule.secret) {
+      lines.push("#");
+      lines.push("# SECRET — never commit a value here. The startup banner prints *** only.");
+    }
+    // Quoted so a value containing a space survives dotenv, and so an empty
+    // value reads as a deliberate `NAME=""` rather than a truncated line.
+    lines.push(`${rule.name}=${JSON.stringify(rule.devValue)}`);
+    lines.push("");
+  }
+
+  return lines.join("\n");
 }

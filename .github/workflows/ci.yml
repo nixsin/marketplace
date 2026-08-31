@@ -341,6 +341,11 @@ jobs:
       # silent-skip shape as a path filter that stops matching. The package's
       # own `pnpm test` already globs; this now matches it.
       - run: node --test packages/config/src/*.test.js
+      # apps/*/.env.example are GENERATED from the environment contract, so
+      # the failure mode is staleness: a rule added without regenerating
+      # leaves CI copying an example that is missing the new variable. Fails
+      # here rather than months later.
+      - run: node scripts/generate-env-example.mjs --check
       # Separate from the package's own tests on purpose: those exercise
       # resolveApiKey() in isolation and pass even when no consumer calls
       # it, which is exactly how apiKeyEnv shipped as decorative config

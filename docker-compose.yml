@@ -61,47 +61,20 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # THE GENERATED .env.example IS THE SOURCE, not a copy of it.
+    #
+    # It already declares every variable the contract requires, with the
+    # development value for each, and it is itself generated from that
+    # contract -- so a variable added to the contract reaches this stack with
+    # no edit to this file at all. Before this, ~16 values were duplicated
+    # here and held in step only by a test.
+    env_file:
+      - ./apps/api/.env.example
     environment:
-      # Server-side only (this process runs inside the Docker network), so
-      # these use the compose service names, not localhost.
-      # Explicit rather than inferred. Container environments are exactly
-      # where detection has least to go on -- compose forwards neither CI nor
-      # GITHUB_ACTIONS, so a dev stack running inside GitHub Actions
-      # (docker-smoke) looks identical to one on a laptop. Both ARE developer
-      # stacks, so saying so beats inferring it twice.
-      # EVERY variable in the contract is declared here, not just the ones
-      # this stack happens to exercise -- see packages/config/src/env-contract.js.
-      # Compose forwards nothing from the host, so anything absent here is
-      # absent inside the container, including in docker-smoke (a required
-      # check) which would then be testing a configuration nobody wrote down.
-      # env-example-drift.test.js fails if one goes missing.
-      #
-      # EMPTY (`NAME=`) is a real value meaning "off", not a gap.
-      APP_ENV: "localhost"
+      # The ONLY overrides: hostnames that differ inside the Docker network.
+      # Everything else is identical to a laptop, which is the point.
       DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/medinstru?schema=public"
       REDIS_URL: "redis://redis:6379"
-      JWT_SECRET: "dev-secret-change-me"
-      PORT: "4000"
-      # Off: the per-IP rate limit does not run. Storing nothing is the honest
-      # option locally -- an unkeyed digest over IPv4 is reversible.
-      INQUIRY_IP_HASH_SECRET: ""
-      # Nothing sits in front of this stack, so no header is trustworthy.
-      INQUIRY_TRUST_PROXY_HEADERS: "false"
-      # The filesystem. Correct here; refused on a deployment.
-      BLOB_PROVIDER: "local"
-      BLOB_ACCESS_KEY_ID: ""
-      BLOB_SECRET_ACCESS_KEY: ""
-      # Used for the product link in outbound inquiries. The browser reaches
-      # the web app on the host port, not the compose service name.
-      NEXT_PUBLIC_SITE_URL: "http://localhost:3000"
-      # WhatsApp delivery off: inquiries are recorded and never sent. This is
-      # deliberate -- the seed writes unroutable numbers, and a dev stack must
-      # not be one misconfiguration away from messaging a real phone.
-      WHATSAPP_ACCESS_TOKEN: ""
-      WHATSAPP_PHONE_NUMBER_ID: ""
-      WHATSAPP_TEMPLATE_NAME: ""
-      WHATSAPP_TEMPLATE_LANGUAGE: ""
-      WHATSAPP_ALLOW_FREE_FORM: "false"
     ports:
       - "4000:4000"
     volumes:
@@ -126,21 +99,13 @@ services:
     restart: unless-stopped
     depends_on:
       - api
-    environment:
-      # Client-side only: NEXT_PUBLIC_* vars are read by the *browser*,
-      # which runs on the host, not inside the Docker network — so this
-      # must be the host-published port (localhost:4000), never the
-      # Docker-internal `api` hostname, which the browser can't resolve.
-      # Same rule as the api service above: every contract variable declared.
-      APP_ENV: "localhost"
-      NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql"
-      NEXT_PUBLIC_SITE_URL: "http://localhost:3000"
-      # Empty: images come from this app's own origin, which is the real state
-      # here -- there is no object storage in the dev stack.
-      NEXT_PUBLIC_BLOB_BASE_URL: ""
-      # Empty: source maps unavailable. The route fails closed, so this is the
-      # safe state rather than a broken one.
-      SOURCEMAP_SIGNING_KEY: ""
+    env_file:
+      - ./apps/web/.env.example
+    # No `environment:` overrides, and this comment is why there are none:
+    # NEXT_PUBLIC_* are read by the BROWSER, which runs on the host, so they
+    # must stay host-visible (localhost:4000) rather than becoming the
+    # Docker-internal `api` hostname the browser cannot resolve. The generated
+    # file already carries exactly those values.
     ports:
       - "3000:3000"
     volumes:

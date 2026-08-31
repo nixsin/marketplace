@@ -911,7 +911,26 @@ is correct on a laptop and catastrophic in production; `BLOB_PROVIDER=local` is
 correct locally and refused on Render. Those live in each rule's
 `perEnvironment` map, so the variable list stays identical everywhere.
 
-**The eight places that must declare values, and the test that holds them to
+**`apps/*/.env.example` are GENERATED from the contract** —
+`node scripts/generate-env-example.mjs`, with `--check` running in
+`test-ci-scripts`. They were the last hand-maintained copy of the variable
+list, and a copy drifts: a rule added without touching them left CI copying an
+example missing the new variable. Each rule carries a `devValue`, so adding a
+variable produces its example entry and its comment automatically.
+
+**`docker-compose.yml` points at those generated files via `env_file`** rather
+than repeating them. It used to duplicate ~16 values held in step only by a
+test; now the only `environment:` entries are the two hostnames that genuinely
+differ inside the Docker network (Postgres and Redis answer on service names).
+A test asserts that override list stays exactly those two, because a third
+appearing silently is how the dev stack starts diverging from a laptop.
+
+**`ci.yml` is the one file that still declares values inline**, because GitHub
+Actions has no `env_file`. It is a single workflow-level block feeding all six
+steps that build or boot the web app, and the drift test pins it to the
+contract and to `DEV_API_URL`/`DEV_SITE_URL`.
+
+**The places that must declare values, and the test that holds them to
 it.** `apps/api/.env`, `apps/web/.env`, `docker-compose.yml`, `ci.yml`'s
 workflow-level `env:`, `vitest.config.ts`, `playwright.config.ts`,
 `apps/web/Dockerfile` (BOTH stages — see below), and Render. The localhost
