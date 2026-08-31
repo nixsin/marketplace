@@ -207,13 +207,29 @@ The invariant is *never write data to storage the CDN does not serve*, which
 with no call sites. `LocalBlobStore.put()` throws on a deployment instead,
 naming this variable, at the moment an upload is first attempted.
 
-### One env group, not two — learned from a failed apply
+### The env group must be in the SERVICES' environment
 
-`REDIS_URL` had its own group at first. That meant two groups and two links
-touching the same service in a single apply, and Render refused with
-**"Unable to add service to environment group"**. One group removes the
-concurrency, and with it the question of which group wins when two define the
-same key — which Render does not document.
+Render refuses a link across that boundary:
+
+```
+Error: Unable to add service to environment group
+  service must be in the same environment as the environment group
+```
+
+The group was created in `var.environment_id`
+(`evm-da02hptg1s2s73c6e7tg`, where Postgres and the Key Value instance live)
+while **both web services are in no project environment at all** — confirmed
+from state: `{"api":null,"web":null}`. So `environment_id` is now derived from
+the API service rather than hardcoded, which is null today and follows
+automatically if the services are ever moved into an environment. A
+`precondition` asserts both services share one environment, since otherwise a
+single group cannot serve them.
+
+Worth recording that the first diagnosis was wrong: the same error was read as
+two links racing on one service, and `REDIS_URL` was consolidated into one
+group on that basis. One group is still the right shape — it removes the
+undocumented question of which group wins when two define the same key — but
+it was not the fix, and the second apply failed identically.
 
 The credential is still never handled by a person: Terraform reads the
 **internal** connection string straight off the Key Value resource, so the

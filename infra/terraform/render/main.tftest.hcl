@@ -4,14 +4,20 @@ mock_provider "render" {
     values = {
       id   = "srv-da02lnojo6nc73djh9bg"
       name = "medinstru-api"
+      # Null in production: the legacy free web services are not in any
+      # project environment. Pinned here because the mock otherwise invents a
+      # different value per data source, which trips app_env's precondition
+      # that both services share one environment.
+      environment_id = null
     }
   }
 
   override_data {
     target = data.render_web_service.existing_web
     values = {
-      id   = "srv-da02mt61egvs73fopb00"
-      name = "medinstru-web"
+      id             = "srv-da02mt61egvs73fopb00"
+      name           = "medinstru-web"
+      environment_id = null
     }
   }
 }
@@ -162,6 +168,10 @@ run "missing_api_service_fails_closed" {
     target = data.render_web_service.existing_api
     values = {
       name = "missing-api-service"
+      # Pinned for the same reason as the mocks at the top: an unset value is
+      # invented per data source, which would trip app_env's same-environment
+      # precondition and fail this run for the wrong reason.
+      environment_id = null
     }
   }
 
@@ -179,6 +189,10 @@ run "missing_web_service_fails_closed" {
     target = data.render_web_service.existing_web
     values = {
       name = "missing-web-service"
+      # Pinned for the same reason as the mocks at the top: an unset value is
+      # invented per data source, which would trip app_env's same-environment
+      # precondition and fail this run for the wrong reason.
+      environment_id = null
     }
   }
 

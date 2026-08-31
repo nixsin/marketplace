@@ -308,8 +308,34 @@ resource "render_keyvalue" "cache" {
 # empty default below is one of those documented states, and every one is
 # described on its variable in variables.tf.
 resource "render_env_group" "app_env" {
-  name           = "medinstru-app-env"
-  environment_id = var.environment_id
+  name = "medinstru-app-env"
+
+  # THE SERVICES' ENVIRONMENT, not var.environment_id -- and today that is
+  # NULL, because the two legacy free web services are not in any project
+  # environment at all. Only Postgres and the Key Value instance are.
+  #
+  # Render refuses a link across that boundary: "service must be in the same
+  # environment as the environment group". With the group created in
+  # evm-da02hptg1s2s73c6e7tg and the services in none, every link failed.
+  #
+  # Derived from the service rather than hardcoded to null, so this follows
+  # automatically if the services are ever moved into a project environment
+  # -- which is the direction this repo is heading, and would otherwise fail
+  # exactly the same way in reverse.
+  environment_id = data.render_web_service.existing_api.environment_id
+
+  lifecycle {
+    # Both services must be in the SAME environment, or no single group can
+    # serve them and this needs splitting in two. Cheap to assert, and the
+    # alternative is rediscovering it from the same opaque error message.
+    precondition {
+      condition = (
+        data.render_web_service.existing_api.environment_id ==
+        data.render_web_service.existing_web.environment_id
+      )
+      error_message = "The API and web services are in different Render environments, so one env group cannot serve both. Split it, or move them into the same environment."
+    }
+  }
 
   env_vars = merge(
     {
@@ -339,11 +365,12 @@ resource "render_env_group" "app_env" {
 
     # REDIS_URL lives in THIS group too, not a second one.
     #
-    # It had its own env group at first, which meant two groups and two links
-    # touching the same service in one apply -- and that apply failed with
-    # "Unable to add service to environment group". One group removes the
-    # concurrency entirely, and with it the question of which group wins when
-    # two define the same key, which Render does not document.
+    # Consolidated after a failed apply, though NOT for the reason first
+    # guessed: the failure was an environment mismatch (see environment_id
+    # above), not two links racing. One group is still the right shape -- it
+    # removes the undocumented question of which group wins when two define
+    # the same key -- but the concurrency theory was wrong and is recorded
+    # here so nobody re-derives it from the commit history.
     #
     # The credential is still never handled by a person: Terraform reads it
     # straight off the Key Value resource. The INTERNAL string, so the traffic
