@@ -40,6 +40,33 @@ override_resource {
   }
 }
 
+# Gating must be ALL-OR-NOTHING: a half-gated set would leave an env group
+# pointing at an instance that does not exist.
+#
+# Deliberately placed BEFORE the apply run below, because it must plan against
+# an EMPTY state. Once the instance exists, `enable_key_value = false` does not
+# quietly remove it -- lifecycle.prevent_destroy refuses the plan outright,
+# which is the intended protection and was confirmed by writing this test in
+# the other order first. So this pins the gating expression, not a supported
+# way to tear a live cache down.
+run "cache_gating_is_all_or_nothing" {
+  command = plan
+
+  variables {
+    jwt_secret       = "test"
+    enable_key_value = false
+  }
+
+  assert {
+    condition = (
+      length(render_keyvalue.cache) == 0 &&
+      length(render_env_group.cache) == 0 &&
+      length(render_env_group_link.cache_api) == 0
+    )
+    error_message = "enable_key_value = false must gate the instance, the env group and the link together."
+  }
+}
+
 run "adopt_guarded_test_state" {
   command = apply
 
@@ -115,4 +142,38 @@ run "missing_web_service_fails_closed" {
   }
 
   expect_failures = [render_web_service.web]
+}
+
+# The cache defaults must stay FREE and NON-PERSISTENT together. Render's free
+# Key Value plan does not offer persistence, so a default of journal_snapshot
+# would be refused at apply time -- a failure that only shows up against real
+# Render, long after `terraform validate` has passed. These assertions are the
+# only thing standing between a plausible-looking edit and that.
+run "cache_defaults_are_free_and_non_persistent" {
+  command = plan
+
+  variables {
+    jwt_secret = "test"
+  }
+
+  assert {
+    condition = (
+      length(render_keyvalue.cache) == 1 &&
+      render_keyvalue.cache[0].plan == "free" &&
+      render_keyvalue.cache[0].persistence_mode == "off"
+    )
+    error_message = "Key Value must default to the free plan with persistence off; free Render Key Value refuses persistence and the apply would fail."
+  }
+
+  # The credential reaches the API through an env group rather than the
+  # service's own env_vars, because render_web_service.api carries
+  # ignore_changes = all -- setting it there would be silently dropped.
+  assert {
+    condition = (
+      length(render_env_group.cache) == 1 &&
+      length(render_env_group_link.cache_api) == 1 &&
+      contains(render_env_group_link.cache_api[0].service_ids, "srv-da02lnojo6nc73djh9bg")
+    )
+    error_message = "REDIS_URL must be delivered to the API service via a linked env group."
+  }
 }

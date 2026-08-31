@@ -93,6 +93,66 @@ variable or detach Postgres from its existing project environment.
 Do not activate `render.yaml` Blueprint sync while Terraform owns the same
 resources.
 
+## The API cache (Render Key Value)
+
+`enable_key_value` is **on and free**. Render's Key Value has a free plan --
+25 MB, one active instance per workspace -- so the defaults cost nothing.
+Applying creates three things: the instance, an env group carrying `REDIS_URL`,
+and the link attaching that group to the API service.
+
+```bash
+cd infra/terraform/render
+terraform apply
+```
+
+That is the entire operation. There is no dashboard step, and **nobody handles
+the credential**: Terraform reads
+`connection_info.internal_connection_string` straight off the Key Value
+resource into the env group, so it is never typed, pasted, or in a shell
+history. The *internal* string, not the external one -- both services sit in
+the same Render environment, which keeps the traffic off the public network.
+
+An env group rather than `env_vars` on the service, because
+`render_web_service.api` carries `ignore_changes = all` (see above): setting it
+on the service would be silently dropped.
+
+### Free means no persistence, and that is safe here
+
+Render documents that persistence is unavailable on free Key Value, and that a
+free instance loses all of its data whenever it restarts. So
+`key_value_persistence_mode` defaults to `off`; sending `journal_snapshot` on
+`free` is the documented shape of a refused apply. The two settings are coupled
+by the plan -- raise them together or not at all.
+
+Data loss on restart cannot produce a wrong answer, for a structural reason
+rather than a tolerance for risk: the catalogue version lives in **Postgres**
+(`CacheVersion`), and Redis only ever holds values *addressed by* that version.
+An emptied instance can only miss, and a miss is the null-cache path the API
+already runs on. What `off` gives up is the warm cache after a restart -- one
+`COUNT(*)` against a small table, at today's catalogue size.
+
+Note this free plan is **not** the free-Postgres situation. Free Postgres
+expires 30 days after creation; free Key Value carries no such clock.
+
+### Turning it off again is not symmetric
+
+`render_keyvalue.cache` has `prevent_destroy = true`, so once the instance
+exists, setting `enable_key_value = false` does **not** quietly remove it --
+Terraform refuses the plan with `Instance cannot be destroyed`. That is the
+intended protection, and it is asserted from a clean state in
+`main.tftest.hcl` (`cache_gating_is_all_or_nothing`) precisely because the
+obvious test ordering hides it. Removing a live cache is a deliberate act:
+drop the lifecycle block in the same change that removes the resource.
+
+### Verifying it connected
+
+**A healthy cache logs nothing.** `RedisCacheStore` tracks health as a *state*
+and logs only on transition, initialised healthy -- so there is no "connected"
+line to look for. The signal is the *absence* of
+`cache unavailable — serving every read from the database` in the API's Render
+logs after the redeploy. For positive confirmation, the instance's own
+dashboard shows keys once the catalogue is hit.
+
 ## Adopt Cloudflare
 
 Create the scoped API token in Cloudflare, export it without writing it to a

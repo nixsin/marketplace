@@ -202,9 +202,20 @@ resource "render_web_service" "web" {
 # Redis for the API's shared cache. See apps/api/src/cache/README.md for what
 # it holds and why invalidation is version-keyed rather than delete-based.
 #
-# Gated OFF by default: creating this is a billable service, and the API runs
-# without it (an unset REDIS_URL yields a null cache and every read falls
-# through to Postgres). Enable, apply, then set REDIS_URL on the API service.
+# ON, and free. Render's Key Value has a free plan -- 25 MB, one active
+# instance per workspace -- so this costs nothing at the defaults. It was
+# gated off originally on the belief that ANY Key Value instance is billable,
+# which was simply wrong; the only thing free withholds is persistence, and
+# see persistence_mode below for why that is safe here.
+#
+# `terraform apply` is the entire operation. Creation, credential delivery and
+# service wiring are all declared below, so there is no dashboard step and
+# nobody ever handles the connection string.
+#
+# Still a switch rather than an unconditional resource, because the API treats
+# the cache as OPTIONAL by construction: an unset REDIS_URL yields a null
+# cache and every read falls through to Postgres. enable_key_value = false is
+# a supported state, not a broken one.
 resource "render_keyvalue" "cache" {
   count = var.enable_key_value ? 1 : 0
 
@@ -220,14 +231,28 @@ resource "render_keyvalue" "cache" {
   # accepted set is ["journal_snapshot" "snapshot" "off"]. Worth validating
   # rather than assuming the provider mirrors the underlying engine's names.
   #
-  # Matched by `--appendonly yes --appendfsync everysec` on the dev stack in
-  # docker-compose.yml, so local behaviour is not quietly more forgiving than
-  # production.
+  # DEFAULTS TO "off", because the free plan offers nothing else: Render
+  # documents that persistence is unavailable on free Key Value, and that a
+  # free instance loses all of its data whenever it restarts. Sending
+  # journal_snapshot on `free` is the documented shape of a refused apply.
   #
-  # Worth being honest about what this buys HERE: everything cached is
-  # derivable from Postgres, so losing the cache costs latency, not data. It
-  # is set because a cold cache after every restart makes an outage worse at
-  # exactly the wrong moment, not because the contents are precious.
+  # That INVERTS a claim this comment used to make -- that `--appendonly yes
+  # --appendfsync everysec` on the dev stack in docker-compose.yml keeps local
+  # behaviour from being quietly more forgiving than production. On free it is
+  # now the other way round: dev persists, production does not. The dev stack
+  # is deliberately left alone rather than crippled to match, because here the
+  # asymmetry runs in the SAFE direction. A wiped cache cannot produce a wrong
+  # answer at all -- the catalogue version lives in Postgres (CacheVersion)
+  # and Redis only ever holds values ADDRESSED BY that version, so an empty
+  # instance can only miss, and a miss is the null-cache path the API already
+  # runs on. What differs between the two environments is how often a miss
+  # happens, never what an answer says.
+  #
+  # What "off" gives up is the warm cache after a restart, which was the whole
+  # reason to want a durable mode: a cold cache makes an outage worse at
+  # exactly the wrong moment. On a few dozen products that is one COUNT(*)
+  # against a tiny table. Raise this back to journal_snapshot together with
+  # key_value_plan, never on its own -- free refuses it and the apply fails.
   persistence_mode = var.key_value_persistence_mode
 
   # Evict the least-recently-used key rather than returning errors when full.
