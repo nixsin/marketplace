@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { ProductDetailView, type ProductDetail } from "./product-detail";
 import { LocaleProvider } from "./locale-provider";
-import { SITE_URL } from "@medinstru/config";
+import { SITE_URL } from "@medinstru/config/web";
 import en from "../../messages/en.json";
 import hi from "../../messages/hi.json";
 

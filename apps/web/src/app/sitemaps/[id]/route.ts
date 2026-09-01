@@ -1,4 +1,4 @@
-import { SITE_URL } from "@medinstru/config";
+import { SITE_URL } from "@medinstru/config/web";
 import { routing } from "@/i18n/routing";
 import {
   loadSitemapProductCount,

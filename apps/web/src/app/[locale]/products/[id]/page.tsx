@@ -5,7 +5,7 @@ import { fetchProduct } from "@/lib/api";
 import { ProductDetailView } from "@/components/product-detail";
 import type { ProductDetail } from "@/components/product-detail";
 import { OG_IMAGE_HEIGHT, OG_IMAGE_WIDTH, ogImageUrl } from "@/lib/og-image";
-import { SITE_URL } from "@medinstru/config";
+import { SITE_URL } from "@medinstru/config/web";
 
 interface ProductDetailPageProps {
   params: Promise<{ locale: string; id: string }>;

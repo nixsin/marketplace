@@ -13,7 +13,6 @@ import {
   INQUIRY_RATE_LIMIT_PER_SELLER,
   INQUIRY_RATE_LIMIT_WINDOW_MS,
   INQUIRY_SUMMARY_NAME_MAX_LENGTH,
-  SITE_URL,
 } from '@medinstru/config';
 import { Prisma } from '../../generated/prisma/client';
 import { InquiryStatus } from '../../generated/prisma/enums';
@@ -223,9 +222,9 @@ const FAILURE_REASON_MAX_LENGTH = 500;
 /**
  * The public site origin, or null when what we have is not one.
  *
- * SITE_URL falls back to `http://localhost:3000`, and `render.yaml` declares
- * NEXT_PUBLIC_SITE_URL only for the WEB service -- so the API resolves that
- * fallback in production and every seller would receive
+ * NEXT_PUBLIC_SITE_URL is easy to miss on the API service because its name
+ * says NEXT_PUBLIC. It used to carry a `http://localhost:3000` fallback, so
+ * an API without it resolved that in production and every seller received
  * `Link: http://localhost:3000/en/products/...`. A dead link, in the outbound
  * message that is the entire point of this feature.
  *
@@ -277,7 +276,30 @@ function isLoopbackHost(hostname: string): boolean {
   return false;
 }
 
-export function publicSiteUrl(siteUrl: string = SITE_URL): string | null {
+/**
+ * Read straight from the environment, with NO default.
+ *
+ * NOT `@medinstru/config/web`'s SITE_URL, even though that is the same
+ * variable: that export THROWS on a deployment when unset, which is right for
+ * apps/web (a localhost canonical URL reaches crawlers) and wrong here. This
+ * service already handles absence better than a throw would -- it omits the
+ * link, logs `[NOT CONFIGURED]` naming the variable, and still delivers the
+ * buyer's name, number and Ref, so the inquiry stays actionable. Refusing to
+ * boot the whole API would trade a degraded message for no message.
+ *
+ * That is degradation, not a silent fallback: the old
+ * `SITE_URL = ... ?? "http://localhost:3000"` meant production resolved a
+ * localhost link and SENT it. The contract marks NEXT_PUBLIC_SITE_URL
+ * required on render, so a real deploy still refuses to start without it --
+ * the hard failure lives at boot, where it can be acted on.
+ */
+function configuredSiteUrl(): string | undefined {
+  return process.env.NEXT_PUBLIC_SITE_URL;
+}
+
+export function publicSiteUrl(
+  siteUrl: string | undefined = configuredSiteUrl(),
+): string | null {
   if (!siteUrl) return null;
 
   let url: URL;
@@ -336,7 +358,7 @@ export function buildInquirySummary(input: {
   buyerPhone: string;
   siteUrl?: string;
 }): string {
-  const base = publicSiteUrl(input.siteUrl ?? SITE_URL);
+  const base = publicSiteUrl(input.siteUrl ?? configuredSiteUrl());
   // Truncated by CODE POINT. .slice() counts UTF-16 code units, so a product
   // name with a non-BMP character straddling the boundary left an unpaired
   // surrogate in the outbound summary. Readily reachable -- unlike the
