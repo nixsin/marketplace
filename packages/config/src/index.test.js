@@ -33,18 +33,24 @@ import {
 // ESM module cache, so each case gets a genuinely fresh evaluation under an
 // environment this test controls.
 async function importWithEnv(overrides) {
-  const saved = {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
-    NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
-    // RENDER decides whether the localhost defaults are a fallback or a hard
-    // error, so a case must be able to set it -- and it must be cleared for
-    // every other case, or a developer with it exported would fail the suite.
-    RENDER: process.env.RENDER,
-    // BOTH markers: resolvePublicUrl treats either as Render, so leaving this
-    // one set meant a developer shell with RENDER_GIT_COMMIT exported changed
-    // the outcome of the cases covering non-Render behaviour.
-    RENDER_GIT_COMMIT: process.env.RENDER_GIT_COMMIT,
-  };
+  // Everything the module reads, PLUS whatever this case overrides.
+  //
+  // A fixed list missed NODE_ENV, which one case sets and nothing restored --
+  // so it leaked into every test that ran afterwards. Deriving the second
+  // half from `overrides` means a new case cannot introduce that again.
+  const managed = new Set([
+    "NEXT_PUBLIC_API_URL",
+    "NEXT_PUBLIC_SITE_URL",
+    // BOTH Render markers: resolvePublicUrl treats either as a deployment, so
+    // leaving one set meant a developer shell with it exported changed the
+    // outcome of the cases covering non-Render behaviour.
+    "RENDER",
+    "RENDER_GIT_COMMIT",
+    ...Object.keys(overrides),
+  ]);
+  const saved = Object.fromEntries(
+    [...managed].map((key) => [key, process.env[key]]),
+  );
   for (const key of Object.keys(saved)) delete process.env[key];
   Object.assign(process.env, overrides);
   try {
@@ -355,5 +361,45 @@ test("embedded credentials are refused, and never echoed", async () => {
       assert.doesNotMatch(error.message, /hunter2/);
       return true;
     },
+  );
+});
+
+test("the BUILD-time marker rejects just as the runtime one does", async () => {
+  // Every other case uses RENDER=true, which is the RUNTIME signal. A Docker
+  // build on Render sees only RENDER_GIT_COMMIT -- and that is the half that
+  // matters most, because NEXT_PUBLIC_* are inlined into the client bundle
+  // then and cannot be corrected afterwards.
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER_GIT_COMMIT: "abc123",
+        NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql",
+        NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      }),
+    /points at localhost/,
+  );
+});
+
+test("SITE_URL is validated too, not just API_URL", async () => {
+  // Every rejection case so far fails while initialising API_URL, so none
+  // proved SITE_URL is checked at all. Give API_URL a valid value and the
+  // failure has to come from the other one.
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER: "true",
+        NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+        NEXT_PUBLIC_SITE_URL: "http://localhost:3000",
+      }),
+    /NEXT_PUBLIC_SITE_URL points at localhost/,
+  );
+
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER: "true",
+        NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+      }),
+    /NEXT_PUBLIC_SITE_URL is not set/,
   );
 });
