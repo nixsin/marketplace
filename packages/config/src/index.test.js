@@ -322,3 +322,38 @@ test("a malformed URL's value is never echoed", async () => {
     },
   );
 });
+
+test("a non-HTTP scheme is refused on a deployment", async () => {
+  // `file:///x` and `javascript:...` have hostnames no loopback list would
+  // flag, and neither is something a visitor's browser can fetch from.
+  for (const value of ["file:///etc/passwd", "javascript:alert(1)"]) {
+    await assert.rejects(
+      () =>
+        importWithEnv({
+          RENDER: "true",
+          NEXT_PUBLIC_API_URL: value,
+          NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+        }),
+      /must be an http:\/\/ or https:\/\/ URL/,
+    );
+  }
+});
+
+test("embedded credentials are refused, and never echoed", async () => {
+  // NEXT_PUBLIC_* values are inlined into the client bundle at build time, so
+  // a credential here would ship to every visitor -- far more public than any
+  // log. The message must not repeat it either.
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER: "true",
+        NEXT_PUBLIC_API_URL: "https://user:hunter2@api.example.com/graphql",
+        NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      }),
+    (error) => {
+      assert.match(error.message, /embeds credentials/);
+      assert.doesNotMatch(error.message, /hunter2/);
+      return true;
+    },
+  );
+});

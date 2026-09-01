@@ -91,9 +91,9 @@ function resolvePublicUrl(name, value, devDefault) {
     );
   }
 
-  let hostname;
+  let parsed;
   try {
-    ({ hostname } = new URL(value));
+    parsed = new URL(value);
   } catch {
     // NAMES THE VARIABLE, NEVER ECHOES THE VALUE.
     //
@@ -115,12 +115,39 @@ function resolvePublicUrl(name, value, devDefault) {
   // so the value is still checked on any path that reaches the config without
   // going through next.config.ts, and covers the case that actually happens:
   // the Dockerfile ARG default surviving because the build arg was not passed.
-  if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname)) {
+  // A HOSTNAME CHECK ALONE IS NOT ENOUGH, and this is the path that has to
+  // catch it: next.config.ts's richer guard covers the boot it runs on, but
+  // this module exists for every OTHER import path.
+  //
+  // `file:///x` and `javascript:...` have hostnames nothing would flag, and
+  // `https://user:secret@example.com/graphql` is a perfectly ordinary URL
+  // whose credentials would then be INLINED INTO THE CLIENT BUNDLE, since
+  // NEXT_PUBLIC_* values are baked in at build time and shipped to every
+  // visitor. Neither is reachable through the hostname list below.
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error(
-      `${name} points at ${hostname} while running on Render. ` +
-        `This is almost certainly apps/web/Dockerfile's ARG default surviving ` +
-        `because the build arg was not passed -- the variable looks set, but ` +
-        `every visitor would resolve it to their own machine.`,
+      `${name} must be an http:// or https:// URL. Found protocol ` +
+        `"${parsed.protocol}", which no visitor's browser can fetch from.`,
+    );
+  }
+
+  if (parsed.username || parsed.password) {
+    // Never echoed: this is a credential, and NEXT_PUBLIC_* reaches the
+    // browser, so the value is about to be far more public than this log.
+    throw new Error(
+      `${name} embeds credentials in its URL. NEXT_PUBLIC_* values are inlined ` +
+        `into the client bundle, so this would ship them to every visitor. ` +
+        `(Value not shown.)`,
+    );
+  }
+
+  if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname)) {
+    throw new Error(
+      `${name} points at ${parsed.hostname} while running on Render. Every ` +
+        `visitor would resolve that to their own machine. The thorough version ` +
+        `of this check -- private ranges, CGNAT, IPv4-mapped IPv6, embedded ` +
+        `credentials -- lives in apps/web/src/lib/site-url.ts and runs from ` +
+        `next.config.ts.`,
     );
   }
 
