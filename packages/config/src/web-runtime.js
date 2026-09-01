@@ -130,9 +130,15 @@ function resolvePublicUrl(name, value, devDefault) {
   // NEXT_PUBLIC_* values are baked in at build time and shipped to every
   // visitor. Neither is reachable through the hostname list below.
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    // THE PROTOCOL IS NOT ECHOED EITHER, which looks over-careful and is
+    // not: a mistakenly pasted secret shaped like `hunter2:abc` is a valid
+    // URL whose protocol IS `hunter2:`, so printing the scheme prints the
+    // first half of the secret. Nothing derived from the value is safe to
+    // show once the value might not be a URL at all.
     throw new Error(
-      `${name} must be an http:// or https:// URL. Found protocol ` +
-        `"${parsed.protocol}", which no visitor's browser can fetch from.`,
+      `${name} must be an http:// or https:// URL — no visitor's browser can ` +
+        `fetch from any other scheme. (Value not shown: a mistyped value can ` +
+        `itself be a secret.)`,
     );
   }
 

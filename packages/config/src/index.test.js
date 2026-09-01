@@ -343,6 +343,23 @@ test("a non-HTTP scheme is refused on a deployment", async () => {
       /must be an http:\/\/ or https:\/\/ URL/,
     );
   }
+
+  // A pasted SECRET is a valid URL whose protocol is the first half of it,
+  // so echoing the scheme echoes the secret. Nothing derived from the value
+  // is safe to show once the value might not be a URL at all.
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER: "true",
+        NEXT_PUBLIC_API_URL: "hunter2:the-rest-of-the-secret",
+        NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      }),
+    (error) => {
+      assert.doesNotMatch(error.message, /hunter2/);
+      assert.match(error.message, /Value not shown/);
+      return true;
+    },
+  );
 });
 
 test("embedded credentials are refused, and never echoed", async () => {
