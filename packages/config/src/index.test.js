@@ -403,3 +403,29 @@ test("SITE_URL is validated too, not just API_URL", async () => {
     /NEXT_PUBLIC_SITE_URL is not set/,
   );
 });
+
+test("the whole loopback and private range is refused, not four strings", async () => {
+  // The guard was four exact hostnames, so `127.0.0.2` -- and every other
+  // address in 127.0.0.0/8, every RFC1918 range, CGNAT, and IPv4-mapped
+  // IPv6 -- reached production. The thorough classification already existed
+  // in apps/web/src/lib/site-url.ts and is shared now.
+  for (const host of [
+    "127.0.0.2",
+    "10.0.0.5",
+    "192.168.1.1",
+    "169.254.1.1",
+    "100.64.0.1",
+    "[::ffff:127.0.0.1]",
+  ]) {
+    await assert.rejects(
+      () =>
+        importWithEnv({
+          RENDER: "true",
+          NEXT_PUBLIC_API_URL: `https://${host}/graphql`,
+          NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+        }),
+      /unreachable from outside/,
+      `${host} should be refused`,
+    );
+  }
+});

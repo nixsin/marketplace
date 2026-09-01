@@ -11,6 +11,11 @@
  * entry must stay safe to import from anywhere.
  */
 
+import {
+  isUnreachableIpv4,
+  isUnreachableIpv6,
+} from "./host-classification.js";
+
 /**
  * Resolve a public URL that has a localhost development default.
  *
@@ -141,13 +146,20 @@ function resolvePublicUrl(name, value, devDefault) {
     );
   }
 
-  if (["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname)) {
+  // The SHARED classification, not a list here. Four exact strings accepted
+  // `127.0.0.2` -- and every other address in 127.0.0.0/8, every RFC1918
+  // range, CGNAT, and IPv4-mapped IPv6. That logic already existed in
+  // apps/web/src/lib/site-url.ts; keeping a second, weaker copy is the drift
+  // this package exists to stop.
+  if (
+    /^localhost\.?$/i.test(parsed.hostname) ||
+    isUnreachableIpv4(parsed.hostname) ||
+    isUnreachableIpv6(parsed.hostname)
+  ) {
     throw new Error(
-      `${name} points at ${parsed.hostname} while running on Render. Every ` +
-        `visitor would resolve that to their own machine. The thorough version ` +
-        `of this check -- private ranges, CGNAT, IPv4-mapped IPv6, embedded ` +
-        `credentials -- lives in apps/web/src/lib/site-url.ts and runs from ` +
-        `next.config.ts.`,
+      `${name} points at ${parsed.hostname} while running on Render — an ` +
+        `address unreachable from outside the network that issued it. Every ` +
+        `visitor would fail to load it.`,
     );
   }
 
