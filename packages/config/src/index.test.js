@@ -416,6 +416,13 @@ test("the whole loopback and private range is refused, not four strings", async 
     "169.254.1.1",
     "100.64.0.1",
     "[::ffff:127.0.0.1]",
+    // IPv6 ranges the internet will not route. fec0::/10 is deprecated by
+    // RFC 3879, which makes it easy to leave out -- but deprecated means
+    // routers may ignore it, not that nobody types it.
+    "[fec0::1]",
+    "[fe80::1]",
+    "[fd00::1]",
+    "[2001:db8::1]",
   ]) {
     await assert.rejects(
       () =>

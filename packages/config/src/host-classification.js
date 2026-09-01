@@ -77,6 +77,11 @@ export function isUnreachableIpv6(hostname) {
     /^f[cd][0-9a-f]{0,2}:/.test(addr) ||
     // fe80::/10 (link-local) covers fe8 through feb.
     /^fe[89ab][0-9a-f]?:/.test(addr) ||
+    // fec0::/10 (site-local). DEPRECATED by RFC 3879 and therefore easy to
+    // leave out -- but deprecated means routers may ignore it, not that
+    // nobody types it, and an address the internet will not route is exactly
+    // what this function exists to catch.
+    /^fe[cdef][0-9a-f]?:/.test(addr) ||
     // ff00::/8 multicast -- an address a browser cannot fetch a page from.
     /^ff[0-9a-f]{0,2}:/.test(addr) ||
     // 2001:db8::/32, reserved for documentation and examples. Not routable,
