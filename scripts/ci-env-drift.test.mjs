@@ -852,3 +852,37 @@ test("describe.each scopes its callback, not its cases argument", () => {
   ].join("\n");
   assert.deepEqual(unguardedTruncates(contained), []);
 });
+
+test("describe.each scopes its callback in the tagged-table form too", () => {
+  // Jest's other `each` spelling: describe.each`a | b`(name, cb). Handling
+  // only the parenthesised form left this one scoped to its TABLE, so a
+  // guard in the callback read as file-level.
+  const guard = "await assertConnectedToTestDatabase(p);";
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+
+  const leaky = [
+    "describe('outer',()=>{",
+    "  describe.each`",
+    "    a",
+    "    ${1}",
+    `  \`('inner',()=>{beforeAll(async()=>{${guard}});});`,
+    `  beforeEach(async()=>{${trunc}});`,
+    "});",
+  ].join("\n");
+  assert.equal(
+    unguardedTruncates(leaky).length,
+    1,
+    "a guard inside a tagged describe.each must not cover the parent",
+  );
+
+  const contained = [
+    "describe.each`",
+    "  a",
+    "  ${1}",
+    "`('s',()=>{",
+    `  beforeAll(async()=>{${guard}});`,
+    `  beforeEach(async()=>{${trunc}});`,
+    "});",
+  ].join("\n");
+  assert.deepEqual(unguardedTruncates(contained), []);
+});

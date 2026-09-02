@@ -255,7 +255,17 @@ function blank(text, { strings }) {
       let j = i + 1;
       while (j < text.length && text[j] !== quote) j += text[j] === "\\" ? 2 : 1;
       const stop = Math.min(j + 1, text.length);
-      out += strings ? " ".repeat(stop - i) : text.slice(i, stop);
+      if (strings) {
+        // DELIMITERS KEPT, interior blanked. Blanking the quotes too
+        // destroyed the backticks of a tagged template, so
+        // `describe.each\`table\`(name, cb)` stopped matching in this view
+        // and its callback lost its scope. Keeping them also costs nothing:
+        // an interior of spaces still cannot masquerade as code.
+        out += text[i] + " ".repeat(Math.max(0, stop - i - 2));
+        if (stop - i >= 2) out += text[stop - 1];
+      } else {
+        out += text.slice(i, stop);
+      }
       i = stop;
     } else if (two === "//" || two === "/*") {
       const end =
@@ -290,7 +300,11 @@ function describeExtents(text) {
     let open = m.index + m[0].length - 1;
 
     // Step over the cases argument to the call that takes the callback.
-    if (m[1] === ".each" && text[open] === "(") {
+    // BOTH forms: `describe.each([...])(name, cb)` and Jest's tagged table
+    // `describe.each`a | b`(name, cb)`. Handling only the parenthesised one
+    // left the tagged form scoped to its TABLE, so a guard in the callback
+    // had no enclosing scope and read as file-level.
+    if (m[1] === ".each" && (text[open] === "(" || text[open] === "`")) {
       const cases = closingIndex(text, open);
       if (cases === -1) continue;
       const next = text.indexOf("(", cases + 1);
