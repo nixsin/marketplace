@@ -58,11 +58,15 @@ export function isPublicDnsName(hostname) {
 /**
  * Suffixes that never resolve on the public internet.
  *
- * RFC 6761 (`test`, `example`, `invalid`, `localhost`), RFC 6762 (`local`,
- * mDNS), RFC 8375 (`home.arpa`), and `internal`, which ICANN reserved for
- * private use in 2024. `onion` and `alt` are omitted deliberately: they are
- * reserved, but nothing here would ever be served over Tor, and listing
- * names for their own sake is what made the previous check unmaintainable.
+ * RFC 6761 (`test`, `example`, `invalid`, `localhost`, `onion`), RFC 6762
+ * (`local`, mDNS), RFC 8375 (`home.arpa`), RFC 9476 (`alt`), and `internal`,
+ * which ICANN reserved for private use in 2024.
+ *
+ * `onion` and `alt` were omitted at first on the grounds that nothing here
+ * would be served over Tor -- true, and beside the point: the question this
+ * function answers is "can the public internet resolve this", and neither
+ * can be. Including them costs two strings and removes a judgement call from
+ * a list that is otherwise purely mechanical.
  */
 const RESERVED_SUFFIXES = [
   "localhost",
@@ -72,6 +76,8 @@ const RESERVED_SUFFIXES = [
   "example",
   "invalid",
   "home.arpa",
+  "onion",
+  "alt",
 ];
 
 /**

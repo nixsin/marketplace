@@ -254,6 +254,15 @@ const isUrl = (protocols) => (value) => {
     return "is not a valid URL";
   }
 
+  // AN AUTHORITY IS REQUIRED. WHATWG accepts `postgresql:foo` and
+  // `redis:foo` as valid URLs with an empty hostname -- they parse, they
+  // carry the right protocol, and they name no host to connect to. Every
+  // rule below reads `hostname`, so without this they all silently pass on
+  // the empty string.
+  if (!parsed.hostname) {
+    return "names no host — it needs an authority, as in scheme://host/path";
+  }
+
   return protocols.includes(parsed.protocol)
     ? null
     : `must use ${protocols.join(" or ")} (found ${parsed.protocol})`;
@@ -910,7 +919,7 @@ export function checkEnv({ app, env = process.env, environment }) {
     errors.push({
       level: "error",
       message:
-        `${APP_ENV_OVERRIDE} is set to ${JSON.stringify(override)}, which is not a ` +
+        `${APP_ENV_OVERRIDE} is set to ${JSON.stringify(displaySafe(override))}, which is not a ` +
         `known environment. It was IGNORED and the environment was inferred as ` +
         `"${target}" instead — which may be more permissive than you intended. ` +
         `Use one of: ${DEPLOY_ENVIRONMENTS.join(", ")}.`,

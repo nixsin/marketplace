@@ -762,3 +762,30 @@ test("special-use suffixes are not public names", () => {
   });
   assert.equal(fine.ok, true, formatReport(fine));
 });
+
+test("a URL with no authority is refused", () => {
+  // WHATWG accepts `postgresql:foo` as a valid URL with an EMPTY hostname:
+  // it parses, it carries the right protocol, and it names no host to
+  // connect to. Every host rule reads `hostname`, so without this check they
+  // all silently pass on the empty string.
+  for (const value of ["postgresql:foo", "postgres:whatever"]) {
+    const result = checkEnv({
+      app: "api",
+      env: { ...completeApi, DATABASE_URL: value },
+      environment: "localhost",
+    });
+    assert.match(messages(result.errors), /names no host/, value);
+  }
+});
+
+test("an invalid APP_ENV cannot forge log lines", () => {
+  // Same class as the blob cross-check: a message that skips displaySafe
+  // writes attacker-shaped text straight into the report.
+  const result = checkEnv({
+    app: "api",
+    env: { ...completeApi, APP_ENV: "prod\nFAKE: injected" },
+  });
+  const shown = formatReport(result);
+  assert.match(shown, /not a known environment/);
+  assert.doesNotMatch(shown, /\nFAKE: injected/);
+});
