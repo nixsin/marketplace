@@ -161,8 +161,29 @@ function enclosingExtent(text, index, pattern) {
   return best;
 }
 
+/** "All", "Each", or null — which setup hook lexically contains `index`. */
+function hookKindAt(text, index) {
+  let best = null;
+  for (const m of text.matchAll(/(?<![\w$])before(All|Each)\s*\(/g)) {
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    for (let i = open; i < text.length; i += 1) {
+      const c = text[i];
+      if (c === "(" || c === "{" || c === "[") depth += 1;
+      else if (c === ")" || c === "}" || c === "]") {
+        depth -= 1;
+        if (depth === 0) {
+          if (index > open && index < i) best = m[1];
+          break;
+        }
+      }
+    }
+  }
+  return best;
+}
+
 function containedInSetupHook(text, index) {
-  for (const m of text.matchAll(/before(?:All|Each)\s*\(/g)) {
+  for (const m of text.matchAll(/(?<![\w$])before(All|Each)\s*\(/g)) {
     const open = m.index + m[0].length - 1;
     let depth = 0;
     for (let i = open; i < text.length; i += 1) {
@@ -564,7 +585,7 @@ test("every TRUNCATE has a guard call before it, in scope, in a hook", () => {
 
     // Case-insensitive: `truncate` is valid SQL and would otherwise leave a
     // destructive spec unchecked entirely.
-    if (!/truncate/i.test(code)) continue;
+    if (!/truncate\s+(?:table\b|only\b|")/i.test(code)) continue;
 
     const text = executable;
     // ORDER, not presence. Three weaker versions of this check passed a
@@ -582,7 +603,10 @@ test("every TRUNCATE has a guard call before it, in scope, in a hook", () => {
       `${spec_} truncates without asserting it is on a test database`,
     );
 
-    for (const m of code.matchAll(/truncate/gi)) {
+    // SQL, not the word. `code.matchAll(/truncate/gi)` demanded a guard for
+    // a test title or an expected error message containing "TRUNCATE",
+    // which would block an unrelated change.
+    for (const m of code.matchAll(/truncate\s+(?:table\b|only\b|")/gi)) {
       const at = m.index;
       // A guard covers a TRUNCATE when the GUARD'S OWN scope contains it —
       // an outer describe's hook protects everything nested inside it, and a
@@ -593,10 +617,19 @@ test("every TRUNCATE has a guard call before it, in scope, in a hook", () => {
       // for a truncate in the parent, and rejected a perfectly good guard in
       // an OUTER describe for a nested truncate — which would have blocked a
       // legitimate refactor.
+      // Jest runs every beforeAll before any beforeEach, so a guard in a
+      // beforeEach never protects a TRUNCATE in a beforeAll — whatever
+      // order they appear in the file. That one pairing is checkable
+      // without a full lifecycle model, so it is checked.
+      const truncateHook = hookKindAt(text, at);
+
       const covering = guards.filter((g) => {
         if (g >= at) return false;
         if (!containedInSetupHook(text, g)) return false;
-        const guardScope = enclosingExtent(text, g, /describe\s*\(/g);
+        if (truncateHook === "All" && hookKindAt(text, g) === "Each") {
+          return false;
+        }
+        const guardScope = enclosingExtent(text, g, /(?<![\w$.])describe\s*\(/g);
         return (
           guardScope === null || (at > guardScope.start && at < guardScope.end)
         );
@@ -708,12 +741,12 @@ test("enclosingExtent finds the innermost describe", () => {
   ].join("\n");
 
   const at = src.indexOf("truncate()");
-  const scope = enclosingExtent(src, at, /describe\s*\(/g);
+  const scope = enclosingExtent(src, at, /(?<![\w$.])describe\s*\(/g);
   assert.ok(scope, "no enclosing describe found");
   assert.ok(scope.start > src.indexOf("outer"), "must be the inner one");
 
   // Nothing enclosing is null, not a throw.
-  assert.equal(enclosingExtent("truncate();", 0, /describe\s*\(/g), null);
+  assert.equal(enclosingExtent("truncate();", 0, /(?<![\w$.])describe\s*\(/g), null);
 });
 
 test("stripComments does not mistake comment markers inside strings", () => {
@@ -748,7 +781,7 @@ test("a guard covers only what its own scope contains", () => {
 
   const at = outerGuard.indexOf("TRUNCATE");
   const g = outerGuard.indexOf("assertConnectedToTestDatabase");
-  const gScope = enclosingExtent(outerGuard, g, /describe\s*\(/g);
+  const gScope = enclosingExtent(outerGuard, g, /(?<![\w$.])describe\s*\(/g);
   assert.ok(
     gScope && at > gScope.start && at < gScope.end,
     "an outer guard must cover a nested truncate",
@@ -765,9 +798,73 @@ test("a guard covers only what its own scope contains", () => {
 
   const at2 = childGuard.indexOf("TRUNCATE");
   const g2 = childGuard.indexOf("assertConnectedToTestDatabase");
-  const gScope2 = enclosingExtent(childGuard, g2, /describe\s*\(/g);
+  const gScope2 = enclosingExtent(childGuard, g2, /(?<![\w$.])describe\s*\(/g);
   assert.ok(
     gScope2 && !(at2 > gScope2.start && at2 < gScope2.end),
     "a child guard must not cover a truncate in the parent",
   );
+});
+
+test("a beforeEach guard does not cover a beforeAll TRUNCATE", () => {
+  // Jest runs every beforeAll before any beforeEach, so file order is not
+  // execution order. This pairing is checkable without a lifecycle model.
+  const unsafe = [
+    "describe('s', () => {",
+    "  beforeEach(async () => { await assertConnectedToTestDatabase(p); });",
+    "  beforeAll(async () => { await q('TRUNCATE TABLE t'); });",
+    "});",
+  ].join("\n");
+
+  const at = unsafe.indexOf("TRUNCATE");
+  const g = unsafe.indexOf("assertConnectedToTestDatabase");
+  assert.equal(hookKindAt(unsafe, at), "All");
+  assert.equal(hookKindAt(unsafe, g), "Each");
+
+  // The safe direction still reads as safe.
+  const safe = unsafe
+    .replace("beforeEach(async () => { await assertConnected", "beforeAll(async () => { await assertConnected");
+  assert.equal(hookKindAt(safe, safe.indexOf("assertConnectedToTestDatabase")), "All");
+});
+
+test("hook and describe recognition requires an identifier boundary", () => {
+  // `notbeforeAll(` and `customdescribe(` are ordinary helpers, not Jest.
+  const fake = "notbeforeAll(() => { guard(); });";
+  assert.ok(!containedInSetupHook(fake, fake.indexOf("guard()")));
+
+  const fakeDescribe = "customdescribe('x', () => { truncate(); });";
+  assert.equal(
+    enclosingExtent(fakeDescribe, fakeDescribe.indexOf("truncate()"), /(?<![\w$.])describe\s*\(/g),
+    null,
+  );
+
+  // A method call is not the global either.
+  const method = "suite.describe('x', () => { truncate(); });";
+  assert.equal(
+    enclosingExtent(method, method.indexOf("truncate()"), /(?<![\w$.])describe\s*\(/g),
+    null,
+  );
+
+  // The real ones still match.
+  const real = "beforeAll(() => { guard(); });";
+  assert.ok(containedInSetupHook(real, real.indexOf("guard()")));
+});
+
+test("only SQL-looking truncates demand a guard", () => {
+  // A test title or an expected error message containing the word would
+  // otherwise block an unrelated change.
+  const inert = [
+    "it('rejects TRUNCATE in user input', () => {});",
+    "expect(e.message).toBe('TRUNCATE is not permitted');",
+  ].join("\n");
+  assert.ok(!/truncate\s+(?:table\b|only\b|")/i.test(inert));
+
+  // Real statements still match, in the spellings this repo uses.
+  for (const sql of [
+    'TRUNCATE TABLE "Product"',
+    "truncate table product",
+    'TRUNCATE "Product", "License"',
+    "TRUNCATE ONLY t",
+  ]) {
+    assert.match(sql, /truncate\s+(?:table\b|only\b|")/i, sql);
+  }
 });
