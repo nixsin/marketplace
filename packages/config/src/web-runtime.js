@@ -177,8 +177,15 @@ function resolvePublicUrl(name, value, devDefault) {
   // literal fails it (a numeric top label) and an IPv6 literal fails it (the
   // brackets), so both families are rejected without naming either.
   const host = parsed.hostname.replace(/\.$/, "");
+  //
+  // The top label allows `xn--…` as well as letters: WHATWG URL parsing
+  // converts an internationalized name to punycode before this sees it, so
+  // `例え.テスト` arrives as `xn--r8jz45g.xn--zckzah` -- which a letters-only
+  // rule rejects for containing digits and hyphens.
   const isDnsName =
-    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(host);
+    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9]{2,59})$/i.test(
+      host,
+    );
 
   if (!isDnsName) {
     throw new Error(

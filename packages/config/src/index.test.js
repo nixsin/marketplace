@@ -475,6 +475,18 @@ test("plain http is refused on a deployment", async () => {
   );
 });
 
+test("an internationalized domain is accepted", async () => {
+  // WHATWG URL parsing converts these to punycode before the guard sees
+  // them, so `例え.テスト` arrives as `xn--r8jz45g.xn--zckzah` -- which a
+  // letters-only top-label rule rejects for containing digits and hyphens.
+  const cfg = await importWithEnv({
+    RENDER: "true",
+    NEXT_PUBLIC_API_URL: "https://例え.テスト/graphql",
+    NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+  });
+  assert.match(cfg.API_URL, /xn--/);
+});
+
 test("a real production hostname is accepted", async () => {
   // The other direction: a rule that is too strict breaks a deploy just as
   // surely as one that is too loose.
