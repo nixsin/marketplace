@@ -24,6 +24,7 @@ import {
   workflowEnv,
   workflowEnvBlockCount,
 } from "./lib/ci-env-drift.mjs";
+import { redactUrlCredentials } from "../packages/config/src/env-contract.js";
 import {
   DEV_API_URL,
   DEV_DATABASE_URL,
@@ -127,9 +128,12 @@ test("migrate uses a production secret, and only migrate does", () => {
     m[1].trim(),
   );
   assert.ok(urls.length > 0, "migrate declares no DATABASE_URL");
+  // REDACTED. The failure these checks exist to catch is a production URL
+  // pasted as a literal — so printing the value writes real credentials into
+  // a CI log, which is the one place they must never appear.
   assert.ok(
     urls.every((u) => SECRET.test(u)),
-    `migrate must use a secret, got: ${urls.join(", ")}`,
+    `migrate must use a secret; got ${urls.map(redactUrlCredentials).join(", ")}`,
   );
 
   // test-e2e-web and load-test run migrations and seeds, so a secret URL
@@ -151,13 +155,13 @@ test("every database and API URL in the file is one we recognise", () => {
       url === DEV_DATABASE_URL ||
       url === "${{ env.DATABASE_URL }}" ||
       SECRET.test(url);
-    assert.ok(ok, `unrecognised DATABASE_URL: ${url}`);
+    assert.ok(ok, `unrecognised DATABASE_URL: ${redactUrlCredentials(url)}`);
   }
   for (const m of source.matchAll(/^\s+NEXT_PUBLIC_API_URL:\s*(.+)$/gm)) {
     const url = m[1].trim();
     assert.ok(
       url === DEV_API_URL || url === "${{ env.NEXT_PUBLIC_API_URL }}",
-      `unrecognised NEXT_PUBLIC_API_URL: ${url}`,
+      `unrecognised NEXT_PUBLIC_API_URL: ${redactUrlCredentials(url)}`,
     );
   }
 });
@@ -179,7 +183,11 @@ test("every Postgres assignment is the shared literal or a reference to it", () 
     const [line, name, raw] = [m[0].trim(), m[1], m[2].trim()];
     // Same-name: `POSTGRES_DB: ${{ env.POSTGRES_USER }}` is a real mistake.
     if (raw === `\${{ env.${name} }}`) continue;
-    assert.equal(raw, expected[name], `${line} — not the contract's value`);
+    assert.equal(
+      raw,
+      expected[name],
+      `${redactUrlCredentials(line)} — not the contract's value`,
+    );
     literals.push(line);
   }
   assert.equal(literals.length, 3, `declared ${literals.length} times`);
@@ -942,4 +950,48 @@ test("SQL extracted into a variable is reported, prose is not", () => {
   ]) {
     assert.deepEqual(unguardedTruncates(inert), [], inert);
   }
+});
+
+test("extracted SQL is detected in every target form, prose in none", () => {
+  // Both `'TRUNCATE TABLE t'` and `'TRUNCATE is not permitted'` begin with
+  // the word, so the discriminator is what follows the target list: SQL
+  // permits RESTART / IDENTITY / CASCADE or the end, prose keeps going.
+  const sql = [
+    "TRUNCATE TABLE users",
+    "TRUNCATE users",
+    "TRUNCATE public.users",
+    'TRUNCATE "Product", "License" RESTART IDENTITY CASCADE',
+    "TRUNCATE ONLY t;",
+  ];
+  for (const stmt of sql) {
+    const src = `describe('s',()=>{const q='${stmt}';beforeEach(async()=>{await p.$executeRawUnsafe(q);});});`;
+    assert.equal(unguardedTruncates(src).length, 1, `missed: ${stmt}`);
+  }
+
+  const prose = [
+    "TRUNCATE is not permitted",
+    "rejects TRUNCATE in user input",
+    "TRUNCATE should be blocked for untrusted callers",
+  ];
+  for (const text of prose) {
+    const src = `describe('s',()=>{it('${text}',()=>{});});`;
+    assert.deepEqual(unguardedTruncates(src), [], `false positive: ${text}`);
+  }
+});
+
+test("a regex literal does not swallow the code after it", () => {
+  // An apostrophe inside `/isn't/` opened a "string" that blanked everything
+  // to the next quote, which could erase a raw-SQL call token and make an
+  // unguarded TRUNCATE vanish from this lint.
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+  const withRegex = `describe('s',()=>{const re=/isn't valid/;beforeEach(async()=>{${trunc}});});`;
+  assert.equal(unguardedTruncates(withRegex).length, 1);
+
+  // A division is not a regex, and must not start one.
+  const division = `describe('s',()=>{const r=a/b;const s=c/d;beforeEach(async()=>{${trunc}});});`;
+  assert.equal(unguardedTruncates(division).length, 1);
+
+  // Offsets survive either way.
+  const src = "const re = /a'b/; const s = 'x';";
+  assert.equal(stripCommentsAndStrings(src).length, src.length);
 });

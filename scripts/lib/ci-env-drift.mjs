@@ -245,12 +245,49 @@ export function stripCommentsAndStrings(text) {
   return blank(text, { strings: true });
 }
 
+/**
+ * Can a `/` at `i` start a regex literal rather than a division?
+ *
+ * The standard heuristic: a regex may follow an operator, an opening
+ * bracket, a comma, or the start of input — never a value. Good enough for
+ * test files, and the consequence of getting it wrong is bounded: a
+ * misjudged `/` blanks or keeps a little more text, and both directions are
+ * covered by fixtures.
+ */
+function startsRegex(text, i) {
+  for (let j = i - 1; j >= 0; j -= 1) {
+    const c = text[j];
+    if (c === " " || c === "\t" || c === "\n" || c === "\r") continue;
+    return "(,=:[!&|?{};+-*%^~<>".includes(c) || /[\s(]return$/.test(text.slice(0, j + 1));
+  }
+  return true;
+}
+
 function blank(text, { strings }) {
   let out = "";
   let i = 0;
   while (i < text.length) {
     const two = text.slice(i, i + 2);
-    if (text[i] === '"' || text[i] === "'" || text[i] === "`") {
+    // A REGEX LITERAL, skipped whole. An apostrophe inside one — `/isn't/` —
+    // otherwise opened a "string" that blanked everything up to the next
+    // quote, which could erase a raw-SQL call token and make an unguarded
+    // TRUNCATE disappear from this lint.
+    if (text[i] === "/" && two !== "//" && two !== "/*" && startsRegex(text, i)) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < text.length) {
+        const c = text[j];
+        if (c === "\\") { j += 2; continue; }
+        if (c === "[") inClass = true;
+        else if (c === "]") inClass = false;
+        else if (c === "/" && !inClass) break;
+        else if (c === "\n") break;
+        j += 1;
+      }
+      const stop = Math.min(j + 1, text.length);
+      out += text.slice(i, stop);
+      i = stop;
+    } else if (text[i] === '"' || text[i] === "'" || text[i] === "`") {
       const quote = text[i];
       let j = i + 1;
       while (j < text.length && text[j] !== quote) j += text[j] === "\\" ? 2 : 1;
@@ -367,6 +404,20 @@ const SETUP_HOOK = /(?<![\w$.])before(All|Each)\s*\(/g;
 const RAW_SQL_CALL = /\$(?:execute|query)Raw[A-Za-z]*\s*(?:`|\()/g;
 const TRUNCATE_WORD = /(?<![\w$])truncate(?![\w$])/gi;
 
+/**
+ * A whole TRUNCATE statement, used only for SQL extracted into a variable.
+ *
+ * `'TRUNCATE TABLE t'` and `'TRUNCATE is not permitted'` both begin with the
+ * word, so the target list is not the discriminator — what follows it is.
+ * SQL permits RESTART / IDENTITY / CASCADE or the end; prose keeps going.
+ */
+const TARGET = String.raw`(?:"[^"]+"|[a-z_][\w$]*(?:\.[a-z_][\w$]*)?)`;
+const SQL_STATEMENT = new RegExp(
+  String.raw`^truncate\s+(?:table\s+|only\s+)?${TARGET}(?:\s*,\s*${TARGET})*` +
+    String.raw`(?:\s+(?:restart|identity|continue|cascade))*\s*;?\s*$`,
+  "i",
+);
+
 /** The innermost `pattern` call whose body contains `index`, or null. */
 export function enclosingExtent(text, index, pattern) {
   let best = null;
@@ -478,8 +529,26 @@ export function unguardedTruncates(spec) {
       // follow the variable to its call site — so rather than skip both, a
       // SQL-SHAPED string outside any call is reported as an arrangement
       // that cannot be verified. Prose does not match those shapes.
-      const line = code.slice(at, code.indexOf("\n", at) + 1 || undefined);
-      if (/^truncate\s+(?:table\b|only\b|")/i.test(line)) unguarded.push(at);
+      // The string must BEGIN with the statement. `const sql = 'TRUNCATE
+      // users'` does; `it('rejects TRUNCATE in user input')` does not. That
+      // is what separates extracted SQL from prose without classifying the
+      // words after it — and it accepts every target form, quoted or not,
+      // schema-qualified or not.
+      const beforeQ = Math.max(
+        code.lastIndexOf('"', at),
+        code.lastIndexOf("'", at),
+        code.lastIndexOf("`", at),
+      );
+      if (beforeQ === -1 || !/^["'`]\s*$/.test(code.slice(beforeQ, at))) continue;
+
+      // ...and the REST of the string has to parse as the statement. Both
+      // `'TRUNCATE TABLE t'` and `'TRUNCATE is not permitted'` begin with
+      // the word; they diverge after the target list, where SQL allows only
+      // RESTART / IDENTITY / CASCADE or the end.
+      const quote = code[beforeQ];
+      const closeQ = code.indexOf(quote, at);
+      if (closeQ === -1) continue;
+      if (SQL_STATEMENT.test(code.slice(at, closeQ))) unguarded.push(at);
       continue;
     }
 
