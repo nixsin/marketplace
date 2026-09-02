@@ -35,6 +35,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the generated template, which has to be committed: compose reads
+# it as an env_file and CI checks it against the contract. It carries names
+# and localhost values only, never a secret.
+!.env.example
 
 # vercel
 .vercel

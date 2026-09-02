@@ -18,6 +18,8 @@ export interface EnvRule {
    * variable, so `undefined` means somebody forgot rather than turned it off.
    */
   emptyMeans: string | null;
+  /** What goes wrong if you set this carelessly; rendered into .env.example. */
+  caution?: string;
   /** The value a non-production environment uses; the generators read it. */
   devValue: string;
   check: (value: string) => string | null;

@@ -140,6 +140,10 @@ jobs:
               - 'apps/api/Dockerfile'
               - 'apps/web/Dockerfile'
               - 'docker-compose.yml'
+              # Read by compose as an env_file, so a change here changes what
+              # the dev stack runs with. Without this entry docker-smoke
+              # would skip and the run would stay green.
+              - 'docker/**'
               - '.dockerignore'
               - 'scripts/dev.sh'
               - 'package.json'
@@ -323,6 +327,12 @@ jobs:
       # the unit tests above cannot observe, and a failure there misreports
       # an otherwise correct check.
       - run: node --test scripts/check-env.test.mjs
+      - run: node --test scripts/generate-env-example.test.mjs
+      # The committed .env.example files and docker/dev.env are generated
+      # from the contract. Without this the generator is only a suggestion:
+      # edit a rule, forget to regenerate, and the committed files describe
+      # a contract that no longer exists.
+      - run: node scripts/generate-env-example.mjs --check
       # Separate from the package's own tests on purpose: those exercise
       # resolveApiKey() in isolation and pass even when no consumer calls
       # it, which is exactly how apiKeyEnv shipped as decorative config
