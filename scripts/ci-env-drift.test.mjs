@@ -119,6 +119,34 @@ function stripCommentsAndStrings(text) {
   return out;
 }
 
+/**
+ * The innermost `pattern` call whose body contains `index`, or null.
+ *
+ * Same balanced-bracket scan as containedInSetupHook, generalised so
+ * describe-scoping can reuse it.
+ */
+function enclosingExtent(text, index, pattern) {
+  let best = null;
+  for (const m of text.matchAll(pattern)) {
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    for (let i = open; i < text.length; i += 1) {
+      const c = text[i];
+      if (c === "(" || c === "{" || c === "[") depth += 1;
+      else if (c === ")" || c === "}" || c === "]") {
+        depth -= 1;
+        if (depth === 0) {
+          if (index > open && index < i) {
+            if (best === null || open > best.start) best = { start: open, end: i };
+          }
+          break;
+        }
+      }
+    }
+  }
+  return best;
+}
+
 function containedInSetupHook(text, index) {
   for (const m of text.matchAll(/before(?:All|Each)\s*\(/g)) {
     const open = m.index + m[0].length - 1;
@@ -477,7 +505,7 @@ test("explicit-key syntax is rejected", () => {
   }
 });
 
-test("every truncating e2e spec calls the database guard", () => {
+test("every TRUNCATE has a guard call before it, in scope, in a hook", () => {
   // A LINT, NOT A PROOF — and the distinction matters, because an earlier
   // version of this comment claimed to be the prevention.
   //
@@ -529,27 +557,34 @@ test("every truncating e2e spec calls the database guard", () => {
     // broken file in turn: matching the bare name accepted an orphaned
     // import, and matching the call accepted one placed AFTER the TRUNCATE
     // or parked in an unused helper.
-    const call = text.search(/assertConnectedToTestDatabase\s*\(/);
-    const truncate = code.search(/truncate/i);
-
-    assert.notEqual(
-      call,
-      -1,
+    // EVERY truncate, each in its own scope. Checking only the first of
+    // each meant a file with one guarded `describe` followed by another
+    // containing an unguarded truncation passed.
+    const guards = [
+      ...text.matchAll(/assertConnectedToTestDatabase\s*\(/g),
+    ].map((m) => m.index);
+    assert.ok(
+      guards.length > 0,
       `${spec_} truncates without asserting it is on a test database`,
     );
-    assert.ok(
-      call < truncate,
-      `${spec_} calls the guard after its first TRUNCATE — it must run first`,
-    );
 
-    // ...and LEXICALLY INSIDE a setup hook, so it runs for the suite rather
-    // than only in whichever test reaches it. `lastIndexOf("beforeAll(")`
-    // was not that: an unrelated hook that had already CLOSED earlier in the
-    // file satisfied it, so a call in an unused helper still passed.
-    assert.ok(
-      containedInSetupHook(text, call),
-      `${spec_} calls the guard outside a beforeAll/beforeEach body`,
-    );
+    for (const m of code.matchAll(/truncate/gi)) {
+      const at = m.index;
+      const scope = enclosingExtent(text, at, /describe\s*\(/g);
+
+      const covering = guards.filter(
+        (g) =>
+          g < at &&
+          (scope === null || (g > scope.start && g < scope.end)) &&
+          containedInSetupHook(text, g),
+      );
+      assert.ok(
+        covering.length > 0,
+        `${spec_}: a TRUNCATE at offset ${at} has no guard before it, in its own describe, inside a setup hook`,
+      );
+    }
+
+
   }
 });
 
@@ -597,4 +632,63 @@ test("jobSource finds every id jobsAssigningDatabaseUrl reports", () => {
   for (const job of jobs) {
     assert.ok(jobSource(src, job), `jobSource cannot find "${job}"`);
   }
+});
+
+// ---------------------------------------------------------------------
+// The lexer and scope helpers, directly
+// ---------------------------------------------------------------------
+
+test("stripComments blanks comments and keeps offsets", () => {
+  const src = 'const a = 1; // TRUNCATE\n/* TRUNCATE */ const b = "TRUNCATE";';
+  const out = stripComments(src);
+
+  assert.equal(out.length, src.length, "offsets must stay comparable");
+  assert.ok(!/TRUNCATE/.test(out.slice(0, src.indexOf("\n"))), "line comment");
+  assert.ok(out.includes('"TRUNCATE"'), "strings are kept — SQL lives in them");
+  assert.equal(out.indexOf("const b"), src.indexOf("const b"));
+});
+
+test("stripCommentsAndStrings blanks both and keeps offsets", () => {
+  const src = 'a(); // guard()\nconst s = "guard()";\nguard();';
+  const out = stripCommentsAndStrings(src);
+
+  assert.equal(out.length, src.length);
+  assert.equal(
+    [...out.matchAll(/guard\(\)/g)].length,
+    1,
+    "only the real call survives",
+  );
+  assert.equal(out.indexOf("guard()"), src.lastIndexOf("guard();"));
+});
+
+test("containedInSetupHook requires lexical containment", () => {
+  const inside = "beforeAll(async () => {\n  guard();\n});";
+  assert.ok(containedInSetupHook(inside, inside.indexOf("guard()")));
+
+  // After a hook that has already closed — the shape lastIndexOf accepted.
+  const after = "beforeAll(() => {});\nfunction stray() { guard(); }";
+  assert.ok(!containedInSetupHook(after, after.indexOf("guard()")));
+
+  // Nested inside the hook still counts as contained; the comment on the
+  // lint says so, and says why proving invocation needs an AST.
+  const nested = "beforeEach(() => {\n  function h() { guard(); }\n});";
+  assert.ok(containedInSetupHook(nested, nested.indexOf("guard()")));
+});
+
+test("enclosingExtent finds the innermost describe", () => {
+  const src = [
+    "describe('outer', () => {",
+    "  describe('inner', () => {",
+    "    truncate();",
+    "  });",
+    "});",
+  ].join("\n");
+
+  const at = src.indexOf("truncate()");
+  const scope = enclosingExtent(src, at, /describe\s*\(/g);
+  assert.ok(scope, "no enclosing describe found");
+  assert.ok(scope.start > src.indexOf("outer"), "must be the inner one");
+
+  // Nothing enclosing is null, not a throw.
+  assert.equal(enclosingExtent("truncate();", 0, /describe\s*\(/g), null);
 });
