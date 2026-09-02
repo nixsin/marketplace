@@ -15,6 +15,18 @@
  * and hand-rolling one is the trap that produced this repo's .env-parser
  * bugs. `unreadableSpellings` below turns what the scans cannot read into a
  * failure instead of a silent gap.
+ *
+ * WHAT THIS DEFENDS AGAINST, stated so the limit is a decision rather than
+ * an oversight: ACCIDENTS. A value edited without the contract, a
+ * DATABASE_URL pasted into the wrong job, a service block overriding the
+ * account, a second env block added at the bottom of the file.
+ *
+ * It is NOT an adversarial boundary, and cannot be. Anyone who can edit
+ * ci.yml can add a step that runs arbitrary code with the repository's
+ * secrets — reaching for `? DATABASE_URL` explicit-key syntax to smuggle a
+ * value past a regex would be the hardest available route to a thing they
+ * could do in one line. So the guard covers the spellings a person might
+ * plausibly write, and says so, rather than pretending to be exhaustive.
  */
 
 /** Variables whose value or placement can break a job destructively. */
@@ -33,9 +45,7 @@ export function jobSource(source, name) {
   const lines = source.split("\n");
   const start = lines.findIndex((l) => l === `  ${name}:`);
   if (start === -1) return null;
-  const end = lines.findIndex(
-    (l, i) => i > start && /^  [a-z][\w-]*:\s*$/.test(l),
-  );
+  const end = lines.findIndex((l, i) => i > start && JOB_KEY.test(l));
   return lines.slice(start, end === -1 ? undefined : end).join("\n");
 }
 
@@ -83,16 +93,33 @@ export function workflowEnv(source) {
   return envBlock(lines.slice(start).join("\n"), 0) ?? {};
 }
 
-/** Job names that assign DATABASE_URL anywhere in their body. */
+/** A job key at column 2, quoted or not, in any case. */
+const JOB_KEY = /^  ["']?([A-Za-z_][\w-]*)["']?:\s*$/;
+
+/**
+ * Job names that assign DATABASE_URL anywhere in their body.
+ *
+ * The id pattern accepts uppercase, `_`-leading and quoted forms. It used to
+ * accept only lowercase, so a job the scanner did not recognise had its
+ * assignments attributed to the PREVIOUS job — and a secret URL in a job
+ * following `migrate` read as migrate's own, which is the one place a secret
+ * is allowed.
+ */
 export function jobsAssigningDatabaseUrl(source) {
   const out = new Set();
   let job = null;
   for (const line of source.split("\n")) {
-    const m = /^  ([a-z][\w-]*):\s*$/.exec(line);
+    const m = JOB_KEY.exec(line);
     if (m) job = m[1];
     if (job && /^\s+DATABASE_URL:/.test(line)) out.add(job);
   }
   return [...out];
+}
+
+/** Column-0 `env:` blocks. More than one means the checks read only the first. */
+export function workflowEnvBlockCount(source) {
+  const head = source.slice(0, source.indexOf("\njobs:"));
+  return head.split("\n").filter((l) => l === "env:").length;
 }
 
 /**
@@ -135,6 +162,12 @@ export function unreadableSpellings(source) {
     }
     if (new RegExp(`^\\s*${WATCHED_RE}:\\s*[*&]`).test(line)) {
       offenders.push(`${at}   (YAML anchor or alias)`);
+      return;
+    }
+    // Explicit-key syntax: `? DATABASE_URL` on one line, `: value` on the
+    // next. No `NAME:` scan can see it.
+    if (new RegExp(`^\\s*\\?\\s*["']?${WATCHED_RE}`).test(line)) {
+      offenders.push(`${at}   (explicit key)`);
       return;
     }
 

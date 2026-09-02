@@ -17,6 +17,7 @@ import {
   jobsAssigningDatabaseUrl,
   unreadableSpellings,
   workflowEnv,
+  workflowEnvBlockCount,
 } from "./lib/ci-env-drift.mjs";
 import {
   DEV_API_URL,
@@ -136,6 +137,13 @@ test("every Postgres assignment is the shared literal or a reference to it", () 
 
 test("ci.yml uses only the YAML spelling these checks can read", () => {
   assert.deepEqual(unreadableSpellings(source), []);
+});
+
+test("there is exactly one workflow-level env block", () => {
+  // workflowEnv reads the FIRST one, so a second added at the bottom of the
+  // header is invisible to it — including to the assertion that no
+  // DATABASE_URL sits at workflow level, where it would reach test-api-e2e.
+  assert.equal(workflowEnvBlockCount(source), 1);
 });
 
 // ---------------------------------------------------------------------
@@ -302,4 +310,59 @@ test("envBlock reads the level it was asked for", () => {
     "          DATABASE_URL: postgresql://service/db",
   ].join("\n");
   assert.equal(envBlock(serviceOnly, 4), null);
+});
+
+test("a second workflow-level env block is refused", () => {
+  const twoBlocks = [
+    "name: CI",
+    "env:",
+    "  POSTGRES_USER: postgres",
+    "env:",
+    "  DATABASE_URL: postgresql://sneaky/db",
+    "",
+    "jobs:",
+    "  build:",
+  ].join("\n");
+
+  assert.equal(workflowEnvBlockCount(twoBlocks), 2);
+
+  // ...and this is why it matters: the first-block reader cannot see it.
+  assert.ok(!("DATABASE_URL" in workflowEnv(twoBlocks)));
+});
+
+test("job ids in every plausible form are attributed to themselves", () => {
+  // Lowercase-only matching attributed an unrecognised job's lines to the
+  // PREVIOUS job — so a secret URL in a job following `migrate` read as
+  // migrate's own, the one place a secret is allowed.
+  const src = [
+    "jobs:",
+    "  migrate:",
+    "    env:",
+    "      DATABASE_URL: ${{ secrets.PROD }}",
+    "  Deploy_Web:",
+    "    env:",
+    "      DATABASE_URL: postgresql://a/db",
+    '  "quoted-job":',
+    "    env:",
+    "      DATABASE_URL: postgresql://b/db",
+    "  _internal:",
+    "    env:",
+    "      DATABASE_URL: postgresql://c/db",
+  ].join("\n");
+
+  assert.deepEqual(jobsAssigningDatabaseUrl(src).sort(), [
+    "Deploy_Web",
+    "_internal",
+    "migrate",
+    "quoted-job",
+  ]);
+});
+
+test("explicit-key syntax is rejected", () => {
+  // `? DATABASE_URL` / `: value` across two lines — no `NAME:` scan sees it.
+  for (const line of ["  ? DATABASE_URL", '  ? "DATABASE_URL"', "    ?  POSTGRES_USER"]) {
+    const found = unreadableSpellings(`name: CI\n${line}\n`);
+    assert.equal(found.length, 1, `not rejected: ${line}`);
+    assert.match(found[0], /explicit key/);
+  }
 });
