@@ -4,7 +4,6 @@ import assert from "node:assert/strict";
 import {
   AI_ROLES,
   ANTHROPIC_ANALYSIS_MODEL,
-  API_URL,
   CORRELATION_HEADERS,
   CORRELATION_ID_MAX_LENGTH,
   CORRELATION_ID_PATTERN,
@@ -15,14 +14,17 @@ import {
   OPENAI_REVIEW_MODEL,
   SERVICE_WORKER_CACHE_CONTROL,
   SHARED_MAX_AGE_SECONDS,
-  SITE_URL,
   STALE_WHILE_REVALIDATE_SECONDS,
   publicCacheControl,
   resolveApiKey,
   roleConfig,
 } from "./index.js";
 
-// API_URL/SITE_URL are resolved from process.env at *import* time, so
+// API_URL/SITE_URL live in ./web-runtime.js, not the main entry -- they throw
+// on a deployment when unset, and the main entry must stay safe to import
+// from Node scripts and from apps/api, which do not read them.
+//
+// They are resolved from process.env at *import* time, so
 // asserting them against the statically-imported module would make these
 // tests pass or fail based on whatever the developer happens to have
 // exported in their shell -- a legitimate NEXT_PUBLIC_API_URL (pointing a
@@ -31,14 +33,28 @@ import {
 // ESM module cache, so each case gets a genuinely fresh evaluation under an
 // environment this test controls.
 async function importWithEnv(overrides) {
-  const saved = {
-    NEXT_PUBLIC_API_URL: process.env.NEXT_PUBLIC_API_URL,
-    NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
-  };
+  // Everything the module reads, PLUS whatever this case overrides.
+  //
+  // A fixed list missed NODE_ENV, which one case sets and nothing restored --
+  // so it leaked into every test that ran afterwards. Deriving the second
+  // half from `overrides` means a new case cannot introduce that again.
+  const managed = new Set([
+    "NEXT_PUBLIC_API_URL",
+    "NEXT_PUBLIC_SITE_URL",
+    // BOTH Render markers: resolvePublicUrl treats either as a deployment, so
+    // leaving one set meant a developer shell with it exported changed the
+    // outcome of the cases covering non-Render behaviour.
+    "RENDER",
+    "RENDER_GIT_COMMIT",
+    ...Object.keys(overrides),
+  ]);
+  const saved = Object.fromEntries(
+    [...managed].map((key) => [key, process.env[key]]),
+  );
   for (const key of Object.keys(saved)) delete process.env[key];
   Object.assign(process.env, overrides);
   try {
-    return await import(`./index.js?case=${Math.random()}`);
+    return await import(`./web-runtime.js?case=${Math.random()}`);
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];
@@ -66,6 +82,52 @@ describe("web config", () => {
     });
     assert.equal(cfg.API_URL, "https://api.example.test/graphql");
     assert.equal(cfg.SITE_URL, "https://example.test");
+  });
+
+  test("throws instead of falling back to localhost when running on Render", async () => {
+    // The whole point. Silently defaulting here publishes localhost canonical
+    // URLs, hreflang alternates and OpenGraph images to real crawlers while
+    // every page still returns 200.
+    await assert.rejects(
+      () => importWithEnv({ RENDER: "true" }),
+      /NEXT_PUBLIC_API_URL is not set, and this process is running on Render/,
+    );
+  });
+
+  test("rejects a localhost value on a deployment, not just a missing one", async () => {
+    // This is the case that actually occurs. apps/web/Dockerfile declares
+    // `ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql`, so a build that
+    // loses the value produces a POPULATED, plausible, wrong variable rather
+    // than an empty one -- an absence check alone would never fire.
+    await assert.rejects(
+      () =>
+        importWithEnv({
+          RENDER: "true",
+          NEXT_PUBLIC_API_URL: "https://localhost:4000/graphql",
+          NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+        }),
+      /must be a public DNS name/,
+    );
+  });
+
+  test("accepts real values on Render", async () => {
+    const cfg = await importWithEnv({
+      RENDER: "true",
+      NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+      NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+    });
+    assert.equal(cfg.API_URL, "https://api.laxair.shop/graphql");
+    assert.equal(cfg.SITE_URL, "https://laxair.shop");
+  });
+
+  test("the localhost defaults still apply everywhere that is not Render", async () => {
+    // Three green checks depend on this: `test-web` builds with no env at
+    // all, `docker-web-prod-boot` boots the real prod image with none, and a
+    // bare `pnpm dev` has none either. NODE_ENV=production must NOT trigger
+    // the strict path -- the prod image sets it wherever it is built.
+    const cfg = await importWithEnv({ NODE_ENV: "production" });
+    assert.equal(cfg.API_URL, "http://localhost:4000/graphql");
+    assert.equal(cfg.SITE_URL, "http://localhost:3000");
   });
 
   test("locales are en + hi with en as the default", () => {
@@ -244,4 +306,215 @@ test("ids the web app generates satisfy the pattern the API enforces", () => {
   const id = randomUUID();
   assert.ok(CORRELATION_ID_PATTERN.test(id));
   assert.ok(id.length <= CORRELATION_ID_MAX_LENGTH);
+});
+
+test("a malformed URL's value is never echoed", async () => {
+  // A malformed URL is the shape most likely to carry a pasted credential:
+  // `https://user:secret@` fails to parse, so it takes the throw path --
+  // which used to include the raw value, landing the secret in a deploy log.
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        // The validation only runs on a deployment -- off Render a localhost
+        // value is correct and nothing is checked.
+        RENDER: "true",
+        NEXT_PUBLIC_API_URL: "https://user:secret@",
+        NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      }),
+    (error) => {
+      assert.match(error.message, /NEXT_PUBLIC_API_URL is not a valid URL/);
+      assert.doesNotMatch(error.message, /secret/);
+      return true;
+    },
+  );
+});
+
+test("a non-HTTP scheme is refused on a deployment", async () => {
+  // `file:///x` and `javascript:...` have hostnames no loopback list would
+  // flag, and neither is something a visitor's browser can fetch from.
+  for (const value of ["file:///etc/passwd", "javascript:alert(1)"]) {
+    await assert.rejects(
+      () =>
+        importWithEnv({
+          RENDER: "true",
+          NEXT_PUBLIC_API_URL: value,
+          NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+        }),
+      /must be an https:\/\/ URL/,
+    );
+  }
+
+  // A pasted SECRET is a valid URL whose protocol is the first half of it,
+  // so echoing the scheme echoes the secret. Nothing derived from the value
+  // is safe to show once the value might not be a URL at all.
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER: "true",
+        NEXT_PUBLIC_API_URL: "hunter2:the-rest-of-the-secret",
+        NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      }),
+    (error) => {
+      assert.doesNotMatch(error.message, /hunter2/);
+      assert.match(error.message, /Value not shown/);
+      return true;
+    },
+  );
+});
+
+test("embedded credentials are refused, and never echoed", async () => {
+  // NEXT_PUBLIC_* values are inlined into the client bundle at build time, so
+  // a credential here would ship to every visitor -- far more public than any
+  // log. The message must not repeat it either.
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER: "true",
+        NEXT_PUBLIC_API_URL: "https://user:hunter2@api.example.com/graphql",
+        NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      }),
+    (error) => {
+      assert.match(error.message, /embeds credentials/);
+      assert.doesNotMatch(error.message, /hunter2/);
+      return true;
+    },
+  );
+});
+
+test("the BUILD-time marker rejects just as the runtime one does", async () => {
+  // Every other case uses RENDER=true, which is the RUNTIME signal. A Docker
+  // build on Render sees only RENDER_GIT_COMMIT -- and that is the half that
+  // matters most, because NEXT_PUBLIC_* are inlined into the client bundle
+  // then and cannot be corrected afterwards.
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER_GIT_COMMIT: "abc123",
+        NEXT_PUBLIC_API_URL: "https://localhost:4000/graphql",
+        NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      }),
+    /must be a public DNS name/,
+  );
+});
+
+test("SITE_URL is validated too, not just API_URL", async () => {
+  // Every rejection case so far fails while initialising API_URL, so none
+  // proved SITE_URL is checked at all. Give API_URL a valid value and the
+  // failure has to come from the other one.
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER: "true",
+        NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+        NEXT_PUBLIC_SITE_URL: "https://localhost:3000",
+      }),
+    /NEXT_PUBLIC_SITE_URL must be a public DNS name/,
+  );
+
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER: "true",
+        NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+      }),
+    /NEXT_PUBLIC_SITE_URL is not set/,
+  );
+});
+
+test("production requires a public DNS name, which rejects every IP literal", async () => {
+  // Five review rounds went into enumerating IANA special-purpose ranges --
+  // fec0::/10, 100::/64, 2001:2::/48, 3fff::/20, ORCHIDv2 -- each real, and
+  // the list unbounded because IANA is still assigning blocks.
+  //
+  // None of it was needed. In production this value is always a DNS name: an
+  // IP literal cannot get a certificate from the CDN in front of it, and the
+  // scheme check already requires https. One rule rejects every literal in
+  // both families, plus single-label internal names, and cannot be defeated
+  // by a range that does not exist yet.
+  // SEQUENTIAL, not Promise.all. importWithEnv mutates the shared
+  // process.env and restores it in a finally, so concurrent calls interleave
+  // and each one sees another's variables -- the assertions would pass or
+  // fail for reasons unrelated to the value under test.
+  for (const value of [
+    "https://127.0.0.2/graphql",
+    "https://192.0.0.1/graphql",
+    "https://10.0.0.5/graphql",
+    "https://[fec0::1]/graphql",
+    "https://[2606:4700::1111]/graphql",
+    "https://localhost/graphql",
+    "https://api/graphql",
+    // An all-numeric top label is what separates a name from an IPv4
+    // literal, and is the only thing the last label may not be.
+    "https://1.2.3.4/graphql",
+    // Malformed names a bare `includes(".")` check accepted.
+    "https://example..com/graphql",
+    "https://-.com/graphql",
+    "https://ex-.com/graphql",
+    // Longer than DNS's 253-character presentation limit: every label is
+    // legal, but no resolver will answer for the whole name.
+    `https://${"a".repeat(60)}.${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(60)}.example.com/graphql`,
+  ]) {
+    await assert.rejects(
+      () =>
+        importWithEnv({
+          RENDER: "true",
+          NEXT_PUBLIC_API_URL: value,
+          NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+        }),
+      /must be a public DNS name/,
+      `${value} should be refused`,
+    );
+  }
+});
+
+test("plain http is refused on a deployment", async () => {
+  // HSTS is served with a two-year max-age, so a plain-http origin is
+  // unreachable for every returning visitor.
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER: "true",
+        NEXT_PUBLIC_API_URL: "http://api.laxair.shop/graphql",
+        NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      }),
+    /must be an https:\/\/ URL/,
+  );
+});
+
+test("punycode with an internal hyphen is accepted", async () => {
+  // Punycode uses `-` as its delimiter, so most encoded names contain one:
+  // `münchen` becomes `xn--mnchen-3ya`. A top-label charset of
+  // `xn--[a-z0-9]+` rejected exactly those.
+  const cfg = await importWithEnv({
+    RENDER: "true",
+    NEXT_PUBLIC_API_URL: "https://xn--mnchen-3ya.de/graphql",
+    NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+  });
+  assert.equal(cfg.API_URL, "https://xn--mnchen-3ya.de/graphql");
+});
+
+test("an internationalized domain is accepted", async () => {
+  // WHATWG URL parsing converts these to punycode before the guard sees
+  // them, so `例え.テスト` arrives as `xn--r8jz45g.xn--zckzah` -- which a
+  // letters-only top-label rule rejects for containing digits and hyphens.
+  // The value is returned AS WRITTEN, not re-serialised -- the punycode form
+  // exists only inside the guard's own URL parse. Asserting on it was wrong,
+  // and the assertion failed for that reason rather than the rule's.
+  const cfg = await importWithEnv({
+    RENDER: "true",
+    NEXT_PUBLIC_API_URL: "https://例え.テスト/graphql",
+    NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+  });
+  assert.equal(cfg.API_URL, "https://例え.テスト/graphql");
+});
+
+test("a real production hostname is accepted", async () => {
+  // The other direction: a rule that is too strict breaks a deploy just as
+  // surely as one that is too loose.
+  const cfg = await importWithEnv({
+    RENDER: "true",
+    NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+    NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+  });
+  assert.equal(cfg.API_URL, "https://api.laxair.shop/graphql");
 });

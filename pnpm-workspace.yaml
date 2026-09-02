@@ -13,6 +13,18 @@ overrides:
   # existing on main, unrelated to any of these PRs' own diffs, blocking
   # a required check.
   deepmerge-ts: ^8.0.1
+  # GHSA-3f6p-5ww8-9rcr (HIGH, auth-plugin downgrade to
+  # mysql_clear_password leaks the password), fixed in 3.22.0. A transitive
+  # dependency of prisma, which ships drivers for every database it
+  # supports; this repo is Postgres-only, so mysql2 is never loaded at
+  # runtime -- but it is in the image, and Trivy scans the image.
+  #
+  # prisma@7.10.0 is the current stable and still declares 3.15.3, so there
+  # is no upstream bump to take. Same shape as deepmerge-ts above:
+  # pre-existing on main, unrelated to this PR's own diff, and blocking a
+  # required check on every Docker-touching PR until it is overridden.
+  # Remove once a prisma release bumps its own mysql2 past 3.22.0.
+  mysql2: ^3.22.0
 allowBuilds:
   '@apollo/protobufjs': true
   '@parcel/watcher': true
