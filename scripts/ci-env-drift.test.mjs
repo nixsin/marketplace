@@ -1182,3 +1182,37 @@ test("dynamically built TRUNCATE SQL is reported", () => {
     [],
   );
 });
+
+test("a YAML merge key is refused", () => {
+  // `<<: *database_env` pulls in a whole anchored map, assigning variables
+  // that appear nowhere in the job's own text — the same hole as an alias.
+  for (const line of ["    <<: *database_env", "  <<: *shared"]) {
+    const found = unreadableSpellings(`name: CI\n${line}\n`);
+    assert.equal(found.length, 1, `not rejected: ${line}`);
+    assert.match(found[0], /merge key/);
+  }
+});
+
+test("a bracket inside a SQL string does not hide the statement", () => {
+  // A quoted identifier such as `"name("` left the bracket scan with excess
+  // depth, so the extent never closed and the statement vanished.
+  const src =
+    'describe(\'s\',()=>{beforeEach(async()=>{await p.$executeRawUnsafe(\'TRUNCATE TABLE "name("\');});});';
+  assert.equal(unguardedTruncates(src).length, 1);
+});
+
+test("an outer beforeAll covers a nested truncate declared before it", () => {
+  // Jest registers every hook while defining the suite, so an outer
+  // beforeAll declared AFTER a nested describe still runs before it.
+  // Requiring source order rejected that — a required check failing over a
+  // harmless reordering.
+  const guard = "await assertConnectedToTestDatabase(p);";
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+
+  const later = `describe('o',()=>{describe('i',()=>{beforeEach(async()=>{${trunc}});});beforeAll(async()=>{${guard}});});`;
+  assert.deepEqual(unguardedTruncates(later), []);
+
+  // Within ONE hook body, order still matters — the guard has to run first.
+  const wrongOrder = `describe('s',()=>{beforeEach(async()=>{${trunc}${guard}});});`;
+  assert.equal(unguardedTruncates(wrongOrder).length, 1);
+});

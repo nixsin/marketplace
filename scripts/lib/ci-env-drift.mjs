@@ -195,6 +195,14 @@ export function unreadableSpellings(source) {
       offenders.push(`${at}   (YAML anchor or alias)`);
       return;
     }
+
+    // A merge key pulls in a whole anchored map: `<<: *database_env` assigns
+    // variables that appear nowhere in the job's own text — the same hole as
+    // an alias, and equally invisible to every scan here.
+    if (/^\s*<<\s*:/.test(line)) {
+      offenders.push(`${at}   (YAML merge key)`);
+      return;
+    }
     // Explicit-key syntax: `? DATABASE_URL` on one line, `: value` on the
     // next. No `NAME:` scan can see it.
     // The boundary matters: without it `? DATABASE_URL_POOL` is rejected as
@@ -555,7 +563,13 @@ export function unguardedTruncates(spec) {
     // Testing the token rather than the whole extent is what keeps tagged
     // templates working: `$executeRaw` is real code while its backticked
     // body is blanked, so an extent-wide test would reject it.
-    const call = enclosingExtent(code, at, RAW_SQL_CALL);
+    // Computed on `executable`, where string interiors are blanked and the
+    // delimiters kept: a quoted identifier such as `"name("` otherwise left
+    // the bracket scan with excess depth and the statement vanished. The
+    // call's own parens and backticks are real code, so the extent is still
+    // found — and a call written inside a string has no text there at all,
+    // which is what keeps prose inert.
+    const call = enclosingExtent(executable, at, RAW_SQL_CALL);
     if (call === null) {
       // NOT INSIDE A CALL. Two very different things look like this:
       //
@@ -577,6 +591,13 @@ export function unguardedTruncates(spec) {
         code.lastIndexOf("`", at),
       );
       if (beforeQ === -1 || !/^["'`]\s*$/.test(code.slice(beforeQ, at))) continue;
+
+      // The quote must be a REAL delimiter. In prose such as
+      // `it('mentions $executeRawUnsafe("TRUNCATE users")')` the inner quote
+      // sits inside the outer string, so `executable` has blanked it — and
+      // treating it as a delimiter made the extracted-SQL fallback report a
+      // test name as a destructive statement.
+      if (executable[beforeQ] !== code[beforeQ]) continue;
 
       // ...and the REST of the string has to parse as the statement. Both
       // `'TRUNCATE TABLE t'` and `'TRUNCATE is not permitted'` begin with
@@ -622,7 +643,13 @@ export function unguardedTruncates(spec) {
       }
 
     const covered = guards.some((g) => {
-      if (g >= at) return false;
+      // SOURCE ORDER ONLY MATTERS WITHIN ONE HOOK BODY. Jest registers
+      // every hook while defining the suite, so an outer `beforeAll`
+      // declared after a nested describe still runs before it — rejecting
+      // that would fail a required check over a harmless reordering.
+      const sameBody =
+        innermostBraceBody(executable, g) === innermostBraceBody(executable, at);
+      if (sameBody && g >= at) return false;
       if (hookKindAt(executable, g) === null) return false;
         if (!inHookBodyDirectly(executable, g)) return false;
       if (truncateHook === "All" && hookKindAt(executable, g) === "Each") {
