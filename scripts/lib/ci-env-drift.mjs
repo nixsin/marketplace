@@ -258,7 +258,12 @@ function startsRegex(text, i) {
   for (let j = i - 1; j >= 0; j -= 1) {
     const c = text[j];
     if (c === " " || c === "\t" || c === "\n" || c === "\r") continue;
-    return "(,=:[!&|?{};+-*%^~<>".includes(c) || /[\s(]return$/.test(text.slice(0, j + 1));
+    const upto = text.slice(0, j + 1);
+    return (
+      "(,=:[!&|?{};+-*%^~<>".includes(c) ||
+      /(?:^|[\s(;{])return$/.test(upto) ||
+      /(?:^|[\s(;{])(?:typeof|case|in|of|do|else|yield|await)$/.test(upto)
+    );
   }
   return true;
 }
@@ -414,7 +419,7 @@ const TRUNCATE_WORD = /(?<![\w$])truncate(?![\w$])/gi;
 const TARGET = String.raw`(?:"[^"]+"|[a-z_][\w$]*(?:\.[a-z_][\w$]*)?)`;
 const SQL_STATEMENT = new RegExp(
   String.raw`^truncate\s+(?:table\s+|only\s+)?${TARGET}(?:\s*,\s*${TARGET})*` +
-    String.raw`(?:\s+(?:restart|identity|continue|cascade))*\s*;?\s*$`,
+    String.raw`(?:\s+(?:restart|identity|continue|cascade|restrict))*\s*;?\s*$`,
   "i",
 );
 
@@ -572,4 +577,68 @@ export function unguardedTruncates(spec) {
     if (!covered) unguarded.push(at);
   }
   return unguarded;
+}
+
+
+/**
+ * JavaScript constructs this lexer cannot read reliably.
+ *
+ * Same decision as `unreadableSpellings` makes for YAML, one language over:
+ * `test-ci-scripts` runs without `pnpm install`, so no parser is available,
+ * and hand-writing one produces a stream of near-misses rather than a
+ * tokenizer. Each of these breaks a specific scan:
+ *
+ *   a bracket inside a regex     the extent scanners count it, so a
+ *                                describe or hook never closes and its
+ *                                guard reads as file-scoped
+ *   a nested template inside     the tagged-template scan stops at the
+ *   `${...}`                     first inner backtick, closing the SQL
+ *                                extent before the statement
+ *
+ * Neither appears in this repo's specs. Reporting them keeps the failure
+ * loud if one ever does, instead of silently dropping a destructive
+ * statement from the lint.
+ *
+ * @returns {string[]} One description per construct; empty when clean.
+ */
+export function unlintableConstructs(spec) {
+  const found = [];
+
+  // Comments first: prose such as "cached (ETag/If-None-Match)" otherwise
+  // reads as a regex literal spanning two slashes.
+  const code = stripComments(spec);
+
+  // Only an UNBALANCED bracket matters. `/^\\d{6}$/` has a matching pair, so
+  // the extent scanners count both and cancel out; `/\\(/` and `/[(]/` do
+  // not, and leave a scan hunting a close that never comes.
+  //
+  // Escapes are deliberately not stripped: the scanners count raw
+  // characters, so an escaped bracket confuses them exactly as a literal one
+  // does.
+  for (const m of code.matchAll(
+    /(?<![\w$)\]])\/(?![/*])(?:\\.|\[(?:\\.|[^\]])*\]|[^/\n\\])+\//g,
+  )) {
+    if (unbalanced(m[0])) {
+      found.push(`regex literal with an unbalanced bracket: ${m[0]}`);
+    }
+  }
+
+  // A template interpolation containing another template: the tagged-template
+  // scan stops at the first inner backtick, closing a SQL extent early.
+  for (const m of code.matchAll(/\$\{[^}]*`/g)) {
+    found.push(`nested template inside an interpolation: ${m[0]}`);
+  }
+
+  return found;
+}
+
+/** Do the brackets in `text` fail to pair up? */
+function unbalanced(text) {
+  const closers = { ")": "(", "}": "{", "]": "[" };
+  const stack = [];
+  for (const c of text) {
+    if (c === "(" || c === "{" || c === "[") stack.push(c);
+    else if (c in closers && stack.pop() !== closers[c]) return true;
+  }
+  return stack.length > 0;
 }

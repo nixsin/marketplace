@@ -20,6 +20,7 @@ import {
   stripComments,
   stripCommentsAndStrings,
   unguardedTruncates,
+  unlintableConstructs,
   unreadableSpellings,
   workflowEnv,
   workflowEnvBlockCount,
@@ -439,7 +440,19 @@ test("no e2e spec has an unguarded TRUNCATE", () => {
   assert.ok(specs.length > 0, "no e2e specs found — did they move?");
 
   for (const spec of specs) {
-    const offsets = unguardedTruncates(readFileSync(spec, "utf8"));
+    const text = readFileSync(spec, "utf8");
+
+    // Declared limits first, same as the YAML checks do one language over.
+    // A bracket inside a regex, or a template nested in an interpolation,
+    // breaks the extent scans — so a spec containing one is reported rather
+    // than quietly dropped from the lint.
+    assert.deepEqual(
+      unlintableConstructs(text),
+      [],
+      `${spec.slice(dir.length)} uses JavaScript these scans cannot read, so the guard lint would stop protecting it`,
+    );
+
+    const offsets = unguardedTruncates(text);
     assert.deepEqual(
       offsets,
       [],
@@ -994,4 +1007,49 @@ test("a regex literal does not swallow the code after it", () => {
   // Offsets survive either way.
   const src = "const re = /a'b/; const s = 'x';";
   assert.equal(stripCommentsAndStrings(src).length, src.length);
+});
+
+test("constructs this lexer cannot read are reported, not mis-read", () => {
+  // The same decision the YAML checks make, one language over: no parser is
+  // available in test-ci-scripts, so what cannot be read reliably is
+  // declared rather than guessed at.
+  const unlintable = [
+    ["const re = /\\(/;", "unbalanced bracket"],
+    ["const re = /[(]/;", "unbalanced bracket"],
+    ["p.$executeRaw`SELECT ${a ? `x` : `y`}`;", "nested template"],
+  ];
+  for (const [src, why] of unlintable) {
+    const found = unlintableConstructs(src);
+    assert.ok(found.length > 0, `not reported: ${src}`);
+    assert.match(found[0], new RegExp(why));
+  }
+
+  // Ordinary code is not. A false positive here fails a required check.
+  for (const fine of [
+    "const re = /isn't valid/;",
+    "const re = /^truncate$/i;",
+    // Balanced brackets cancel out in the extent scanners, so they are fine.
+    "const re = /^\\d{6}$/;",
+    "const re = /(a|b)/;",
+    "const s = `plain ${value} template`;",
+    "await p.$executeRawUnsafe('TRUNCATE TABLE t');",
+    "const r = a / b / c;",
+  ]) {
+    assert.deepEqual(unlintableConstructs(fine), [], `false positive: ${fine}`);
+  }
+});
+
+test("RESTRICT is a valid TRUNCATE option", () => {
+  const src =
+    "describe('s',()=>{const q='TRUNCATE users RESTRICT';beforeEach(async()=>{await p.$executeRawUnsafe(q);});});";
+  assert.equal(unguardedTruncates(src).length, 1);
+});
+
+test("a regex at the start of a statement is recognised", () => {
+  // `/[\s(]return$/` required a character before `return`, so a
+  // statement-leading `return /isn't/` read as division and its apostrophe
+  // opened a string that blanked the code after it.
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+  const src = `describe('s',()=>{const f=()=>{return /isn't/;};beforeEach(async()=>{${trunc}});});`;
+  assert.equal(unguardedTruncates(src).length, 1);
 });
