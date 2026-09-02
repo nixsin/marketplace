@@ -12,6 +12,7 @@
  */
 
 import { isPublicDnsName } from "./dns-name.js";
+import { isDeployedEnvironment } from "./environment.js";
 
 /**
  * Resolve a public URL that has a localhost development default.
@@ -69,19 +70,16 @@ function resolvePublicUrl(name, value, devDefault) {
   // `Invalid URL` somewhere far away. Caught by product-detail.spec.tsx.
   if (typeof window !== "undefined") return value || devDefault;
 
-  // TWO SIGNALS, because a Docker deploy on Render splits into a build and a
-  // runtime that see different environments. `RENDER=true` reaches the
-  // running container; `RENDER_GIT_COMMIT` is passed into the image build via
-  // an explicit ARG (Render hands a Docker build nothing else). Checking both
-  // means a bad value is caught at build -- while it can still be fixed
-  // before being inlined into the bundle -- and again at every boot.
+  // SHARED WITH THE CONTRACT, not a second copy. This was
+  // `RENDER === "true" || RENDER_GIT_COMMIT`, which meant `APP_ENV=render`
+  // switched on the contract's production rules but not these -- two modules
+  // disagreeing about the same question, with the strict half missing
+  // exactly where someone had said "this is production".
   //
-  // Neither is inlined into the client bundle (only NEXT_PUBLIC_* are), so
-  // this is false in the browser and the browser never throws; it receives
-  // whatever the server already validated.
-  const onRender =
-    process.env.RENDER === "true" || Boolean(process.env.RENDER_GIT_COMMIT);
-  if (!onRender) return value || devDefault;
+  // Imported from ./environment.js rather than ./env-contract.js: apps/web
+  // pages import this module, and the contract's rule tables have no
+  // business in a client bundle.
+  if (!isDeployedEnvironment()) return value || devDefault;
 
   if (!value) {
     throw new Error(

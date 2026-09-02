@@ -67,177 +67,25 @@ import { isLoopbackHost, isPublicDnsName } from "./dns-name.js";
  * - `unknown`    nothing recognised. Permissive like localhost, but it says
  *                so out loud every single time -- see UNKNOWN_ENVIRONMENT_HINT
  */
-/**
- * Named rather than loose strings, so a config file that has to declare
- * APP_ENV declares a value this module actually recognises -- a typo is now a
- * hard error, and a magic string is how you write one.
- */
-export const DEPLOY_ENVIRONMENT = /** @type {const} */ ({
-  RENDER: "render",
-  GITHUB_CI: "github-ci",
-  CI_LOCAL: "ci-local",
-  TEST: "test",
-  LOCALHOST: "localhost",
-  UNKNOWN: "unknown",
-});
+// The environment vocabulary and detection live in ./environment.js, shared
+// with web-runtime.js so the two cannot disagree about what "on a
+// deployment" means. Re-exported here because this is where callers look.
+export {
+  APP_ENV_OVERRIDE,
+  DEPLOY_ENVIRONMENT,
+  DEPLOY_ENVIRONMENTS,
+  UNKNOWN_ENVIRONMENT_HINT,
+  detectEnvironment,
+  isDeployedEnvironment,
+  isRenderDeploy,
+} from "./environment.js";
 
-export const DEPLOY_ENVIRONMENTS = /** @type {const} */ (
-  Object.values(DEPLOY_ENVIRONMENT)
-);
-
-/** Explicit override. Set this and nothing is inferred at all. */
-export const APP_ENV_OVERRIDE = "APP_ENV";
-
-/**
- * Is this a real Render deploy -- build or runtime?
- *
- * TWO SIGNALS, because a Docker deploy on Render splits into two processes
- * that see different environments, and only one of them sees `RENDER`.
- *
- * - `RENDER=true` is injected into the running CONTAINER. It is what a
- *   production boot sees, and it is the backstop for everything read at
- *   runtime.
- * - `RENDER_GIT_COMMIT` is passed into the BUILD, via an explicit `ARG` in
- *   apps/web/Dockerfile. Render does not hand arbitrary service variables to
- *   a Docker build -- each one needs its own ARG -- so `RENDER` itself is
- *   absent while the image is being built. This is the only signal available
- *   at that point, and it is the one that matters for `NEXT_PUBLIC_*`, whose
- *   values are inlined into the client bundle at build time and cannot be
- *   corrected afterwards.
- *
- * Neither is set on a developer's machine, and CRUCIALLY neither is set by
- * CI: `docker build --target prod` in `docker-web-prod-boot` passes no build
- * args and `docker run` passes no environment, on purpose -- that job's whole
- * job is proving the image boots with nothing configured. Verified by reading
- * the workflow, not assumed; keying on `NODE_ENV=production` instead would
- * fail that required check every run.
- *
- * This mirrors the existing guard in apps/web/src/lib/site-url.ts, which has
- * gated on `RENDER_GIT_COMMIT` since it was written.
- *
- * @param {Record<string, string | undefined>} [env]
- */
-export function isRenderDeploy(env = process.env) {
-  return env.RENDER === "true" || Boolean(env.RENDER_GIT_COMMIT);
-}
-
-/**
- * Is this a real deployment, as opposed to a laptop, a CI runner or a test?
- *
- * THE QUESTION APP CODE SHOULD ASK. `isRenderDeploy()` answers "which
- * platform", which is this package's business, not apps/web's -- app code
- * encoding the hosting provider means every future platform is a grep across
- * both apps rather than one line here.
- *
- * Render is the only deployment target today, so this is currently a rename
- * with one call site. That is the point at which the boundary is free to
- * draw; after the second platform it is a refactor.
- *
- * @param {Record<string, string | undefined>} [env]
- */
-export function isDeployedEnvironment(env = process.env) {
-  // Via detectEnvironment, NOT isRenderDeploy directly.
-  //
-  // `APP_ENV=render` is documented and tested as the way to state a
-  // deployment when no platform marker is detectable -- but this used to ask
-  // only about markers, so a process identified as production by APP_ENV
-  // still got LocalBlobStore's write path enabled. Deployment-sensitive
-  // callers must agree with detection, or "which environment am I" has two
-  // answers depending on who asks.
-  return detectEnvironment(env) === "render";
-}
-
-/**
- * Which environment is this process running in?
- *
- * ORDER IS LOAD-BEARING and every branch earns its place:
- *
- * 0. A PLATFORM MARKER first. `RENDER=true` is injected by the platform and
- *    cannot be stale, while `APP_ENV` is set by a person and can be -- so one
- *    leftover `APP_ENV=localhost` must not be able to disable every
- *    production rule. A contradiction between them is reported as an error
- *    rather than resolved silently.
- * 1. Then `APP_ENV`, which NARROWS rather than overrides: it can state an
- *    environment nothing can detect, which is the escape hatch for any host
- *    this function has never heard of. `unknown` is not an assertion and
- *    never wins.
- * 2. `test` BEFORE either CI branch: a Jest or Vitest process on a GitHub
- *    runner is both at once, and the suites supply their own fixtures.
- * 3. `github-ci` before `ci-local`, since GitHub Actions sets `CI` too --
- *    checking `CI` first would swallow every GitHub run.
- * 4. `ci-local` is the remaining `CI=true`: another provider, or a developer
- *    running `CI=true pnpm install` on a Mac to reproduce a CI failure. Worth
- *    naming separately from `github-ci` precisely because it is a laptop.
- * 5. `localhost` for a dev machine.
- * 6. `unknown` otherwise -- reached when NODE_ENV says production but no
- *    platform is recognised, i.e. something is running this as a deployment
- *    somewhere this function has never seen. Deliberately NOT silently
- *    folded into `localhost`.
- *
- * NOT keyed on NODE_ENV=production for the strict path. The prod image sets
- * it wherever it is built, including in `docker-web-prod-boot`, which boots
- * the real production image with no configuration on purpose. Treating that
- * as production would fail a required check for doing exactly its job -- it
- * lands in `unknown`, which is permissive and says so.
- *
- * @param {Record<string, string | undefined>} [env]
- * @returns {DeployEnvironment}
- */
-export function detectEnvironment(env = process.env) {
-  // `unknown` is NOT an assertion, so it does not win.
-  //
-  // apps/web/Dockerfile defaults `ARG APP_ENV=unknown`, so an image built
-  // anywhere gets it. A Render build passes RENDER_GIT_COMMIT but need not
-  // pass APP_ENV -- and with `unknown` treated as an override, that build
-  // skipped every render-specific rule while a real platform marker sat
-  // right there. An override says "I know where I am"; `unknown` says the
-  // opposite, so a marker beats it.
-  // A REAL PLATFORM MARKER BEATS APP_ENV. This ordering was the other way
-  // round, and that was wrong in the dangerous direction: `RENDER=true` is
-  // injected by the platform and cannot be stale, while APP_ENV is set by a
-  // person and can be. Trusting the person over the platform meant one
-  // leftover `APP_ENV=localhost` silently disabled every render-only rule --
-  // including the refusal of the development JWT_SECRET and of an empty
-  // INQUIRY_IP_HASH_SECRET. An override may narrow among environments nobody
-  // can detect; it may not downgrade one the platform is telling us about.
-  if (isRenderDeploy(env)) return "render";
-
-  // `unknown` is not an assertion either, so it does not win. apps/web's
-  // Dockerfile defaults `ARG APP_ENV=unknown`, so an image built anywhere
-  // carries it; treating that as an override made a Render BUILD skip every
-  // render rule while RENDER_GIT_COMMIT sat right there.
-  const override = env[APP_ENV_OVERRIDE];
-  const asserted =
-    override &&
-    override !== "unknown" &&
-    DEPLOY_ENVIRONMENTS.includes(/** @type {any} */ (override));
-  if (asserted) return /** @type {DeployEnvironment} */ (override);
-  if (env.NODE_ENV === "test" || env.VITEST || env.JEST_WORKER_ID) return "test";
-  if (env.GITHUB_ACTIONS === "true") return "github-ci";
-  if (env.CI === "true") return "ci-local";
-
-  // A dev server: NODE_ENV development, or simply absent (a bare `node
-  // script.mjs`, `pnpm dev`, `nest start`).
-  if (env.NODE_ENV === undefined || env.NODE_ENV === "development") {
-    return "localhost";
-  }
-
-  return "unknown";
-}
-
-/**
- * Said out loud on every `unknown` run. An unrecognised environment is not
- * an error -- the prod-image boot test is a legitimate one -- but it must
- * never pass silently, or "permissive by default" becomes invisible exactly
- * where it is most dangerous.
- */
-export const UNKNOWN_ENVIRONMENT_HINT =
-  `Environment not recognised (no Render, GitHub Actions, CI or test markers, ` +
-  `and NODE_ENV is not development). Every variable is still required — one ` +
-  `list is shared by every environment — but the stricter PRODUCTION value ` +
-  `rules are not applied, so a localhost URL or a placeholder secret would ` +
-  `pass here and fail on Render. If this is a real deployment, set ` +
-  `${APP_ENV_OVERRIDE} to one of: ${DEPLOY_ENVIRONMENTS.join(", ")}.`;
+import {
+  APP_ENV_OVERRIDE,
+  DEPLOY_ENVIRONMENTS,
+  UNKNOWN_ENVIRONMENT_HINT,
+  detectEnvironment,
+} from "./environment.js";
 
 // ---------------------------------------------------------------------
 // Value checks. Each returns null when fine, or a human sentence when not.
@@ -311,8 +159,14 @@ const all =
  * in .env.example, and the point is that it must never reach production
  * wearing a longer name.
  */
+//
+// WORD-BOUNDED, because the short terms match inside ordinary values:
+// unanchored `todo` flags `https://todoapp.example.com`, and `fixme` would
+// flag any host containing it. A false positive here is not harmless -- it
+// refuses a deploy over a perfectly good value, which is how a check earns a
+// reputation for crying wolf.
 const PLACEHOLDER_PATTERN =
-  /(change[-_]?me|your[-_]?(key|secret|token|value|url)|replace[-_]?me|todo|fixme|xxxx+)/i;
+  /(\bchange[-_]?me\b|\byour[-_]?(key|secret|token|value|url)\b|\breplace[-_]?me\b|\btodo\b|\bfixme\b|xxxx+)/i;
 
 /** @param {string} value */
 function looksLikePlaceholder(value) {
@@ -1352,7 +1206,15 @@ export function formatMatrix(app) {
 
   const rows = rules.map((rule) => ({
     name: rule.name,
-    empty: rule.emptyMeans ? "allowed" : "no",
+    // "allowed" is not a property of the rule alone: INQUIRY_IP_HASH_SECRET
+    // and NEXT_PUBLIC_SITE_URL both document an `emptyMeans` and both refuse
+    // "" in production. Reporting them as globally empty-capable is the same
+    // bug expectationsFor had -- answering "anywhere" while reading "here".
+    empty: !rule.emptyMeans
+      ? "no"
+      : DEPLOY_ENVIRONMENTS.some((e) => rule.perEnvironment?.[e]?.(""))
+        ? "not everywhere"
+        : "allowed",
     secret: rule.secret ? "yes" : "",
     extra: DEPLOY_ENVIRONMENTS.filter((e) => rule.perEnvironment?.[e]).join(", "),
   }));
@@ -1385,8 +1247,10 @@ export function formatMatrix(app) {
     "-".repeat(header.length),
     ...rows.map((r) => line(r.name, r.empty, r.secret, r.extra)),
     "",
-    "empty ok    = `NAME=` is a legal value here and means something specific;",
-    "              see the rule's emptyMeans. Absent is ALWAYS an error.",
+    "empty ok    = `NAME=` is a legal value and means something specific; see",
+    "              the rule's emptyMeans. `not everywhere` means some",
+    "              environment refuses it anyway -- production usually.",
+    "              Absent is ALWAYS an error.",
     "secret      = never printed; the startup banner shows *** and a length.",
     "stricter in = environments that constrain the VALUE further (for example",
     "              rejecting a localhost URL in production).",

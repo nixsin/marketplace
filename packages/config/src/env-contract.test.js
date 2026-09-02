@@ -789,3 +789,51 @@ test("an invalid APP_ENV cannot forge log lines", () => {
   assert.match(shown, /not a known environment/);
   assert.doesNotMatch(shown, /\nFAKE: injected/);
 });
+
+test("every signal for 'this is a deployment' agrees across modules", () => {
+  // web-runtime.js had its own copy of this question, so `APP_ENV=render`
+  // switched on the contract's production rules but not its own -- two
+  // modules disagreeing, with the strict half missing exactly where someone
+  // had said "this is production". Both import ./environment.js now.
+  for (const env of [
+    { APP_ENV: "render" },
+    { RENDER: "true" },
+    { RENDER_GIT_COMMIT: "abc123" },
+  ]) {
+    assert.equal(isDeployedEnvironment(env), true, JSON.stringify(env));
+    assert.equal(detectEnvironment(env), "render", JSON.stringify(env));
+  }
+  assert.equal(isDeployedEnvironment({ APP_ENV: "localhost" }), false);
+  assert.equal(isDeployedEnvironment({}), false);
+});
+
+test("the matrix does not call a value empty-capable where an environment refuses it", () => {
+  // Same bug expectationsFor had: answering "anywhere" while documenting
+  // "here". INQUIRY_IP_HASH_SECRET has an emptyMeans AND a Render rule that
+  // rejects "".
+  const matrix = formatMatrix("api");
+  const row = matrix
+    .split("\n")
+    .find((line) => line.startsWith("INQUIRY_IP_HASH_SECRET"));
+  assert.ok(row, "expected a row for INQUIRY_IP_HASH_SECRET");
+  assert.match(row, /not everywhere/);
+});
+
+test("placeholder terms do not match inside ordinary values", () => {
+  // Unanchored `todo` flagged `https://todoapp.example.com`. A false positive
+  // refuses a deploy over a perfectly good value, which is how a check earns
+  // a reputation for crying wolf.
+  const ordinary = checkEnv({
+    app: "web",
+    env: { ...completeWeb, NEXT_PUBLIC_SITE_URL: "https://todoapp.example.com" },
+    environment: "localhost",
+  });
+  assert.doesNotMatch(messages(ordinary.warnings), /placeholder/);
+
+  const genuine = checkEnv({
+    app: "web",
+    env: { ...completeWeb, NEXT_PUBLIC_SITE_URL: "https://change-me.example.com" },
+    environment: "localhost",
+  });
+  assert.match(messages(genuine.warnings), /placeholder/);
+});

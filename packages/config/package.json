@@ -8,7 +8,8 @@
     ".": "./src/index.js",
     "./sourcemap-token": "./src/sourcemap-token.js",
     "./web": "./src/web-runtime.js",
-    "./dns-name": "./src/dns-name.js"
+    "./dns-name": "./src/dns-name.js",
+    "./environment": "./src/environment.js"
   },
   "scripts": {
     "test": "node --test src/*.test.js"
