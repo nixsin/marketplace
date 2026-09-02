@@ -158,3 +158,18 @@ test("every list ends at .env, and lists highest precedence first", () => {
     }
   }
 });
+
+test("a repeated flag is refused", () => {
+  // Only the first occurrence is read, so a second one silently answers a
+  // different question than the one typed.
+  for (const argv of [
+    ["--env", "render", "--env"],
+    ["--env", "render", "--env", "localhost"],
+    ["--list", "--list"],
+    ["--show", "api", "--show"],
+  ]) {
+    const result = parseArgs(argv, ENVS);
+    assert.equal(result.ok, false, `${JSON.stringify(argv)} should be refused`);
+    assert.match(result.message, /more than once/);
+  }
+});

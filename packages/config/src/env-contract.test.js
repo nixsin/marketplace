@@ -1092,3 +1092,63 @@ test("displaySafe strips line and paragraph separators", () => {
   assert.equal(displaySafe("a‮b"), "a�b");
   assert.equal(displaySafe("ordinary value"), "ordinary value");
 });
+
+test("an unrecognised forced environment throws instead of skipping rules", () => {
+  // `rule.perEnvironment?.[target]` simply misses on an unknown key, so a
+  // typo reported a clean pass for an environment with no HTTPS rule, no
+  // public-name rule, no placeholder rejection and no required hash secret.
+  assert.throws(
+    () => checkEnv({ app: "api", env: completeApi, environment: "rendr" }),
+    /Unknown environment "rendr"/,
+  );
+
+  // Every real one still works, including the detected path (undefined).
+  for (const env of [...DEPLOY_ENVIRONMENTS, undefined]) {
+    assert.doesNotThrow(() =>
+      checkEnv({ app: "api", env: completeApi, environment: env }),
+    );
+  }
+});
+
+test("a dry run reports an APP_ENV that could not be right on the target", () => {
+  // `--env render` from a laptop is the documented workflow, and the laptop's
+  // APP_ENV is SUPPOSED to say localhost -- so this is a warning naming what
+  // must be true there, not an error about a file that is correct here.
+  const result = checkEnv({
+    app: "api",
+    env: { ...completeApiRender, APP_ENV: "localhost" },
+    environment: "render",
+  });
+  assert.equal(result.ok, true, formatReport(result));
+  assert.match(messages(result.warnings), /APP_ENV/);
+  assert.match(messages(result.warnings), /must itself be "render"/);
+
+  // No warning when they agree.
+  const agreed = checkEnv({
+    app: "api",
+    env: completeApiRender,
+    environment: "render",
+  });
+  assert.ok(!messages(agreed.warnings).includes("must itself be"));
+});
+
+test("expansion syntax is reported rather than silently evaluated", () => {
+  // Next expands `$FOO` through dotenv-expand; Nest's ConfigModule does not
+  // unless expandVariables is set, which this API does not set. A checker
+  // that picked either would be wrong for the other app half the time.
+  const result = checkEnv({
+    app: "web",
+    env: { ...completeWeb, NEXT_PUBLIC_SITE_URL: "$PUBLIC_ORIGIN" },
+    environment: "localhost",
+  });
+  assert.match(messages(result.warnings), /variable-expansion syntax/);
+  assert.match(messages(result.warnings), /NEXT_PUBLIC_SITE_URL/);
+
+  // An ordinary value with a dollar sign in it is not expansion syntax.
+  const literal = checkEnv({
+    app: "api",
+    env: { ...completeApi, JWT_SECRET: "price-is-100$-and-then-some" },
+    environment: "localhost",
+  });
+  assert.ok(!messages(literal.warnings).includes("variable-expansion"));
+});

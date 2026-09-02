@@ -50,6 +50,21 @@ export function parseArgs(argv, environments) {
     };
   }
 
+  // A REPEATED FLAG IS A REFUSAL, for the same reason an unknown one is:
+  // only the first `--env` is read, so `--env render --env localhost`
+  // silently answers a different question than the one typed, and
+  // `--env render --env` leaves a trailing incomplete option that the
+  // positional logic then misreads. Neither should look like success.
+  for (const flag of KNOWN_FLAGS) {
+    if (argv.filter((a) => a === flag).length > 1) {
+      return {
+        ok: false,
+        code: 2,
+        message: `"${flag}" given more than once. Pass it at most once.`,
+      };
+    }
+  }
+
   const envFlag = argv.indexOf("--env");
   if (envFlag !== -1) {
     const value = argv[envFlag + 1];

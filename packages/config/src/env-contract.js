@@ -802,6 +802,19 @@ export const CROSS_CHECKS = {
  * @returns {CheckResult}
  */
 export function checkEnv({ app, env = process.env, environment }) {
+  // A FORCED TARGET IS VALIDATED, because an unrecognised one silently
+  // skips every environment-specific protection: `rule.perEnvironment?.[target]`
+  // just misses, so `checkEnv({ environment: "rendr" })` reports a clean pass
+  // for an environment with no HTTPS rule, no public-name rule, no
+  // placeholder rejection and no required hash secret. The CLI already
+  // refuses a bad --env, but this function is exported and its own callers
+  // are not all the CLI. expectationsFor validates the same way.
+  if (environment !== undefined && !DEPLOY_ENVIRONMENTS.includes(environment)) {
+    throw new Error(
+      `Unknown environment "${environment}". Expected one of: ${DEPLOY_ENVIRONMENTS.join(", ")}.`,
+    );
+  }
+
   const target = environment ?? detectEnvironment(env);
   const rules = CONTRACTS[app];
   if (!rules) throw new Error(`Unknown app "${app}" — expected api or web`);
@@ -856,8 +869,61 @@ export function checkEnv({ app, env = process.env, environment }) {
     });
   }
 
+  // A FORCED TARGET STILL REPORTS THE MISMATCH, as a warning rather than an
+  // error. Skipping the check entirely let `--env render` answer "this would
+  // pass on Render" for a file whose APP_ENV says `localhost` -- which on a
+  // real Render process contradicts the platform marker and fails, so the
+  // dry run answered the one question it exists to answer, wrongly.
+  //
+  // A warning and not an error because the laptop's APP_ENV is SUPPOSED to
+  // say localhost: the dry run checks this machine's values against another
+  // environment's rules, and this is the one variable that legitimately
+  // differs. So it names what will have to be true there instead of failing
+  // a check about a file that is correct for where it lives.
+  if (
+    !targetWasDetected &&
+    override &&
+    DEPLOY_ENVIRONMENTS.includes(override) &&
+    override !== target
+  ) {
+    warnings.push({
+      level: "warning",
+      message:
+        `${APP_ENV_OVERRIDE} is "${override}" here, and this is a dry run ` +
+        `against "${target}". That is expected on your own machine — but on ` +
+        `"${target}" this variable must itself be "${target}", or the ` +
+        `platform marker will contradict it and the boot check will fail.`,
+    });
+  }
+
   if (target === "unknown") {
     warnings.push({ level: "warning", message: UNKNOWN_ENVIRONMENT_HINT });
+  }
+
+  // EXPANSION SYNTAX IS REPORTED RATHER THAN EVALUATED. Next expands `$FOO`
+  // in a .env through dotenv-expand; Nest's ConfigModule does not unless
+  // `expandVariables` is set, which this API does not set. So the two apps
+  // genuinely disagree, and a checker that picked either would be wrong for
+  // the other half the time.
+  //
+  // Reimplementing expansion means a third implementation that disagrees
+  // with both in some new way -- the same trap as the hand-rolled .env
+  // parser this loader already abandoned. Saying "this value contains
+  // something this check cannot resolve" is the honest answer, and it is
+  // actionable: the reader knows the verdict below it is about the literal
+  // text rather than the value the app will see.
+  for (const rule of rules) {
+    const raw = env[rule.name];
+    if (typeof raw === "string" && /\$\{?[A-Za-z_]/.test(raw)) {
+      warnings.push({
+        level: "warning",
+        message:
+          `${rule.name} contains variable-expansion syntax, which this check ` +
+          `does not evaluate — the result below is about the literal text. ` +
+          `Next expands it and the API does not, so confirm which app reads ` +
+          `this file before trusting either answer.`,
+      });
+    }
   }
 
   for (const rule of rules) {
