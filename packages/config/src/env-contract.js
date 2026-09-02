@@ -265,6 +265,11 @@ function universalProblem(value) {
  * @property {boolean} secret        Never echo this value into a message.
  * @property {string} why            What actually breaks, in one line.
  * @property {string | null} emptyMeans  What `FOO=` means, or null if empty is invalid.
+ * @property {string} [caution]      What goes wrong if you set this carelessly.
+ *   For the variables where the danger is in the ACT of setting one rather
+ *   than in the value: a precondition that must hold first, or a reason to
+ *   leave it alone. Rendered into .env.example, which is what an operator
+ *   reads at the moment they are about to change it.
  * @property {string} devValue       The localhost value, written into .env.example.
  * @property {(value: string) => string | null} check
  * @property {Partial<Record<DeployEnvironment, (value: string) => string | null>>} [perEnvironment]
@@ -399,6 +404,11 @@ export const API_ENV_CONTRACT = [
     emptyMeans:
       "no shared cache — the API uses a null cache and reads Postgres directly, " +
       "which is a supported state rather than a degraded one",
+    caution:
+      "leave this blank in .env.example. CI copies that file verbatim, so a " +
+      "URL pointing at a Redis nobody started makes every job build a client, " +
+      "fail to connect, and log cache-unavailable for the whole run. The dev " +
+      "stack supplies a real one through docker-compose.",
     devValue: "",
     check: isUrl(["redis:", "rediss:"]),
     perEnvironment: {
@@ -450,6 +460,14 @@ export const API_ENV_CONTRACT = [
     why: 'Only the exact string "true" enables it; anything else reads as off.',
     emptyMeans: null,
     devValue: "false",
+    caution:
+      "enabling this asserts the origin REFUSES traffic that did not come " +
+      "through Cloudflare — not merely that a proxy exists. This service also " +
+      "answers directly on its .onrender.com hostname, so until that is " +
+      "closed a caller can skip the edge and set cf-connecting-ip themselves, " +
+      "choosing which bucket the per-IP limit charges. Only cf-connecting-ip " +
+      "is ever believed: Cloudflare overwrites it, while x-forwarded-for is " +
+      "appended to, leaving its left-most entry attacker-controlled.",
     check: isOneOf(["true", "false"]),
   },
   {
@@ -1491,37 +1509,34 @@ export function renderEnvExample(app) {
   if (!rules) throw new Error(`Unknown app "${app}" — expected api or web`);
 
   const lines = [
-    `# apps/${app} environment variables — GENERATED, do not edit by hand.`,
+    `# apps/${app} environment variables — GENERATED, do not edit.`,
     "#",
-    "# Regenerate with:  node scripts/generate-env-example.mjs",
-    "# Source of truth:  packages/config/src/env-contract.js",
+    "# Regenerate:  node scripts/generate-env-example.mjs",
+    "# Source:      packages/config/src/env-contract.js",
     "#",
-    "# HOW THIS FILE IS USED:",
+    "# Who reads this file:",
     ...(app === "api"
       ? [
-          "#   * You:    cp apps/api/.env.example apps/api/.env  (dotenv loads it at boot)",
-          "#   * CI:     the API jobs run `cp .env.example .env` VERBATIM, so whatever",
-          "#             is written here IS the configuration those jobs run under.",
-          "#   * Docker: docker-compose.yml points at this file directly via env_file,",
-          "#             overriding only the hostnames that differ inside the network.",
-          "#   * Prod:   nothing reads this file. Render injects real values.",
+          "#   you      cp apps/api/.env.example apps/api/.env",
+          "#   CI       copies it verbatim — this IS what the API jobs run under",
+          "#   Docker   env_file, with the network's hostnames layered over it",
+          "#   prod     nothing; Render injects real values",
         ]
       : [
-          "#   * You:    cp apps/web/.env.example apps/web/.env  (Next loads it itself)",
-          "#   * CI:     NOT copied — ci.yml declares these at workflow level so one",
-          "#             block feeds all six steps that build or boot the web app.",
-          "#   * Docker: docker-compose.yml points at this file via env_file.",
-          "#   * Prod:   nothing reads this file. Render injects real values — and for",
-          "#             NEXT_PUBLIC_*, they must ALSO be passed as Docker build args,",
-          "#             because those are inlined into the client bundle at build time.",
+          "#   you      cp apps/web/.env.example apps/web/.env",
+          "#   CI       not copied; ci.yml declares these at workflow level",
+          "#   Docker   env_file",
+          "#   prod     nothing; Render injects real values — and NEXT_PUBLIC_*",
+          "#            must ALSO be Docker build args, since they are inlined",
+          "#            into the client bundle at build time",
         ]),
     "#",
-    "# EVERY environment declares EVERY variable; only the VALUES differ. An",
-    "# ABSENT variable is an error. An EMPTY one (`NAME=`) is a real value",
-    "# meaning \"off\", and each one below says what off means.",
+    "# Every environment declares every variable; only the values differ.",
+    "#   missing   error — the environment is incomplete",
+    "#   NAME=     a real value meaning \"off\"; each one says what off means",
     "#",
-    "# NAMES ONLY, never real values for anything secret — this file is",
-    "# committed, and a committed credential is permanent in git history.",
+    "# Names only, never a real secret — this file is committed, and a",
+    "# committed credential stays in git history forever.",
     "",
   ];
 
@@ -1530,6 +1545,10 @@ export function renderEnvExample(app) {
     if (rule.emptyMeans) {
       lines.push("#");
       lines.push(...wrap(`EMPTY means: ${rule.emptyMeans}`).map((l) => `# ${l}`));
+    }
+    if (rule.caution) {
+      lines.push("#");
+      lines.push(...wrap(`CAUTION: ${rule.caution}`).map((l) => `# ${l}`));
     }
     if (rule.secret) {
       lines.push("#");
@@ -1547,33 +1566,30 @@ export function renderEnvExample(app) {
 /**
  * The Docker-network overrides, as a dotenv file.
  *
- * Exactly two variables differ inside the compose network: Postgres and Redis
- * answer on service names there, and a container cannot reach the host's
- * `localhost`. Everything else is identical to a laptop.
+ * Only the hostnames differ inside compose: Postgres and Redis answer on
+ * service names, and a container cannot reach the host's `localhost`.
  *
- * Generated rather than written into docker-compose.yml, so the last two env
- * literals leave that file. Compose applies `env_file` entries in order, so
- * listing this one after `.env.example` lets it override those two and
- * nothing else -- and because both URLs are built from the same parts as
- * their localhost counterparts, the pair cannot drift apart while each keeps
- * working perfectly in its own context.
+ * Compose applies `env_file` entries in order, so listing this after
+ * `.env.example` overrides those and nothing else.
  *
  * @returns {string}
  */
 export function renderDockerEnv() {
   return [
-    "# GENERATED, do not edit by hand.",
+    "# GENERATED, do not edit.",
     "#",
-    "# Regenerate with:  node scripts/generate-env-example.mjs",
-    "# Source of truth:  packages/config/src/index.js",
+    "# Regenerate:  node scripts/generate-env-example.mjs",
+    "# Source:      packages/config/src/dev-defaults.js",
     "#",
-    "# The ONLY variables that differ inside the Docker network. Listed after",
-    "# .env.example in docker-compose.yml's env_file, so these two win and",
-    "# every other value stays identical to a laptop's.",
+    "# Only the hostnames differ inside the Docker network. Listed after",
+    "# .env.example in compose's env_file, so these win and nothing else",
+    "# changes from a laptop's values.",
+    "#",
+    "# NOT named .env — the root .gitignore would swallow it, and compose",
+    "# needs this one committed.",
     "",
-    "# The Postgres container creates this account for itself on first boot,",
-    "# and the API connects with it -- so both halves come from one definition",
-    "# rather than a literal in the service block and another in the URL.",
+    "# The Postgres container creates this account on first boot and the API",
+    "# connects with it — one definition, not two literals.",
     `POSTGRES_USER=${JSON.stringify(DEV_POSTGRES_USER)}`,
     `POSTGRES_PASSWORD=${JSON.stringify(DEV_POSTGRES_PASSWORD)}`,
     `POSTGRES_DB=${JSON.stringify(DEV_POSTGRES_DB)}`,
@@ -1581,8 +1597,8 @@ export function renderDockerEnv() {
     "# Postgres answers on the compose service name, not the host's localhost.",
     `DATABASE_URL=${JSON.stringify(DOCKER_DATABASE_URL)}`,
     "",
-    "# Redis likewise. Note this is NON-EMPTY here while .env.example leaves it",
-    "# empty: the dev stack runs a real Redis, so the shared cache is on.",
+    "# Non-empty here while .env.example leaves it empty: the dev stack runs a",
+    "# real Redis, so the cache is on.",
     `REDIS_URL=${JSON.stringify(DOCKER_REDIS_URL)}`,
     "",
   ].join("\n");
