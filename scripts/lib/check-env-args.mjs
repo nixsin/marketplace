@@ -219,3 +219,48 @@ export function nodeEnvForTarget(target) {
   if (target === "localhost") return "development";
   return "production";
 }
+
+/**
+ * Expand `$VAR` / `${VAR}` the way Next does, over FILE-SOURCED values only.
+ *
+ * This is the piece that ends four rounds of getting expansion wrong, and
+ * the reason it belongs here rather than in the contract is provenance:
+ *
+ *   * Next runs a web `.env` FILE through dotenv-expand, so `$PUBLIC_ORIGIN`
+ *     in such a file is not the value the app sees, and judging the literal
+ *     reports a working configuration as broken.
+ *   * Nothing expands a value already in `process.env` -- the Render
+ *     dashboard, a shell export, a Docker ENV. There the literal IS the
+ *     value, so `SOURCEMAP_SIGNING_KEY=$KEY` is a four-character key and
+ *     must be judged as one.
+ *
+ * checkEnv receives a flat object and cannot tell those apart. The LOADER
+ * can, because it knows which keys its own file reads introduced -- so the
+ * resolution happens here, before the contract ever sees the values, and the
+ * contract keeps judging literals with no special case at all.
+ *
+ * The API is deliberately excluded: Nest's ConfigModule expands only with
+ * `expandVariables`, which apps/api does not set, so its file values are
+ * literal too.
+ *
+ * An UNRESOLVED reference is left as written rather than replaced with an
+ * empty string. dotenv-expand would substitute nothing and hand the app a
+ * silently empty value; leaving the text intact makes the contract's own
+ * rules report it, which is the loud version of the same fact.
+ *
+ * `\\$` escapes, matching dotenv-expand.
+ *
+ * @param {string} value    The raw value read from a file.
+ * @param {Record<string, string | undefined>} scope Where to resolve names.
+ * @returns {string}
+ */
+export function expandValue(value, scope) {
+  return value.replace(
+    /\\?\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g,
+    (match, braced, bare) => {
+      if (match.startsWith("\\")) return match.slice(1);
+      const resolved = scope[braced ?? bare];
+      return resolved === undefined ? match : resolved;
+    },
+  );
+}

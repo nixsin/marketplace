@@ -136,11 +136,16 @@ function resolvePublicUrl(name, value, devDefault, { bareOrigin = false } = {}) 
 
   if (!value) {
     throw new Error(
-      `${name} is not set, and this process is running on Render. ` +
-        `Refusing to fall back to ${devDefault}: that would publish localhost ` +
-        `links to real visitors and crawlers. Set it on the Render service ` +
-        `AND pass it as a Docker build arg -- NEXT_PUBLIC_* values are inlined ` +
-        `into the client bundle at build time.`,
+      // NOT "running on Render". isDeployedEnvironment is also true for
+      // APP_ENV=render with no platform marker, so this fired on a manually
+      // identified environment and told the reader something false about
+      // where they were -- which sends them to check the wrong dashboard.
+      `${name} is not set, and this is a deployed environment ` +
+        `(APP_ENV=render, or a Render platform marker). Refusing to fall ` +
+        `back to ${devDefault}: that would publish localhost links to real ` +
+        `visitors and crawlers. Set it on the service AND pass it as a ` +
+        `Docker build arg -- NEXT_PUBLIC_* values are inlined into the ` +
+        `client bundle at build time.`,
     );
   }
 

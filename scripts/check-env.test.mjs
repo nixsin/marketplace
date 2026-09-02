@@ -14,6 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
 const CLI = fileURLToPath(new URL("./check-env.mjs", import.meta.url));
 
@@ -25,6 +26,34 @@ const { CONTRACTS } = await import(
 const CONTRACT_VARIABLES = Object.values(CONTRACTS)
   .flat()
   .map((rule) => rule.name);
+
+/**
+ * A complete, valid environment for each app, supplied by the TEST.
+ *
+ * These used to lean on the repo's own committed .env files, which pass on a
+ * developer machine and does not exist in CI at all -- every .env is
+ * gitignored. The suite was therefore asserting a property of one laptop.
+ * Building the environment here makes the same assertions true everywhere,
+ * and it doubles as the readable statement of what a valid one looks like.
+ */
+const VALID = Object.fromEntries(
+  Object.entries(CONTRACTS).map(([app, rules]) => [
+    app,
+    Object.fromEntries(rules.map((rule) => [rule.name, rule.devValue])),
+  ]),
+);
+const VALID_BOTH = { ...VALID.api, ...VALID.web };
+
+/**
+ * Drop keys from a fixture. Setting one to `undefined` does NOT work: the
+ * child process receives the literal string "undefined", which is a value
+ * and passes "is it declared" while failing every rule after it.
+ */
+function omit(source, ...keys) {
+  const copy = { ...source };
+  for (const key of keys) delete copy[key];
+  return copy;
+}
 
 /**
  * A CONTROLLED BASELINE, not the ambient environment.
@@ -55,6 +84,32 @@ function baselineEnv() {
   );
 }
 
+
+/**
+ * Run `body` with an extra apps/web/.env.local in place, then put the tree
+ * back exactly as it was.
+ *
+ * `.env.local` is gitignored, so it EXISTS on a developer machine and does
+ * not in CI. Both cases have to be handled: restore contents where there
+ * were contents, remove the file where there was no file. Otherwise the
+ * suite either fails in CI on a missing file or leaves one behind on a
+ * laptop.
+ */
+function withWebEnvLocal(contents, body) {
+  const local = fileURLToPath(
+    new URL("../apps/web/.env.local", import.meta.url),
+  );
+  const existed = existsSync(local);
+  const original = existed ? readFileSync(local, "utf8") : "";
+  try {
+    writeFileSync(local, `${original}\n${contents}\n`);
+    body();
+  } finally {
+    if (existed) writeFileSync(local, original);
+    else rmSync(local, { force: true });
+  }
+}
+
 /** @returns {{status: number, out: string}} */
 function run(args, env = {}) {
   try {
@@ -72,41 +127,40 @@ function run(args, env = {}) {
   }
 }
 
-test("the CLI reads each app's own .env and passes on this repo", () => {
-  // The whole reason readAppEnv exists: without it every variable comes back
-  // "not declared" on a correctly configured laptop, which trains people to
-  // ignore the check.
-  const { status, out } = run(["all"]);
+test("a complete environment passes for both apps", () => {
+  const { status, out } = run(["all"], VALID_BOTH);
   assert.equal(status, 0, out);
   assert.match(out, /app: api/);
   assert.match(out, /app: web/);
   assert.ok(!out.includes("is not declared"), out);
 });
 
+
 test("an explicit variable wins over the .env file", () => {
   // process.loadEnvFile never overwrites an already-set value, and the CLI
   // depends on that: `FOO=bar node scripts/check-env.mjs` must check `bar`.
-  // apps/api/.env ships a placeholder JWT_SECRET, so the warning it produces
-  // is the observable difference.
-  const withFile = run(["api"]);
-  assert.match(withFile.out, /JWT_SECRET still looks like a placeholder/);
+  withWebEnvLocal('NEXT_PUBLIC_SITE_URL="https://from-the-file.example.com"', () => {
+    const fromFile = run(["web"], omit(VALID.web, "NEXT_PUBLIC_SITE_URL"));
+    assert.equal(fromFile.status, 0, fromFile.out);
 
-  const overridden = run(["api"], {
-    JWT_SECRET: "an-ordinary-value-of-sufficient-length", // scan-ignore
+    // The shell's value must win, and be the one reported. `--show` prints
+    // the banner, which lists values; the plain report only says OK.
+    const overridden = run(["web", "--show"], {
+      ...VALID.web,
+      NEXT_PUBLIC_SITE_URL: "http://localhost:3000",
+    });
+    assert.equal(overridden.status, 0, overridden.out);
+    assert.match(overridden.out, /localhost:3000/);
+    assert.ok(!overridden.out.includes("from-the-file"), overridden.out);
   });
-  assert.equal(overridden.status, 0, overridden.out);
-  assert.ok(
-    !overridden.out.includes("JWT_SECRET still looks like a placeholder"),
-    overridden.out,
-  );
 });
 
 test("one app's values do not leak into the other's report", () => {
   // readAppEnv mutates process.env and restores it, so `all` must produce
   // exactly the same web verdict as `web` alone. Without the restore the
   // API's values are still present when the web app is checked.
-  const both = run(["all"]);
-  const webOnly = run(["web"]);
+  const both = run(["all"], VALID_BOTH);
+  const webOnly = run(["web"], VALID_BOTH);
   const webSection = both.out.slice(both.out.indexOf("app: web"));
   assert.equal(
     webSection.includes("ERROR"),
@@ -115,10 +169,10 @@ test("one app's values do not leak into the other's report", () => {
   );
 });
 
-test("a missing variable exits 1 and names it", () => {
-  // Only reachable by forcing a target whose rules this machine cannot meet;
-  // the repo's own .env is valid, which is what the first test asserts.
-  const { status, out } = run(["api", "--env", "render"]);
+test("localhost values fail the production rules", () => {
+  // The dry run's whole purpose: the same environment, judged where it would
+  // actually have to work.
+  const { status, out } = run(["api", "--env", "render"], VALID_BOTH);
   assert.equal(status, 1, out);
   assert.match(out, /ERROR/);
 });
@@ -133,13 +187,13 @@ test("a usage error exits 2, distinct from a configuration failure", () => {
 });
 
 test("--env render reports the APP_ENV that could not be right there", () => {
-  const { out } = run(["api", "--env", "render"]);
+  const { out } = run(["api", "--env", "render"], VALID_BOTH);
   assert.match(out, /APP_ENV/);
   assert.match(out, /must itself be "render"/);
 });
 
 test("--list prints the contract without needing a valid environment", () => {
-  const { status, out } = run(["api", "--list"], { JWT_SECRET: "" });
+  const { status, out } = run(["api", "--list"]);
   assert.equal(status, 0, out);
   assert.match(out, /DATABASE_URL/);
   assert.match(out, /WHATSAPP_TEMPLATE_NAME/);
@@ -155,9 +209,38 @@ test("--env render reads the production env files, not the development ones", ()
   // not: under a forced render target the loader must still find .env.local
   // (Next reads it in production too) while asking for .env.production
   // rather than .env.development.
-  const { status, out } = run(["web", "--env", "render"]);
+  const { status, out } = run(["web", "--env", "render"], VALID_BOTH);
   assert.equal(status, 1, out);
   assert.match(out, /environment: render/);
   // A missing .env.production is not an error — absent is a legal state.
   assert.ok(!out.includes("Could not read"), out);
+});
+
+test("a web .env value using expansion is resolved, not judged literally", () => {
+  // The provenance split, end to end. Next expands a web .env file through
+  // dotenv-expand, so judging `$PUBLIC_ORIGIN` as text reports a working
+  // configuration as broken. The loader resolves it before the contract
+  // sees it, which is why the contract needs no special case.
+  withWebEnvLocal(
+    'PUBLIC_ORIGIN="https://laxair.shop"\nNEXT_PUBLIC_SITE_URL=$PUBLIC_ORIGIN',
+    () => {
+      const { status, out } = run(["web"], omit(VALID.web, "NEXT_PUBLIC_SITE_URL"));
+      assert.equal(status, 0, out);
+      assert.ok(!out.includes("$PUBLIC_ORIGIN"), out);
+    },
+  );
+});
+
+test("the same syntax in the ENVIRONMENT is still judged literally", () => {
+  // Nothing expands a value already in process.env — not the Render
+  // dashboard, not a shell export, not a Docker ENV. So `$KEY` there is a
+  // four-character signing key, and skipping the length check to avoid a
+  // hypothetical false positive would wave it through.
+  const { status, out } = run(["web"], {
+    ...VALID.web,
+    SOURCEMAP_SIGNING_KEY: "$KEY",
+  });
+  assert.equal(status, 1, out);
+  assert.match(out, /SOURCEMAP_SIGNING_KEY/);
+  assert.match(out, /at least 32 characters/);
 });

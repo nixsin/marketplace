@@ -40,6 +40,7 @@
 import { fileURLToPath } from "node:url";
 import {
   envFilesFor,
+  expandValue,
   nodeEnvForTarget,
   parseArgs,
 } from "./lib/check-env-args.mjs";
@@ -101,10 +102,18 @@ function readAppEnv(app, forcedTarget) {
   //           so that a developer's local overrides cannot change what a test
   //           run sees.
   //
-  // WHAT THIS STILL DOES NOT REPRODUCE is Next's variable expansion --
-  // `A=$B` is left literal here. Worth knowing before trusting a report on
-  // an expanded value; not worth a second parser to fix, which is the trap
-  // the note below is about.
+  // VARIABLE EXPANSION IS RESOLVED HERE, and only here, because this is the
+  // only place that knows PROVENANCE. Next runs a web .env FILE through
+  // dotenv-expand, so `$PUBLIC_ORIGIN` there is not what the app sees;
+  // nothing expands a value already in process.env, so there the literal IS
+  // the value. `process.loadEnvFile` never overwrites, which makes the two
+  // sets separable: whatever this function's own reads ADDED came from a
+  // file, and everything else was already in the environment.
+  //
+  // The contract therefore keeps judging literals with no special case, and
+  // neither a false failure on a valid .env nor a false pass on a
+  // dashboard-set `$KEY` is possible. See expandValue for the API's
+  // exclusion.
   //
   // `process.loadEnvFile` mutates process.env and never overwrites an
   // existing value, so this snapshots, loads the app's files in that app's
@@ -142,7 +151,19 @@ function readAppEnv(app, forcedTarget) {
         }
       }
     }
-    return { ...process.env };
+    const loaded = { ...process.env };
+
+    // Only the keys this function's own file reads introduced, and only for
+    // the app whose loader expands them.
+    if (app === "web") {
+      for (const key of Object.keys(loaded)) {
+        if (key in before) continue;
+        const raw = loaded[key];
+        if (typeof raw === "string") loaded[key] = expandValue(raw, loaded);
+      }
+    }
+
+    return loaded;
   } finally {
     for (const key of Object.keys(process.env)) {
       if (!(key in before)) delete process.env[key];

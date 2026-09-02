@@ -46,6 +46,14 @@ async function importWithEnv(overrides) {
     // outcome of the cases covering non-Render behaviour.
     "RENDER",
     "RENDER_GIT_COMMIT",
+    // APP_ENV reaches the same decision through detectEnvironment, so a
+    // developer shell carrying `APP_ENV=render` pushed the cases covering
+    // NON-deployed behaviour into production validation. Same class as the
+    // two markers above, arriving by the other route.
+    "APP_ENV",
+    // NODE_ENV gates the unknown-production hint, so leaving it set makes
+    // one case print a warning the others do not.
+    "NODE_ENV",
     ...Object.keys(overrides),
   ]);
   const saved = Object.fromEntries(
@@ -90,7 +98,7 @@ describe("web config", () => {
     // every page still returns 200.
     await assert.rejects(
       () => importWithEnv({ RENDER: "true" }),
-      /NEXT_PUBLIC_API_URL is not set, and this process is running on Render/,
+      /NEXT_PUBLIC_API_URL is not set, and this is a deployed environment/,
     );
   });
 

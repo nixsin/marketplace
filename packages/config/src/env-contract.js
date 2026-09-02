@@ -963,11 +963,11 @@ export function checkEnv({ app, env = process.env, environment }) {
       warnings.push({
         level: "warning",
         message:
-          `${rule.name} contains variable-expansion syntax and is checked as ` +
-          `a LITERAL, because nothing expands a value that is already in the ` +
-          `environment — only Next expands a web .env file. If this comes ` +
-          `from such a file, the value the app sees differs from the one ` +
-          `judged here.`,
+          `${rule.name} contains variable-expansion syntax that NOTHING ` +
+          `resolved — either it came from the environment rather than a ` +
+          `.env file (nothing expands those), or the variable it names is ` +
+          `not defined. Either way the literal is what the app gets, and ` +
+          `that is what is judged here.`,
       });
       // No `continue`: the checks below run on the literal.
     }

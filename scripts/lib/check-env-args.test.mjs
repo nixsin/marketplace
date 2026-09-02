@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   envFilesFor,
+  expandValue,
   nodeEnvForTarget,
   parseArgs,
 } from "./check-env-args.mjs";
@@ -259,4 +260,51 @@ test("a boolean flag with a value is told to drop the value, not move it", () =>
   const env = parseArgs(["--env=render"], ENVS);
   assert.match(env.message, /Use "--env render"/);
   assert.equal(parseArgs(["--env", "render"], ENVS).ok, true);
+});
+
+test("expandValue resolves the forms dotenv-expand does", () => {
+  const scope = {
+    PUBLIC_ORIGIN: "https://laxair.shop",
+    PORT: "3000",
+    EMPTY: "",
+  };
+
+  assert.equal(expandValue("$PUBLIC_ORIGIN", scope), "https://laxair.shop");
+  assert.equal(expandValue("${PUBLIC_ORIGIN}", scope), "https://laxair.shop");
+  assert.equal(
+    expandValue("${PUBLIC_ORIGIN}/en", scope),
+    "https://laxair.shop/en",
+  );
+  assert.equal(
+    expandValue("$PUBLIC_ORIGIN:$PORT", scope),
+    "https://laxair.shop:3000",
+  );
+
+  // A defined-but-empty variable resolves to empty, which is a real value.
+  assert.equal(expandValue("$EMPTY", scope), "");
+
+  // `\$` escapes, matching dotenv-expand.
+  assert.equal(expandValue("\\$PUBLIC_ORIGIN", scope), "$PUBLIC_ORIGIN");
+});
+
+test("an unresolved reference is left as written, not blanked", () => {
+  // dotenv-expand substitutes nothing and hands the app a silently empty
+  // value. Leaving the text intact makes the contract's own rules report it,
+  // which is the loud version of the same fact — an unresolved reference is
+  // a broken configuration either way, and an empty string hides it.
+  assert.equal(expandValue("$MISSING", {}), "$MISSING");
+  assert.equal(expandValue("${MISSING}/x", {}), "${MISSING}/x");
+});
+
+test("expandValue leaves ordinary values alone", () => {
+  // A dollar sign is not expansion syntax unless a name follows it.
+  for (const value of [
+    "no-vars-here",
+    "price-is-100$",
+    "https://laxair.shop",
+    "a$-b",
+    "",
+  ]) {
+    assert.equal(expandValue(value, { A: "x" }), value);
+  }
 });

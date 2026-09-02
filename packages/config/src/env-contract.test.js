@@ -1164,7 +1164,7 @@ test("expansion syntax is warned about AND still checked as a literal", () => {
     environment: "localhost",
   });
   assert.match(messages(result.warnings), /variable-expansion syntax/);
-  assert.match(messages(result.warnings), /checked as a LITERAL/);
+  assert.match(messages(result.warnings), /NOTHING resolved/);
   assert.equal(result.ok, false, "the literal must still be judged");
   assert.match(messages(result.errors), /NEXT_PUBLIC_SITE_URL/);
 
