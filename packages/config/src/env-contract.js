@@ -937,41 +937,39 @@ export function checkEnv({ app, env = process.env, environment }) {
   for (const rule of rules) {
     const raw = env[rule.name];
 
-    // EXPANSION SYNTAX IS HANDLED PER APP, because only one of them expands.
+    // EXPANSION SYNTAX IS ALWAYS CHECKED AS A LITERAL, and warned about.
     //
-    // Next runs .env through dotenv-expand, so `$PUBLIC_ORIGIN` becomes some
-    // other value before the app sees it and judging the literal reports a
-    // working configuration as broken. Nest's ConfigModule does NOT expand
-    // unless `expandVariables` is set, which apps/api does not set -- so
-    // there the literal `$MISSING` IS the value the API will sign tokens
-    // with, and skipping the checks would wave through an eight-character
-    // predictable JWT_SECRET on a warning.
+    // Two earlier versions of this branch were both wrong, in opposite
+    // directions, and the reason is that the app is not what decides.
+    // PROVENANCE is:
     //
-    // So: web defers, api validates. An earlier version deferred for both,
-    // which fixed the false failure by opening a real hole.
+    //   * A value in a web `.env` FILE is expanded by Next through
+    //     dotenv-expand before the app sees it, so the literal is not what
+    //     runs and judging it reports a working configuration as broken.
+    //   * A value already in `process.env` -- the Render dashboard, a shell
+    //     export, a Docker ENV -- is NOT expanded by anything. The literal
+    //     is exactly what runs.
+    //
+    // This function receives a flat object and cannot tell those apart. So
+    // it takes the safe side: `SOURCEMAP_SIGNING_KEY=$KEY` set in the Render
+    // dashboard is a four-character signing key, and skipping the length
+    // check to avoid a hypothetical false positive would wave it through
+    // with `ok: true` and a report saying nothing is invalid.
+    //
+    // The warning carries the caveat so a genuine .env-expansion user is not
+    // left guessing why a valid value was refused. Nothing in this repo uses
+    // expansion today, so that caveat is theoretical and the hole was not.
     if (typeof raw === "string" && /\$\{?[A-Za-z_]/.test(raw)) {
-      if (app === "web") {
-        warnings.push({
-          level: "warning",
-          message:
-            `${rule.name} contains variable-expansion syntax, so its value ` +
-            `was NOT checked — Next expands it through dotenv-expand before ` +
-            `the app sees it, and this check does not expand it.`,
-        });
-        // The variable is still REQUIRED to be declared; only the value
-        // rules are skipped, because this check cannot resolve the value.
-        continue;
-      }
-
       warnings.push({
         level: "warning",
         message:
-          `${rule.name} looks like variable-expansion syntax, and the API ` +
-          `does NOT expand it — Nest's ConfigModule only does so with ` +
-          `expandVariables, which apps/api does not set. This literal string ` +
-          `is the value the API will use, and it is checked as one below.`,
+          `${rule.name} contains variable-expansion syntax and is checked as ` +
+          `a LITERAL, because nothing expands a value that is already in the ` +
+          `environment — only Next expands a web .env file. If this comes ` +
+          `from such a file, the value the app sees differs from the one ` +
+          `judged here.`,
       });
-      // Deliberately no `continue`: the literal is what runs.
+      // No `continue`: the checks below run on the literal.
     }
 
     // ABSENT: nobody declared it. Always an error -- every environment

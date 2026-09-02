@@ -1138,33 +1138,49 @@ test("a dry run reports an APP_ENV that could not be right on the target", () =>
   assert.ok(!messages(agreed.warnings).includes("must itself be"));
 });
 
-test("expansion syntax is reported rather than silently evaluated", () => {
-  // Next expands `$FOO` through dotenv-expand; Nest's ConfigModule does not
-  // unless expandVariables is set, which this API does not set. A checker
-  // that picked either would be wrong for the other app half the time.
+test("expansion syntax is warned about AND still checked as a literal", () => {
+  // The app is not what decides — provenance is. Next expands a web .env
+  // FILE through dotenv-expand; nothing expands a value already in
+  // process.env, which is where the Render dashboard, a shell export and a
+  // Docker ENV all put it. checkEnv receives a flat object and cannot tell
+  // those apart, so it takes the safe side.
+  //
+  // Two earlier versions got this wrong in opposite directions: validating
+  // the literal for both apps (a false failure on a working .env), then
+  // skipping it for web (a false PASS on a four-character signing key set
+  // in the dashboard). Only one of those two errors is dangerous.
   const result = checkEnv({
     app: "web",
     env: { ...completeWeb, NEXT_PUBLIC_SITE_URL: "$PUBLIC_ORIGIN" },
     environment: "localhost",
   });
   assert.match(messages(result.warnings), /variable-expansion syntax/);
-  assert.match(messages(result.warnings), /NEXT_PUBLIC_SITE_URL/);
+  assert.match(messages(result.warnings), /checked as a LITERAL/);
+  assert.equal(result.ok, false, "the literal must still be judged");
+  assert.match(messages(result.errors), /NEXT_PUBLIC_SITE_URL/);
 
-  // AND IT DOES NOT FAIL. Warning and then validating the literal reported
-  // a perfectly good Next configuration as an invalid URL — a check that
-  // turns working configuration red trains people to ignore it.
-  assert.equal(result.ok, true, formatReport(result));
-  assert.ok(!messages(result.errors).includes("NEXT_PUBLIC_SITE_URL"));
-
-  // Still required to be DECLARED, though. Only the value rules are skipped.
-  const absent = { ...completeWeb };
-  delete absent.NEXT_PUBLIC_SITE_URL;
-  const missing = checkEnv({
+  // The case that made this matter: a short secret set in the Render
+  // dashboard as `$KEY` is a four-character key, not a reference.
+  const shortKey = checkEnv({
     app: "web",
-    env: absent,
+    env: { ...completeWeb, APP_ENV: "render", SOURCEMAP_SIGNING_KEY: "$KEY",
+      NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+      NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      NEXT_PUBLIC_BLOB_BASE_URL: "https://images.laxair.shop" },
+    environment: "render",
+  });
+  assert.equal(shortKey.ok, false, formatReport(shortKey));
+  assert.match(messages(shortKey.errors), /SOURCEMAP_SIGNING_KEY/);
+
+  // The API side is identical, and was never in doubt: Nest does not expand
+  // unless expandVariables is set, which apps/api does not set.
+  const apiExpansion = checkEnv({
+    app: "api",
+    env: { ...completeApi, JWT_SECRET: "$MISSING" },
     environment: "localhost",
   });
-  assert.equal(missing.ok, false);
+  assert.equal(apiExpansion.ok, false, formatReport(apiExpansion));
+  assert.match(messages(apiExpansion.errors), /JWT_SECRET/);
 
   // An ordinary value with a dollar sign in it is not expansion syntax.
   const literal = checkEnv({
@@ -1173,29 +1189,7 @@ test("expansion syntax is reported rather than silently evaluated", () => {
     environment: "localhost",
   });
   assert.ok(!messages(literal.warnings).includes("variable-expansion"));
-
-  // THE API STILL VALIDATES THE LITERAL, and this is the asymmetry that
-  // matters: Nest does not expand unless expandVariables is set, which
-  // apps/api does not set — so `$MISSING` is the eight-character string the
-  // API would sign tokens with. Deferring here fixed a false failure by
-  // opening a real hole.
-  const apiExpansion = checkEnv({
-    app: "api",
-    env: { ...completeApi, JWT_SECRET: "$MISSING" },
-    environment: "localhost",
-  });
-  assert.equal(apiExpansion.ok, false, formatReport(apiExpansion));
-  assert.match(messages(apiExpansion.errors), /JWT_SECRET/);
-  assert.match(messages(apiExpansion.warnings), /does NOT expand it/);
-
-  // ...including on Render, where the placeholder and length rules bite.
-  const onRender = checkEnv({
-    app: "api",
-    env: { ...completeApiRender, INQUIRY_IP_HASH_SECRET: "$SOME_SECRET" },
-    environment: "render",
-  });
-  assert.equal(onRender.ok, false, formatReport(onRender));
-  assert.match(messages(onRender.errors), /INQUIRY_IP_HASH_SECRET/);
+  assert.equal(literal.ok, true, formatReport(literal));
 });
 
 // ---------------------------------------------------------------------
