@@ -255,11 +255,63 @@ export function nodeEnvForTarget(target) {
  * @returns {string}
  */
 export function expandValue(value, scope) {
+  // ITERATED TO A FIXED POINT, because a reference can resolve to another
+  // reference: `A=$B` with `B=https://example.com` means `$A` is a URL, and
+  // a single pass returns `$B`. dotenv-expand resolves the chain, so a
+  // single pass rejected an environment Next resolves fine.
+  //
+  // Bounded, because `A=$A` and `A=$B` / `B=$A` are self-referential and a
+  // fixed point does not exist. Ten passes is far past any real chain; what
+  // remains unresolved is left as written, which the contract then reports.
+  let current = value;
+  for (let pass = 0; pass < 10; pass += 1) {
+    const next = expandOnce(current, scope);
+    if (next === current) break;
+    current = next;
+  }
+
+  // THE UNESCAPE HAPPENS ONCE, AFTER the loop, and that ordering is the
+  // whole reason it is separate. Consuming the backslash inside a pass turns
+  // `\$B` into `$B`, which the NEXT pass then expands -- so adding iteration
+  // silently broke escaping, and an escaped reference resolved to the very
+  // value the author had escaped it to avoid. Leaving `\$` untouched during
+  // expansion also makes it a fixed point, which is what lets the loop
+  // terminate on it.
+  return current.replace(/\\(\$)/g, "$1");
+}
+
+/**
+ * One substitution pass. Split out so the loop above is readable and the
+ * termination condition -- "a pass changed nothing" -- is explicit.
+ *
+ * @param {string} value
+ * @param {Record<string, string | undefined>} scope
+ * @returns {string}
+ */
+function expandOnce(value, scope) {
   return value.replace(
-    /\\?\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/g,
-    (match, braced, bare) => {
-      if (match.startsWith("\\")) return match.slice(1);
-      const resolved = scope[braced ?? bare];
+    // `${VAR}`, `${VAR:-default}`, `${VAR-default}`, and bare `$VAR`.
+    /\\?\$(?:\{([A-Za-z_]\w*)(?::?-([^}]*))?\}|([A-Za-z_]\w*))/g,
+    (match, braced, fallback, bare) => {
+      // Left exactly as found, backslash included -- see the note in
+      // expandValue about why the unescape cannot happen here.
+      if (match.startsWith("\\")) return match;
+
+      const name = braced ?? bare;
+      const resolved = scope[name];
+
+      // `:-` and `-` differ in dotenv-expand exactly as they do in a shell:
+      // `:-` substitutes the default for unset OR empty, plain `-` only for
+      // unset. The match tells them apart by whether a colon preceded the
+      // dash, which is recovered from the raw text rather than a third
+      // capture group.
+      if (fallback !== undefined) {
+        const colonForm = match.includes(":-");
+        const useDefault =
+          resolved === undefined || (colonForm && resolved === "");
+        return useDefault ? fallback : resolved;
+      }
+
       return resolved === undefined ? match : resolved;
     },
   );

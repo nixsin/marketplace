@@ -283,8 +283,58 @@ test("expandValue resolves the forms dotenv-expand does", () => {
   // A defined-but-empty variable resolves to empty, which is a real value.
   assert.equal(expandValue("$EMPTY", scope), "");
 
-  // `\$` escapes, matching dotenv-expand.
+  // `\$` escapes, matching dotenv-expand — and it has to survive ITERATION.
+  // Consuming the backslash inside a pass leaves `$PUBLIC_ORIGIN`, which the
+  // next pass expands, so the escaped reference resolves to the very value
+  // the author escaped it to avoid. Adding iteration broke exactly this.
   assert.equal(expandValue("\\$PUBLIC_ORIGIN", scope), "$PUBLIC_ORIGIN");
+  assert.equal(
+    expandValue("a\\$b-$PORT", scope),
+    "a$b-3000",
+    "an escape beside a real reference must not disturb it",
+  );
+});
+
+test("a reference resolving to another reference is followed", () => {
+  // `A=$B` with `B=https://example.com` means `$A` is a URL. A single
+  // substitution pass returned `$B` and the contract rejected it as an
+  // invalid URL — an environment Next resolves without complaint.
+  const scope = {
+    A: "$B",
+    B: "$C",
+    C: "https://example.com",
+    PORT: "3000",
+  };
+  assert.equal(expandValue("$A", scope), "https://example.com");
+  assert.equal(expandValue("${A}:${PORT}", scope), "https://example.com:3000");
+});
+
+test("a self-referential chain terminates instead of hanging", () => {
+  // `A=$A` and `A=$B` / `B=$A` have no fixed point. The loop is bounded and
+  // leaves what it could not resolve, which the contract then reports —
+  // rather than spinning, which in a boot check is indistinguishable from a
+  // hung service.
+  assert.equal(expandValue("$SELF", { SELF: "$SELF" }), "$SELF");
+  assert.equal(expandValue("$A", { A: "$B", B: "$A" }), "$A");
+});
+
+test("default forms follow the shell's colon rule, as dotenv-expand does", () => {
+  const scope = { SET: "real-value", EMPTY: "" };
+
+  // `:-` substitutes for unset OR empty.
+  assert.equal(expandValue("${MISSING:-fallback}", scope), "fallback");
+  assert.equal(expandValue("${EMPTY:-fallback}", scope), "fallback");
+  assert.equal(expandValue("${SET:-fallback}", scope), "real-value");
+
+  // Plain `-` substitutes only for unset, so a deliberate empty survives —
+  // which matters here, because empty is a documented value in this
+  // contract rather than an absence.
+  assert.equal(expandValue("${MISSING-fallback}", scope), "fallback");
+  assert.equal(expandValue("${EMPTY-fallback}", scope), "");
+  assert.equal(expandValue("${SET-fallback}", scope), "real-value");
+
+  // An empty default is legal and means empty.
+  assert.equal(expandValue("${MISSING:-}", scope), "");
 });
 
 test("an unresolved reference is left as written, not blanked", () => {
