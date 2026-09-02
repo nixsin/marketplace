@@ -211,3 +211,158 @@ export function unreadableSpellings(source) {
 
   return offenders;
 }
+
+// ---------------------------------------------------------------------
+// The e2e-spec guard lint
+// ---------------------------------------------------------------------
+//
+// A LINT over assertConnectedToTestDatabase's call sites, not a proof that
+// it executes. The prevention is the guard itself: it asks Postgres
+// `SELECT current_database()` and throws unless the name ends in `_test`.
+// This catches the ways that call goes missing by accident — deleted,
+// commented out, hidden in a string, moved after the TRUNCATE, lifted out
+// of its hook, or scoped to a describe that does not contain the truncate.
+//
+// It lives here rather than inline in the test so the fixtures exercise the
+// real function. While it was inline, every fixture tested a helper instead,
+// and the covering rule itself could have been deleted with all of them
+// still passing.
+
+/** Blank comments, keep strings — SQL lives in them. Offsets preserved. */
+export function stripComments(text) {
+  return blank(text, { strings: false });
+}
+
+/** Blank comments and strings. Offsets preserved. */
+export function stripCommentsAndStrings(text) {
+  return blank(text, { strings: true });
+}
+
+function blank(text, { strings }) {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const two = text.slice(i, i + 2);
+    if (text[i] === '"' || text[i] === "'" || text[i] === "`") {
+      const quote = text[i];
+      let j = i + 1;
+      while (j < text.length && text[j] !== quote) j += text[j] === "\\" ? 2 : 1;
+      const stop = Math.min(j + 1, text.length);
+      out += strings ? " ".repeat(stop - i) : text.slice(i, stop);
+      i = stop;
+    } else if (two === "//" || two === "/*") {
+      const end =
+        two === "//" ? text.indexOf("\n", i) : text.indexOf("*/", i + 2);
+      const stop =
+        end === -1 ? text.length : two === "//" ? end : end + 2;
+      out += " ".repeat(stop - i);
+      i = stop;
+    } else {
+      out += text[i];
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/** Every `describe` form Jest offers, as a scope opener. */
+const DESCRIBE = /(?<![\w$.])(?:x|f)?describe(?:\.(?:each|only|skip|todo))?\s*(?:`|\()/g;
+const SETUP_HOOK = /(?<![\w$])before(All|Each)\s*\(/g;
+
+/**
+ * Raw-SQL execution call sites — where a TRUNCATE is actually a statement.
+ *
+ * Scoped to the CALL, not to the word, because the two cannot be told apart
+ * by what follows: `TRUNCATE users` is a real statement and `TRUNCATE in
+ * input` is a test title, and both are the word followed by an identifier.
+ * Widening the pattern to catch the first inevitably caught the second,
+ * which would have failed a required check over an unrelated test name.
+ */
+const RAW_SQL_CALL = /\$(?:execute|query)Raw[A-Za-z]*\s*(?:`|\()/g;
+const TRUNCATE_WORD = /(?<![\w$])truncate(?![\w$])/gi;
+
+/** The innermost `pattern` call whose body contains `index`, or null. */
+export function enclosingExtent(text, index, pattern) {
+  let best = null;
+  for (const m of text.matchAll(pattern)) {
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    for (let i = open; i < text.length; i += 1) {
+      const c = text[i];
+      if (c === "(" || c === "{" || c === "[") depth += 1;
+      else if (c === ")" || c === "}" || c === "]") {
+        depth -= 1;
+        if (depth === 0) {
+          if (index > open && index < i && (best === null || open > best.start)) {
+            best = { start: open, end: i };
+          }
+          break;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/** "All", "Each", or null — the setup hook lexically containing `index`. */
+export function hookKindAt(text, index) {
+  let best = null;
+  for (const m of text.matchAll(SETUP_HOOK)) {
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    for (let i = open; i < text.length; i += 1) {
+      const c = text[i];
+      if (c === "(" || c === "{" || c === "[") depth += 1;
+      else if (c === ")" || c === "}" || c === "]") {
+        depth -= 1;
+        if (depth === 0) {
+          if (index > open && index < i) best = m[1];
+          break;
+        }
+      }
+    }
+  }
+  return best;
+}
+
+/**
+ * Offsets of TRUNCATE statements with no guard call covering them.
+ *
+ * A guard covers a truncate when it is before it, inside a setup hook, its
+ * own describe scope contains the truncate, and it is not a beforeEach guard
+ * against a beforeAll truncate — Jest runs every beforeAll first, whatever
+ * the file order.
+ */
+export function unguardedTruncates(spec) {
+  const code = stripComments(spec);
+  const executable = stripCommentsAndStrings(spec);
+
+  // The identifier boundary matters: `fakeAssertConnectedToTestDatabase()`
+  // would otherwise satisfy the lint with the real guard removed.
+  const guards = [
+    ...executable.matchAll(/(?<![\w$])assertConnectedToTestDatabase\s*\(/g),
+  ].map((m) => m.index);
+
+  const unguarded = [];
+  for (const m of code.matchAll(TRUNCATE_WORD)) {
+    const at = m.index;
+
+    // Only inside a raw-SQL call. Prose mentioning the word is inert.
+    if (enclosingExtent(code, at, RAW_SQL_CALL) === null) continue;
+
+    const truncateHook = hookKindAt(executable, at);
+
+    const covered = guards.some((g) => {
+      if (g >= at) return false;
+      if (hookKindAt(executable, g) === null) return false;
+      if (truncateHook === "All" && hookKindAt(executable, g) === "Each") {
+        return false;
+      }
+      const scope = enclosingExtent(executable, g, DESCRIBE);
+      return scope === null || (at > scope.start && at < scope.end);
+    });
+
+    if (!covered) unguarded.push(at);
+  }
+  return unguarded;
+}
