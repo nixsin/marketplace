@@ -126,6 +126,25 @@ function resolvePublicUrl(name, value, devDefault, { bareOrigin = false } = {}) 
     );
   }
 
+  // WHITESPACE IS REFUSED BEFORE PARSING, because `new URL()` trims it and
+  // this function returns the ORIGINAL string. `"https://laxair.shop "`
+  // therefore passed the scheme, name and origin checks and then produced
+  // `https://laxair.shop /en/products/<id>` at every concatenation site --
+  // a broken link in every canonical tag and OpenGraph URL, from a value
+  // three separate checks had just called valid.
+  //
+  // The contract catches this, and that is not enough on its own: the
+  // contract is not wired at boot yet, and this module is the guard that
+  // runs on every import path regardless.
+  if (value !== value.trim()) {
+    throw new Error(
+      `${name} has leading or trailing whitespace. URL parsing silently ` +
+        `trims it while concatenation does not, so the value would validate ` +
+        `and still build broken links. (Value not shown: a mistyped value ` +
+        `can itself be a secret.)`,
+    );
+  }
+
   let parsed;
   try {
     parsed = new URL(value);

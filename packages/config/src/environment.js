@@ -183,5 +183,10 @@ export const UNKNOWN_ENVIRONMENT_HINT =
   `list is shared by every environment — but the stricter PRODUCTION value ` +
   `rules are not applied, so a localhost URL or a placeholder secret would ` +
   `pass here and fail on Render. If this is a real deployment, set ` +
-  `${APP_ENV_OVERRIDE} to one of: ${DEPLOY_ENVIRONMENTS.join(", ")}.`;
+  // NOT "unknown", which this list used to include. detectEnvironment
+  // deliberately ignores that value -- it is not an assertion -- so telling
+  // someone to set it sends them to change a variable, rerun, and get this
+  // same warning back with nothing to show for it.
+  `${APP_ENV_OVERRIDE} to one of: ` +
+  `${DEPLOY_ENVIRONMENTS.filter((e) => e !== "unknown").join(", ")}.`;
 

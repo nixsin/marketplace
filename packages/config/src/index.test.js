@@ -154,6 +154,41 @@ describe("web config", () => {
     assert.equal(cfg.API_URL, "https://api.laxair.shop/graphql?x=1");
   });
 
+  test("whitespace is refused, because URL parsing trims and concatenation does not", async () => {
+    // `new URL("https://laxair.shop ")` succeeds and reports a clean origin,
+    // so the scheme, public-name and bare-origin checks all passed — and the
+    // function returns the ORIGINAL string, which then built
+    // `https://laxair.shop /en/products/<id>` at every concatenation site.
+    for (const bad of [
+      "https://laxair.shop ",
+      " https://laxair.shop",
+      "https://laxair.shop\n",
+    ]) {
+      await assert.rejects(
+        () =>
+          importWithEnv({
+            RENDER: "true",
+            NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+            NEXT_PUBLIC_SITE_URL: bad,
+          }),
+        /whitespace/,
+        `${JSON.stringify(bad)} should be refused`,
+      );
+    }
+
+    // API_URL is held to it too — it is concatenated with nothing, but a
+    // value nobody meant to have a space in is wrong either way.
+    await assert.rejects(
+      () =>
+        importWithEnv({
+          RENDER: "true",
+          NEXT_PUBLIC_API_URL: " https://api.laxair.shop/graphql",
+          NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+        }),
+      /whitespace/,
+    );
+  });
+
   test("the localhost defaults still apply everywhere that is not Render", async () => {
     // Three green checks depend on this: `test-web` builds with no env at
     // all, `docker-web-prod-boot` boots the real prod image with none, and a

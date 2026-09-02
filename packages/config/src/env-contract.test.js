@@ -14,6 +14,7 @@ import {
   formatStartupBanner,
   isDeployedEnvironment,
   isRenderDeploy,
+  UNKNOWN_ENVIRONMENT_HINT,
   assertEnvOrExit,
   redactUrlCredentials,
 } from "./env-contract.js";
@@ -1314,4 +1315,17 @@ test("trusting proxy headers warns on Render too, not only off it", () => {
   // Silent when the flag is off, which is the default.
   const off = checkEnv({ app: "api", env: completeApiRender, environment: "render" });
   assert.ok(!messages(off.warnings).includes("INQUIRY_TRUST_PROXY_HEADERS"));
+});
+
+test("the unknown hint does not suggest a value that leaves you unknown", () => {
+  // detectEnvironment deliberately ignores APP_ENV=unknown — it is not an
+  // assertion — so suggesting it sends the reader to change a variable,
+  // rerun, and get this same warning back with nothing to show for it.
+  assert.ok(!UNKNOWN_ENVIRONMENT_HINT.includes("localhost, unknown"));
+  for (const real of DEPLOY_ENVIRONMENTS.filter((e) => e !== "unknown")) {
+    assert.ok(
+      UNKNOWN_ENVIRONMENT_HINT.includes(real),
+      `${real} should still be suggested`,
+    );
+  }
 });
