@@ -46,6 +46,79 @@ const SECRET = /^\$\{\{\s*secrets\.[A-Z0-9_]+\s*\}\}$/;
  * a miscount fails CLOSED — the containment simply is not found and the
  * test reports it.
  */
+/** Every *.e2e-spec.ts under `dir`, including subdirectories. */
+function findSpecs(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = `${dir}${entry.name}`;
+    if (entry.isDirectory()) out.push(...findSpecs(`${full}/`));
+    else if (entry.name.endsWith(".e2e-spec.ts")) out.push(full);
+  }
+  return out;
+}
+
+/** Blank out comments only, preserving offsets. */
+function stripComments(text) {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const two = text.slice(i, i + 2);
+    if (two === "//") {
+      const end = text.indexOf("\n", i);
+      const stop = end === -1 ? text.length : end;
+      out += " ".repeat(stop - i);
+      i = stop;
+    } else if (two === "/*") {
+      const end = text.indexOf("*/", i + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      out += " ".repeat(stop - i);
+      i = stop;
+    } else {
+      out += text[i];
+      i += 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * Blank out comments and string bodies, preserving offsets.
+ *
+ * A guard call that is commented out, or sits inside a string, executes
+ * nothing — but satisfied every check here, since they were all textual.
+ * Replacing with spaces rather than deleting keeps every index comparable
+ * to the original file.
+ */
+function stripCommentsAndStrings(text) {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const two = text.slice(i, i + 2);
+    if (two === "//") {
+      const end = text.indexOf("\n", i);
+      const stop = end === -1 ? text.length : end;
+      out += " ".repeat(stop - i);
+      i = stop;
+    } else if (two === "/*") {
+      const end = text.indexOf("*/", i + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      out += " ".repeat(stop - i);
+      i = stop;
+    } else if (text[i] === '"' || text[i] === "'" || text[i] === "`") {
+      const quote = text[i];
+      let j = i + 1;
+      while (j < text.length && text[j] !== quote) j += text[j] === "\\" ? 2 : 1;
+      const stop = Math.min(j + 1, text.length);
+      out += " ".repeat(stop - i);
+      i = stop;
+    } else {
+      out += text[i];
+      i += 1;
+    }
+  }
+  return out;
+}
+
 function containedInSetupHook(text, index) {
   for (const m of text.matchAll(/before(?:All|Each)\s*\(/g)) {
     const open = m.index + m[0].length - 1;
@@ -414,27 +487,47 @@ test("every truncating e2e spec guards its connection first", () => {
   // DATABASE_URL, so it cannot be fooled by the env-var indirection that
   // caused the incident.
   const dir = fileURLToPath(new URL("../apps/api/test/", import.meta.url));
-  const specs = readdirSync(dir).filter((f) => f.endsWith(".e2e-spec.ts"));
+  const specs = findSpecs(dir);
   assert.ok(specs.length > 0, "no e2e specs found — did they move?");
 
   for (const spec of specs) {
-    const text = readFileSync(`${dir}${spec}`, "utf8");
-    if (!text.includes("TRUNCATE")) continue;
+    const raw = readFileSync(spec, "utf8");
+
+    // TWO STRIPPED VIEWS, because the two things being located live in
+    // opposite places:
+    //
+    //   the TRUNCATE   inside a template literal — so keep strings, drop
+    //                  comments, or a commented-out one counts
+    //   the guard call real code — so drop both, or a commented-out call
+    //                  satisfies every ordering and containment assertion
+    //                  while executing nothing
+    //
+    // Both strippers replace with spaces rather than deleting, so every
+    // index stays comparable to the original file.
+    const code = stripComments(raw);
+    const executable = stripCommentsAndStrings(raw);
+    const spec_ = spec.slice(dir.length);
+
+    // Case-insensitive: `truncate` is valid SQL and would otherwise leave a
+    // destructive spec unchecked entirely.
+    if (!/truncate/i.test(code)) continue;
+
+    const text = executable;
     // ORDER, not presence. Three weaker versions of this check passed a
     // broken file in turn: matching the bare name accepted an orphaned
     // import, and matching the call accepted one placed AFTER the TRUNCATE
     // or parked in an unused helper.
     const call = text.search(/assertConnectedToTestDatabase\s*\(/);
-    const truncate = text.indexOf("TRUNCATE");
+    const truncate = code.search(/truncate/i);
 
     assert.notEqual(
       call,
       -1,
-      `${spec} truncates without asserting it is on a test database`,
+      `${spec_} truncates without asserting it is on a test database`,
     );
     assert.ok(
       call < truncate,
-      `${spec} calls the guard after its first TRUNCATE — it must run first`,
+      `${spec_} calls the guard after its first TRUNCATE — it must run first`,
     );
 
     // ...and LEXICALLY INSIDE a setup hook, so it runs for the suite rather
@@ -443,7 +536,29 @@ test("every truncating e2e spec guards its connection first", () => {
     // file satisfied it, so a call in an unused helper still passed.
     assert.ok(
       containedInSetupHook(text, call),
-      `${spec} calls the guard outside a beforeAll/beforeEach body`,
+      `${spec_} calls the guard outside a beforeAll/beforeEach body`,
     );
+  }
+});
+
+test("the inline-map and explicit-key rules handle quoting and boundaries", () => {
+  // A quoted key inside an inline map evaded both the line-anchored quoted
+  // check and the inline-map check, which looked for `NAME:` with no quote
+  // between.
+  const quotedInline = '    env: { "DATABASE_URL": postgresql://x/y }';
+  assert.equal(unreadableSpellings(`name: CI\n${quotedInline}\n`).length, 1);
+
+  // And the explicit-key rule needs a boundary, or an unrelated variable is
+  // rejected as if it were a watched one — a false positive here blocks
+  // every PR.
+  for (const line of ["  ? DATABASE_URL_POOL", '  ? "DATABASE_URL_EXTRA"']) {
+    assert.deepEqual(
+      unreadableSpellings(`name: CI\n${line}\n`),
+      [],
+      `false positive: ${line}`,
+    );
+  }
+  for (const line of ["  ? DATABASE_URL", '  ? "DATABASE_URL"']) {
+    assert.equal(unreadableSpellings(`name: CI\n${line}\n`).length, 1, line);
   }
 });

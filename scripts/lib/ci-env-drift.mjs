@@ -179,7 +179,9 @@ export function unreadableSpellings(source) {
     }
     // Explicit-key syntax: `? DATABASE_URL` on one line, `: value` on the
     // next. No `NAME:` scan can see it.
-    if (new RegExp(`^\\s*\\?\\s*["']?${WATCHED_RE}`).test(line)) {
+    // The boundary matters: without it `? DATABASE_URL_POOL` is rejected as
+    // if it were DATABASE_URL, and a false positive here blocks every PR.
+    if (new RegExp(`^\\s*\\?\\s*["']?${WATCHED_RE}(?:["']|\\s|$)`).test(line)) {
       offenders.push(`${at}   (explicit key)`);
       return;
     }
@@ -188,9 +190,12 @@ export function unreadableSpellings(source) {
     // contains braces — so it comes out before asking about braces, or every
     // legitimate reference reads as an inline map.
     const yamlOnly = line.replace(/\$\{\{[^}]*\}\}/g, "");
+    // The key may be quoted inside the map — `{ "DATABASE_URL": v }` — so
+    // an optional quote is allowed between the name and the colon.
+    const INLINE_KEY = new RegExp(`["']?${WATCHED_RE}["']?\\s*:`);
     if (
       /^\s*env:\s*\{/.test(yamlOnly) ||
-      (yamlOnly.includes("{") && new RegExp(`${WATCHED_RE}\\s*:`).test(yamlOnly))
+      (yamlOnly.includes("{") && INLINE_KEY.test(yamlOnly))
     ) {
       offenders.push(`${at}   (inline map)`);
     }
