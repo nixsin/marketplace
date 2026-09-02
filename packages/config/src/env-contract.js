@@ -937,26 +937,41 @@ export function checkEnv({ app, env = process.env, environment }) {
   for (const rule of rules) {
     const raw = env[rule.name];
 
-    // EXPANSION SYNTAX SKIPS THE VALUE CHECKS, rather than failing them.
+    // EXPANSION SYNTAX IS HANDLED PER APP, because only one of them expands.
     //
-    // Warning and then validating the literal was worse than not checking:
-    // `NEXT_PUBLIC_SITE_URL=$PUBLIC_ORIGIN` is a perfectly good Next
-    // configuration, and it was reported as an invalid URL and failed the
-    // whole verdict. A check that turns a working configuration red is not
-    // being cautious, it is being wrong -- and it trains people to ignore
-    // the output, which is the one failure this module cannot afford.
+    // Next runs .env through dotenv-expand, so `$PUBLIC_ORIGIN` becomes some
+    // other value before the app sees it and judging the literal reports a
+    // working configuration as broken. Nest's ConfigModule does NOT expand
+    // unless `expandVariables` is set, which apps/api does not set -- so
+    // there the literal `$MISSING` IS the value the API will sign tokens
+    // with, and skipping the checks would wave through an eight-character
+    // predictable JWT_SECRET on a warning.
     //
-    // The variable is still REQUIRED to be declared; only the value rules
-    // are skipped, because this check genuinely cannot resolve the value.
+    // So: web defers, api validates. An earlier version deferred for both,
+    // which fixed the false failure by opening a real hole.
     if (typeof raw === "string" && /\$\{?[A-Za-z_]/.test(raw)) {
+      if (app === "web") {
+        warnings.push({
+          level: "warning",
+          message:
+            `${rule.name} contains variable-expansion syntax, so its value ` +
+            `was NOT checked — Next expands it through dotenv-expand before ` +
+            `the app sees it, and this check does not expand it.`,
+        });
+        // The variable is still REQUIRED to be declared; only the value
+        // rules are skipped, because this check cannot resolve the value.
+        continue;
+      }
+
       warnings.push({
         level: "warning",
         message:
-          `${rule.name} contains variable-expansion syntax, so its value was ` +
-          `NOT checked — this check does not expand it. Next expands it and ` +
-          `the API does not, so confirm which app reads this file.`,
+          `${rule.name} looks like variable-expansion syntax, and the API ` +
+          `does NOT expand it — Nest's ConfigModule only does so with ` +
+          `expandVariables, which apps/api does not set. This literal string ` +
+          `is the value the API will use, and it is checked as one below.`,
       });
-      continue;
+      // Deliberately no `continue`: the literal is what runs.
     }
 
     // ABSENT: nobody declared it. Always an error -- every environment

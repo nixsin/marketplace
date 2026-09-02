@@ -1173,6 +1173,29 @@ test("expansion syntax is reported rather than silently evaluated", () => {
     environment: "localhost",
   });
   assert.ok(!messages(literal.warnings).includes("variable-expansion"));
+
+  // THE API STILL VALIDATES THE LITERAL, and this is the asymmetry that
+  // matters: Nest does not expand unless expandVariables is set, which
+  // apps/api does not set — so `$MISSING` is the eight-character string the
+  // API would sign tokens with. Deferring here fixed a false failure by
+  // opening a real hole.
+  const apiExpansion = checkEnv({
+    app: "api",
+    env: { ...completeApi, JWT_SECRET: "$MISSING" },
+    environment: "localhost",
+  });
+  assert.equal(apiExpansion.ok, false, formatReport(apiExpansion));
+  assert.match(messages(apiExpansion.errors), /JWT_SECRET/);
+  assert.match(messages(apiExpansion.warnings), /does NOT expand it/);
+
+  // ...including on Render, where the placeholder and length rules bite.
+  const onRender = checkEnv({
+    app: "api",
+    env: { ...completeApiRender, INQUIRY_IP_HASH_SECRET: "$SOME_SECRET" },
+    environment: "render",
+  });
+  assert.equal(onRender.ok, false, formatReport(onRender));
+  assert.match(messages(onRender.errors), /INQUIRY_IP_HASH_SECRET/);
 });
 
 // ---------------------------------------------------------------------
