@@ -103,7 +103,7 @@ describe("web config", () => {
       () =>
         importWithEnv({
           RENDER: "true",
-          NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql",
+          NEXT_PUBLIC_API_URL: "https://localhost:4000/graphql",
           NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
         }),
       /must be a public DNS name/,
@@ -340,7 +340,7 @@ test("a non-HTTP scheme is refused on a deployment", async () => {
           NEXT_PUBLIC_API_URL: value,
           NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
         }),
-      /must be an http:\/\/ or https:\/\/ URL/,
+      /must be an https:\/\/ URL/,
     );
   }
 
@@ -390,7 +390,7 @@ test("the BUILD-time marker rejects just as the runtime one does", async () => {
     () =>
       importWithEnv({
         RENDER_GIT_COMMIT: "abc123",
-        NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql",
+        NEXT_PUBLIC_API_URL: "https://localhost:4000/graphql",
         NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
       }),
     /must be a public DNS name/,
@@ -406,7 +406,7 @@ test("SITE_URL is validated too, not just API_URL", async () => {
       importWithEnv({
         RENDER: "true",
         NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
-        NEXT_PUBLIC_SITE_URL: "http://localhost:3000",
+        NEXT_PUBLIC_SITE_URL: "https://localhost:3000",
       }),
     /NEXT_PUBLIC_SITE_URL must be a public DNS name/,
   );
@@ -421,7 +421,7 @@ test("SITE_URL is validated too, not just API_URL", async () => {
   );
 });
 
-test("production requires a public DNS name, which rejects every IP literal", () => {
+test("production requires a public DNS name, which rejects every IP literal", async () => {
   // Five review rounds went into enumerating IANA special-purpose ranges --
   // fec0::/10, 100::/64, 2001:2::/48, 3fff::/20, ORCHIDv2 -- each real, and
   // the list unbounded because IANA is still assigning blocks.
@@ -431,27 +431,47 @@ test("production requires a public DNS name, which rejects every IP literal", ()
   // scheme check already requires https. One rule rejects every literal in
   // both families, plus single-label internal names, and cannot be defeated
   // by a range that does not exist yet.
-  return Promise.all(
-    [
-      "https://127.0.0.2/graphql",
-      "https://192.0.0.1/graphql",
-      "https://10.0.0.5/graphql",
-      "https://[fec0::1]/graphql",
-      "https://[2606:4700::1111]/graphql",
-      "https://localhost/graphql",
-      "https://api/graphql",
-    ].map((value) =>
-      assert.rejects(
-        () =>
-          importWithEnv({
-            RENDER: "true",
-            NEXT_PUBLIC_API_URL: value,
-            NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
-          }),
-        /must be a public DNS name/,
-        `${value} should be refused`,
-      ),
-    ),
+  // SEQUENTIAL, not Promise.all. importWithEnv mutates the shared
+  // process.env and restores it in a finally, so concurrent calls interleave
+  // and each one sees another's variables -- the assertions would pass or
+  // fail for reasons unrelated to the value under test.
+  for (const value of [
+    "https://127.0.0.2/graphql",
+    "https://192.0.0.1/graphql",
+    "https://10.0.0.5/graphql",
+    "https://[fec0::1]/graphql",
+    "https://[2606:4700::1111]/graphql",
+    "https://localhost/graphql",
+    "https://api/graphql",
+    // Malformed names a bare `includes(".")` check accepted.
+    "https://example..com/graphql",
+    "https://-.com/graphql",
+    "https://ex-.com/graphql",
+  ]) {
+    await assert.rejects(
+      () =>
+        importWithEnv({
+          RENDER: "true",
+          NEXT_PUBLIC_API_URL: value,
+          NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+        }),
+      /must be a public DNS name/,
+      `${value} should be refused`,
+    );
+  }
+});
+
+test("plain http is refused on a deployment", async () => {
+  // HSTS is served with a two-year max-age, so a plain-http origin is
+  // unreachable for every returning visitor.
+  await assert.rejects(
+    () =>
+      importWithEnv({
+        RENDER: "true",
+        NEXT_PUBLIC_API_URL: "http://api.laxair.shop/graphql",
+        NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      }),
+    /must be an https:\/\/ URL/,
   );
 });
 

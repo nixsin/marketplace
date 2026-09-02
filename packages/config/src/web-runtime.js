@@ -124,16 +124,21 @@ function resolvePublicUrl(name, value, devDefault) {
   // whose credentials would then be INLINED INTO THE CLIENT BUNDLE, since
   // NEXT_PUBLIC_* values are baked in at build time and shipped to every
   // visitor. Neither is reachable through the hostname list below.
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+  // HTTPS ONLY on a deployment, not "http or https". The site sends HSTS with
+  // a two-year max-age, so a plain-http origin is unreachable for every
+  // returning visitor -- and this branch only runs on a deployment, where
+  // there is no reason to allow it.
+  if (parsed.protocol !== "https:") {
     // THE PROTOCOL IS NOT ECHOED EITHER, which looks over-careful and is
     // not: a mistakenly pasted secret shaped like `hunter2:abc` is a valid
     // URL whose protocol IS `hunter2:`, so printing the scheme prints the
     // first half of the secret. Nothing derived from the value is safe to
     // show once the value might not be a URL at all.
     throw new Error(
-      `${name} must be an http:// or https:// URL — no visitor's browser can ` +
-        `fetch from any other scheme. (Value not shown: a mistyped value can ` +
-        `itself be a secret.)`,
+      `${name} must be an https:// URL in production — HSTS is served with a ` +
+        `two-year max-age, so a plain-http origin is unreachable for every ` +
+        `returning visitor. (Value not shown: a mistyped value can itself be ` +
+        `a secret.)`,
     );
   }
 
@@ -161,11 +166,21 @@ function resolvePublicUrl(name, value, devDefault) {
   // So the rule is "a public DNS name", which rejects every IP literal in
   // both families at once, rejects single-label internal names like `api`,
   // and cannot be defeated by a range IANA has not invented yet.
-  const isIpv6Literal = parsed.hostname.startsWith("[");
-  const isIpv4Literal = /^\d+(?:\.\d+)*$/.test(parsed.hostname);
-  const isDottedName = parsed.hostname.replace(/\.$/, "").includes(".");
+  // A DOT IS NOT A HOSTNAME. The first version tested `includes(".")`, which
+  // accepts `example..com` and `-.com` -- malformed names that resolve
+  // nowhere, so the guard would have passed exactly the kind of typo it
+  // exists to catch.
+  //
+  // Two or more labels, each 1-63 characters of letters, digits and internal
+  // hyphens, with an alphabetic top label. That is the shape of every name a
+  // certificate is issued for, which is the actual requirement here. An IPv4
+  // literal fails it (a numeric top label) and an IPv6 literal fails it (the
+  // brackets), so both families are rejected without naming either.
+  const host = parsed.hostname.replace(/\.$/, "");
+  const isDnsName =
+    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(host);
 
-  if (isIpv6Literal || isIpv4Literal || !isDottedName) {
+  if (!isDnsName) {
     throw new Error(
       `${name} must be a public DNS name in production — got a bare host with ` +
         `no domain, or an IP literal. Visitors reach this over the CDN, which ` +
