@@ -394,6 +394,29 @@ export const API_ENV_CONTRACT = [
       "which is a supported state rather than a degraded one",
     devValue: "",
     check: isUrl(["redis:", "rediss:"]),
+    perEnvironment: {
+      // Empty stays legal here -- a null cache is a supported state, not a
+      // degraded one, and the free Render plan is genuinely optional. What
+      // is not legal is a NON-EMPTY value pointing at the container itself:
+      // `redis://localhost:6379` on Render reaches nothing, so every read
+      // fails and falls through to Postgres while the configuration insists
+      // a cache is present. The honest states are "no cache configured" and
+      // "a cache that resolves" -- this rules out the third.
+      render: (value) => {
+        if (value === "") return null;
+        let host;
+        try {
+          host = new URL(value).hostname;
+        } catch {
+          return null; // `check` already reports a malformed URL
+        }
+        return isLoopbackHost(host)
+          ? "must not point at localhost in production — it would reach the " +
+            "API container itself, so every cache read fails. Leave it empty " +
+            "for the supported no-cache state instead."
+          : null;
+      },
+    },
   },
   {
     name: "INQUIRY_IP_HASH_SECRET",
@@ -1103,13 +1126,21 @@ export function redactUrlCredentials(value) {
  *    reasoning as sanitizeForLog in the WhatsApp path, which strips
  *    `\p{Cf}` as well as `\p{Cc}` -- U+202E RIGHT-TO-LEFT OVERRIDE reverses
  *    a line visually, forging one just as effectively as an injected
- *    newline.
+ *    newline. `\p{Zl}` and `\p{Zp}` go with them: U+2028 LINE SEPARATOR and
+ *    U+2029 PARAGRAPH SEPARATOR are categorised as separators rather than
+ *    controls, so neither `Cc` nor `Cf` catches them, and both start a new
+ *    line in a JSON log viewer and in a JavaScript string literal. The
+ *    function's whole job is that no value can forge a line, so the
+ *    category a character happens to sit in is beside the point.
  *
  * @param {string} value
  * @returns {string}
  */
 export function displaySafe(value) {
-  return redactUrlCredentials(value).replace(/[\p{Cc}\p{Cf}]/gu, "\uFFFD");
+  return redactUrlCredentials(value).replace(
+    /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu,
+    "\uFFFD",
+  );
 }
 
 /**

@@ -48,7 +48,7 @@ import { isDeployedEnvironment } from "./environment.js";
  * image sets NODE_ENV=production wherever it is built, including in the CI
  * boot test that must keep passing with no configuration.
  */
-function resolvePublicUrl(name, value, devDefault) {
+function resolvePublicUrl(name, value, devDefault, { bareOrigin = false } = {}) {
   // SERVER ONLY, and this is not a shortcut -- it is where the check belongs.
   //
   // NEXT_PUBLIC_* values are inlined into the client bundle at BUILD time, and
@@ -167,6 +167,23 @@ function resolvePublicUrl(name, value, devDefault) {
     );
   }
 
+  // A BARE ORIGIN for SITE_URL, matching `mustBeOrigin` in the contract.
+  //
+  // Paths are concatenated onto this value -- `${SITE_URL}/en/products/${id}`
+  // -- so a trailing slash produces `//en/...` and a path or query produces
+  // `https://h/app/en/...` or a link with the query silently dropped. The
+  // contract enforced this and the runtime did not, which is the same
+  // two-modules-disagreeing shape that `isDeployedEnvironment` above exists
+  // to prevent. API_URL is exempt because it legitimately ends in /graphql.
+  if (bareOrigin && (parsed.search || parsed.hash || parsed.pathname !== "/" || value.endsWith("/"))) {
+    throw new Error(
+      `${name} must be a bare origin in production — no path, no query, no ` +
+        `fragment, no trailing slash — because paths are concatenated onto ` +
+        `it to build canonical and OpenGraph URLs. (Value not shown: a ` +
+        `mistyped value can itself be a secret.)`,
+    );
+  }
+
   return value;
 }
 
@@ -182,4 +199,5 @@ export const SITE_URL = resolvePublicUrl(
   "NEXT_PUBLIC_SITE_URL",
   process.env.NEXT_PUBLIC_SITE_URL,
   "http://localhost:3000",
+  { bareOrigin: true },
 );

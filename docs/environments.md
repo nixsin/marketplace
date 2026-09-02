@@ -144,11 +144,16 @@ without booting anything.
 
 ## The startup banner
 
-Every service prints its environment and every variable's value as it starts —
-on every boot, not only on failure. "What is this process actually configured
-with" gets asked far more often than "is the configuration valid", and this
-answers it in the first lines of the log with no shell on the box and no
-guessing about which `.env` won.
+**This is what the banner will print once the wiring change lands** — it is
+not printed at boot today, because nothing calls the checker at boot yet.
+`node scripts/check-env.mjs api --show` renders exactly this now, against
+whatever environment you are in.
+
+The intent, for when it is wired: every service prints its environment and
+every variable's value as it starts — on every boot, not only on failure.
+"What is this process actually configured with" gets asked far more often
+than "is the configuration valid", and this answers it in the first lines of
+the log with no shell on the box and no guessing about which `.env` won.
 
 ```
 ┌──────────────────────────────────────────────────┐
@@ -167,8 +172,10 @@ thing that gets pasted into a bug report. The length is shown because a
 wrong-length secret is a real and common misconfiguration and a length alone
 reveals nothing usable.
 
-It prints **once per process** — Next loads `next.config.ts` several times
-during a build, and a diagnostic repeated four times is one nobody reads.
+It will print **once per process** — Next loads `next.config.ts` several
+times during a build, and a diagnostic repeated four times is one nobody
+reads. `formatStartupBanner` is written for that already; the once-per-process
+guard belongs with the call site, so it lands with the wiring.
 
 ## Overriding detection
 

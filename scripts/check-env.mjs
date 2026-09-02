@@ -146,13 +146,20 @@ if (list) {
   process.exit(0);
 }
 
-if (!forced) {
-  console.log(`Detected environment: ${detectEnvironment()}`);
-}
-
 let failed = false;
 for (const app of apps) {
   const env = readAppEnv(app);
+
+  // DETECTED FROM THE LOADED ENVIRONMENT, and inside the loop, because
+  // APP_ENV is one of the variables an app's own .env may declare. Printed
+  // once before the loop from `process.env` alone, this line reported the
+  // bare shell's answer while the report below it used the file's -- two
+  // different environments, one screen, no indication which was which. It is
+  // also genuinely per-app: `check-env.mjs all` reads two separate files.
+  if (!forced) {
+    console.log(`${app}: detected environment ${detectEnvironment(env)}`);
+  }
+
   const result = checkEnv({ app, env, environment: forced });
   if (show) console.log(formatStartupBanner(result, env));
   console.log(formatReport(result));

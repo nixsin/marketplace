@@ -120,6 +120,40 @@ describe("web config", () => {
     assert.equal(cfg.SITE_URL, "https://laxair.shop");
   });
 
+  test("SITE_URL must be a bare origin, while API_URL keeps its path", async () => {
+    // Paths are concatenated onto SITE_URL -- `${SITE_URL}/en/products/${id}`
+    // -- so a trailing slash produces `//en/...` and a path or query produces
+    // a wrong canonical URL or one with the query silently dropped. The
+    // contract enforced this and the runtime did not, which is the same
+    // two-modules-disagreeing shape isDeployedEnvironment exists to prevent.
+    for (const bad of [
+      "https://laxair.shop/",
+      "https://laxair.shop/app",
+      "https://laxair.shop?ref=x",
+      "https://laxair.shop#top",
+    ]) {
+      await assert.rejects(
+        () =>
+          importWithEnv({
+            RENDER: "true",
+            NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+            NEXT_PUBLIC_SITE_URL: bad,
+          }),
+        /must be a bare origin/,
+        `${bad} should be refused`,
+      );
+    }
+
+    // API_URL is exempt on purpose: it legitimately ends in /graphql, which
+    // the test above already relies on.
+    const cfg = await importWithEnv({
+      RENDER: "true",
+      NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql?x=1",
+      NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+    });
+    assert.equal(cfg.API_URL, "https://api.laxair.shop/graphql?x=1");
+  });
+
   test("the localhost defaults still apply everywhere that is not Render", async () => {
     // Three green checks depend on this: `test-web` builds with no env at
     // all, `docker-web-prod-boot` boots the real prod image with none, and a

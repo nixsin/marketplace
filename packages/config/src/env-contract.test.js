@@ -1036,3 +1036,59 @@ test("private pseudo-TLDs are refused in production", () => {
   });
   assert.equal(fine.ok, true, formatReport(fine));
 });
+
+test("a loopback REDIS_URL is refused in production, but empty is not", () => {
+  // The honest states are "no cache configured" and "a cache that resolves".
+  // `redis://localhost:6379` on Render is the third: it insists a cache is
+  // present and reaches the API container itself, so every read fails.
+  for (const url of [
+    "redis://localhost:6379",
+    "redis://127.0.0.1:6379",
+    "rediss://[::1]:6379",
+    "redis://[::ffff:127.0.0.1]:6379",
+  ]) {
+    const result = checkEnv({
+      app: "api",
+      env: { ...completeApiRender, REDIS_URL: url },
+      environment: "render",
+    });
+    assert.equal(result.ok, false, `${url} should be refused`);
+    assert.match(messages(result.errors), /REDIS_URL/);
+  }
+
+  // Empty stays legal: a null cache is a supported state, not a degraded one.
+  const noCache = checkEnv({
+    app: "api",
+    env: { ...completeApiRender, REDIS_URL: "" },
+    environment: "render",
+  });
+  assert.equal(noCache.ok, true, formatReport(noCache));
+
+  // ...and a real one passes.
+  const real = checkEnv({
+    app: "api",
+    env: {
+      ...completeApiRender,
+      REDIS_URL: "rediss://red-abc123:6379",
+    },
+    environment: "render",
+  });
+  assert.equal(real.ok, true, formatReport(real));
+});
+
+test("displaySafe strips line and paragraph separators", () => {
+  // U+2028 and U+2029 are categorised as separators rather than controls, so
+  // neither \p{Cc} nor \p{Cf} catches them -- and both start a new line in a
+  // JSON log viewer and in a JavaScript string literal. The function's job is
+  // that no value can forge a line, whatever category the character sits in.
+  for (const ch of [" ", " "]) {
+    const shown = displaySafe(`before${ch}after`);
+    assert.ok(!shown.includes(ch), `${escape(ch)} survived`);
+    assert.equal(shown, "before�after");
+  }
+
+  // The categories already covered must still be.
+  assert.equal(displaySafe("a\nb"), "a�b");
+  assert.equal(displaySafe("a‮b"), "a�b");
+  assert.equal(displaySafe("ordinary value"), "ordinary value");
+});
