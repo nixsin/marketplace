@@ -1,6 +1,6 @@
 import type { Product } from "@/components/product-card";
 import type { ProductDetail } from "@/components/product-detail";
-import { API_URL } from "@medinstru/config";
+import { API_URL } from "@medinstru/config/web";
 import { correlationHeaders, newClientRequestId } from "./correlation";
 import { reportApiFailure } from "./report-api-failure";
 

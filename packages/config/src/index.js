@@ -44,13 +44,21 @@
 // Web app
 // ---------------------------------------------------------------------
 
-export const API_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000/graphql";
-
-// Used as `metadataBase` and for absolute OpenGraph image URLs. Next
-// requires this once any route uses a relative OG image path.
-export const SITE_URL =
-  process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+// API_URL and SITE_URL are NOT here. They live in ./web-runtime.js, reached
+// as `@medinstru/config/web`.
+//
+// They THROW on a deployment when unset, and this entry is imported by things
+// that have no business knowing about the web app's URLs: six Node scripts,
+// and apps/api/src/main.ts itself. That crashed a production API boot in
+// testing -- `NEXT_PUBLIC_API_URL is not set, and this process is running on
+// Render` -- for a variable the API's own contract does not include and
+// Render does not set on that service. It fired while IMPORTING the checker,
+// so it happened before the diagnostic built to explain such failures could
+// run.
+//
+// The rule this restores: the main entry is side-effect-free and safe to
+// import from anywhere. Anything that can refuse to load gets its own door,
+// the same reasoning that put sourcemap-token behind one.
 
 // English + Hindi for MVP (TECHNICAL_PLAN.md §14) -- additional regional
 // languages land in Phase 3, prioritized by where signups concentrate.

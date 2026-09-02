@@ -10,8 +10,11 @@
 // would silently widen that union and break locale type-safety across the
 // whole web app.
 
-export declare const API_URL: string;
-export declare const SITE_URL: string;
+// API_URL and SITE_URL are NOT here. They moved to web-runtime.d.ts
+// (`@medinstru/config/web`) because they throw on a deployment when unset,
+// and the main entry must stay safe to import from Node scripts and apps/api.
+// Leaving the declarations here let TypeScript compile an import that fails
+// at runtime.
 
 export declare const LOCALES: readonly ["en", "hi"];
 export declare const DEFAULT_LOCALE: (typeof LOCALES)[number];
