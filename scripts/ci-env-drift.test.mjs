@@ -542,8 +542,9 @@ test("setup-hook containment is lexical", () => {
   const after = "beforeAll(() => {});\nfunction stray() { guard(); }";
   assert.ok(!hookKindAtTruthy(after, after.indexOf("guard()")));
 
-  // Nested inside the hook still counts as contained; the comment on the
-  // lint says so, and says why proving invocation needs an AST.
+  // Nested inside the hook is still CONTAINED — that is what this helper
+  // answers. Whether it RUNS is a separate question, and unguardedTruncates
+  // now rejects it: see "a guard in a nested function does not count".
   const nested = "beforeEach(() => {\n  function h() { guard(); }\n});";
   assert.ok(hookKindAtTruthy(nested, nested.indexOf("guard()")));
 });
@@ -1143,5 +1144,41 @@ test("an inline-map key matching only by suffix is not flagged", () => {
   assert.equal(
     unreadableSpellings("name: CI\n  x: { DATABASE_URL: v }\n").length,
     1,
+  );
+});
+
+test("a guard in a nested function does not count", () => {
+  // `beforeAll(() => { function unused() { return guard(); } })` contains
+  // the call lexically while never running it. Containment alone accepted
+  // that, and an earlier fixture here asserted it was fine — it was not.
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+  const nested = `describe('s',()=>{beforeAll(()=>{function u(){return assertConnectedToTestDatabase(p);}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(unguardedTruncates(nested).length, 1);
+
+  // Directly in the hook body is still accepted.
+  const direct = `describe('s',()=>{beforeAll(async()=>{await assertConnectedToTestDatabase(p);});beforeEach(async()=>{${trunc}});});`;
+  assert.deepEqual(unguardedTruncates(direct), []);
+});
+
+test("dynamically built TRUNCATE SQL is reported", () => {
+  // `TRUNCATE TABLE` and `TRUNCATE ONLY` are unambiguous whatever follows,
+  // so an interpolated or concatenated target is still destructive and this
+  // lint cannot resolve it.
+  for (const q of [
+    "const q=`TRUNCATE TABLE ${table}`;",
+    "const q='TRUNCATE TABLE ' + table;",
+    "const q=`TRUNCATE ONLY ${t}`;",
+  ]) {
+    const src = `describe('s',()=>{${q}beforeEach(async()=>{await p.$executeRawUnsafe(q);});});`;
+    assert.equal(unguardedTruncates(src).length, 1, `missed: ${q}`);
+  }
+
+  // Without the keyword the whole string must still parse as a statement,
+  // which is what keeps prose inert.
+  assert.deepEqual(
+    unguardedTruncates(
+      "describe('s',()=>{it('rejects TRUNCATE in user input',()=>{});});",
+    ),
+    [],
   );
 });

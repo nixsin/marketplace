@@ -585,7 +585,19 @@ export function unguardedTruncates(spec) {
       const quote = code[beforeQ];
       const closeQ = code.indexOf(quote, at);
       if (closeQ === -1) continue;
-      if (SQL_STATEMENT.test(code.slice(at, closeQ))) unguarded.push(at);
+      const body = code.slice(at, closeQ);
+
+      // `TRUNCATE TABLE` and `TRUNCATE ONLY` are unambiguous SQL whatever
+      // follows, so an interpolated or concatenated target is still
+      // reported: `TRUNCATE TABLE ${table}` is destructive and this lint
+      // cannot resolve the target. Without the keyword the whole string must
+      // parse, which is what keeps `'TRUNCATE is not permitted'` inert.
+      if (
+        /^truncate\s+(?:table|only)\b/i.test(body) ||
+        SQL_STATEMENT.test(body)
+      ) {
+        unguarded.push(at);
+      }
       continue;
     }
 
@@ -612,6 +624,7 @@ export function unguardedTruncates(spec) {
     const covered = guards.some((g) => {
       if (g >= at) return false;
       if (hookKindAt(executable, g) === null) return false;
+        if (!inHookBodyDirectly(executable, g)) return false;
       if (truncateHook === "All" && hookKindAt(executable, g) === "Each") {
         return false;
       }
@@ -686,4 +699,37 @@ function unbalanced(text) {
     else if (c in closers && stack.pop() !== closers[c]) return true;
   }
   return stack.length > 0;
+}
+
+/**
+ * Is the guard in the hook callback's OWN body, not a nested function?
+ *
+ * `beforeAll(() => { function unused() { return guard(); } })` contains the
+ * call lexically while never running it. Containment alone accepted that —
+ * an earlier fixture even asserted it, which was wrong.
+ *
+ * The test: the innermost `{...}` around the guard must be the hook
+ * callback's own body, which is the first brace after the hook's paren.
+ */
+function inHookBodyDirectly(text, index) {
+  for (const m of text.matchAll(SETUP_HOOK)) {
+    const paren = m.index + m[0].length - 1;
+    const close = closingIndex(text, paren);
+    if (close === -1 || index < paren || index > close) continue;
+
+    const body = text.indexOf("{", paren);
+    if (body === -1 || body > close) continue;
+    if (innermostBraceBody(text, index) === body) return true;
+  }
+  return false;
+}
+
+/** Start of the innermost `{...}` containing `index`, or null. */
+function innermostBraceBody(text, index) {
+  const stack = [];
+  for (let i = 0; i < index; i += 1) {
+    if (text[i] === "{") stack.push(i);
+    else if (text[i] === "}") stack.pop();
+  }
+  return stack.length ? stack[stack.length - 1] : null;
 }
