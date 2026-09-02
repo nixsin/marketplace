@@ -453,10 +453,28 @@ const mustBeHttps = (value) => {
 const notPlaceholder = (value) =>
   looksLikePlaceholder(value) ? "is still a placeholder" : null;
 
-const noTrailingSlash = (value) =>
-  value.endsWith("/")
-    ? "must not end with a trailing slash — it is concatenated with paths"
-    : null;
+/**
+ * A value that gets concatenated with paths must be a bare ORIGIN.
+ *
+ * A trailing slash was the only thing checked, which let
+ * `https://laxair.shop?ref=x` and `https://laxair.shop/app` through -- both
+ * produce `https://laxair.shop?ref=x/en` when a path is appended, a URL that
+ * is neither the canonical page nor an error anyone would notice.
+ */
+const mustBeOrigin = (value) => {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null; // `check` already reports a malformed URL
+  }
+  if (parsed.search || parsed.hash) {
+    return "must not carry a query string or fragment — it is concatenated with paths";
+  }
+  return parsed.pathname === "/" && !value.endsWith("/")
+    ? null
+    : "must be a bare origin with no path and no trailing slash — it is concatenated with paths";
+};
 
 /** @type {EnvRule[]} */
 export const API_ENV_CONTRACT = [
@@ -581,7 +599,7 @@ export const API_ENV_CONTRACT = [
       "outbound WhatsApp inquiries omit the product link and log " +
       "[NOT CONFIGURED] — the buyer's name, number and Ref still get through",
     devValue: DEV_SITE_URL,
-    check: all(isUrl(["http:", "https:"]), noTrailingSlash),
+    check: all(isUrl(["http:", "https:"]), mustBeOrigin),
     perEnvironment: {
       // Empty is refused HERE despite `emptyMeans` documenting it, because
       // `emptyMeans` says empty is legal somewhere, not everywhere. In
@@ -684,7 +702,7 @@ export const WEB_ENV_CONTRACT = [
     why: "Canonical URLs, hreflang alternates and OpenGraph images are all built from it.",
     emptyMeans: null,
     devValue: DEV_SITE_URL,
-    check: all(isUrl(["http:", "https:"]), noTrailingSlash),
+    check: all(isUrl(["http:", "https:"]), mustBeOrigin),
     perEnvironment: { render: all(mustBePublicName, mustBeHttps) },
   },
   {
@@ -695,7 +713,7 @@ export const WEB_ENV_CONTRACT = [
       "images are served from this app's own origin — the real state on a " +
       "laptop and in CI, where no object storage exists",
     devValue: DEV_BLOB_BASE_URL,
-    check: all(isUrl(["http:", "https:"]), noTrailingSlash),
+    check: all(isUrl(["http:", "https:"]), mustBeOrigin),
     // notLoopback as well: unlike the other two URLs this had only the scheme
     // check, so `https://localhost:9000` passed in production and every
     // visitor's browser would fetch product images from their own machine
@@ -774,7 +792,10 @@ export const CROSS_CHECKS = {
       return missing.length
         ? {
             level: "error",
-            message: `BLOB_PROVIDER is "${provider}" but ${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} not set. Uploads would fail at the first write, not at boot.`,
+            // displaySafe, not the raw value: this message goes to the same
+            // logs as every other finding, and a cross-check is not exempt
+            // from the sanitisation the per-variable path already applies.
+            message: `BLOB_PROVIDER is ${JSON.stringify(displaySafe(provider))} but ${missing.join(" and ")} ${missing.length > 1 ? "are" : "is"} not set. Uploads would fail at the first write, not at boot.`,
           }
         : null;
     },

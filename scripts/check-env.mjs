@@ -33,6 +33,8 @@
  *                         current value, secrets masked -- without booting a
  *                         service.
  */
+import { fileURLToPath } from "node:url";
+import { parseArgs } from "./lib/check-env-args.mjs";
 import {
   DEPLOY_ENVIRONMENTS,
   checkEnv,
@@ -42,33 +44,12 @@ import {
   formatStartupBanner,
 } from "../packages/config/src/env-contract.js";
 
-const argv = process.argv.slice(2);
-
-// The value belonging to `--env` is NOT the positional app.
-//
-// `argv.find(a => !a.startsWith("-"))` picked it whenever no app was given,
-// so `check-env.mjs --env render` exited with `Unknown app "render"` instead
-// of defaulting to `all`. Only worked at all because every documented
-// invocation happens to put the app first.
-const envFlag = argv.indexOf("--env");
-if (envFlag !== -1 && !argv[envFlag + 1]) {
-  console.error("--env needs a value, e.g. --env render");
-  process.exit(2);
+const parsed = parseArgs(process.argv.slice(2), DEPLOY_ENVIRONMENTS);
+if (!parsed.ok) {
+  console.error(parsed.message);
+  process.exit(parsed.code);
 }
-const forced = envFlag === -1 ? undefined : argv[envFlag + 1];
-
-const positional = argv.filter(
-  (arg, i) => !arg.startsWith("-") && i !== envFlag + 1,
-);
-const target = positional[0] ?? "all";
-if (forced && !DEPLOY_ENVIRONMENTS.includes(forced)) {
-  console.error(
-    `Unknown --env "${forced}". Expected one of: ${DEPLOY_ENVIRONMENTS.join(", ")}`,
-  );
-  process.exit(2);
-}
-
-const apps = target === "all" ? ["api", "web"] : [target];
+const { apps, forced, list, show } = parsed;
 
 /**
  * Load the same .env the app itself loads at boot.
@@ -102,11 +83,23 @@ function readAppEnv(app) {
   const before = { ...process.env };
   try {
     for (const file of [".env.local", ".env"]) {
+      const path = new URL(`../apps/${app}/${file}`, import.meta.url);
       try {
-        process.loadEnvFile(new URL(`../apps/${app}/${file}`, import.meta.url));
-      } catch {
-        // Absent is a legitimate state -- CI and the containers declare their
-        // values in the environment itself. The check reports what is missing.
+        process.loadEnvFile(path);
+      } catch (error) {
+        // ONLY a missing file is silent. Absent is a legitimate state -- CI
+        // and the containers declare their values in the environment itself.
+        //
+        // Anything else is not: a permission error or an unparseable file
+        // would have been swallowed and reported as "variable not declared",
+        // sending the reader to look for a missing value when the real
+        // problem is that their .env could not be read at all.
+        if (error?.code !== "ENOENT") {
+          console.error(
+            `Could not read ${fileURLToPath(path)}: ${error?.message ?? error}`,
+          );
+          process.exit(2);
+        }
       }
     }
     return { ...process.env };
@@ -124,7 +117,7 @@ for (const app of apps) {
   }
 }
 
-if (argv.includes("--list")) {
+if (list) {
   for (const app of apps) console.log(formatMatrix(app) + "\n");
   process.exit(0);
 }
@@ -137,7 +130,7 @@ let failed = false;
 for (const app of apps) {
   const env = readAppEnv(app);
   const result = checkEnv({ app, env, environment: forced });
-  if (argv.includes("--show")) console.log(formatStartupBanner(result, env));
+  if (show) console.log(formatStartupBanner(result, env));
   console.log(formatReport(result));
   console.log("");
   if (!result.ok) failed = true;

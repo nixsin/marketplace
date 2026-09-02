@@ -40,8 +40,39 @@ export function isPublicDnsName(hostname) {
   if (!labels.every((label) => LABEL.test(label))) return false;
 
   // An all-numeric top label means this is an IPv4 literal, not a name.
-  return !/^\d+$/.test(labels[labels.length - 1]);
+  if (/^\d+$/.test(labels[labels.length - 1])) return false;
+
+  // SPECIAL-USE SUFFIXES ARE NOT PUBLIC NAMES. `api.localhost` is two
+  // syntactically valid labels with a non-numeric top label, so every rule
+  // above accepts it -- and RFC 6761 requires resolvers to answer it with
+  // loopback. It points a visitor at their own machine just as surely as
+  // `localhost` does, which is the failure this whole check exists for.
+  //
+  // A short, standards-defined list, unlike the IANA address registry this
+  // replaced: these are reserved by RFC and do not grow with allocation.
+  return !RESERVED_SUFFIXES.some(
+    (suffix) => host === suffix || host.endsWith(`.${suffix}`),
+  );
 }
+
+/**
+ * Suffixes that never resolve on the public internet.
+ *
+ * RFC 6761 (`test`, `example`, `invalid`, `localhost`), RFC 6762 (`local`,
+ * mDNS), RFC 8375 (`home.arpa`), and `internal`, which ICANN reserved for
+ * private use in 2024. `onion` and `alt` are omitted deliberately: they are
+ * reserved, but nothing here would ever be served over Tor, and listing
+ * names for their own sake is what made the previous check unmaintainable.
+ */
+const RESERVED_SUFFIXES = [
+  "localhost",
+  "local",
+  "internal",
+  "test",
+  "example",
+  "invalid",
+  "home.arpa",
+];
 
 /**
  * Is this hostname the machine asking the question?

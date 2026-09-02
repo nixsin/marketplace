@@ -323,7 +323,7 @@ test("a phone NUMBER pasted where Meta's numeric ID belongs is caught", () => {
   assert.match(messages(result.errors), /not a phone number/);
 });
 
-test("a trailing slash on SITE_URL is caught", () => {
+test("SITE_URL must be a bare origin, since paths are appended to it", () => {
   // Concatenates into https://laxair.shop//en -- which resolves, but
   // publishes a different canonical URL than the sitemap emits. Two URLs for
   // one page is exactly what canonical tags exist to prevent.
@@ -331,7 +331,7 @@ test("a trailing slash on SITE_URL is caught", () => {
     app: "web",
     env: { ...completeWeb, NEXT_PUBLIC_SITE_URL: "http://localhost:3000/" },
   });
-  assert.match(messages(result.errors), /must not end with a trailing slash/);
+  assert.match(messages(result.errors), /must be a bare origin/);
 });
 
 // ---------------------------------------------------------------------
@@ -695,4 +695,70 @@ test("expectationsFor respects the environment's own empty rules", () => {
 
   const local = expectationsFor("api", "localhost").mayBeEmpty.map((r) => r.name);
   assert.ok(local.includes("INQUIRY_IP_HASH_SECRET"));
+});
+
+test("a path or query on a base URL is caught too, not just a slash", () => {
+  // Only the trailing slash was checked, so `https://laxair.shop/app` and
+  // `https://laxair.shop?ref=x` passed -- and both produce a nonsense URL
+  // once a path is appended.
+  for (const value of [
+    "https://laxair.shop/app",
+    "https://laxair.shop?ref=x",
+    "https://laxair.shop#top",
+  ]) {
+    const result = checkEnv({
+      app: "web",
+      env: { ...completeWeb, NEXT_PUBLIC_SITE_URL: value },
+      environment: "localhost",
+    });
+    assert.match(
+      messages(result.errors),
+      /bare origin|query string or fragment/,
+      `${value} should be refused`,
+    );
+  }
+});
+
+test("special-use suffixes are not public names", () => {
+  // `api.localhost` is two syntactically valid labels with a non-numeric top
+  // label, so every structural rule accepts it -- and RFC 6761 requires
+  // resolvers to answer it with loopback. It points a visitor at their own
+  // machine exactly as `localhost` does.
+  for (const host of [
+    "api.localhost",
+    "db.local",
+    "svc.internal",
+    "foo.test",
+    "a.example",
+    "x.invalid",
+  ]) {
+    const result = checkEnv({
+      app: "web",
+      env: {
+        ...completeWeb,
+        APP_ENV: "render",
+        NEXT_PUBLIC_API_URL: `https://${host}/graphql`,
+        NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+      },
+      environment: "render",
+    });
+    assert.match(
+      messages(result.errors),
+      /must be a public DNS name/,
+      `${host} should be refused in production`,
+    );
+  }
+
+  // Near-misses must still pass: the check is on the SUFFIX, not a substring.
+  const fine = checkEnv({
+    app: "web",
+    env: {
+      ...completeWeb,
+      APP_ENV: "render",
+      NEXT_PUBLIC_API_URL: "https://notlocalhost.com/graphql",
+      NEXT_PUBLIC_SITE_URL: "https://mylocal.com",
+    },
+    environment: "render",
+  });
+  assert.equal(fine.ok, true, formatReport(fine));
 });
