@@ -588,7 +588,7 @@ test("a real production hostname is accepted", async () => {
   assert.equal(cfg.API_URL, "https://api.laxair.shop/graphql");
 });
 
-test("every runtime export is declared in index.d.ts", async () => {
+test("every runtime export is declared in its .d.ts", async () => {
   // THE CLASS, not the instance. Thirteen exports were added to index.js
   // without declarations, so TypeScript consumers could not import them at
   // all — and nothing failed, because the package is plain JS with a
@@ -600,25 +600,42 @@ test("every runtime export is declared in index.d.ts", async () => {
   const read = (f) =>
     readFileSync(new URL(f, import.meta.url), "utf8");
 
-  const exported = [
-    ...read("./index.js").matchAll(/^export const ([A-Za-z_][\w]*)/gm),
-  ].map((m) => m[1]);
-  const declared = new Set(
-    [
-      ...read("./index.d.ts").matchAll(
-        /^export declare (?:const|function) ([A-Za-z_][\w]*)/gm,
+  // EVERY module with a .d.ts, not just index. displaySafe and
+  // redactUrlCredentials were exported from env-contract.js and declared
+  // nowhere, which the index-only version of this test could not see.
+  const modules = [
+    "index",
+    "env-contract",
+    "environment",
+    "dns-name",
+    "web-runtime",
+  ];
+
+  let checked = 0;
+  for (const name of modules) {
+    const exported = [
+      ...read(`./${name}.js`).matchAll(
+        /^export (?:const|function) ([A-Za-z_][\w]*)/gm,
       ),
-    ].map((m) => m[1]),
-  );
+    ].map((m) => m[1]);
+    const declared = new Set(
+      [
+        ...read(`./${name}.d.ts`).matchAll(
+          /^export declare (?:const|function) ([A-Za-z_][\w]*)/gm,
+        ),
+      ].map((m) => m[1]),
+    );
 
-  assert.ok(exported.length > 50, "the export scan found nothing to check");
+    checked += exported.length;
+    const undeclared = exported.filter((n) => !declared.has(n));
+    assert.deepEqual(
+      undeclared,
+      [],
+      `exported from ${name}.js but not declared in ${name}.d.ts: ${undeclared.join(", ")}`,
+    );
+  }
 
-  const undeclared = exported.filter((name) => !declared.has(name));
-  assert.deepEqual(
-    undeclared,
-    [],
-    `exported from index.js but not declared in index.d.ts: ${undeclared.join(", ")}`,
-  );
+  assert.ok(checked > 60, "the export scan found nothing to check");
 });
 
 test("every exported subpath has a declaration file beside it", async () => {

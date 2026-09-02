@@ -23,6 +23,9 @@ export const APPS = /** @type {const} */ (["api", "web"]);
  */
 const KNOWN_FLAGS = ["--env", "--list", "--show"];
 
+/** The subset that takes a value; the rest are booleans. */
+const VALUED_FLAGS = ["--env"];
+
 export function parseArgs(argv, environments) {
   // AN UNKNOWN FLAG IS A REFUSAL, not something to skip past. Every flag
   // here selects a different operation, so silently ignoring one runs the
@@ -41,11 +44,20 @@ export function parseArgs(argv, environments) {
     if (KNOWN_FLAGS.includes(arg)) continue;
     const equals = arg.indexOf("=");
     const base = equals === -1 ? arg : arg.slice(0, equals);
+
+    // The remediation has to differ for the two kinds of flag. `--list=true`
+    // was answered with `Use "--list true"`, which then parses `true` as the
+    // positional app and fails with `Unknown app "true"` -- advice that
+    // trades one error for another. Only `--env` takes a value.
+    const remediation = VALUED_FLAGS.includes(base)
+      ? `Use "${base} ${arg.slice(equals + 1)}", not "${arg}".`
+      : `"${base}" takes no value — use "${base}" on its own, not "${arg}".`;
+
     return {
       ok: false,
       code: 2,
       message: KNOWN_FLAGS.includes(base)
-        ? `Use "${base} ${arg.slice(equals + 1)}", not "${arg}".`
+        ? remediation
         : `Unknown option "${arg}". Expected ${KNOWN_FLAGS.join(", ")}.`,
     };
   }

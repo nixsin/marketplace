@@ -110,3 +110,19 @@ export declare function assertEnvOrExit(options: {
   exit?: (code: number) => never;
   log?: (message: string) => void;
 }): CheckResult;
+
+/**
+ * Replace any credentials embedded in a URL before the value is shown.
+ *
+ * A value with no authority (an opaque URL such as `mailto:u:pw@h.com`) or
+ * one too malformed to parse is withheld entirely rather than redacted in
+ * place, because there the credential's boundaries cannot be identified.
+ */
+export declare function redactUrlCredentials(value: string): string;
+
+/**
+ * Make a non-secret value safe to print: credentials redacted, and every
+ * control, format, line and paragraph separator replaced — so no value can
+ * forge a log line or reorder one visually.
+ */
+export declare function displaySafe(value: string): string;

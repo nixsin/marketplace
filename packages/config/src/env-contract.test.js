@@ -1505,3 +1505,31 @@ test("renderDockerEnv lists only what differs inside the Docker network", () => 
   assert.ok(values.some((v) => v.includes("@postgres:")), values.join("\n"));
   assert.ok(values.some((v) => v.startsWith("redis://redis:")), values.join("\n"));
 });
+
+test("a test marker must be SET, not merely present", () => {
+  // `env.VITEST` alone made VITEST=false select "test" — and it sits above
+  // the CI branches, so one stray export turned every job on a runner into a
+  // test environment, which supplies its own fixtures and requires nothing.
+  for (const off of ["false", "0", "", "  "]) {
+    assert.equal(
+      detectEnvironment({ VITEST: off }),
+      "localhost",
+      `VITEST=${JSON.stringify(off)} should not read as a test run`,
+    );
+    // ...and must not beat a real CI marker either, which is the half that
+    // actually changes which rules apply.
+    assert.equal(
+      detectEnvironment({ VITEST: off, CI: "true", GITHUB_ACTIONS: "true" }),
+      "github-ci",
+    );
+  }
+
+  // A genuinely set marker still wins, from either runner.
+  assert.equal(detectEnvironment({ VITEST: "true" }), "test");
+  assert.equal(detectEnvironment({ JEST_WORKER_ID: "1" }), "test");
+  assert.equal(
+    detectEnvironment({ VITEST: "true", CI: "true", GITHUB_ACTIONS: "true" }),
+    "test",
+    "test must beat both CI branches",
+  );
+});

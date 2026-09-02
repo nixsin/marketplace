@@ -143,6 +143,18 @@ export function isDeployedEnvironment(env = process.env) {
  * @param {Record<string, string | undefined>} [env]
  * @returns {DeployEnvironment}
  */
+/**
+ * Is this marker actually SET, as opposed to present and switched off?
+ *
+ * @param {string | undefined} value
+ * @returns {boolean}
+ */
+function isSetMarker(value) {
+  if (value === undefined) return false;
+  const normalised = value.trim().toLowerCase();
+  return normalised !== "" && normalised !== "false" && normalised !== "0";
+}
+
 export function detectEnvironment(env = process.env) {
   // `unknown` is NOT an assertion, so it does not win.
   //
@@ -172,7 +184,23 @@ export function detectEnvironment(env = process.env) {
     override !== "unknown" &&
     DEPLOY_ENVIRONMENTS.includes(/** @type {any} */ (override));
   if (asserted) return /** @type {DeployEnvironment} */ (override);
-  if (env.NODE_ENV === "test" || env.VITEST || env.JEST_WORKER_ID) return "test";
+  // MARKERS ARE COMPARED, not merely tested for truthiness. `env.VITEST`
+  // alone made `VITEST=false` select "test" -- and worse, beat the CI
+  // branches below it, so one stray export turned every job on a runner into
+  // a test environment that supplies its own fixtures and requires nothing.
+  //
+  // A false-like list rather than `=== "true"`, because these two markers do
+  // not agree on a value: Vitest writes "true", while JEST_WORKER_ID is a
+  // worker number. Both are absent when not running, so the question is only
+  // whether a present value is a deliberate off-switch. Jest numbers workers
+  // from 1, so treating "0" as off cannot swallow a real worker.
+  if (
+    env.NODE_ENV === "test" ||
+    isSetMarker(env.VITEST) ||
+    isSetMarker(env.JEST_WORKER_ID)
+  ) {
+    return "test";
+  }
   if (env.GITHUB_ACTIONS === "true") return "github-ci";
   if (env.CI === "true") return "ci-local";
 

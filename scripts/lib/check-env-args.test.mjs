@@ -95,9 +95,11 @@ test("--env=render is refused with the form that works", () => {
   assert.equal(result.ok, false);
   assert.match(result.message, /--env render/);
 
+  // A boolean flag gets DIFFERENT advice, covered in its own test below:
+  // "--list true" would then parse `true` as the positional app.
   const listEquals = parseArgs(["--list=true"], ENVS);
   assert.equal(listEquals.ok, false);
-  assert.match(listEquals.message, /--list true/);
+  assert.match(listEquals.message, /takes no value/);
 });
 
 test("every valid invocation still parses", () => {
@@ -232,4 +234,29 @@ test("a forced target selects the files that target actually reads", () => {
   for (const target of ["render", "test", "localhost"]) {
     assert.deepEqual(envFilesFor("api", nodeEnvForTarget(target)), [".env"]);
   }
+});
+
+test("a boolean flag with a value is told to drop the value, not move it", () => {
+  // `--list=true` was answered with `Use "--list true"`, which then parses
+  // `true` as the positional app and fails with `Unknown app "true"` —
+  // advice that trades one error for another.
+  for (const arg of ["--list=true", "--show=1"]) {
+    const result = parseArgs([arg], ENVS);
+    assert.equal(result.ok, false);
+    assert.match(result.message, /takes no value/);
+    assert.ok(
+      !/ true| 1/.test(result.message),
+      `the suggestion must not carry the value: ${result.message}`,
+    );
+  }
+
+  // The suggestion it gives must itself parse, which is the property the
+  // old message failed.
+  assert.equal(parseArgs(["--list"], ENVS).ok, true);
+  assert.equal(parseArgs(["--show"], ENVS).ok, true);
+
+  // --env is the one flag that does take a value, and keeps its advice.
+  const env = parseArgs(["--env=render"], ENVS);
+  assert.match(env.message, /Use "--env render"/);
+  assert.equal(parseArgs(["--env", "render"], ENVS).ok, true);
 });
