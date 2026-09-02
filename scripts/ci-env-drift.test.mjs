@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   envBlock,
@@ -58,9 +58,15 @@ test("each job needing a database URL owns one, equal to the contract's", () => 
 });
 
 test("test-api-e2e has no DATABASE_URL, at any level", () => {
-  // THE ONE THAT MATTERS. That suite loads apps/api/.env.test, dotenv never
-  // overwrites an already-set value, and its beforeEach TRUNCATEs every
-  // table — so any DATABASE_URL reaching this job wipes the dev database.
+  // That suite loads apps/api/.env.test, and dotenv never overwrites an
+  // already-set value — so a DATABASE_URL reaching this job silently
+  // redirects it, and its beforeEach TRUNCATEs every table.
+  //
+  // This check stops that configuration from MERGING. It does not prevent
+  // the damage: it runs in test-ci-scripts, concurrently with the job it
+  // describes. `assertConnectedToTestDatabase` is the prevention — see the
+  // test below.
+  //
   // Checked at the workflow level too, because hoisting it there is the
   // natural tidy-up and exactly the wrong move.
   assert.ok(!("DATABASE_URL" in workflowEnv(source)));
@@ -364,5 +370,32 @@ test("explicit-key syntax is rejected", () => {
     const found = unreadableSpellings(`name: CI\n${line}\n`);
     assert.equal(found.length, 1, `not rejected: ${line}`);
     assert.match(found[0], /explicit key/);
+  }
+});
+
+test("every truncating e2e spec guards its connection first", () => {
+  // THE ACTUAL PREVENTION, and nothing was checking it. A spec that
+  // TRUNCATEs without calling assertConnectedToTestDatabase would destroy
+  // whatever database it happened to be pointed at — which is how the dev
+  // catalogue was lost once already.
+  //
+  // The guard asks Postgres `SELECT current_database()` rather than reading
+  // DATABASE_URL, so it cannot be fooled by the env-var indirection that
+  // caused the incident.
+  const dir = fileURLToPath(new URL("../apps/api/test/", import.meta.url));
+  const specs = readdirSync(dir).filter((f) => f.endsWith(".e2e-spec.ts"));
+  assert.ok(specs.length > 0, "no e2e specs found — did they move?");
+
+  for (const spec of specs) {
+    const text = readFileSync(`${dir}${spec}`, "utf8");
+    if (!text.includes("TRUNCATE")) continue;
+    // The CALL, not the import. Matching the bare name passed a file whose
+    // call had been deleted but whose import line remained — found by
+    // deleting one and watching this test still pass.
+    assert.match(
+      text,
+      /assertConnectedToTestDatabase\s*\(/,
+      `${spec} truncates without asserting it is on a test database`,
+    );
   }
 });

@@ -21,6 +21,19 @@
  * DATABASE_URL pasted into the wrong job, a service block overriding the
  * account, a second env block added at the bottom of the file.
  *
+ * AND IT IS THE OUTER LAYER, NOT THE PREVENTION. These checks run in
+ * test-ci-scripts, concurrently with test-api-e2e — so a bad configuration
+ * would already be running by the time they fail. What actually stops the
+ * destructive case is inside that job:
+ * `assertConnectedToTestDatabase` runs in every e2e spec's beforeAll, asks
+ * Postgres `SELECT current_database()`, and refuses to truncate anything
+ * whose name does not end in `_test`. That cannot be fooled by env-var
+ * indirection, because it reads the connection rather than the variable.
+ *
+ * So the layering is: the runtime guard prevents the damage; this stops the
+ * misconfiguration from being merged in the first place. Neither replaces
+ * the other, and neither should be described as doing the other's job.
+ *
  * It is NOT an adversarial boundary, and cannot be. Anyone who can edit
  * ci.yml can add a step that runs arbitrary code with the repository's
  * secrets — reaching for `? DATABASE_URL` explicit-key syntax to smuggle a
