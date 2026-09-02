@@ -487,18 +487,27 @@ test("angle-bracket placeholders are caught without a quadratic regex", () => {
   });
   assert.match(messages(caught.errors), /looks like a placeholder/);
 
-  // The shape that was slow. A regression would not fail this assertion, it
-  // would fail to finish -- which the runner reports as a timeout, and is the
-  // only honest way to assert "linear".
-  const start = Date.now();
-  checkEnv({
+  // The shape that was slow, and NO WALL-CLOCK ASSERTION.
+  //
+  // This used to assert `Date.now() - start < 1000`, which the comment
+  // beside it already argued was the wrong instrument: a quadratic
+  // regression here does not take 1.1 seconds, it fails to finish, and the
+  // runner reports that as a timeout. Meanwhile a loaded machine can push a
+  // perfectly linear implementation past any fixed threshold, so the
+  // assertion could only ever produce false failures. Half a million
+  // characters is quadratic-hostile enough that a regression hangs.
+  const pathological = checkEnv({
     app: "api",
-    env: { ...completeApi, JWT_SECRET: "<".repeat(200_000) },
+    env: { ...completeApi, JWT_SECRET: "<".repeat(500_000) },
     environment: "render",
   });
+
+  // And it still gets the right answer, which a timing assertion never
+  // checked: unterminated `<`s are not a placeholder, so the finding must
+  // be about something else entirely.
   assert.ok(
-    Date.now() - start < 1000,
-    "placeholder detection should be linear in the value's length",
+    !messages(pathological.errors).includes("looks like a placeholder"),
+    "an unterminated < run is not a placeholder",
   );
 });
 

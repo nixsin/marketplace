@@ -177,24 +177,33 @@ export function envFilesFor(app, nodeEnv) {
  * `.env.production*`; checking `.env.development*` against production rules
  * reports a verdict about files that deploy will never open.
  *
- * The mapping is what each environment genuinely does, not a preference:
+ * The split is BUILD versus DEV SERVER, not deployment versus laptop, and
+ * that distinction is the whole content of this function:
  *
- *   render      `next build` / `next start`      -> production
- *   unknown     a production-looking process      -> production
- *   test        Vitest/Jest                       -> test
- *   github-ci   \
- *   ci-local     > a dev server or a script       -> development
- *   localhost   /
+ *   test                       Vitest/Jest            -> test
+ *   localhost                  `next dev`             -> development
+ *   render, github-ci,         `next build`           -> production
+ *   ci-local, unknown
  *
- * github-ci is the loose one: a CI job runs builds AND tests. `test` beats
- * both CI branches during detection, so a forced `github-ci` is asking about
- * the non-test jobs, which run a dev-mode toolchain.
+ * github-ci was development here and that was wrong: the only thing CI does
+ * with a web env file is `next build`, which is production mode, so a dry
+ * run against it validated `.env.development*` while the job it describes
+ * reads `.env.production*`. ci-local and unknown go with it for the same
+ * reason -- `CI=true pnpm build` and a bare `pnpm build` are both builds.
+ *
+ * `localhost` stays development because that is the one target whose
+ * defining activity is the dev server. Someone asking about a local
+ * production build has `--env unknown`, which is what such a process
+ * actually detects as.
+ *
+ * Only the web app is affected: envFilesFor("api", ...) returns `.env`
+ * whatever the mode, because Nest reads one file.
  *
  * @param {string} target One of DEPLOY_ENVIRONMENTS.
  * @returns {string} The NODE_ENV to select env files with.
  */
 export function nodeEnvForTarget(target) {
-  if (target === "render" || target === "unknown") return "production";
   if (target === "test") return "test";
-  return "development";
+  if (target === "localhost") return "development";
+  return "production";
 }

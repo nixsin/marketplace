@@ -205,12 +205,19 @@ test("a forced target selects the files that target actually reads", () => {
   // `--env render` asks "would this pass in production?" — answering it from
   // `.env.development*` answers a different question, about files the deploy
   // will never open.
+  // The split is BUILD versus DEV SERVER, not deployment versus laptop.
+  // github-ci was development and that was wrong: the only thing CI does
+  // with a web env file is `next build`, which is production mode, so a dry
+  // run validated `.env.development*` while the job reads `.env.production*`.
   assert.equal(nodeEnvForTarget("render"), "production");
+  assert.equal(nodeEnvForTarget("github-ci"), "production");
+  assert.equal(nodeEnvForTarget("ci-local"), "production");
   assert.equal(nodeEnvForTarget("unknown"), "production");
   assert.equal(nodeEnvForTarget("test"), "test");
+  // The one target whose defining activity is the dev server. Someone
+  // asking about a local production build wants --env unknown, which is
+  // what such a process actually detects as.
   assert.equal(nodeEnvForTarget("localhost"), "development");
-  assert.equal(nodeEnvForTarget("ci-local"), "development");
-  assert.equal(nodeEnvForTarget("github-ci"), "development");
 
   // The interaction is the point: the two functions compose into the file
   // list a dry run against Render should read.
