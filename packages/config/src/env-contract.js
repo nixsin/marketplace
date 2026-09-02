@@ -1163,10 +1163,20 @@ function hasUrlCredentials(value) {
     if (parsed.host === "") return /@/.test(value);
     return Boolean(parsed.username || parsed.password);
   } catch {
-    // Same fail-closed reasoning as redactUrlCredentials: a value too
-    // malformed to parse can carry userinfo in a shape no pattern reliably
-    // describes, and answering "no" is how the leak got through.
-    return /\/\/[^\s]*@/.test(value);
+    // A BARE `@`, matching redactUrlCredentials exactly -- and the previous
+    // version contradicted its own comment. It said a malformed value "can
+    // carry userinfo in a shape no pattern reliably describes" and then used
+    // a pattern, `/\/\/[^\s]*@/`, which CodeQL flagged as js/polynomial-redos
+    // (high): unanchored, so the engine retries `[^\s]*` from every `//` and
+    // input like `//////...` is quadratic. The same finding this file already
+    // records for looksLikePlaceholder, in a second place.
+    //
+    // Requiring `//` was also WRONG, not merely slow: `not-a-url
+    // user:secret@host` carries userinfo and has no `//` at all. The honest
+    // question is not "does this look like userinfo" but "can I rule it
+    // out", and a bare `@` cannot be. `String.includes` is linear and
+    // answers exactly that, so there is nothing traded away.
+    return value.includes("@");
   }
 }
 

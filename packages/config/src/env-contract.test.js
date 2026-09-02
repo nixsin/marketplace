@@ -1583,3 +1583,40 @@ test("DEPLOY_ENVIRONMENTS matches DEPLOY_ENVIRONMENT, in order", () => {
     "the literal list and the named constants disagree",
   );
 });
+
+test("credential detection is linear, and catches userinfo without a scheme", () => {
+  // CodeQL flagged the previous `/\/\/[^\s]*@/` as js/polynomial-redos
+  // (high): unanchored, so the engine retries `[^\s]*` from every `//` and a
+  // run of slashes is quadratic. Half a million of them, which a regression
+  // would not fail so much as fail to finish.
+  const slashes = "/".repeat(500_000);
+  const pathological = checkEnv({
+    app: "web",
+    env: { ...completeWeb, NEXT_PUBLIC_BLOB_BASE_URL: slashes },
+    environment: "localhost",
+  });
+  assert.equal(pathological.ok, false, "a run of slashes is not a URL");
+
+  // Requiring `//` was also WRONG, not merely slow: userinfo can appear with
+  // no scheme at all, and that value was printed verbatim into the report.
+  const noScheme = checkEnv({
+    app: "web",
+    env: { ...completeWeb, NEXT_PUBLIC_BLOB_BASE_URL: "user:hunter2@host" },
+    environment: "localhost",
+  });
+  assert.equal(noScheme.ok, false);
+  assert.ok(
+    !messages(noScheme.errors).includes("hunter2"),
+    `the credential reached the report:\n${formatReport(noScheme)}`,
+  );
+
+  // An ordinary invalid value with no `@` is still shown, because showing it
+  // is what makes the error useful — the withholding is for credentials.
+  const ordinary = checkEnv({
+    app: "web",
+    env: { ...completeWeb, NEXT_PUBLIC_BLOB_BASE_URL: "not-a-url" },
+    environment: "localhost",
+  });
+  assert.equal(ordinary.ok, false);
+  assert.match(messages(ordinary.errors), /not-a-url/);
+});
