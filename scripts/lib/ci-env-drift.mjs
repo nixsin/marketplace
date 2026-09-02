@@ -307,9 +307,16 @@ function blank(text, { strings }) {
 /** A TRUNCATE statement, in the spellings Postgres accepts. */
 const TRUNCATE_SQL = /(?<![\w$])truncate\s+(?:table\b|only\b|["a-z_])/gi;
 
-/** The guard, awaited or returned so Jest observes it finishing. */
+/**
+ * The guard, awaited or returned so Jest observes it finishing.
+ *
+ * HORIZONTAL whitespace only after the keyword. `\s+` matched a newline, and
+ * `return\n  assertConnectedToTestDatabase(p)` returns undefined —
+ * automatic semicolon insertion ends the statement at the line break, so the
+ * hook does not wait for the guard at all.
+ */
 const GUARD =
-  /(?<![\w$])(?:await|return)\s+(?:[\w$.]+\.)?assertConnectedToTestDatabase\s*\(/;
+  /(?<![\w$])(?:await|return)[ \t]+(?:[\w$.]+\.)?assertConnectedToTestDatabase\s*\(/g;
 
 const SETUP_HOOK = /(?<![\w$.])before(?:All|Each)\s*\(/g;
 
@@ -327,8 +334,15 @@ export function unguardedTruncates(spec) {
   const truncates = [...code.matchAll(TRUNCATE_SQL)].map((m) => m.index);
   if (truncates.length === 0) return [];
 
-  const guard = executable.search(GUARD);
-  if (guard === -1 || !inSetupHook(executable, guard)) return truncates;
+  // EVERY candidate, not the first. One guard-shaped expression outside a
+  // hook — in a helper, say — otherwise made the function report every
+  // truncate as unguarded while a real guard sat in the hook below it.
+  const usable = [...executable.matchAll(GUARD)]
+    .map((m) => m.index)
+    .filter((i) => inSetupHook(executable, i));
+  if (usable.length === 0) return truncates;
+
+  const guard = Math.min(...usable);
 
   // The guard has to come first. Within one hook that is the real ordering;
   // across hooks it is a conservative approximation, and erring toward

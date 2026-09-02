@@ -690,3 +690,29 @@ test("every way the guard goes missing by accident is caught", () => {
     assert.deepEqual(unguardedTruncates(src), [], `rejected: ${why}`);
   }
 });
+
+test("a return broken by a newline does not count", () => {
+  // `return\n  assertConnectedToTestDatabase(p)` returns undefined:
+  // automatic semicolon insertion ends the statement at the line break, so
+  // the hook never waits for the guard.
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+  const asi = `describe('s',()=>{beforeAll(()=>{return\n  assertConnectedToTestDatabase(p);});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(unguardedTruncates(asi).length, 1);
+
+  const sameLine = `describe('s',()=>{beforeAll(()=>{return assertConnectedToTestDatabase(p);});beforeEach(async()=>{${trunc}});});`;
+  assert.deepEqual(unguardedTruncates(sameLine), []);
+});
+
+test("a guard-shaped expression outside a hook does not mask a real one", () => {
+  // Only the first match was examined, so a helper containing one made the
+  // lint report every truncate while a real guard sat in the hook below.
+  const guard = "await assertConnectedToTestDatabase(p);";
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+
+  const both = `describe('s',()=>{const h=()=>{return assertConnectedToTestDatabase(p);};beforeAll(async()=>{${guard}});beforeEach(async()=>{${trunc}});});`;
+  assert.deepEqual(unguardedTruncates(both), [], "a real guard must still count");
+
+  // ...and a helper on its own is still not a guard.
+  const helperOnly = `describe('s',()=>{const h=()=>{return assertConnectedToTestDatabase(p);};beforeEach(async()=>{${trunc}});});`;
+  assert.equal(unguardedTruncates(helperOnly).length, 1);
+});
