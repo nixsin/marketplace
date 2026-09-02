@@ -173,3 +173,26 @@ test("a repeated flag is refused", () => {
     assert.match(result.message, /more than once/);
   }
 });
+
+test("an unrecognised NODE_ENV falls back to production, not a made-up file", () => {
+  // Next only ever uses development/production/test and sets NODE_ENV itself.
+  // Interpolating whatever is in the environment sent this looking for
+  // `.env.staging.local` -- a file Next never reads -- so the checker would
+  // report values from somewhere the app does not look, which is the exact
+  // failure the per-app split exists to prevent.
+  const production = envFilesFor("web", "production");
+  for (const odd of ["staging", "", "PRODUCTION", "dev", "qa"]) {
+    assert.deepEqual(
+      envFilesFor("web", odd),
+      production,
+      `NODE_ENV=${JSON.stringify(odd)} should fall back to production`,
+    );
+  }
+
+  // No file name may carry an unrecognised mode into it.
+  for (const odd of ["staging", "qa"]) {
+    for (const file of envFilesFor("web", odd)) {
+      assert.ok(!file.includes(odd), `${file} leaked ${odd}`);
+    }
+  }
+});

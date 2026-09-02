@@ -259,6 +259,7 @@ function universalProblem(value) {
  * @property {boolean} secret        Never echo this value into a message.
  * @property {string} why            What actually breaks, in one line.
  * @property {string | null} emptyMeans  What `FOO=` means, or null if empty is invalid.
+ * @property {string} devValue       The localhost value, written into .env.example.
  * @property {(value: string) => string | null} check
  * @property {Partial<Record<DeployEnvironment, (value: string) => string | null>>} [perEnvironment]
  */

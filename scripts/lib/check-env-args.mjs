@@ -147,10 +147,23 @@ export function parseArgs(argv, environments) {
  */
 export function envFilesFor(app, nodeEnv) {
   if (app !== "web") return [".env"];
+
+  // NEXT ONLY EVER USES THESE THREE MODES, and it sets NODE_ENV itself:
+  // `next dev` forces development, `next build`/`next start` production,
+  // and the test runners test. Interpolating whatever is in the environment
+  // meant `NODE_ENV=staging` sent this looking for `.env.staging.local` --
+  // a file Next would never read, so the checker would report values from
+  // somewhere the app does not look, which is the exact failure the per-app
+  // split above exists to prevent. Anything else falls back to production,
+  // matching what Next does with an unrecognised mode.
+  const mode = ["development", "production", "test"].includes(nodeEnv)
+    ? nodeEnv
+    : "production";
+
   return [
-    `.env.${nodeEnv}.local`,
-    ...(nodeEnv === "test" ? [] : [".env.local"]),
-    `.env.${nodeEnv}`,
+    `.env.${mode}.local`,
+    ...(mode === "test" ? [] : [".env.local"]),
+    `.env.${mode}`,
     ".env",
   ];
 }
