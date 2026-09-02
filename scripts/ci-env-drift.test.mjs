@@ -389,13 +389,33 @@ test("every truncating e2e spec guards its connection first", () => {
   for (const spec of specs) {
     const text = readFileSync(`${dir}${spec}`, "utf8");
     if (!text.includes("TRUNCATE")) continue;
-    // The CALL, not the import. Matching the bare name passed a file whose
-    // call had been deleted but whose import line remained — found by
-    // deleting one and watching this test still pass.
-    assert.match(
-      text,
-      /assertConnectedToTestDatabase\s*\(/,
+    // ORDER, not presence. Three weaker versions of this check passed a
+    // broken file in turn: matching the bare name accepted an orphaned
+    // import, and matching the call accepted one placed AFTER the TRUNCATE
+    // or parked in an unused helper.
+    const call = text.search(/assertConnectedToTestDatabase\s*\(/);
+    const truncate = text.indexOf("TRUNCATE");
+
+    assert.notEqual(
+      call,
+      -1,
       `${spec} truncates without asserting it is on a test database`,
+    );
+    assert.ok(
+      call < truncate,
+      `${spec} calls the guard after its first TRUNCATE — it must run first`,
+    );
+
+    // ...and from a setup hook, so it runs for the suite rather than only
+    // inside whichever test happens to reach it.
+    const beforeCall = text.slice(0, call);
+    const hook = Math.max(
+      beforeCall.lastIndexOf("beforeAll("),
+      beforeCall.lastIndexOf("beforeEach("),
+    );
+    assert.ok(
+      hook !== -1,
+      `${spec} calls the guard outside a beforeAll/beforeEach hook`,
     );
   }
 });
