@@ -587,3 +587,36 @@ test("a real production hostname is accepted", async () => {
   });
   assert.equal(cfg.API_URL, "https://api.laxair.shop/graphql");
 });
+
+test("every runtime export is declared in index.d.ts", async () => {
+  // THE CLASS, not the instance. Thirteen exports were added to index.js
+  // without declarations, so TypeScript consumers could not import them at
+  // all — and nothing failed, because the package is plain JS with a
+  // hand-written .d.ts and neither half checks the other.
+  //
+  // Reading the source rather than importing it: a declaration file has no
+  // runtime form, so the only way to compare the two is textually.
+  const { readFileSync } = await import("node:fs");
+  const read = (f) =>
+    readFileSync(new URL(f, import.meta.url), "utf8");
+
+  const exported = [
+    ...read("./index.js").matchAll(/^export const ([A-Za-z_][\w]*)/gm),
+  ].map((m) => m[1]);
+  const declared = new Set(
+    [
+      ...read("./index.d.ts").matchAll(
+        /^export declare (?:const|function) ([A-Za-z_][\w]*)/gm,
+      ),
+    ].map((m) => m[1]),
+  );
+
+  assert.ok(exported.length > 50, "the export scan found nothing to check");
+
+  const undeclared = exported.filter((name) => !declared.has(name));
+  assert.deepEqual(
+    undeclared,
+    [],
+    `exported from index.js but not declared in index.d.ts: ${undeclared.join(", ")}`,
+  );
+});

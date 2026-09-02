@@ -48,7 +48,13 @@ import {
 } from "./index.js";
 import { isLoopbackHost, isPublicDnsName } from "./dns-name.js";
 
-/** @typedef {"render" | "github-ci" | "ci-local" | "test" | "localhost" | "unknown"} DeployEnvironment */
+/**
+ * Imported rather than redeclared. environment.js is the module that
+ * PRODUCES an environment, so the union belongs with it; two copies of the
+ * same six strings drift, and a JSDoc union drifts silently.
+ *
+ * @typedef {import("./environment.js").DeployEnvironment} DeployEnvironment
+ */
 /** @typedef {"required" | "recommended" | "optional"} Severity */
 
 /**

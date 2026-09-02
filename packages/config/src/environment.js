@@ -14,6 +14,20 @@
  */
 
 /**
+ * THE TYPEDEF LIVES HERE, not in env-contract.js, and the direction matters:
+ * this module is the one that produces an environment, and env-contract.js
+ * imports it. Declaring it there and using it here made the union unresolved
+ * in this file for any JSDoc-aware checker -- and an unresolved type is not
+ * a weaker check, it is no check, so the casts below were asserting nothing.
+ *
+ * Kept in step with DEPLOY_ENVIRONMENTS by a test, since a union written out
+ * by hand and an array of the same strings drift silently in both
+ * directions.
+ *
+ * @typedef {"render" | "github-ci" | "ci-local" | "test" | "localhost" | "unknown"} DeployEnvironment
+ */
+
+/**
  * Named rather than loose strings, so a config file that has to declare
  * APP_ENV declares a value this module actually recognises -- a typo is now a
  * hard error, and a magic string is how you write one.

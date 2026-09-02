@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   API_ENV_CONTRACT,
   DEPLOY_ENVIRONMENTS,
@@ -1328,4 +1329,28 @@ test("the unknown hint does not suggest a value that leaves you unknown", () => 
       `${real} should still be suggested`,
     );
   }
+});
+
+test("the DeployEnvironment union matches DEPLOY_ENVIRONMENTS", () => {
+  // A JSDoc union written by hand and an array of the same strings drift in
+  // both directions with nothing failing — the union is erased at runtime
+  // and the array is never type-checked against it. Read from source,
+  // because a typedef has no runtime form to inspect.
+  const source = readFileSync(
+    new URL("./environment.js", import.meta.url),
+    "utf8",
+  );
+  const match = /@typedef \{([^}]+)\} DeployEnvironment/.exec(source);
+  assert.ok(match, "the DeployEnvironment typedef was not found");
+
+  const union = match[1]
+    .split("|")
+    .map((part) => part.trim().replace(/^"|"$/g, ""))
+    .sort();
+
+  assert.deepEqual(
+    union,
+    [...DEPLOY_ENVIRONMENTS].sort(),
+    "the typedef and DEPLOY_ENVIRONMENTS disagree",
+  );
 });
