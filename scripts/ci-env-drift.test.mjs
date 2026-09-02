@@ -57,13 +57,27 @@ function findSpecs(dir) {
   return out;
 }
 
-/** Blank out comments only, preserving offsets. */
+/**
+ * Blank out comments only, preserving offsets and string bodies.
+ *
+ * String-aware: `//` inside a quoted URL, or `/*` inside SQL, is not a
+ * comment. Treating it as one blanked the rest of the line and could hide a
+ * TRUNCATE from the lint — which matters here precisely because this view
+ * keeps strings so the SQL inside them stays visible.
+ */
 function stripComments(text) {
   let out = "";
   let i = 0;
   while (i < text.length) {
     const two = text.slice(i, i + 2);
-    if (two === "//") {
+    if (text[i] === '"' || text[i] === "'" || text[i] === "`") {
+      const quote = text[i];
+      let j = i + 1;
+      while (j < text.length && text[j] !== quote) j += text[j] === "\\" ? 2 : 1;
+      const stop = Math.min(j + 1, text.length);
+      out += text.slice(i, stop);
+      i = stop;
+    } else if (two === "//") {
       const end = text.indexOf("\n", i);
       const stop = end === -1 ? text.length : end;
       out += " ".repeat(stop - i);
@@ -570,14 +584,23 @@ test("every TRUNCATE has a guard call before it, in scope, in a hook", () => {
 
     for (const m of code.matchAll(/truncate/gi)) {
       const at = m.index;
-      const scope = enclosingExtent(text, at, /describe\s*\(/g);
-
-      const covering = guards.filter(
-        (g) =>
-          g < at &&
-          (scope === null || (g > scope.start && g < scope.end)) &&
-          containedInSetupHook(text, g),
-      );
+      // A guard covers a TRUNCATE when the GUARD'S OWN scope contains it —
+      // an outer describe's hook protects everything nested inside it, and a
+      // child's protects nothing outside itself.
+      //
+      // Asking instead whether the guard sits inside the TRUNCATE's scope was
+      // wrong both ways: it accepted a guard from an earlier CHILD describe
+      // for a truncate in the parent, and rejected a perfectly good guard in
+      // an OUTER describe for a nested truncate — which would have blocked a
+      // legitimate refactor.
+      const covering = guards.filter((g) => {
+        if (g >= at) return false;
+        if (!containedInSetupHook(text, g)) return false;
+        const guardScope = enclosingExtent(text, g, /describe\s*\(/g);
+        return (
+          guardScope === null || (at > guardScope.start && at < guardScope.end)
+        );
+      });
       assert.ok(
         covering.length > 0,
         `${spec_}: a TRUNCATE at offset ${at} has no guard before it, in its own describe, inside a setup hook`,
@@ -691,4 +714,60 @@ test("enclosingExtent finds the innermost describe", () => {
 
   // Nothing enclosing is null, not a throw.
   assert.equal(enclosingExtent("truncate();", 0, /describe\s*\(/g), null);
+});
+
+test("stripComments does not mistake comment markers inside strings", () => {
+  // A `//` in a URL, or `/*` in SQL, is not a comment. Treating it as one
+  // blanks the rest of the line and can hide a TRUNCATE — in the one view
+  // that keeps strings specifically so the SQL stays visible.
+  const url = 'const u = "https://x/y"; await q(`TRUNCATE TABLE "P"`);';
+  const out = stripComments(url);
+  assert.match(out, /TRUNCATE/, "the SQL was hidden by a URL's slashes");
+  assert.equal(out.length, url.length);
+
+  const sql = 'await q("/* not a comment */ TRUNCATE TABLE t");';
+  assert.match(stripComments(sql), /TRUNCATE/);
+
+  // A real comment is still blanked.
+  const real = 'a(); // TRUNCATE TABLE t';
+  assert.ok(!/TRUNCATE/.test(stripComments(real)));
+});
+
+test("a guard covers only what its own scope contains", () => {
+  // Outer covers nested; a child covers nothing outside itself. Asking the
+  // other way round accepted a child's guard for a parent truncate and
+  // rejected an outer guard for a nested one.
+  const outerGuard = [
+    "describe('outer', () => {",
+    "  beforeAll(async () => { await assertConnectedToTestDatabase(p); });",
+    "  describe('inner', () => {",
+    "    beforeEach(async () => { await q('TRUNCATE TABLE t'); });",
+    "  });",
+    "});",
+  ].join("\n");
+
+  const at = outerGuard.indexOf("TRUNCATE");
+  const g = outerGuard.indexOf("assertConnectedToTestDatabase");
+  const gScope = enclosingExtent(outerGuard, g, /describe\s*\(/g);
+  assert.ok(
+    gScope && at > gScope.start && at < gScope.end,
+    "an outer guard must cover a nested truncate",
+  );
+
+  const childGuard = [
+    "describe('outer', () => {",
+    "  describe('inner', () => {",
+    "    beforeAll(async () => { await assertConnectedToTestDatabase(p); });",
+    "  });",
+    "  beforeEach(async () => { await q('TRUNCATE TABLE t'); });",
+    "});",
+  ].join("\n");
+
+  const at2 = childGuard.indexOf("TRUNCATE");
+  const g2 = childGuard.indexOf("assertConnectedToTestDatabase");
+  const gScope2 = enclosingExtent(childGuard, g2, /describe\s*\(/g);
+  assert.ok(
+    gScope2 && !(at2 > gScope2.start && at2 < gScope2.end),
+    "a child guard must not cover a truncate in the parent",
+  );
 });
