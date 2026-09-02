@@ -11,11 +11,6 @@
  * entry must stay safe to import from anywhere.
  */
 
-import {
-  isUnreachableIpv4,
-  isUnreachableIpv6,
-} from "./host-classification.js";
-
 /**
  * Resolve a public URL that has a localhost development default.
  *
@@ -152,20 +147,30 @@ function resolvePublicUrl(name, value, devDefault) {
     );
   }
 
-  // The SHARED classification, not a list here. Four exact strings accepted
-  // `127.0.0.2` -- and every other address in 127.0.0.0/8, every RFC1918
-  // range, CGNAT, and IPv4-mapped IPv6. That logic already existed in
-  // apps/web/src/lib/site-url.ts; keeping a second, weaker copy is the drift
-  // this package exists to stop.
-  if (
-    /^localhost\.?$/i.test(parsed.hostname) ||
-    isUnreachableIpv4(parsed.hostname) ||
-    isUnreachableIpv6(parsed.hostname)
-  ) {
+  // MUST BE A DNS NAME. Not "which of the IANA special-purpose ranges is
+  // this", which is what five review rounds were spent on -- fec0::/10, then
+  // 100::/64 and 64:ff9b:1::/48, then 2001:2::/48 and 3fff::/20, then
+  // ORCHIDv2 -- each one real, and the enumeration unbounded because IANA is
+  // still assigning blocks (3fff::/20 landed in 2024).
+  //
+  // In production this value is always a DNS name: an IP literal cannot get
+  // a certificate from the CDN in front of it, and the scheme check above
+  // already requires https. The incident this guard exists for was
+  // `http://localhost:3000` -- a HOSTNAME, not an address.
+  //
+  // So the rule is "a public DNS name", which rejects every IP literal in
+  // both families at once, rejects single-label internal names like `api`,
+  // and cannot be defeated by a range IANA has not invented yet.
+  const isIpv6Literal = parsed.hostname.startsWith("[");
+  const isIpv4Literal = /^\d+(?:\.\d+)*$/.test(parsed.hostname);
+  const isDottedName = parsed.hostname.replace(/\.$/, "").includes(".");
+
+  if (isIpv6Literal || isIpv4Literal || !isDottedName) {
     throw new Error(
-      `${name} points at ${parsed.hostname} while running on Render — an ` +
-        `address unreachable from outside the network that issued it. Every ` +
-        `visitor would fail to load it.`,
+      `${name} must be a public DNS name in production — got a bare host with ` +
+        `no domain, or an IP literal. Visitors reach this over the CDN, which ` +
+        `needs a name it holds a certificate for. (Value not shown: a mistyped ` +
+        `value can itself be a secret.)`,
     );
   }
 

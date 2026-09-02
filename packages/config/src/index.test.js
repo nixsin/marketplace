@@ -94,7 +94,7 @@ describe("web config", () => {
     );
   });
 
-  test("rejects a localhost value on Render, not just a missing one", async () => {
+  test("rejects a localhost value on a deployment, not just a missing one", async () => {
     // This is the case that actually occurs. apps/web/Dockerfile declares
     // `ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql`, so a build that
     // loses the value produces a POPULATED, plausible, wrong variable rather
@@ -106,7 +106,7 @@ describe("web config", () => {
           NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql",
           NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
         }),
-      /points at localhost while running on Render/,
+      /must be a public DNS name/,
     );
   });
 
@@ -393,7 +393,7 @@ test("the BUILD-time marker rejects just as the runtime one does", async () => {
         NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql",
         NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
       }),
-    /points at localhost/,
+    /must be a public DNS name/,
   );
 });
 
@@ -408,7 +408,7 @@ test("SITE_URL is validated too, not just API_URL", async () => {
         NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
         NEXT_PUBLIC_SITE_URL: "http://localhost:3000",
       }),
-    /NEXT_PUBLIC_SITE_URL points at localhost/,
+    /NEXT_PUBLIC_SITE_URL must be a public DNS name/,
   );
 
   await assert.rejects(
@@ -421,35 +421,47 @@ test("SITE_URL is validated too, not just API_URL", async () => {
   );
 });
 
-test("the whole loopback and private range is refused, not four strings", async () => {
-  // The guard was four exact hostnames, so `127.0.0.2` -- and every other
-  // address in 127.0.0.0/8, every RFC1918 range, CGNAT, and IPv4-mapped
-  // IPv6 -- reached production. The thorough classification already existed
-  // in apps/web/src/lib/site-url.ts and is shared now.
-  for (const host of [
-    "127.0.0.2",
-    "10.0.0.5",
-    "192.168.1.1",
-    "169.254.1.1",
-    "100.64.0.1",
-    "[::ffff:127.0.0.1]",
-    // IPv6 ranges the internet will not route. fec0::/10 is deprecated by
-    // RFC 3879, which makes it easy to leave out -- but deprecated means
-    // routers may ignore it, not that nobody types it.
-    "[fec0::1]",
-    "[fe80::1]",
-    "[fd00::1]",
-    "[2001:db8::1]",
-  ]) {
-    await assert.rejects(
-      () =>
-        importWithEnv({
-          RENDER: "true",
-          NEXT_PUBLIC_API_URL: `https://${host}/graphql`,
-          NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
-        }),
-      /unreachable from outside/,
-      `${host} should be refused`,
-    );
-  }
+test("production requires a public DNS name, which rejects every IP literal", () => {
+  // Five review rounds went into enumerating IANA special-purpose ranges --
+  // fec0::/10, 100::/64, 2001:2::/48, 3fff::/20, ORCHIDv2 -- each real, and
+  // the list unbounded because IANA is still assigning blocks.
+  //
+  // None of it was needed. In production this value is always a DNS name: an
+  // IP literal cannot get a certificate from the CDN in front of it, and the
+  // scheme check already requires https. One rule rejects every literal in
+  // both families, plus single-label internal names, and cannot be defeated
+  // by a range that does not exist yet.
+  return Promise.all(
+    [
+      "https://127.0.0.2/graphql",
+      "https://192.0.0.1/graphql",
+      "https://10.0.0.5/graphql",
+      "https://[fec0::1]/graphql",
+      "https://[2606:4700::1111]/graphql",
+      "https://localhost/graphql",
+      "https://api/graphql",
+    ].map((value) =>
+      assert.rejects(
+        () =>
+          importWithEnv({
+            RENDER: "true",
+            NEXT_PUBLIC_API_URL: value,
+            NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+          }),
+        /must be a public DNS name/,
+        `${value} should be refused`,
+      ),
+    ),
+  );
+});
+
+test("a real production hostname is accepted", async () => {
+  // The other direction: a rule that is too strict breaks a deploy just as
+  // surely as one that is too loose.
+  const cfg = await importWithEnv({
+    RENDER: "true",
+    NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+    NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+  });
+  assert.equal(cfg.API_URL, "https://api.laxair.shop/graphql");
 });

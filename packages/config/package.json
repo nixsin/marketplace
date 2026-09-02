@@ -7,8 +7,7 @@
   "exports": {
     ".": "./src/index.js",
     "./sourcemap-token": "./src/sourcemap-token.js",
-    "./web": "./src/web-runtime.js",
-    "./host-classification": "./src/host-classification.js"
+    "./web": "./src/web-runtime.js"
   },
   "scripts": {
     "test": "node --test src/*.test.js"
