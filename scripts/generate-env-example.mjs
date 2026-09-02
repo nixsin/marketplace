@@ -30,7 +30,20 @@ const FILES = [
   { path: "docker/dev.env", render: renderDockerEnv },
 ];
 
-const check = process.argv.includes("--check");
+// An unknown flag is refused, not ignored. The two modes do OPPOSITE things:
+// `--chek` would silently rewrite every file and exit 0, so someone who meant
+// to verify would be told they had, having just overwritten the evidence.
+const args = process.argv.slice(2);
+const unknown = args.filter((a) => a !== "--check");
+if (unknown.length > 0) {
+  console.error(
+    `Unknown option${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}\n` +
+      `Usage:  node scripts/generate-env-example.mjs [--check]`,
+  );
+  process.exit(2);
+}
+
+const check = args.includes("--check");
 const resolve = (p) => fileURLToPath(new URL(`../${p}`, import.meta.url));
 
 /** Trailing-newline-insensitive, so an editor's final newline is not a diff. */

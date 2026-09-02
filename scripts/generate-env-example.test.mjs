@@ -229,3 +229,19 @@ test("variables whose danger is in setting them carry a CAUTION", () => {
     );
   }
 });
+
+test("an unknown option is refused, not treated as write mode", () => {
+  // The two modes do opposite things, so a typo is the dangerous case:
+  // `--chek` would fall through to writing, rewrite every file and exit 0,
+  // telling someone who meant to verify that they had — after overwriting
+  // the evidence. Exit 2 for usage, distinct from 1 for a stale file.
+  for (const bad of ["--chek", "--dry-run", "-c", "check"]) {
+    const { status, out } = run([bad]);
+    assert.equal(status, 2, `${bad} should be a usage error: ${out}`);
+    assert.match(out, /Unknown option/);
+  }
+
+  // Both documented modes still work.
+  assert.equal(run(["--check"]).status, 0);
+  assert.equal(run([]).status, 0);
+});
