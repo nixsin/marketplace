@@ -42,7 +42,7 @@ export interface CheckResult {
 
 export declare const DEPLOY_ENVIRONMENTS: readonly DeployEnvironment[];
 export declare const APP_ENV_OVERRIDE: string;
-export declare const UNKNOWN_ENVIRONMENT_HINT: string;
+export declare function unknownEnvironmentHint(): string;
 
 export declare function isRenderDeploy(
   env?: Record<string, string | undefined>,

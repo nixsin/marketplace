@@ -48,7 +48,7 @@ export declare const DEPLOY_ENVIRONMENT: {
 export declare const APP_ENV_OVERRIDE: string;
 
 /** Human-readable guidance printed when detection lands on `unknown`. */
-export declare const UNKNOWN_ENVIRONMENT_HINT: string;
+export declare function unknownEnvironmentHint(): string;
 
 /** Is this process on Render — either the build or the runtime half? */
 export declare function isRenderDeploy(env?: NodeJS.ProcessEnv): boolean;

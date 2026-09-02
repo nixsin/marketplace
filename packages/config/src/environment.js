@@ -41,9 +41,27 @@ export const DEPLOY_ENVIRONMENT = /** @type {const} */ ({
   UNKNOWN: "unknown",
 });
 
-export const DEPLOY_ENVIRONMENTS = /** @type {const} */ (
-  Object.values(DEPLOY_ENVIRONMENT)
-);
+/**
+ * WRITTEN OUT, not derived with `Object.values(DEPLOY_ENVIRONMENT)`.
+ *
+ * Deriving it is a top-level CALL, and a bundler cannot prove a call is free
+ * of side effects -- so it survives tree-shaking even when nothing in the
+ * client uses it. web-runtime.js imports this module and apps/web pages
+ * import that, so the whole table shipped to every visitor and failed the JS
+ * budget at 196.1KB against 196KB. An array literal is data, and an unused
+ * one is dropped.
+ *
+ * The cost of writing it twice is drift, so a test asserts the literal and
+ * DEPLOY_ENVIRONMENT hold the same values in the same order.
+ */
+export const DEPLOY_ENVIRONMENTS = /** @type {const} */ ([
+  "render",
+  "github-ci",
+  "ci-local",
+  "test",
+  "localhost",
+  "unknown",
+]);
 
 /** Explicit override. Set this and nothing is inferred at all. */
 export const APP_ENV_OVERRIDE = "APP_ENV";
@@ -219,16 +237,36 @@ export function detectEnvironment(env = process.env) {
  * never pass silently, or "permissive by default" becomes invisible exactly
  * where it is most dangerous.
  */
-export const UNKNOWN_ENVIRONMENT_HINT =
-  `Environment not recognised (no Render, GitHub Actions, CI or test markers, ` +
-  `and NODE_ENV is not development). Every variable is still required — one ` +
-  `list is shared by every environment — but the stricter PRODUCTION value ` +
-  `rules are not applied, so a localhost URL or a placeholder secret would ` +
-  `pass here and fail on Render. If this is a real deployment, set ` +
-  // NOT "unknown", which this list used to include. detectEnvironment
-  // deliberately ignores that value -- it is not an assertion -- so telling
-  // someone to set it sends them to change a variable, rerun, and get this
-  // same warning back with nothing to show for it.
-  `${APP_ENV_OVERRIDE} to one of: ` +
-  `${DEPLOY_ENVIRONMENTS.filter((e) => e !== "unknown").join(", ")}.`;
+/**
+ * COMPUTED ON DEMAND, and that is a bundle-size decision rather than style.
+ *
+ * This was a top-level `const` built with
+ * `Object.values(...).filter(...).join(", ")`. A bundler cannot prove a
+ * top-level CALL is free of side effects, so it keeps it -- and web-runtime.js
+ * imports this module, which apps/web pages import, so the whole environment
+ * table plus the filter and join shipped to every visitor. It cost 571 bytes
+ * and failed the JS budget at 196.1KB against 196KB, on the one metric that
+ * check enforces because it is deterministic.
+ *
+ * A function body is not evaluated until called, and the only caller runs
+ * behind `typeof window`, which is eliminated in the client build -- so
+ * nothing here reaches a browser. Same reason `resolvePublicUrl`'s error
+ * prose is written where it is.
+ *
+ * @returns {string}
+ */
+export function unknownEnvironmentHint() {
+  return (
+    `Environment not recognised (no Render, GitHub Actions, CI or test ` +
+    `markers, and NODE_ENV is not development). Every variable is still ` +
+    `required — one list is shared by every environment — but the stricter ` +
+    `PRODUCTION value rules are not applied, so a localhost URL or a ` +
+    `placeholder secret would pass here and fail on Render. If this is a ` +
+    `real deployment, set ${APP_ENV_OVERRIDE} to one of: ` +
+    // NOT "unknown": detectEnvironment deliberately ignores that value, so
+    // suggesting it sends the reader to change a variable, rerun, and get
+    // this same warning back with nothing to show for it.
+    `${DEPLOY_ENVIRONMENTS.filter((e) => e !== "unknown").join(", ")}.`
+  );
+}
 

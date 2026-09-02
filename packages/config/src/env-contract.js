@@ -39,13 +39,13 @@ import {
   DEV_API_URL,
   DEV_BLOB_BASE_URL,
   DEV_DATABASE_URL,
-  DEV_SITE_URL,
   DEV_POSTGRES_DB,
   DEV_POSTGRES_PASSWORD,
   DEV_POSTGRES_USER,
+  DEV_SITE_URL,
   DOCKER_DATABASE_URL,
   DOCKER_REDIS_URL,
-} from "./index.js";
+} from "./dev-defaults.js";
 import { isLoopbackHost, isPublicDnsName } from "./dns-name.js";
 
 /**
@@ -71,7 +71,7 @@ import { isLoopbackHost, isPublicDnsName } from "./dns-name.js";
  * - `test`       a Jest/Vitest process, which supplies its own fixtures
  * - `localhost`  a developer's dev server
  * - `unknown`    nothing recognised. Permissive like localhost, but it says
- *                so out loud every single time -- see UNKNOWN_ENVIRONMENT_HINT
+ *                so out loud every single time -- see unknownEnvironmentHint()
  */
 // The environment vocabulary and detection live in ./environment.js, shared
 // with web-runtime.js so the two cannot disagree about what "on a
@@ -80,7 +80,7 @@ export {
   APP_ENV_OVERRIDE,
   DEPLOY_ENVIRONMENT,
   DEPLOY_ENVIRONMENTS,
-  UNKNOWN_ENVIRONMENT_HINT,
+  unknownEnvironmentHint,
   detectEnvironment,
   isDeployedEnvironment,
   isRenderDeploy,
@@ -89,7 +89,7 @@ export {
 import {
   APP_ENV_OVERRIDE,
   DEPLOY_ENVIRONMENTS,
-  UNKNOWN_ENVIRONMENT_HINT,
+  unknownEnvironmentHint,
   detectEnvironment,
 } from "./environment.js";
 
@@ -917,7 +917,7 @@ export function checkEnv({ app, env = process.env, environment }) {
   }
 
   if (target === "unknown") {
-    warnings.push({ level: "warning", message: UNKNOWN_ENVIRONMENT_HINT });
+    warnings.push({ level: "warning", message: unknownEnvironmentHint() });
   }
 
   // EXPANSION SYNTAX IS REPORTED RATHER THAN EVALUATED. Next expands `$FOO`

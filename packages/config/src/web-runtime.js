@@ -13,9 +13,9 @@
 
 import { isPublicDnsName } from "./dns-name.js";
 import {
-  UNKNOWN_ENVIRONMENT_HINT,
   detectEnvironment,
   isDeployedEnvironment,
+  unknownEnvironmentHint,
 } from "./environment.js";
 
 /**
@@ -77,10 +77,10 @@ function warnIfUnknownProduction() {
   if (process.env.NODE_ENV !== "production") return;
   if (detectEnvironment() !== "unknown") return;
   unknownProductionWarned = true;
-  console.warn(`[@medinstru/config] ${UNKNOWN_ENVIRONMENT_HINT}`);
+  console.warn(`[@medinstru/config] ${unknownEnvironmentHint()}`);
 }
 
-function resolvePublicUrl(name, value, devDefault, { bareOrigin = false } = {}) {
+function resolvePublicUrl(name, value, devDefault, options) {
   // SERVER ONLY, and this is not a shortcut -- it is where the check belongs.
   //
   // NEXT_PUBLIC_* values are inlined into the client bundle at BUILD time, and
@@ -101,6 +101,14 @@ function resolvePublicUrl(name, value, devDefault, { bareOrigin = false } = {}) 
   // jsdom under vitest, most obviously -- got `undefined` and threw
   // `Invalid URL` somewhere far away. Caught by product-detail.spec.tsx.
   if (typeof window !== "undefined") return value ?? devDefault;
+
+  // DESTRUCTURED AFTER the window check, not in the signature. A default in
+  // the parameter list is emitted before the early return, so the client
+  // bundle carried `arguments.length > 3 ? ... : {}` plus a property read of
+  // an option only the server uses. Small, and this budget has no headroom:
+  // the whole reason this file returns early is to keep the browser's copy
+  // to the one line it actually needs.
+  const { bareOrigin = false } = options ?? {};
 
   // SHARED WITH THE CONTRACT, not a second copy. This was
   // `RENDER === "true" || RENDER_GIT_COMMIT`, which meant `APP_ENV=render`

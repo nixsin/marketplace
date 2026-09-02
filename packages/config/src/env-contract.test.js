@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   API_ENV_CONTRACT,
   CONTRACTS,
+  DEPLOY_ENVIRONMENT,
   DEPLOY_ENVIRONMENTS,
   WEB_ENV_CONTRACT,
   checkEnv,
@@ -16,7 +17,7 @@ import {
   formatStartupBanner,
   isDeployedEnvironment,
   isRenderDeploy,
-  UNKNOWN_ENVIRONMENT_HINT,
+  unknownEnvironmentHint,
   assertEnvOrExit,
   renderDockerEnv,
   renderEnvExample,
@@ -1367,10 +1368,11 @@ test("the unknown hint does not suggest a value that leaves you unknown", () => 
   // detectEnvironment deliberately ignores APP_ENV=unknown — it is not an
   // assertion — so suggesting it sends the reader to change a variable,
   // rerun, and get this same warning back with nothing to show for it.
-  assert.ok(!UNKNOWN_ENVIRONMENT_HINT.includes("localhost, unknown"));
+  const hint = unknownEnvironmentHint();
+  assert.ok(!hint.includes("localhost, unknown"));
   for (const real of DEPLOY_ENVIRONMENTS.filter((e) => e !== "unknown")) {
     assert.ok(
-      UNKNOWN_ENVIRONMENT_HINT.includes(real),
+      hint.includes(real),
       `${real} should still be suggested`,
     );
   }
@@ -1568,4 +1570,16 @@ test("names beneath .localhost are internal too, for the internal hosts", () => 
     environment: "render",
   });
   assert.equal(fine.ok, true, formatReport(fine));
+});
+
+test("DEPLOY_ENVIRONMENTS matches DEPLOY_ENVIRONMENT, in order", () => {
+  // The list is written out rather than derived with Object.values, because
+  // a top-level call survives tree-shaking and shipped the whole table to
+  // every visitor. This is the cost of that: two places holding the same
+  // six strings, pinned so they cannot drift apart in silence.
+  assert.deepEqual(
+    [...DEPLOY_ENVIRONMENTS],
+    Object.values(DEPLOY_ENVIRONMENT),
+    "the literal list and the named constants disagree",
+  );
 });

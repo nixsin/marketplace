@@ -617,6 +617,7 @@ test("every runtime export is declared in its .d.ts", async () => {
     "environment",
     "dns-name",
     "web-runtime",
+    "dev-defaults",
   ];
 
   let checked = 0;
