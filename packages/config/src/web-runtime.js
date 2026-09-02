@@ -176,7 +176,11 @@ function resolvePublicUrl(name, value, devDefault) {
   // certificate is issued for, which is the actual requirement here. An IPv4
   // literal fails it (a numeric top label) and an IPv6 literal fails it (the
   // brackets), so both families are rejected without naming either.
+  // 253 is DNS's presentation-format limit for a whole name. The per-label
+  // rule below caps each label at 63 but says nothing about how many there
+  // are, so `(?:label\.)+` would accept a name no resolver will answer for.
   const host = parsed.hostname.replace(/\.$/, "");
+  const withinDnsLimit = host.length <= 253;
   //
   // The top label allows `xn--…` as well as letters: WHATWG URL parsing
   // converts an internationalized name to punycode before this sees it, so
@@ -187,7 +191,7 @@ function resolvePublicUrl(name, value, devDefault) {
       host,
     );
 
-  if (!isDnsName) {
+  if (!isDnsName || !withinDnsLimit) {
     throw new Error(
       `${name} must be a public DNS name in production — got a bare host with ` +
         `no domain, or an IP literal. Visitors reach this over the CDN, which ` +

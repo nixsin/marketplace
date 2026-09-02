@@ -447,6 +447,9 @@ test("production requires a public DNS name, which rejects every IP literal", as
     "https://example..com/graphql",
     "https://-.com/graphql",
     "https://ex-.com/graphql",
+    // Longer than DNS's 253-character presentation limit: every label is
+    // legal, but no resolver will answer for the whole name.
+    `https://${"a".repeat(60)}.${"b".repeat(60)}.${"c".repeat(60)}.${"d".repeat(60)}.example.com/graphql`,
   ]) {
     await assert.rejects(
       () =>
