@@ -716,14 +716,27 @@ export const CROSS_CHECKS = {
 
     // Trusting proxy headers asserts the origin refuses non-proxied traffic.
     // It cannot be verified from here, so it is surfaced rather than judged.
+    //
+    // ON RENDER TOO, which it did not used to be. Suppressing it there
+    // treated "this is Render" as evidence for "every route to this origin
+    // goes through Cloudflare" -- and those are unrelated facts. A Render
+    // service has a public onrender.com hostname that answers directly
+    // whether or not a CDN sits in front of it, so a caller who reaches it
+    // that way sets cf-connecting-ip themselves and picks which bucket the
+    // per-IP limit charges. The one environment where the flag has teeth was
+    // the one environment that said nothing about it.
     (env, environment) =>
-      env.INQUIRY_TRUST_PROXY_HEADERS === "true" && environment !== "render"
+      env.INQUIRY_TRUST_PROXY_HEADERS === "true"
         ? {
             level: "warning",
             message:
-              'INQUIRY_TRUST_PROXY_HEADERS is "true" outside Render. ' +
-              "cf-connecting-ip is only trustworthy when every route to this origin goes through Cloudflare; " +
-              "anywhere else the caller can set it themselves.",
+              'INQUIRY_TRUST_PROXY_HEADERS is "true"' +
+              (environment === "render"
+                ? ", which asserts this origin refuses traffic that did not come through Cloudflare. " +
+                  "Nothing here can verify that, and a Render service answers on its own onrender.com hostname " +
+                  "unless something stops it — confirm direct origin access is actually blocked."
+                : " outside Render. cf-connecting-ip is only trustworthy when every route to this origin " +
+                  "goes through Cloudflare; anywhere else the caller can set it themselves."),
           }
         : null,
   ],

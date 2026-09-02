@@ -14,6 +14,7 @@ import {
   formatStartupBanner,
   isDeployedEnvironment,
   isRenderDeploy,
+  assertEnvOrExit,
   redactUrlCredentials,
 } from "./env-contract.js";
 
@@ -1151,4 +1152,166 @@ test("expansion syntax is reported rather than silently evaluated", () => {
     environment: "localhost",
   });
   assert.ok(!messages(literal.warnings).includes("variable-expansion"));
+});
+
+// ---------------------------------------------------------------------
+// assertEnvOrExit -- the boot entry point
+// ---------------------------------------------------------------------
+
+const BANNER_KEY = Symbol.for("@medinstru/config:banner-printed");
+
+/** Runs assertEnvOrExit with the once-per-process guard cleared. */
+function runAssert(env, { app = "api" } = {}) {
+  delete globalThis[BANNER_KEY];
+  const logged = [];
+  const exited = [];
+  const result = assertEnvOrExit({
+    app,
+    env,
+    log: (line) => logged.push(String(line)),
+    exit: (code) => exited.push(code),
+  });
+  return { result, logged, exited, output: logged.join("\n") };
+}
+
+test("assertEnvOrExit prints the banner and does not exit on a valid environment", () => {
+  const { result, exited, output } = runAssert(completeApi);
+  assert.equal(result.ok, true);
+  assert.deepEqual(exited, [], "a valid environment must not exit");
+  assert.match(output, /API|api/);
+  assert.match(output, /PORT/, "the banner lists every variable");
+});
+
+test("assertEnvOrExit exits 1 when a variable is missing", () => {
+  const missing = { ...completeApi };
+  delete missing.DATABASE_URL;
+  const { result, exited, output } = runAssert(missing);
+  assert.equal(result.ok, false);
+  assert.deepEqual(exited, [1], "an invalid environment must exit 1");
+  assert.match(output, /DATABASE_URL/);
+});
+
+test("assertEnvOrExit never prints a secret, even while failing", () => {
+  // The failure path prints the banner AND the report, so it is the path
+  // most likely to spill a value. JWT_SECRET is marked secret, so neither
+  // may carry it.
+  const secret = "correct-horse-battery-staple-1234567"; // scan-ignore
+  const { output } = runAssert({
+    ...completeApi,
+    JWT_SECRET: secret,
+    PORT: "not-a-port",
+  });
+  assert.ok(!output.includes(secret), "the secret reached the output");
+  assert.match(output, /\*\*\*/, "it is shown as *** instead");
+  assert.match(output, /PORT/, "and the real problem is still reported");
+});
+
+test("assertEnvOrExit prints the banner once per process", () => {
+  // Next loads next.config.ts several times during a build, and a
+  // diagnostic repeated four times is one nobody reads. Keyed on a symbol
+  // rather than a module-level variable because this package can be loaded
+  // through more than one specifier, each its own module instance.
+  delete globalThis[BANNER_KEY];
+  const runs = [];
+  for (let i = 0; i < 3; i += 1) {
+    const logged = [];
+    assertEnvOrExit({
+      app: "api",
+      env: completeApi,
+      log: (line) => logged.push(String(line)),
+      exit: () => {},
+    });
+    runs.push(logged.join("\n"));
+  }
+  assert.match(runs[0], /PORT/, "the first call prints the banner");
+  for (const later of runs.slice(1)) {
+    assert.ok(!later.includes("PORT"), "later calls must not reprint it");
+  }
+});
+
+test("assertEnvOrExit still reports problems after the banner is suppressed", () => {
+  // The once-guard covers the BANNER, not the verdict. Suppressing the
+  // report too would make a second load of a broken config look clean.
+  delete globalThis[BANNER_KEY];
+  assertEnvOrExit({ app: "api", env: completeApi, log: () => {}, exit: () => {} });
+
+  const logged = [];
+  const exited = [];
+  const broken = { ...completeApi };
+  delete broken.JWT_SECRET;
+  assertEnvOrExit({
+    app: "api",
+    env: broken,
+    log: (line) => logged.push(String(line)),
+    exit: (code) => exited.push(code),
+  });
+  assert.deepEqual(exited, [1]);
+  assert.match(logged.join("\n"), /JWT_SECRET/);
+});
+
+test("the unspecified address is internal, in both families", () => {
+  // `0.0.0.0` means "every interface on this machine" to a server binding it
+  // and "this host" to anything connecting, so it names no remotely reachable
+  // service — the same failure as localhost in a different spelling.
+  for (const url of [
+    "postgresql://u:p@0.0.0.0:5432/db",
+    "postgresql://u:p@[::]:5432/db",
+  ]) {
+    const result = checkEnv({
+      app: "api",
+      env: { ...completeApiRender, DATABASE_URL: url },
+      environment: "render",
+    });
+    assert.equal(result.ok, false, `${url} should be refused`);
+    assert.match(messages(result.errors), /DATABASE_URL/);
+  }
+
+  const redis = checkEnv({
+    app: "api",
+    env: { ...completeApiRender, REDIS_URL: "redis://0.0.0.0:6379" },
+    environment: "render",
+  });
+  assert.equal(redis.ok, false);
+  assert.match(messages(redis.errors), /REDIS_URL/);
+
+  // A neighbouring address is a real host and must still pass.
+  const fine = checkEnv({
+    app: "api",
+    env: {
+      ...completeApiRender,
+      DATABASE_URL: "postgresql://u:p@dpg-abc-a.oregon-postgres.render.com:5432/db",
+    },
+    environment: "render",
+  });
+  assert.equal(fine.ok, true, formatReport(fine));
+});
+
+test("trusting proxy headers warns on Render too, not only off it", () => {
+  // Suppressing it there treated "this is Render" as evidence for "every
+  // route to this origin goes through Cloudflare" — unrelated facts. A Render
+  // service answers on its own onrender.com hostname unless something stops
+  // it, so the one environment where the flag has teeth was the one saying
+  // nothing about it.
+  const onRender = checkEnv({
+    app: "api",
+    env: { ...completeApiRender, INQUIRY_TRUST_PROXY_HEADERS: "true" },
+    environment: "render",
+  });
+  assert.match(messages(onRender.warnings), /INQUIRY_TRUST_PROXY_HEADERS/);
+  assert.match(messages(onRender.warnings), /direct origin access/);
+
+  // Still a warning, never an error: it cannot be verified from here.
+  assert.equal(onRender.ok, true, formatReport(onRender));
+
+  // And still reported off Render, with the wording for that case.
+  const local = checkEnv({
+    app: "api",
+    env: { ...completeApi, INQUIRY_TRUST_PROXY_HEADERS: "true" },
+    environment: "localhost",
+  });
+  assert.match(messages(local.warnings), /outside Render/);
+
+  // Silent when the flag is off, which is the default.
+  const off = checkEnv({ app: "api", env: completeApiRender, environment: "render" });
+  assert.ok(!messages(off.warnings).includes("INQUIRY_TRUST_PROXY_HEADERS"));
 });

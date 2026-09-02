@@ -12,7 +12,11 @@
  */
 
 import { isPublicDnsName } from "./dns-name.js";
-import { isDeployedEnvironment } from "./environment.js";
+import {
+  UNKNOWN_ENVIRONMENT_HINT,
+  detectEnvironment,
+  isDeployedEnvironment,
+} from "./environment.js";
 
 /**
  * Resolve a public URL that has a localhost development default.
@@ -48,6 +52,34 @@ import { isDeployedEnvironment } from "./environment.js";
  * image sets NODE_ENV=production wherever it is built, including in the CI
  * boot test that must keep passing with no configuration.
  */
+/**
+ * A production-looking process on no platform we recognise gets ONE line.
+ *
+ * The permissive branch stays permissive, and that is deliberate rather than
+ * an oversight: `docker-web-prod-boot` boots the real production image with
+ * no configuration at all, on purpose, and asserts a genuine 200 -- so
+ * anything required there fails a required check for doing its job. See the
+ * `unknown` section of docs/environments.md.
+ *
+ * What was missing is that this path said NOTHING. The contract warns on
+ * `unknown`; the runtime silently applied the weaker rules, which is the
+ * precise silent-failure shape this module exists to remove. So it now says
+ * the same thing the contract does, and docs/environments.md already
+ * promised it did: a bare `pnpm build` lands in `unknown` and prints the
+ * hint. A warning, never a failure.
+ *
+ * Once per process. `next.config.ts` is loaded several times during a build
+ * and a diagnostic repeated four times is one nobody reads.
+ */
+let unknownProductionWarned = false;
+function warnIfUnknownProduction() {
+  if (unknownProductionWarned) return;
+  if (process.env.NODE_ENV !== "production") return;
+  if (detectEnvironment() !== "unknown") return;
+  unknownProductionWarned = true;
+  console.warn(`[@medinstru/config] ${UNKNOWN_ENVIRONMENT_HINT}`);
+}
+
 function resolvePublicUrl(name, value, devDefault, { bareOrigin = false } = {}) {
   // SERVER ONLY, and this is not a shortcut -- it is where the check belongs.
   //
@@ -79,7 +111,10 @@ function resolvePublicUrl(name, value, devDefault, { bareOrigin = false } = {}) 
   // Imported from ./environment.js rather than ./env-contract.js: apps/web
   // pages import this module, and the contract's rule tables have no
   // business in a client bundle.
-  if (!isDeployedEnvironment()) return value || devDefault;
+  if (!isDeployedEnvironment()) {
+    warnIfUnknownProduction();
+    return value || devDefault;
+  }
 
   if (!value) {
     throw new Error(

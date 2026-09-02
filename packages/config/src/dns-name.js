@@ -131,6 +131,12 @@ export function isLoopbackHost(hostname) {
     /^localhost\.?$/i.test(addr) ||
     /^127\./.test(addr) ||
     addr === "::1" ||
-    addr === "::"
+    // THE UNSPECIFIED ADDRESSES, both families. `0.0.0.0` means "every
+    // interface on this machine" to a server binding it and "this host" to
+    // anything connecting, so `postgresql://u:p@0.0.0.0/db` in production
+    // names no remotely reachable service -- the same failure as `localhost`
+    // wearing a different spelling. `::` is its IPv6 counterpart.
+    addr === "::" ||
+    addr === "0.0.0.0"
   );
 }
