@@ -42,15 +42,31 @@ export function isUnreachableIpv4(hostname) {
     (a === 192 && b === 168) ||
     (a === 169 && b === 254) ||
     (a === 172 && b >= 16 && b <= 31) ||
-    // Deterministically non-public even though they are not "local":
-    // CGNAT (100.64/10), TEST-NET documentation ranges (192.0.2, 198.51.100,
-    // 203.0.113), benchmarking (198.18/15), multicast (224-239) and
-    // reserved/broadcast (240+, which includes 255.255.255.255).
+    // Deterministically non-public even though they are not "local". This is
+    // now the WHOLE IANA IPv4 Special-Purpose Address Registry, not a
+    // growing list of the ones somebody happened to notice -- three review
+    // rounds each added another range (127.0.0.0/8, then fec0::/10, then
+    // 192.0.0.0/24), which is the signal that enumerating instances was the
+    // wrong shape. The registry is finite; the list of things people can
+    // think of is not.
+    //
+    // CGNAT (100.64/10).
     (a === 100 && b >= 64 && b <= 127) ||
+    // IETF Protocol Assignments (192.0.0.0/24). Two addresses inside it --
+    // 192.0.0.8/9, PCP anycast -- are technically globally reachable, but
+    // nothing serves a website there, and treating the /24 as unusable is
+    // the safe direction for a guard whose failure mode is a dead URL.
+    (a === 192 && b === 0 && Number(m[3]) === 0) ||
+    // TEST-NET-1/2/3, reserved for documentation.
     (a === 192 && b === 0 && Number(m[3]) === 2) ||
     (a === 198 && b === 51 && Number(m[3]) === 100) ||
     (a === 203 && b === 0 && Number(m[3]) === 113) ||
+    // 6to4 relay anycast (192.88.99.0/24), deprecated by RFC 7526.
+    (a === 192 && b === 88 && Number(m[3]) === 99) ||
+    // Benchmarking (198.18/15).
     (a === 198 && (b === 18 || b === 19)) ||
+    // Multicast (224-239) and reserved/broadcast (240+, which includes
+    // 255.255.255.255).
     a >= 224
   );
 }
@@ -86,7 +102,14 @@ export function isUnreachableIpv6(hostname) {
     /^ff[0-9a-f]{0,2}:/.test(addr) ||
     // 2001:db8::/32, reserved for documentation and examples. Not routable,
     // and a very plausible copy-paste out of a tutorial.
-    /^2001:0?db8:/.test(addr)
+    /^2001:0?db8:/.test(addr) ||
+    // Discard-Only (100::/64, RFC 6666) -- traffic is dropped by design.
+    /^100:(?::|0{1,4}:)/.test(addr) ||
+    // Local-use IPv4/IPv6 translation (64:ff9b:1::/48, RFC 8215).
+    /^64:ff9b:1:/.test(addr) ||
+    // 6to4 (2002::/16). Reachable only through relays that RFC 7526
+    // deprecated, so in practice a dead address.
+    /^2002:/.test(addr)
   );
 }
 
