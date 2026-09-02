@@ -147,6 +147,27 @@ const completeApi = {
   WHATSAPP_ALLOW_FREE_FORM: "false",
 };
 
+// The same variables with values production accepts. Built once here rather
+// than inline per test, because "what does a valid Render API environment
+// look like" is exactly the question this contract exists to answer, and a
+// test that spells it out is also the readable example.
+const completeApiRender = {
+  ...completeApi,
+  APP_ENV: "render",
+  DATABASE_URL: "postgresql://u:p@dpg-abc123-a.oregon-postgres.render.com:5432/db",
+  // Both carry a scan-ignore marker, and the conflict is inherent rather
+  // than a scanner quirk: production REFUSES any value matching a
+  // placeholder term, so a fixture that satisfies the production rules must
+  // by construction look like a real secret to a credential scanner. These
+  // two are invented, are used only by this file, and open nothing.
+  JWT_SECRET: "unremarkable-but-long-enough-string", // scan-ignore
+  INQUIRY_IP_HASH_SECRET: "another-unremarkable-long-string", // scan-ignore
+  BLOB_PROVIDER: "s3",
+  BLOB_ACCESS_KEY_ID: "an-access-key-id",
+  BLOB_SECRET_ACCESS_KEY: "an-access-key-secret", // scan-ignore
+  NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+};
+
 const completeWeb = {
   APP_ENV: "localhost",
   NEXT_PUBLIC_API_URL: "http://localhost:4000/graphql",
@@ -757,6 +778,7 @@ test("special-use suffixes are not public names", () => {
       APP_ENV: "render",
       NEXT_PUBLIC_API_URL: "https://notlocalhost.com/graphql",
       NEXT_PUBLIC_SITE_URL: "https://mylocal.com",
+      NEXT_PUBLIC_BLOB_BASE_URL: "https://images.notlocalhost.com",
     },
     environment: "render",
   });
@@ -836,4 +858,107 @@ test("placeholder terms do not match inside ordinary values", () => {
     environment: "localhost",
   });
   assert.match(messages(genuine.warnings), /placeholder/);
+});
+
+test("an empty blob base URL is refused in production", () => {
+  // Empty is a legal, documented value on a laptop -- images resolve against
+  // the app's own origin. In production that same value is a silent
+  // regression: every product image served by Render instead of Cloudflare,
+  // with nothing failing anywhere. The variable's `emptyMeans` text describes
+  // the laptop case, and the production rule is what keeps it there.
+  const result = checkEnv({
+    app: "web",
+    env: { ...completeWeb, APP_ENV: "render", NEXT_PUBLIC_BLOB_BASE_URL: "" },
+    environment: "render",
+  });
+  assert.equal(result.ok, false);
+  assert.match(messages(result.errors), /NEXT_PUBLIC_BLOB_BASE_URL/);
+  assert.match(messages(result.errors), /instead of the CDN/);
+
+  // ...and still legal on a laptop, which is the whole point of the split.
+  const local = checkEnv({
+    app: "web",
+    env: { ...completeWeb, NEXT_PUBLIC_BLOB_BASE_URL: "" },
+    environment: "localhost",
+  });
+  assert.equal(local.ok, true, formatReport(local));
+});
+
+test("free-form WhatsApp with no template is legal, but not in production", () => {
+  // `whatsapp.service.ts` refuses a send only when the template AND free-form
+  // are both absent, so free-form with no template is a configuration the
+  // service supports. An earlier version of this contract called it an error
+  // outright, which forbade the one thing the option exists to enable.
+  const localFreeForm = checkEnv({
+    app: "api",
+    env: {
+      ...completeApi,
+      WHATSAPP_ACCESS_TOKEN: "a-token",
+      WHATSAPP_PHONE_NUMBER_ID: "123456789",
+      WHATSAPP_TEMPLATE_NAME: "",
+      WHATSAPP_ALLOW_FREE_FORM: "true",
+    },
+    environment: "localhost",
+  });
+  assert.equal(localFreeForm.ok, true, formatReport(localFreeForm));
+
+  // On Render the 24h window is never open -- the marketplace always speaks
+  // first -- so the same configuration cannot deliver anything.
+  const onRender = checkEnv({
+    app: "api",
+    env: {
+      ...completeApiRender,
+      WHATSAPP_ALLOW_FREE_FORM: "true",
+    },
+    environment: "render",
+  });
+  assert.equal(onRender.ok, false);
+  assert.match(messages(onRender.errors), /WHATSAPP_ALLOW_FREE_FORM/);
+  assert.match(messages(onRender.errors), /business-initiated/);
+
+  // The token-without-template check must still fire when free-form is OFF.
+  const noWayToSend = checkEnv({
+    app: "api",
+    env: {
+      ...completeApi,
+      WHATSAPP_ACCESS_TOKEN: "a-token",
+      WHATSAPP_PHONE_NUMBER_ID: "123456789",
+      WHATSAPP_TEMPLATE_NAME: "",
+      WHATSAPP_ALLOW_FREE_FORM: "false",
+    },
+    environment: "localhost",
+  });
+  assert.equal(noWayToSend.ok, false);
+  assert.match(messages(noWayToSend.errors), /WHATSAPP_TEMPLATE_NAME is not/);
+});
+
+test("a port must be a decimal digit string, not merely coercible", () => {
+  // `Number()` accepts all of these and lands in range; Node's `listen()`,
+  // Docker's port mapping and Render's dashboard do not agree with it or
+  // with each other about what they mean.
+  for (const bad of ["1e3", "0x10", " 80 ", "080", "80.0", "+80", ""]) {
+    const result = checkEnv({
+      app: "api",
+      env: { ...completeApi, PORT: bad },
+      environment: "localhost",
+    });
+    assert.equal(result.ok, false, `PORT=${JSON.stringify(bad)} should fail`);
+  }
+
+  for (const good of ["1", "4000", "65535"]) {
+    const result = checkEnv({
+      app: "api",
+      env: { ...completeApi, PORT: good },
+      environment: "localhost",
+    });
+    assert.equal(result.ok, true, formatReport(result));
+  }
+
+  // Off the top of the range, where a bare `Number.isInteger` check passes.
+  const tooHigh = checkEnv({
+    app: "api",
+    env: { ...completeApi, PORT: "65536" },
+    environment: "localhost",
+  });
+  assert.equal(tooHigh.ok, false);
 });

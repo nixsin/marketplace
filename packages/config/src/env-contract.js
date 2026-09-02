@@ -123,10 +123,17 @@ const isOneOf = (allowed) => (value) =>
     : `must be exactly one of ${allowed.map((a) => `"${a}"`).join(", ")}`;
 
 const isPort = (value) => {
+  // A DECIMAL DIGIT STRING, not merely something `Number()` accepts. `1e3`,
+  // `0x10`, ` 80 ` and `080` all convert to a number in range here while
+  // meaning something else -- or nothing -- to the several other parsers that
+  // read this same variable: Node's own `listen()`, Docker's port mapping,
+  // and Render's dashboard. The error text promises an integer, so the check
+  // should demand one rather than whatever coercion happens to allow.
+  if (!/^[1-9][0-9]*$/.test(value)) {
+    return "must be an integer between 1 and 65535";
+  }
   const n = Number(value);
-  return Number.isInteger(n) && n > 0 && n <= 65535
-    ? null
-    : "must be an integer between 1 and 65535";
+  return n <= 65535 ? null : "must be an integer between 1 and 65535";
 };
 
 /** @param {number} n */
@@ -525,6 +532,21 @@ export const API_ENV_CONTRACT = [
     emptyMeans: null,
     devValue: "false",
     check: isOneOf(["true", "false"]),
+    perEnvironment: {
+      // REFUSED IN PRODUCTION, and this is where the "never a fallback"
+      // rule actually bites. Free-form text is deliverable only inside a
+      // 24-hour window the recipient opens by messaging the business first
+      // — which never happens here, because the marketplace always speaks
+      // first. So on Render the window is never open and every free-form
+      // send is rejected by Meta. Locally it is legitimate: a developer who
+      // has just messaged the test number really does have an open window.
+      render: (value) =>
+        value === "true"
+          ? 'must not be "true" in production — every message here is ' +
+            "business-initiated, so the 24h free-form window is never open " +
+            "and Meta rejects every such send. Use WHATSAPP_TEMPLATE_NAME."
+          : null,
+    },
   },
 ];
 
@@ -577,11 +599,22 @@ export const WEB_ENV_CONTRACT = [
       "laptop and in CI, where no object storage exists",
     devValue: DEV_BLOB_BASE_URL,
     check: all(isUrl(["http:", "https:"]), mustBeOrigin),
-    // notLoopback as well: unlike the other two URLs this had only the scheme
-    // check, so `https://localhost:9000` passed in production and every
-    // visitor's browser would fetch product images from their own machine
-    // while the environment check reported success.
-    perEnvironment: { render: all(mustBePublicName, mustBeHttps) },
+    perEnvironment: {
+      // Empty is refused in production despite `emptyMeans` documenting it:
+      // that state means images resolve against the app's own origin rather
+      // than the CDN, which is correct on a laptop and a silent regression
+      // in production -- every product image served by Render instead of
+      // Cloudflare, with nothing failing.
+      //
+      // The name and scheme checks matter here for the same reason as the
+      // other two URLs: this one previously had only the scheme check, so
+      // `https://localhost:9000` passed and every visitor's browser would
+      // fetch product images from their own machine.
+      render: (value) =>
+        value === ""
+          ? "must not be empty in production — product images would be served from the app's own origin instead of the CDN"
+          : all(mustBePublicName, mustBeHttps)(value),
+    },
   },
   {
     name: "SOURCEMAP_SIGNING_KEY",
@@ -599,21 +632,15 @@ export const CONTRACTS = { api: API_ENV_CONTRACT, web: WEB_ENV_CONTRACT };
 
 export const CROSS_CHECKS = {
   api: [
-    // The documented known-bad pairing: free-form ON with no template sends a
-    // request Meta is known to reject, and marks every inquiry FAILED.
-    (env) =>
-      env.WHATSAPP_ALLOW_FREE_FORM === "true" && !env.WHATSAPP_TEMPLATE_NAME
-        ? {
-            level: "error",
-            message:
-              'WHATSAPP_ALLOW_FREE_FORM is "true" with no WHATSAPP_TEMPLATE_NAME. ' +
-              "That combination sends a request Meta rejects and marks every inquiry FAILED. " +
-              "Free-form is an opt-in for a known-open 24h window, never a fallback for a missing template.",
-          }
-        : null,
-
     // Configured to send, but unable to: the token is present so the code
     // will attempt delivery, and every attempt is refused before the request.
+    //
+    // Free-form exempts this, matching `whatsapp.service.ts`, which refuses a
+    // send only when the template AND free-form are both absent. Free-form
+    // with no template is therefore a configuration the service supports --
+    // the one this option exists for -- so it is not an error here. Whether
+    // it is a sane thing to switch on is a per-environment question, and
+    // WHATSAPP_ALLOW_FREE_FORM's own rule answers it: never on Render.
     (env) =>
       env.WHATSAPP_ACCESS_TOKEN &&
       !env.WHATSAPP_TEMPLATE_NAME &&

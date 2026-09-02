@@ -92,10 +92,22 @@ const RESERVED_SUFFIXES = [
  * @returns {boolean}
  */
 export function isLoopbackHost(hostname) {
+  const addr = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+
+  // IPv4-MAPPED SPELLINGS TOO. `[::ffff:127.0.0.1]` and its hex form
+  // `[::ffff:7f00:1]` are loopback wearing an IPv6 costume, and a check that
+  // only knows `127.` and `::1` lets both through -- which is the whole
+  // trick, since anything a resolver accepts a caller can write.
+  const mappedDotted = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(addr)?.[1];
+  if (mappedDotted) return /^127\./.test(mappedDotted);
+
+  const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(addr);
+  if (mappedHex) return parseInt(mappedHex[1], 16) >> 8 === 127;
+
   return (
-    /^localhost\.?$/i.test(hostname) ||
-    /^127\./.test(hostname) ||
-    hostname === "[::1]" ||
-    hostname === "::1"
+    /^localhost\.?$/i.test(addr) ||
+    /^127\./.test(addr) ||
+    addr === "::1" ||
+    addr === "::"
   );
 }
