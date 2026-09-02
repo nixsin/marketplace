@@ -1,4 +1,5 @@
-import { DEFAULT_LOCALE, LOCALES, SITE_URL } from "@medinstru/config";
+import { DEFAULT_LOCALE, LOCALES } from "@medinstru/config";
+import { SITE_URL } from "@medinstru/config/web";
 
 // WhatsApp share-link construction, kept as pure functions so the message
 // format and URL encoding are directly testable -- the whole point of this

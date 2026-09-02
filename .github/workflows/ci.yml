@@ -307,7 +307,13 @@ jobs:
       # @medinstru/config is the single source of truth for both the web
       # app's runtime values and every AI automation's settings, so a
       # regression here reaches further than any other script in this list.
-      - run: node --test packages/config/src/index.test.js
+      # A GLOB, not a named file. This line named index.test.js alone, so
+      # host-classification.test.js -- added in the same change as the module
+      # it covers -- would have passed locally and never run in CI. A new
+      # suite that is invisible to CI is the same silent-skip shape as a path
+      # filter that stops matching. The package's own `pnpm test` already
+      # globs; this now matches it.
+      - run: node --test packages/config/src/*.test.js
       # Separate from the package's own tests on purpose: those exercise
       # resolveApiKey() in isolation and pass even when no consumer calls
       # it, which is exactly how apiKeyEnv shipped as decorative config
