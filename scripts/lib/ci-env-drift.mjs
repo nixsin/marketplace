@@ -331,7 +331,21 @@ export function unguardedTruncates(spec) {
   const code = stripComments(spec);
   const executable = stripCommentsAndStrings(spec);
 
-  const truncates = [...code.matchAll(TRUNCATE_SQL)].map((m) => m.index);
+  // A STRING THAT BEGINS WITH THE STATEMENT. `code` keeps strings because
+  // the SQL lives in one, which also means prose like
+  // `"does not TRUNCATE TABLE users"` would reject a safe spec — a false
+  // positive on a required check. Requiring the string to start with the
+  // statement separates the two without scanning for call sites.
+  const truncates = [...code.matchAll(TRUNCATE_SQL)]
+    .map((m) => m.index)
+    .filter((at) => {
+      const q = Math.max(
+        code.lastIndexOf('"', at),
+        code.lastIndexOf("'", at),
+        code.lastIndexOf("`", at),
+      );
+      return q !== -1 && /^["'`]\s*$/.test(code.slice(q, at));
+    });
   if (truncates.length === 0) return [];
 
   // EVERY candidate, not the first. One guard-shaped expression outside a

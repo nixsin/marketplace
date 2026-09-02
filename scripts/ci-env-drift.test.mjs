@@ -716,3 +716,28 @@ test("a guard-shaped expression outside a hook does not mask a real one", () => 
   const helperOnly = `describe('s',()=>{const h=()=>{return assertConnectedToTestDatabase(p);};beforeEach(async()=>{${trunc}});});`;
   assert.equal(unguardedTruncates(helperOnly).length, 1);
 });
+
+test("prose containing TRUNCATE TABLE is not a statement", () => {
+  // `code` keeps strings because the SQL lives in one, so prose mentioning
+  // the keywords would reject a safe spec — a false positive on a required
+  // check. The string has to BEGIN with the statement.
+  for (const text of [
+    "does not TRUNCATE TABLE users",
+    "rejects TRUNCATE ONLY from untrusted callers",
+    "documents why we TRUNCATE TABLE between tests",
+  ]) {
+    assert.deepEqual(
+      unguardedTruncates(`describe('s',()=>{it('${text}',()=>{});});`),
+      [],
+      `false positive: ${text}`,
+    );
+  }
+
+  // A real one is still reported.
+  assert.equal(
+    unguardedTruncates(
+      "describe('s',()=>{beforeEach(async()=>{await p.$executeRawUnsafe('TRUNCATE TABLE t');});});",
+    ).length,
+    1,
+  );
+});
