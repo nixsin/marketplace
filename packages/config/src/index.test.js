@@ -620,3 +620,33 @@ test("every runtime export is declared in index.d.ts", async () => {
     `exported from index.js but not declared in index.d.ts: ${undeclared.join(", ")}`,
   );
 });
+
+test("every exported subpath has a declaration file beside it", async () => {
+  // `./environment` shipped without one, so a TypeScript consumer importing
+  // `@medinstru/config/environment` got a missing-declaration error while
+  // `./web` and `./dns-name` beside it were fine. Declarations living in
+  // ANOTHER module's .d.ts do not describe a separately exported subpath.
+  const { readFileSync, existsSync } = await import("node:fs");
+  const pkg = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+
+  const subpaths = Object.entries(pkg.exports ?? {});
+  assert.ok(subpaths.length > 1, "the exports map was not found");
+
+  const missing = subpaths
+    .filter(([, target]) => {
+      const declaration = new URL(
+        String(target).replace(/\.js$/, ".d.ts"),
+        new URL("../", import.meta.url),
+      );
+      return !existsSync(declaration);
+    })
+    .map(([name]) => name);
+
+  assert.deepEqual(
+    missing,
+    [],
+    `exported without a .d.ts: ${missing.join(", ")}`,
+  );
+});

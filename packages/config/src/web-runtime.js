@@ -100,7 +100,7 @@ function resolvePublicUrl(name, value, devDefault, { bareOrigin = false } = {}) 
   // any environment where `window` exists but the value was never inlined --
   // jsdom under vitest, most obviously -- got `undefined` and threw
   // `Invalid URL` somewhere far away. Caught by product-detail.spec.tsx.
-  if (typeof window !== "undefined") return value || devDefault;
+  if (typeof window !== "undefined") return value ?? devDefault;
 
   // SHARED WITH THE CONTRACT, not a second copy. This was
   // `RENDER === "true" || RENDER_GIT_COMMIT`, which meant `APP_ENV=render`
@@ -113,7 +113,25 @@ function resolvePublicUrl(name, value, devDefault, { bareOrigin = false } = {}) 
   // business in a client bundle.
   if (!isDeployedEnvironment()) {
     warnIfUnknownProduction();
-    return value || devDefault;
+
+    // ABSENT AND EMPTY ARE DIFFERENT, and `||` collapsed them. `undefined`
+    // means nobody declared it, and the localhost default is right; `""`
+    // means somebody wrote `FOO=`, which the contract calls invalid for both
+    // of these variables (`emptyMeans: null`). Substituting localhost for a
+    // deliberate empty hid a malformed local or CI configuration behind a
+    // value that looks healthy -- the same silent-substitution shape the
+    // whole module exists to remove, and the reason the contract draws that
+    // distinction at all.
+    if (value === "") {
+      throw new Error(
+        `${name} is declared but empty. That is not the same as unset: an ` +
+          `unset value falls back to ${devDefault} for local development, ` +
+          `while an empty one is a configuration that says nothing. Remove ` +
+          `the line or give it a value.`,
+      );
+    }
+
+    return value ?? devDefault;
   }
 
   if (!value) {

@@ -17,11 +17,49 @@ import { fileURLToPath } from "node:url";
 
 const CLI = fileURLToPath(new URL("./check-env.mjs", import.meta.url));
 
+// Read from the contract rather than listed by hand, so a variable added
+// later is stripped too instead of quietly re-entering through the shell.
+const { CONTRACTS } = await import(
+  "../packages/config/src/env-contract.js"
+);
+const CONTRACT_VARIABLES = Object.values(CONTRACTS)
+  .flat()
+  .map((rule) => rule.name);
+
+/**
+ * A CONTROLLED BASELINE, not the ambient environment.
+ *
+ * process.loadEnvFile never overwrites an already-set value, so any contract
+ * variable exported in the developer's shell -- or `RENDER` / `APP_ENV` left
+ * over from another experiment -- changes what these tests observe and what
+ * the CLI detects. They would then pass or fail based on the machine rather
+ * than the code, which is the one thing a test must never do.
+ *
+ * PATH and friends are kept because the subprocess needs them to run at all;
+ * everything the contract or detection reads is stripped.
+ */
+function baselineEnv() {
+  const stripped = new Set([
+    "APP_ENV",
+    "RENDER",
+    "RENDER_GIT_COMMIT",
+    "CI",
+    "GITHUB_ACTIONS",
+    "NODE_ENV",
+    "VITEST",
+    "JEST_WORKER_ID",
+    ...CONTRACT_VARIABLES,
+  ]);
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !stripped.has(key)),
+  );
+}
+
 /** @returns {{status: number, out: string}} */
 function run(args, env = {}) {
   try {
     const out = execFileSync(process.execPath, [CLI, ...args], {
-      env: { ...process.env, ...env },
+      env: { ...baselineEnv(), ...env },
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });

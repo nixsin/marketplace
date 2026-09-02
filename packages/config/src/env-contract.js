@@ -932,22 +932,32 @@ export function checkEnv({ app, env = process.env, environment }) {
   // something this check cannot resolve" is the honest answer, and it is
   // actionable: the reader knows the verdict below it is about the literal
   // text rather than the value the app will see.
+
+
   for (const rule of rules) {
     const raw = env[rule.name];
+
+    // EXPANSION SYNTAX SKIPS THE VALUE CHECKS, rather than failing them.
+    //
+    // Warning and then validating the literal was worse than not checking:
+    // `NEXT_PUBLIC_SITE_URL=$PUBLIC_ORIGIN` is a perfectly good Next
+    // configuration, and it was reported as an invalid URL and failed the
+    // whole verdict. A check that turns a working configuration red is not
+    // being cautious, it is being wrong -- and it trains people to ignore
+    // the output, which is the one failure this module cannot afford.
+    //
+    // The variable is still REQUIRED to be declared; only the value rules
+    // are skipped, because this check genuinely cannot resolve the value.
     if (typeof raw === "string" && /\$\{?[A-Za-z_]/.test(raw)) {
       warnings.push({
         level: "warning",
         message:
-          `${rule.name} contains variable-expansion syntax, which this check ` +
-          `does not evaluate — the result below is about the literal text. ` +
-          `Next expands it and the API does not, so confirm which app reads ` +
-          `this file before trusting either answer.`,
+          `${rule.name} contains variable-expansion syntax, so its value was ` +
+          `NOT checked — this check does not expand it. Next expands it and ` +
+          `the API does not, so confirm which app reads this file.`,
       });
+      continue;
     }
-  }
-
-  for (const rule of rules) {
-    const raw = env[rule.name];
 
     // ABSENT: nobody declared it. Always an error -- every environment
     // declares every variable, so this means the environment is incomplete

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   API_ENV_CONTRACT,
+  CONTRACTS,
   DEPLOY_ENVIRONMENTS,
   WEB_ENV_CONTRACT,
   checkEnv,
@@ -17,6 +18,8 @@ import {
   isRenderDeploy,
   UNKNOWN_ENVIRONMENT_HINT,
   assertEnvOrExit,
+  renderDockerEnv,
+  renderEnvExample,
   redactUrlCredentials,
 } from "./env-contract.js";
 
@@ -1147,6 +1150,22 @@ test("expansion syntax is reported rather than silently evaluated", () => {
   assert.match(messages(result.warnings), /variable-expansion syntax/);
   assert.match(messages(result.warnings), /NEXT_PUBLIC_SITE_URL/);
 
+  // AND IT DOES NOT FAIL. Warning and then validating the literal reported
+  // a perfectly good Next configuration as an invalid URL — a check that
+  // turns working configuration red trains people to ignore it.
+  assert.equal(result.ok, true, formatReport(result));
+  assert.ok(!messages(result.errors).includes("NEXT_PUBLIC_SITE_URL"));
+
+  // Still required to be DECLARED, though. Only the value rules are skipped.
+  const absent = { ...completeWeb };
+  delete absent.NEXT_PUBLIC_SITE_URL;
+  const missing = checkEnv({
+    app: "web",
+    env: absent,
+    environment: "localhost",
+  });
+  assert.equal(missing.ok, false);
+
   // An ordinary value with a dollar sign in it is not expansion syntax.
   const literal = checkEnv({
     app: "api",
@@ -1353,4 +1372,110 @@ test("the DeployEnvironment union matches DEPLOY_ENVIRONMENTS", () => {
     [...DEPLOY_ENVIRONMENTS].sort(),
     "the typedef and DEPLOY_ENVIRONMENTS disagree",
   );
+});
+
+// ---------------------------------------------------------------------
+// The generators -- these write real operational files
+// ---------------------------------------------------------------------
+
+test("renderEnvExample declares every variable in the contract, once", () => {
+  // The whole point of generating this file is that the contract is the only
+  // place a variable is declared. A rule that produced no line would mean a
+  // variable required at boot and absent from the file people copy.
+  for (const app of ["api", "web"]) {
+    const output = renderEnvExample(app);
+    const declared = [...output.matchAll(/^([A-Z][A-Z0-9_]*)=/gm)].map(
+      (m) => m[1],
+    );
+
+    assert.deepEqual(
+      declared,
+      CONTRACTS[app].map((rule) => rule.name),
+      `${app}: the file's variables must match the contract, in order`,
+    );
+    assert.equal(
+      new Set(declared).size,
+      declared.length,
+      `${app}: a duplicated line means one silently wins`,
+    );
+  }
+});
+
+test("renderEnvExample writes each rule's dev value and its reason", () => {
+  const output = renderEnvExample("api");
+  for (const rule of CONTRACTS.api) {
+    assert.match(
+      output,
+      new RegExp(`^${rule.name}=`, "m"),
+      `${rule.name} is missing`,
+    );
+    // `why` is the line that makes the file readable rather than a list of
+    // names; a generator that dropped it would still look correct. Compared
+    // against the comment text with its `# ` prefixes and line wrapping
+    // removed, because the generator wraps to a column and a raw substring
+    // match would be testing the wrapper rather than the content.
+    const prose = output
+      .split("\n")
+      .filter((line) => line.startsWith("#"))
+      .map((line) => line.replace(/^#\s?/, ""))
+      .join(" ")
+      .replace(/\s+/g, " ");
+    assert.ok(
+      prose.includes(rule.why.replace(/\s+/g, " ")),
+      `${rule.name}'s reason is missing`,
+    );
+  }
+
+  // The generated file must itself pass the contract, or the thing we hand
+  // people to copy is a configuration we would refuse.
+  const parsed = Object.fromEntries(
+    [...output.matchAll(/^([A-Z][A-Z0-9_]*)="?([^"\n]*)"?$/gm)].map((m) => [
+      m[1],
+      m[2],
+    ]),
+  );
+  const result = checkEnv({
+    app: "api",
+    env: parsed,
+    environment: "localhost",
+  });
+  assert.ok(
+    result.errors.length === 0,
+    `the generated example does not pass its own contract:\n${formatReport(result)}`,
+  );
+});
+
+test("renderEnvExample refuses an unknown app rather than emitting nothing", () => {
+  // An empty file would be written without complaint and read as "this app
+  // needs no configuration".
+  assert.throws(() => renderEnvExample("mobile"), /Unknown app/);
+});
+
+test("renderDockerEnv lists only what differs inside the Docker network", () => {
+  const output = renderDockerEnv();
+  const declared = [...output.matchAll(/^([A-Z][A-Z0-9_]*)=/gm)].map(
+    (m) => m[1],
+  );
+
+  assert.ok(declared.length > 0, "the docker env declared nothing");
+  assert.equal(new Set(declared).size, declared.length, "no duplicates");
+
+  // Service names, not localhost: that IS the difference this file exists
+  // for, and a generator that emitted localhost would break the dev stack
+  // while looking plausible.
+  //
+  // Checked against the VALUES only. The prose above them says "not the
+  // host's localhost", so scanning the whole file tests the comment.
+  const values = [...output.matchAll(/^[A-Z][A-Z0-9_]*="?([^"\n]*)"?$/gm)].map(
+    (m) => m[1],
+  );
+  assert.ok(values.length > 0, "no values were parsed");
+  for (const value of values) {
+    assert.ok(
+      !value.includes("localhost"),
+      `a Docker value points at localhost: ${value}`,
+    );
+  }
+  assert.ok(values.some((v) => v.includes("@postgres:")), values.join("\n"));
+  assert.ok(values.some((v) => v.startsWith("redis://redis:")), values.join("\n"));
 });
