@@ -290,7 +290,15 @@ function blank(text, { strings }) {
         j += 1;
       }
       const stop = Math.min(j + 1, text.length);
-      out += text.slice(i, stop);
+      // The interior is blanked in the executable view for the same reason a
+      // string's is: `/await assertConnectedToTestDatabase\(/` would
+      // otherwise be counted as a real guard call.
+      if (strings) {
+        out += text[i] + " ".repeat(Math.max(0, stop - i - 2));
+        if (stop - i >= 2) out += text[stop - 1];
+      } else {
+        out += text.slice(i, stop);
+      }
       i = stop;
     } else if (text[i] === '"' || text[i] === "'" || text[i] === "`") {
       const quote = text[i];
@@ -341,8 +349,20 @@ const DESCRIBE =
  * and parent scopes.
  */
 function describeExtents(text) {
+  return callExtents(text, DESCRIBE);
+}
+
+/**
+ * Body extents for a call pattern, stepping over an `each` table.
+ *
+ * Shared by `describe` and `it`/`test` because both take `.each`, and both
+ * spell it as TWO calls — `it.each([1])('x %i', cb)`. Handling it only for
+ * describe left an `it.each` callback outside every extent, so a truncate
+ * inside one read as sitting in a bare describe body.
+ */
+function callExtents(text, pattern) {
   const out = [];
-  for (const m of text.matchAll(DESCRIBE)) {
+  for (const m of text.matchAll(pattern)) {
     let open = m.index + m[0].length - 1;
 
     // Step over the cases argument to the call that takes the callback.
@@ -396,6 +416,10 @@ export function enclosingDescribe(text, index) {
 // `.` excluded as well as `[\w$]`: `suite.beforeAll(...)` is a method call,
 // not Jest's global hook, and a guard inside one never runs as setup.
 const SETUP_HOOK = /(?<![\w$.])before(All|Each)\s*\(/g;
+
+/** `it` / `test`, including Jest's modifier and `each` forms. */
+const TEST_BODY =
+  /(?<![\w$.])(?:x|f)?(?:it|test)(?:\.(?:only|skip|todo|failing|concurrent))?(\.each)?(?:\.(?:only|skip|todo))?\s*(?:`|\()/g;
 
 /**
  * Raw-SQL execution call sites — where a TRUNCATE is actually a statement.
@@ -563,6 +587,19 @@ export function unguardedTruncates(spec) {
     }
 
     const truncateHook = hookKindAt(executable, at);
+
+      // MUST RUN INSIDE A HOOK OR A TEST. A raw call sitting directly in a
+      // describe body executes while the suite is being DEFINED — before any
+      // beforeAll — so no setup-hook guard can precede it, whatever the file
+      // order says.
+      const inHook = hookKindAt(executable, at) !== null;
+      const inTest = callExtents(executable, TEST_BODY).some(
+        (e) => at > e.start && at < e.end,
+      );
+      if (!inHook && !inTest) {
+        unguarded.push(at);
+        continue;
+      }
 
     const covered = guards.some((g) => {
       if (g >= at) return false;

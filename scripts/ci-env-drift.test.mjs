@@ -1053,3 +1053,42 @@ test("a regex at the start of a statement is recognised", () => {
   const src = `describe('s',()=>{const f=()=>{return /isn't/;};beforeEach(async()=>{${trunc}});});`;
   assert.equal(unguardedTruncates(src).length, 1);
 });
+
+test("SQL in a describe body is reported, however well guarded", () => {
+  // A raw call directly in a describe body runs while the suite is being
+  // DEFINED — before any beforeAll — so no setup-hook guard can precede it,
+  // whatever the file order suggests.
+  const guard = "await assertConnectedToTestDatabase(p);";
+  const bare =
+    `describe('s',()=>{beforeAll(async()=>{${guard}});p.$executeRawUnsafe('TRUNCATE TABLE t');});`;
+  assert.equal(unguardedTruncates(bare).length, 1);
+
+  // Inside a hook or a test it is fine.
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+  for (const ctx of [
+    `beforeEach(async()=>{${trunc}});`,
+    `it('x',async()=>{${trunc}});`,
+    `test('x',async()=>{${trunc}});`,
+    `it.each([1])('x %i',async()=>{${trunc}});`,
+  ]) {
+    assert.deepEqual(
+      unguardedTruncates(`describe('s',()=>{beforeAll(async()=>{${guard}});${ctx}});`),
+      [],
+      `rejected a valid context: ${ctx}`,
+    );
+  }
+});
+
+test("a guard-shaped regex is not a guard", () => {
+  // Regex interiors stayed verbatim in the executable view, so
+  // `/await assertConnectedToTestDatabase\(/` inside a hook counted as a
+  // real call and covered a later truncate.
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+  const fake = `describe('s',()=>{beforeAll(()=>{const re=/await assertConnectedToTestDatabase\\(x/;});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(unguardedTruncates(fake).length, 1);
+
+  // The interior is blanked, and offsets still line up.
+  assert.ok(!stripCommentsAndStrings("const re = /secret/;").includes("secret"));
+  const src = "const re = /a'b/; const s = 'x';";
+  assert.equal(stripCommentsAndStrings(src).length, src.length);
+});
