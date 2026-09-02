@@ -106,3 +106,20 @@ test("--list prints the contract without needing a valid environment", () => {
   assert.match(out, /DATABASE_URL/);
   assert.match(out, /WHATSAPP_TEMPLATE_NAME/);
 });
+
+test("--env render reads the production env files, not the development ones", () => {
+  // The interaction the unit tests cover separately: readAppEnv used to
+  // select files from the ambient NODE_ENV while the forced target only
+  // reached checkEnv, so a dry run against Render judged development values
+  // by production rules.
+  //
+  // Observable because apps/web/.env.local exists and .env.production does
+  // not: under a forced render target the loader must still find .env.local
+  // (Next reads it in production too) while asking for .env.production
+  // rather than .env.development.
+  const { status, out } = run(["web", "--env", "render"]);
+  assert.equal(status, 1, out);
+  assert.match(out, /environment: render/);
+  // A missing .env.production is not an error — absent is a legal state.
+  assert.ok(!out.includes("Could not read"), out);
+});

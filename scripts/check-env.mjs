@@ -2,15 +2,19 @@
 /**
  * Check an app's environment variables and report what is wrong.
  *
- * This is the by-hand and CI entry point. It is NOT how the check runs in
- * production -- both prod images bypass npm scripts entirely (the API's CMD
- * is `node dist/src/main.js`, the web's is `next start`), so a `prestart`
- * hook would work locally and silently do nothing in the container. The real
- * enforcement lives in apps/api/src/main.ts and apps/web/next.config.ts,
- * which always run.
+ * This is the by-hand and CI entry point, and TODAY IT IS THE ONLY ONE.
+ * Nothing calls the contract at boot yet; that wiring is a later change in
+ * this series, and docs/environments.md says the same.
+ *
+ * When it lands it will go in apps/api/src/main.ts and
+ * apps/web/next.config.ts rather than a `prestart` hook, because both prod
+ * images bypass npm scripts entirely -- the API's CMD is
+ * `node dist/src/main.js` and the web's is `next start` -- so a hook would
+ * work locally and silently do nothing in the container, which is the
+ * failure mode this whole module exists to remove.
  *
  * All the decisions live in the environment contract, so this file and both
- * boot hooks share one implementation rather than three that drift.
+ * future boot hooks share one implementation rather than three that drift.
  *
  * Imported by RELATIVE path for the same reason ci-env.mjs is: nothing under
  * scripts/ can rely on the workspace package being linked into the root
@@ -34,7 +38,11 @@
  *                         service.
  */
 import { fileURLToPath } from "node:url";
-import { envFilesFor, parseArgs } from "./lib/check-env-args.mjs";
+import {
+  envFilesFor,
+  nodeEnvForTarget,
+  parseArgs,
+} from "./lib/check-env-args.mjs";
 import {
   DEPLOY_ENVIRONMENTS,
   checkEnv,
@@ -65,7 +73,7 @@ const { apps, forced, list, show } = parsed;
  * is already set, so an explicit `FOO=bar node scripts/check-env.mjs` still
  * wins over the file.
  */
-function readAppEnv(app) {
+function readAppEnv(app, forcedTarget) {
   // NODE'S OWN PARSER, not a hand-rolled one.
   //
   // Three review rounds found three separate bugs in a hand-written parser --
@@ -103,7 +111,15 @@ function readAppEnv(app) {
   // own precedence order, captures the result, and restores -- which also
   // keeps `check-env.mjs all` from letting the API's values leak into the
   // web app's report.
-  const files = envFilesFor(app, process.env.NODE_ENV ?? "development");
+  // A FORCED TARGET SELECTS THE FILES TOO, not just the rules. `--env render`
+  // from a dev shell used to load `.env.development*` and judge it against
+  // production rules -- a verdict about files that deploy will never open.
+  const files = envFilesFor(
+    app,
+    forcedTarget
+      ? nodeEnvForTarget(forcedTarget)
+      : (process.env.NODE_ENV ?? "development"),
+  );
   const before = { ...process.env };
   try {
     for (const file of files) {
@@ -148,7 +164,7 @@ if (list) {
 
 let failed = false;
 for (const app of apps) {
-  const env = readAppEnv(app);
+  const env = readAppEnv(app, forced);
 
   // DETECTED FROM THE LOADED ENVIRONMENT, and inside the loop, because
   // APP_ENV is one of the variables an app's own .env may declare. Printed

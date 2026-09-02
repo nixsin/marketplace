@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { envFilesFor, parseArgs } from "./check-env-args.mjs";
+import {
+  envFilesFor,
+  nodeEnvForTarget,
+  parseArgs,
+} from "./check-env-args.mjs";
 
 const ENVS = ["render", "github-ci", "ci-local", "test", "localhost", "unknown"];
 
@@ -194,5 +198,31 @@ test("an unrecognised NODE_ENV falls back to production, not a made-up file", ()
     for (const file of envFilesFor("web", odd)) {
       assert.ok(!file.includes(odd), `${file} leaked ${odd}`);
     }
+  }
+});
+
+test("a forced target selects the files that target actually reads", () => {
+  // `--env render` asks "would this pass in production?" — answering it from
+  // `.env.development*` answers a different question, about files the deploy
+  // will never open.
+  assert.equal(nodeEnvForTarget("render"), "production");
+  assert.equal(nodeEnvForTarget("unknown"), "production");
+  assert.equal(nodeEnvForTarget("test"), "test");
+  assert.equal(nodeEnvForTarget("localhost"), "development");
+  assert.equal(nodeEnvForTarget("ci-local"), "development");
+  assert.equal(nodeEnvForTarget("github-ci"), "development");
+
+  // The interaction is the point: the two functions compose into the file
+  // list a dry run against Render should read.
+  assert.deepEqual(envFilesFor("web", nodeEnvForTarget("render")), [
+    ".env.production.local",
+    ".env.local",
+    ".env.production",
+    ".env",
+  ]);
+
+  // ...and the API is unaffected, because it reads one file regardless.
+  for (const target of ["render", "test", "localhost"]) {
+    assert.deepEqual(envFilesFor("api", nodeEnvForTarget(target)), [".env"]);
   }
 });

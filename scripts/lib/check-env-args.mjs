@@ -167,3 +167,34 @@ export function envFilesFor(app, nodeEnv) {
     ".env",
   ];
 }
+
+/**
+ * Which NODE_ENV does a given environment actually run Next in?
+ *
+ * `--env render` asks "would this pass in production?" -- and answering it
+ * with the development .env files answers a different question. A Render
+ * build runs `next build`, which is NODE_ENV=production, so it reads
+ * `.env.production*`; checking `.env.development*` against production rules
+ * reports a verdict about files that deploy will never open.
+ *
+ * The mapping is what each environment genuinely does, not a preference:
+ *
+ *   render      `next build` / `next start`      -> production
+ *   unknown     a production-looking process      -> production
+ *   test        Vitest/Jest                       -> test
+ *   github-ci   \
+ *   ci-local     > a dev server or a script       -> development
+ *   localhost   /
+ *
+ * github-ci is the loose one: a CI job runs builds AND tests. `test` beats
+ * both CI branches during detection, so a forced `github-ci` is asking about
+ * the non-test jobs, which run a dev-mode toolchain.
+ *
+ * @param {string} target One of DEPLOY_ENVIRONMENTS.
+ * @returns {string} The NODE_ENV to select env files with.
+ */
+export function nodeEnvForTarget(target) {
+  if (target === "render" || target === "unknown") return "production";
+  if (target === "test") return "test";
+  return "development";
+}
