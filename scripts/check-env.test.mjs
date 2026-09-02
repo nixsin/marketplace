@@ -95,20 +95,21 @@ function baselineEnv() {
  * suite either fails in CI on a missing file or leaves one behind on a
  * laptop.
  */
-function withWebEnvLocal(contents, body) {
-  const local = fileURLToPath(
-    new URL("../apps/web/.env.local", import.meta.url),
-  );
-  const existed = existsSync(local);
-  const original = existed ? readFileSync(local, "utf8") : "";
+function withEnvFile(relativePath, contents, body) {
+  const path = fileURLToPath(new URL(`../${relativePath}`, import.meta.url));
+  const existed = existsSync(path);
+  const original = existed ? readFileSync(path, "utf8") : "";
   try {
-    writeFileSync(local, `${original}\n${contents}\n`);
+    writeFileSync(path, `${original}\n${contents}\n`);
     body();
   } finally {
-    if (existed) writeFileSync(local, original);
-    else rmSync(local, { force: true });
+    if (existed) writeFileSync(path, original);
+    else rmSync(path, { force: true });
   }
 }
+
+const withWebEnvLocal = (contents, body) =>
+  withEnvFile("apps/web/.env.local", contents, body);
 
 /** @returns {{status: number, out: string}} */
 function run(args, env = {}) {
@@ -155,17 +156,40 @@ test("an explicit variable wins over the .env file", () => {
   });
 });
 
-test("one app's values do not leak into the other's report", () => {
-  // readAppEnv mutates process.env and restores it, so `all` must produce
-  // exactly the same web verdict as `web` alone. Without the restore the
-  // API's values are still present when the web app is checked.
-  const both = run(["all"], VALID_BOTH);
-  const webOnly = run(["web"], VALID_BOTH);
-  const webSection = both.out.slice(both.out.indexOf("app: web"));
-  assert.equal(
-    webSection.includes("ERROR"),
-    webOnly.out.includes("ERROR"),
-    `all:\n${both.out}\nweb:\n${webOnly.out}`,
+test("one app's file values do not leak into the other's report", () => {
+  // THE VARIABLE HAS TO BE IN BOTH CONTRACTS for the leak to be visible, and
+  // an earlier version of this test missed that: it passed every variable in
+  // the subprocess environment, so the files could not introduce anything at
+  // all and the restore it claimed to exercise was never touched.
+  //
+  // NEXT_PUBLIC_SITE_URL is in both. Giving each app's own file a distinct
+  // value and supplying neither from the shell means the API's value is in
+  // process.env by the time the web app is read — and since loadEnvFile
+  // never overwrites, a missing restore makes the web report show the API's.
+  const shared = omit(VALID_BOTH, "NEXT_PUBLIC_SITE_URL");
+
+  withEnvFile(
+    "apps/api/.env",
+    'NEXT_PUBLIC_SITE_URL="http://localhost:3000/#from-the-api-file"',
+    () => {
+      withWebEnvLocal(
+        'NEXT_PUBLIC_SITE_URL="http://localhost:3000/#from-the-web-file"',
+        () => {
+          const { out } = run(["all", "--show"], shared);
+          const webSection = out.slice(out.indexOf("app: web"));
+
+          assert.match(
+            webSection,
+            /from-the-web-file/,
+            `the web app must see its own file:\n${out}`,
+          );
+          assert.ok(
+            !webSection.includes("from-the-api-file"),
+            `the API's value leaked into the web report:\n${out}`,
+          );
+        },
+      );
+    },
   );
 });
 

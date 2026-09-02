@@ -315,7 +315,14 @@ test("a self-referential chain terminates instead of hanging", () => {
   // rather than spinning, which in a boot check is indistinguishable from a
   // hung service.
   assert.equal(expandValue("$SELF", { SELF: "$SELF" }), "$SELF");
-  assert.equal(expandValue("$A", { A: "$B", B: "$A" }), "$A");
+
+  // For a MUTUAL cycle the residue is whichever link the loop stopped on --
+  // `$A` under the old depth cap, `$B` under cycle detection. Which one is
+  // not the property that matters: what matters is that it terminates and
+  // leaves an unresolved reference for the contract to report, rather than
+  // inventing a value or spinning.
+  const mutual = expandValue("$A", { A: "$B", B: "$A" });
+  assert.match(mutual, /^\$[AB]$/, `unexpected residue: ${mutual}`);
 });
 
 test("default forms follow the shell's colon rule, as dotenv-expand does", () => {
@@ -357,4 +364,48 @@ test("expandValue leaves ordinary values alone", () => {
   ]) {
     assert.equal(expandValue(value, { A: "x" }), value);
   }
+});
+
+test("the alternate-value operators work, not just the defaults", () => {
+  // `${VAR:+r}` and `${VAR+r}` are dotenv-expand's inverse forms: substitute
+  // when the name IS set rather than when it is not. They were left literal,
+  // so a value using them was judged as text and rejected — a configuration
+  // Next resolves without complaint.
+  const scope = { SET: "value", EMPTY: "" };
+
+  // `+` substitutes when set at all; `:+` requires non-empty.
+  assert.equal(expandValue("${SET:+yes}", scope), "yes");
+  assert.equal(expandValue("${SET+yes}", scope), "yes");
+  assert.equal(expandValue("${EMPTY:+yes}", scope), "");
+  assert.equal(expandValue("${EMPTY+yes}", scope), "yes");
+  assert.equal(expandValue("${MISSING:+yes}", scope), "");
+  assert.equal(expandValue("${MISSING+yes}", scope), "");
+
+  // The `-` forms keep behaving as before — the two operators must not have
+  // been collapsed into one code path.
+  assert.equal(expandValue("${MISSING:-no}", scope), "no");
+  assert.equal(expandValue("${EMPTY:-no}", scope), "no");
+  assert.equal(expandValue("${EMPTY-no}", scope), "");
+  assert.equal(expandValue("${SET-no}", scope), "value");
+
+  // An empty replacement is legal and means empty.
+  assert.equal(expandValue("${SET:+}", scope), "");
+});
+
+test("a long reference chain resolves; only a cycle stops it", () => {
+  // The old ten-pass cap was an arbitrary rule dressed up as a safety net: a
+  // valid chain of eleven references was left unresolved and then rejected.
+  // What needs guarding is a cycle, which has no fixed point at any depth.
+  const chain = { K: "https://deep.example" };
+  let previous = "K";
+  for (const name of "JIHGFEDCBA") {
+    chain[name] = `$${previous}`;
+    previous = name;
+  }
+  assert.equal(expandValue("$A", chain), "https://deep.example");
+
+  // Cycles terminate rather than spinning, which in a boot check is
+  // indistinguishable from a hung service.
+  assert.equal(expandValue("$P", { P: "$P" }), "$P");
+  assert.doesNotThrow(() => expandValue("$P", { P: "$Q", Q: "$P" }));
 });

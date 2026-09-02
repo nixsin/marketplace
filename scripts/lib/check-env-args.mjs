@@ -263,10 +263,19 @@ export function expandValue(value, scope) {
   // Bounded, because `A=$A` and `A=$B` / `B=$A` are self-referential and a
   // fixed point does not exist. Ten passes is far past any real chain; what
   // remains unresolved is left as written, which the contract then reports.
+  // CYCLE DETECTION, not a depth cap. A fixed limit of ten passes rejected a
+  // valid chain of eleven references -- an arbitrary rule dressed up as a
+  // safety net. What actually needs guarding is a CYCLE (`A=$A`, or
+  // `A=$B`/`B=$A`), which has no fixed point at any depth. Remembering the
+  // intermediate values catches exactly that and lets a chain of any finite
+  // length resolve.
   let current = value;
-  for (let pass = 0; pass < 10; pass += 1) {
+  const seen = new Set([current]);
+  for (;;) {
     const next = expandOnce(current, scope);
     if (next === current) break;
+    if (seen.has(next)) break; // a cycle: stop and leave what we have
+    seen.add(next);
     current = next;
   }
 
@@ -290,9 +299,9 @@ export function expandValue(value, scope) {
  */
 function expandOnce(value, scope) {
   return value.replace(
-    // `${VAR}`, `${VAR:-default}`, `${VAR-default}`, and bare `$VAR`.
-    /\\?\$(?:\{([A-Za-z_]\w*)(?::?-([^}]*))?\}|([A-Za-z_]\w*))/g,
-    (match, braced, fallback, bare) => {
+    // `${VAR}`, `${VAR:-d}`, `${VAR-d}`, `${VAR:+r}`, `${VAR+r}`, `$VAR`.
+    /\\?\$(?:\{([A-Za-z_]\w*)(?:(:?[-+])([^}]*))?\}|([A-Za-z_]\w*))/g,
+    (match, braced, operator, argument, bare) => {
       // Left exactly as found, backslash included -- see the note in
       // expandValue about why the unescape cannot happen here.
       if (match.startsWith("\\")) return match;
@@ -300,16 +309,21 @@ function expandOnce(value, scope) {
       const name = braced ?? bare;
       const resolved = scope[name];
 
-      // `:-` and `-` differ in dotenv-expand exactly as they do in a shell:
-      // `:-` substitutes the default for unset OR empty, plain `-` only for
-      // unset. The match tells them apart by whether a colon preceded the
-      // dash, which is recovered from the raw text rather than a third
-      // capture group.
-      if (fallback !== undefined) {
-        const colonForm = match.includes(":-");
-        const useDefault =
-          resolved === undefined || (colonForm && resolved === "");
-        return useDefault ? fallback : resolved;
+      if (operator !== undefined) {
+        // The colon is the same distinction it is in a shell, and it is not
+        // cosmetic here: empty is a DOCUMENTED value in this contract rather
+        // than an absence, so `${X:-d}` and `${X-d}` genuinely differ.
+        //
+        //   `-`  substitutes when the name is unset
+        //   `:-` substitutes when it is unset OR empty
+        //   `+`  substitutes when the name is SET (the inverse)
+        //   `:+` substitutes when it is set AND non-empty
+        const colon = operator.startsWith(":");
+        const isSet = resolved !== undefined;
+        const isUsable = isSet && (!colon || resolved !== "");
+
+        if (operator.endsWith("+")) return isUsable ? argument : "";
+        return isUsable ? resolved : argument;
       }
 
       return resolved === undefined ? match : resolved;
