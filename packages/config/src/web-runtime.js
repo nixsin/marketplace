@@ -182,14 +182,21 @@ function resolvePublicUrl(name, value, devDefault) {
   const host = parsed.hostname.replace(/\.$/, "");
   const withinDnsLimit = host.length <= 253;
   //
-  // The top label allows `xn--…` as well as letters: WHATWG URL parsing
-  // converts an internationalized name to punycode before this sees it, so
-  // `例え.テスト` arrives as `xn--r8jz45g.xn--zckzah` -- which a letters-only
-  // rule rejects for containing digits and hyphens.
+  // EVERY LABEL USES THE SAME RULE, including the last one. Special-casing
+  // the top label as "letters only" rejected punycode (`xn--zckzah`), and
+  // widening it to `xn--[a-z0-9]+` then rejected punycode containing an
+  // internal hyphen -- which is most of it, since the encoding uses `-` as
+  // its delimiter: `münchen` becomes `xn--mnchen-3ya`.
+  //
+  // The only thing the top label must NOT be is all digits, which is what
+  // separates `example.com` from the IPv4 literal `1.2.3.4`. That is one
+  // condition instead of a charset that needed widening every round.
+  const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+  const labels = host.split(".");
   const isDnsName =
-    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:[a-z]{2,63}|xn--[a-z0-9]{2,59})$/i.test(
-      host,
-    );
+    labels.length >= 2 &&
+    labels.every((label) => LABEL.test(label)) &&
+    !/^\d+$/.test(labels[labels.length - 1]);
 
   if (!isDnsName || !withinDnsLimit) {
     throw new Error(

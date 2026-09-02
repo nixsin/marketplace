@@ -443,6 +443,9 @@ test("production requires a public DNS name, which rejects every IP literal", as
     "https://[2606:4700::1111]/graphql",
     "https://localhost/graphql",
     "https://api/graphql",
+    // An all-numeric top label is what separates a name from an IPv4
+    // literal, and is the only thing the last label may not be.
+    "https://1.2.3.4/graphql",
     // Malformed names a bare `includes(".")` check accepted.
     "https://example..com/graphql",
     "https://-.com/graphql",
@@ -476,6 +479,18 @@ test("plain http is refused on a deployment", async () => {
       }),
     /must be an https:\/\/ URL/,
   );
+});
+
+test("punycode with an internal hyphen is accepted", async () => {
+  // Punycode uses `-` as its delimiter, so most encoded names contain one:
+  // `münchen` becomes `xn--mnchen-3ya`. A top-label charset of
+  // `xn--[a-z0-9]+` rejected exactly those.
+  const cfg = await importWithEnv({
+    RENDER: "true",
+    NEXT_PUBLIC_API_URL: "https://xn--mnchen-3ya.de/graphql",
+    NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+  });
+  assert.equal(cfg.API_URL, "https://xn--mnchen-3ya.de/graphql");
 });
 
 test("an internationalized domain is accepted", async () => {
