@@ -34,6 +34,37 @@ const source = readFileSync(
 
 const SECRET = /^\$\{\{\s*secrets\.[A-Z0-9_]+\s*\}\}$/;
 
+/**
+ * Is `index` inside the body of a `beforeAll(` / `beforeEach(` call?
+ *
+ * Balanced-bracket scan from each hook's opening paren. Small and tractable
+ * over a region of JavaScript — unlike parsing YAML, which is why the
+ * workflow checks stop at declaring what they cannot read.
+ *
+ * Brackets inside strings, template literals or comments would confuse it;
+ * they do not appear between these hooks' parens in this repo's specs, and
+ * a miscount fails CLOSED — the containment simply is not found and the
+ * test reports it.
+ */
+function containedInSetupHook(text, index) {
+  for (const m of text.matchAll(/before(?:All|Each)\s*\(/g)) {
+    const open = m.index + m[0].length - 1;
+    let depth = 0;
+    for (let i = open; i < text.length; i += 1) {
+      const c = text[i];
+      if (c === "(" || c === "{" || c === "[") depth += 1;
+      else if (c === ")" || c === "}" || c === "]") {
+        depth -= 1;
+        if (depth === 0) {
+          if (index > open && index < i) return true;
+          break;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------
 // The real ci.yml
 // ---------------------------------------------------------------------
@@ -406,16 +437,13 @@ test("every truncating e2e spec guards its connection first", () => {
       `${spec} calls the guard after its first TRUNCATE — it must run first`,
     );
 
-    // ...and from a setup hook, so it runs for the suite rather than only
-    // inside whichever test happens to reach it.
-    const beforeCall = text.slice(0, call);
-    const hook = Math.max(
-      beforeCall.lastIndexOf("beforeAll("),
-      beforeCall.lastIndexOf("beforeEach("),
-    );
+    // ...and LEXICALLY INSIDE a setup hook, so it runs for the suite rather
+    // than only in whichever test reaches it. `lastIndexOf("beforeAll(")`
+    // was not that: an unrelated hook that had already CLOSED earlier in the
+    // file satisfied it, so a call in an unused helper still passed.
     assert.ok(
-      hook !== -1,
-      `${spec} calls the guard outside a beforeAll/beforeEach hook`,
+      containedInSetupHook(text, call),
+      `${spec} calls the guard outside a beforeAll/beforeEach body`,
     );
   }
 });
