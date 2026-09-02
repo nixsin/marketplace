@@ -73,10 +73,16 @@ function jobsWithDatabaseUrl() {
   return out;
 }
 
-/** The workflow-level block: the first `env:` at column 0. */
+/**
+ * The workflow-level `env:` — required at column 0, not merely the first
+ * `env:` before `jobs:`. A `workflow_dispatch` input named `env` is nested
+ * and would otherwise be mistaken for it.
+ */
 function workflowEnv() {
-  const before = source.slice(0, source.indexOf("\njobs:"));
-  return envBlock(before) ?? {};
+  const lines = source.slice(0, source.indexOf("\njobs:")).split("\n");
+  const start = lines.findIndex((l) => l === "env:");
+  if (start === -1) return {};
+  return envBlock(lines.slice(start).join("\n")) ?? {};
 }
 
 test("the workflow-level Postgres account matches the contract", () => {
@@ -226,4 +232,54 @@ test("every Postgres assignment is the shared literal or a reference to it", () 
   for (const [name, value] of Object.entries(expected)) {
     assert.equal(env[name], value, `${name} is not the workflow-level value`);
   }
+});
+
+test("ci.yml uses only the YAML spelling these checks can read", () => {
+  // THE HONEST GUARD, and it exists because of what this file is not: a YAML
+  // parser. test-ci-scripts runs without `pnpm install` — checkout,
+  // setup-node, `node --test` — so no parser is available, and hand-rolling
+  // one is the trap that produced the .env-parser bugs this repo already
+  // records.
+  //
+  // GitHub accepts spellings these regexes do not read:
+  //
+  //   "DATABASE_URL": value        a quoted key
+  //   DATABASE_URL : value         a space before the colon
+  //   env: { DATABASE_URL: ... }   an inline map
+  //
+  // Any of them would slip past the scans above — including the one stopping
+  // a DATABASE_URL from reaching test-api-e2e, which is a destructive write
+  // to the dev database. So rather than pretend to handle them, this fails
+  // loudly the moment one appears: the blind spot becomes a red check
+  // instead of a silent gap.
+  const WATCHED = "(?:DATABASE_URL|NEXT_PUBLIC_API_URL|POSTGRES_(?:USER|PASSWORD|DB))";
+  const offenders = [];
+
+  source.split("\n").forEach((line, i) => {
+    const at = `line ${i + 1}: ${line.trim()}`;
+    if (new RegExp(`^\\s*["']${WATCHED}["']\\s*:`).test(line)) {
+      offenders.push(`${at}   (quoted key)`);
+    } else if (new RegExp(`^\\s*${WATCHED}\\s+:`).test(line)) {
+      offenders.push(`${at}   (space before colon)`);
+    } else {
+      // `${{ ... }}` is an ACTIONS EXPRESSION, not a YAML flow map, and it
+      // contains braces — so it must come out before asking about braces or
+      // every legitimate reference reads as an inline map.
+      const yamlOnly = line.replace(/\$\{\{[^}]*\}\}/g, "");
+      if (
+        /^\s*env:\s*\{/.test(yamlOnly) ||
+        (yamlOnly.includes("{") && new RegExp(`${WATCHED}\\s*:`).test(yamlOnly))
+      ) {
+        offenders.push(`${at}   (inline map)`);
+      }
+    }
+  });
+
+  assert.deepEqual(
+    offenders,
+    [],
+    `ci.yml uses a YAML spelling these drift checks cannot parse, so they ` +
+      `would silently stop protecting it:\n${offenders.join("\n")}\n\n` +
+      `Write it as a plain block key, or teach this file to parse YAML properly.`,
+  );
 });
