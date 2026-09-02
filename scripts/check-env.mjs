@@ -75,14 +75,25 @@ function readAppEnv(app) {
   // misses ones everybody hits, so the only real fix is to stop having a
   // second parser at all.
   //
+  // THE FILE LIST IS PER-APP, because the two apps genuinely differ and a
+  // checker that reads files the application does not is worse than no
+  // checker: it reports a valid configuration sourced from somewhere the
+  // service will never look.
+  //
+  //   api  -- `ConfigModule.forRoot({ isGlobal: true })` with no envFilePath,
+  //           which is Nest's default of `.env` alone. An apps/api/.env.local
+  //           is read by nothing.
+  //   web  -- Next loads `.env.local` ahead of `.env`.
+  //
   // `process.loadEnvFile` mutates process.env and never overwrites an
-  // existing value, so this snapshots, loads both files in dotenv's
-  // precedence order (.env.local wins), captures the result, and restores --
-  // which also keeps `check-env.mjs all` from letting the API's values leak
-  // into the web app's report.
+  // existing value, so this snapshots, loads the app's files in that app's
+  // own precedence order, captures the result, and restores -- which also
+  // keeps `check-env.mjs all` from letting the API's values leak into the
+  // web app's report.
+  const files = app === "web" ? [".env.local", ".env"] : [".env"];
   const before = { ...process.env };
   try {
-    for (const file of [".env.local", ".env"]) {
+    for (const file of files) {
       const path = new URL(`../apps/${app}/${file}`, import.meta.url);
       try {
         process.loadEnvFile(path);

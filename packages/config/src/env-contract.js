@@ -1024,6 +1024,11 @@ export function formatStartupBanner(result, env) {
 function hasUrlCredentials(value) {
   try {
     const parsed = new URL(value);
+    // No authority means an opaque URL, whose userinfo -- if any -- sits in
+    // the pathname rather than in `username`/`password`. Same reasoning as
+    // redactUrlCredentials: this is the catch block's question reached
+    // through a successful parse.
+    if (parsed.host === "") return /@/.test(value);
     return Boolean(parsed.username || parsed.password);
   } catch {
     // Same fail-closed reasoning as redactUrlCredentials: a value too
@@ -1066,6 +1071,18 @@ export function redactUrlCredentials(value) {
       ? "(redacted — unparseable value that may contain credentials)"
       : value;
   }
+  // AN OPAQUE URL PARSES AND HAS NO AUTHORITY, so `username`/`password` are
+  // empty however much userinfo the text contains -- `mailto:u:pw@h.com`
+  // parses cleanly and puts the whole of `u:pw@h.com` in `pathname`. That is
+  // the same question the catch block above answers, arriving through a
+  // success rather than a failure, so it gets the same answer: a value with
+  // no authority and a bare `@` cannot be ruled out, and is withheld.
+  if (parsed.host === "") {
+    return value.includes("@")
+      ? "(redacted — value may contain credentials)"
+      : value;
+  }
+
   if (!parsed.username && !parsed.password) return value;
   parsed.username = "***";
   parsed.password = "";

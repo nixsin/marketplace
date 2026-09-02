@@ -67,8 +67,24 @@ export function isPublicDnsName(hostname) {
  * function answers is "can the public internet resolve this", and neither
  * can be. Including them costs two strings and removes a judgement call from
  * a list that is otherwise purely mechanical.
+ *
+ * The second group is private-use suffixes that are not RFC-reserved but are
+ * conventional on corporate networks. `corp`, `home` and `mail` are the
+ * three ICANN permanently withheld from delegation in 2018 after measuring
+ * the name-collision risk; the rest have never been delegated and are used
+ * on internal networks by convention.
+ *
+ * WHAT THIS LIST IS NOT is a completeness claim. Deciding whether an
+ * arbitrary suffix is publicly delegated needs the Public Suffix List --
+ * thousands of entries, revised continuously, so vendoring it trades this
+ * gap for a staleness problem that fails in the same direction. This
+ * denylist catches the suffixes that actually get typed into a production
+ * config by accident. The backstop for everything else is that an
+ * undelegated name does not resolve, so the deploy fails loudly rather
+ * than silently pointing at nothing.
  */
 const RESERVED_SUFFIXES = [
+  // RFC-reserved.
   "localhost",
   "local",
   "internal",
@@ -78,6 +94,13 @@ const RESERVED_SUFFIXES = [
   "home.arpa",
   "onion",
   "alt",
+  // Private use by convention, never delegated.
+  "corp",
+  "home",
+  "mail",
+  "lan",
+  "intranet",
+  "localdomain",
 ];
 
 /**

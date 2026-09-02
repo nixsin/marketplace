@@ -14,6 +14,7 @@ import {
   formatStartupBanner,
   isDeployedEnvironment,
   isRenderDeploy,
+  redactUrlCredentials,
 } from "./env-contract.js";
 
 const messages = (findings) => findings.map((f) => f.message).join("\n");
@@ -961,4 +962,77 @@ test("a port must be a decimal digit string, not merely coercible", () => {
     environment: "localhost",
   });
   assert.equal(tooHigh.ok, false);
+});
+
+test("an opaque URL cannot hide credentials from the banner", () => {
+  // `mailto:u:pw@h.com` PARSES, and an opaque URL has no authority -- so
+  // `username`/`password` are empty however much userinfo the text carries,
+  // and the whole of it sits in `pathname`. The earlier version asked only
+  // those two fields and printed the value verbatim.
+  for (const value of [
+    "mailto:user:hunter2@example.com",
+    "custom:user:hunter2@example.com",
+    "urn:x:user:hunter2@example.com",
+  ]) {
+    const shown = redactUrlCredentials(value);
+    assert.ok(!shown.includes("hunter2"), `${value} leaked through`);
+    assert.match(shown, /redacted/);
+  }
+
+  // The hierarchical path still redacts in place rather than withholding,
+  // because there the credential's boundaries are known exactly.
+  assert.equal(
+    redactUrlCredentials("https://u:hunter2@h.com/x"),
+    "https://***@h.com/x",
+  );
+
+  // ...and an ordinary value is untouched, including an opaque URL with no
+  // `@` at all. Withholding everything would be safe and useless.
+  assert.equal(redactUrlCredentials("https://laxair.shop"), "https://laxair.shop");
+  assert.equal(redactUrlCredentials("mailto:plain"), "mailto:plain");
+});
+
+test("private pseudo-TLDs are refused in production", () => {
+  // Not RFC-reserved, but never delegated and routinely typed into a
+  // corporate config. `.corp`, `.home` and `.mail` are the three ICANN
+  // permanently withheld after measuring name-collision risk.
+  for (const host of [
+    "api.lan",
+    "db.corp",
+    "x.home",
+    "svc.mail",
+    "web.intranet",
+    "h.localdomain",
+  ]) {
+    const result = checkEnv({
+      app: "web",
+      env: {
+        ...completeWeb,
+        APP_ENV: "render",
+        NEXT_PUBLIC_API_URL: `https://${host}/graphql`,
+        NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+        NEXT_PUBLIC_BLOB_BASE_URL: "https://images.laxair.shop",
+      },
+      environment: "render",
+    });
+    assert.match(
+      messages(result.errors),
+      /must be a public DNS name/,
+      `${host} should be refused in production`,
+    );
+  }
+
+  // The suffix rule must not swallow a real host that merely contains one.
+  const fine = checkEnv({
+    app: "web",
+    env: {
+      ...completeWeb,
+      APP_ENV: "render",
+      NEXT_PUBLIC_API_URL: "https://mailchimp.com/graphql",
+      NEXT_PUBLIC_SITE_URL: "https://corporate.laxair.shop",
+      NEXT_PUBLIC_BLOB_BASE_URL: "https://images.laxair.shop",
+    },
+    environment: "render",
+  });
+  assert.equal(fine.ok, true, formatReport(fine));
 });

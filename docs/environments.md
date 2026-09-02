@@ -119,7 +119,12 @@ Today the contract is exercised by hand:
 node scripts/check-env.mjs all
 ```
 
-which reads `apps/api/.env` and `apps/web/.env` if they exist. The localhost
+which reads each app's own env files, in that app's own precedence
+order: `apps/api/.env` for the API (Nest's `ConfigModule` default), and
+`apps/web/.env.local` then `apps/web/.env` for the web app (Next's order).
+Reading a file the app itself does not would be worse than reading none —
+it reports a valid configuration sourced from somewhere the service never
+looks. The localhost
 values themselves come from `@medinstru/config` — `DEV_API_URL`,
 `DEV_SITE_URL`, `API_DEFAULT_PORT` — so that anything which can import
 JavaScript shares one definition rather than repeating a literal.

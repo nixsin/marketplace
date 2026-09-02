@@ -21,7 +21,35 @@ export const APPS = /** @type {const} */ (["api", "web"]);
  * @returns {{ok: true, apps: App[], forced?: string, list: boolean, show: boolean}
  *          | {ok: false, message: string, code: number}}
  */
+const KNOWN_FLAGS = ["--env", "--list", "--show"];
+
 export function parseArgs(argv, environments) {
+  // AN UNKNOWN FLAG IS A REFUSAL, not something to skip past. Every flag
+  // here selects a different operation, so silently ignoring one runs the
+  // wrong operation and reports success: `--lis` checks the current
+  // environment instead of listing, and `--showw` boots nothing while
+  // looking like it printed the banner. A typo in a flag is exactly the
+  // case where the reader trusts the output most.
+  //
+  // `--env=render` is called out by name because it is the form people
+  // actually type, and it is the worst of the silent cases: it parses as an
+  // unknown flag, leaves `forced` undefined, and checks the environment you
+  // are in rather than the one you asked about -- which is the single
+  // question this CLI exists to answer differently.
+  for (const arg of argv) {
+    if (!arg.startsWith("-")) continue;
+    if (KNOWN_FLAGS.includes(arg)) continue;
+    const equals = arg.indexOf("=");
+    const base = equals === -1 ? arg : arg.slice(0, equals);
+    return {
+      ok: false,
+      code: 2,
+      message: KNOWN_FLAGS.includes(base)
+        ? `Use "${base} ${arg.slice(equals + 1)}", not "${arg}".`
+        : `Unknown option "${arg}". Expected ${KNOWN_FLAGS.join(", ")}.`,
+    };
+  }
+
   const envFlag = argv.indexOf("--env");
   if (envFlag !== -1) {
     const value = argv[envFlag + 1];

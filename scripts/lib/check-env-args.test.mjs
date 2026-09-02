@@ -71,3 +71,43 @@ test("--list and --show are recognised anywhere", () => {
   assert.equal(result.list, true);
   assert.equal(result.show, true);
 });
+
+test("an unknown flag is refused rather than ignored", () => {
+  // Every flag selects a different operation, so skipping an unrecognised
+  // one runs the wrong operation and reports success.
+  for (const bad of ["--lis", "--showw", "--verbose", "-l"]) {
+    const result = parseArgs([bad], ENVS);
+    assert.equal(result.ok, false, `${bad} should be refused`);
+    assert.equal(result.code, 2);
+    assert.match(result.message, /Unknown option/);
+  }
+});
+
+test("--env=render is refused with the form that works", () => {
+  // The worst of the silent cases: it leaves `forced` undefined, so the CLI
+  // checks the environment you are in rather than the one you asked about --
+  // the single question this tool exists to answer differently.
+  const result = parseArgs(["--env=render"], ENVS);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /--env render/);
+
+  const listEquals = parseArgs(["--list=true"], ENVS);
+  assert.equal(listEquals.ok, false);
+  assert.match(listEquals.message, /--list true/);
+});
+
+test("every valid invocation still parses", () => {
+  // The guard runs before everything else, so a regression in it breaks the
+  // whole CLI rather than one flag.
+  for (const argv of [
+    [],
+    ["api"],
+    ["web", "--list"],
+    ["--show"],
+    ["--env", "render"],
+    ["api", "--env", "render", "--show"],
+  ]) {
+    const result = parseArgs(argv, ENVS);
+    assert.equal(result.ok, true, `${JSON.stringify(argv)} should parse`);
+  }
+});
