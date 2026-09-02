@@ -60,6 +60,19 @@ function envBlock(text) {
   return out;
 }
 
+/** Job names that assign DATABASE_URL anywhere in their body. */
+function jobsWithDatabaseUrl() {
+  const lines = source.split("\n");
+  const out = {};
+  let job = null;
+  for (const line of lines) {
+    const m = /^  ([a-z][\w-]*):\s*$/.exec(line);
+    if (m) job = m[1];
+    if (job && /^\s+DATABASE_URL:/.test(line)) out[job] = true;
+  }
+  return out;
+}
+
 /** The workflow-level block: the first `env:` at column 0. */
 function workflowEnv() {
   const before = source.slice(0, source.indexOf("\njobs:"));
@@ -110,12 +123,28 @@ test("no other database URL is introduced anywhere", () => {
   const SECRET = /^\$\{\{\s*secrets\.[A-Z0-9_]+\s*\}\}$/;
 
   for (const url of urls) {
-    const ok =
-      url === DEV_DATABASE_URL ||
-      url === "${{ env.DATABASE_URL }}" ||
-      SECRET.test(url);
-    assert.ok(ok, `unrecognised DATABASE_URL in ci.yml: ${url}`);
+    const ok = url === DEV_DATABASE_URL || url === "${{ env.DATABASE_URL }}";
+    assert.ok(ok || SECRET.test(url), `unrecognised DATABASE_URL: ${url}`);
   }
+
+  // A SECRET URL IS ALLOWED IN `migrate` ONLY. Accepting one file-wide meant
+  // a step in test-e2e-web or load-test could point at production with
+  // `${{ secrets.PROD_DATABASE_URL }}` and satisfy every check here — and
+  // those jobs run migrations and seeds, so that is a destructive write to
+  // the real database.
+  const secretsOutsideMigrate = [];
+  for (const job of Object.keys(jobsWithDatabaseUrl())) {
+    if (job === "migrate") continue;
+    const text = jobSource(job) ?? "";
+    for (const m of text.matchAll(/^\s+DATABASE_URL:\s*(.+)$/gm)) {
+      if (SECRET.test(m[1].trim())) secretsOutsideMigrate.push(`${job}: ${m[1].trim()}`);
+    }
+  }
+  assert.deepEqual(
+    secretsOutsideMigrate,
+    [],
+    `a secret DATABASE_URL outside migrate:\n${secretsOutsideMigrate.join("\n")}`,
+  );
 });
 
 test("the web app's API URL matches the contract everywhere it appears", () => {
