@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { isUnreachableIpv4, isUnreachableIpv6 } from "./host-classification.js";
 
 /**
- * These ranges are the IANA Special-Purpose Address Registries, not a list of
- * addresses somebody thought of.
+ * IPv4 is the IANA Special-Purpose Address Registry. IPv6 is INVERTED:
+ * global unicast is exactly 2000::/3, so everything outside it is
+ * unreachable with no list to maintain, and only the five exceptions inside
+ * it are named.
  *
  * Three review rounds each added one more range -- 127.0.0.0/8, then
  * fec0::/10, then 192.0.0.0/24 -- which is the signal that enumerating
@@ -73,6 +75,11 @@ const unreachableV6 = [
   ["[100::1]", "discard-only, RFC 6666"],
   ["[64:ff9b:1::1]", "local-use IPv4/IPv6 translation"],
   ["[2002::1]", "6to4, relays deprecated by RFC 7526"],
+  ["[2001:2::1]", "benchmarking, RFC 5180"],
+  ["[2001::1]", "Teredo — a tunnel, not somewhere a service is hosted"],
+  ["[3fff::1]", "documentation, RFC 9637 (allocated 2024)"],
+  ["[3fff:0fff::1]", "the far end of the 3fff::/20 documentation block"],
+  ["[5f00::1]", "SRv6 — outside 2000::/3, so covered with no rule of its own"],
   ["[::ffff:127.0.0.1]", "IPv4-mapped loopback, dotted"],
   ["[::ffff:7f00:1]", "IPv4-mapped loopback, hex"],
   ["[::ffff:10.0.0.1]", "IPv4-mapped RFC1918"],
@@ -83,6 +90,10 @@ const reachableV6 = [
   ["[2001:4860:4860::8888]", "ordinary public"],
   ["[::ffff:8.8.8.8]", "IPv4-mapped PUBLIC address"],
   ["2606:4700::1111", "no brackets — URL.hostname always supplies them"],
+  ["[2400:cb00::1]", "ordinary public"],
+  ["[2003::1]", "ordinary public, adjacent to the 2002::/16 exception"],
+  ["[3ffe:ffff::1]", "decommissioned 6bone — unallocated, not special-purpose"],
+  ["[3fff:1000::1]", "one block past the 3fff::/20 documentation range"],
 ];
 
 for (const [address, why] of unreachableV6) {

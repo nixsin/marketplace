@@ -72,44 +72,65 @@ export function isUnreachableIpv4(hostname) {
 }
 
 /**
- * True for an IPv6 literal that is loopback (::1), unspecified (::),
- * unique-local (fc00::/7) or link-local (fe80::/10). URL.hostname keeps
- * the surrounding brackets for IPv6, so they are stripped first.
+ * True for an IPv6 literal that is not globally reachable.
+ *
+ * INVERTED, and that is the point. Four review rounds each added one more
+ * non-global range -- fec0::/10, then 100::/64 and 64:ff9b:1::/48, then
+ * 2001:2::/48 and 3fff::/20. Enumerating what is bad is unbounded: IANA is
+ * still assigning these (3fff::/20 was allocated in 2024), so the list is
+ * guaranteed to be out of date again.
+ *
+ * Global unicast is exactly 2000::/3. Everything outside it -- loopback,
+ * unspecified, unique-local, link-local, site-local, multicast, discard-only,
+ * translation prefixes, and every block IANA assigns next -- is not globally
+ * reachable, with no list to maintain. Only the exceptions INSIDE 2000::/3
+ * need naming, and there are five.
+ *
+ * URL.hostname keeps the brackets for IPv6, so they are stripped first.
  */
 export function isUnreachableIpv6(hostname) {
   if (!hostname.startsWith("[") || !hostname.endsWith("]")) return false;
   const addr = hostname.slice(1, -1).toLowerCase();
-  if (addr === "::1" || addr === "::") return true;
 
   // IPv4-mapped addresses (::ffff:127.0.0.1, and its canonical hex form
   // ::ffff:7f00:1) resolve to the embedded IPv4 address, so they must go
   // through the IPv4 range checks -- otherwise every private and loopback
   // address has a trivial spelling that walks straight past this guard.
+  // Handled BEFORE the 2000::/3 test, which would otherwise call a mapped
+  // PUBLIC address unreachable.
   const mapped = mappedIpv4(addr);
   if (mapped) return isUnreachableIpv4(mapped);
 
+  const firstHextet = /^([0-9a-f]{0,4})(?::|$)/.exec(addr)?.[1];
+  if (firstHextet === undefined) return true; // unparseable: fail closed
+  // A leading `::` means the first group is zero -- ::1, :: and friends, all
+  // outside global unicast.
+  const high = firstHextet === "" ? 0 : parseInt(firstHextet, 16);
+
+  // Outside 2000::/3 is not globally reachable, whatever it is.
+  if (high < 0x2000 || high > 0x3fff) return true;
+
+  // The exceptions inside global unicast. This list IS bounded: a block only
+  // belongs here if IANA carved it out of 2000::/3 specifically.
   return (
-    // fc00::/7 (unique-local) covers fc and fd.
-    /^f[cd][0-9a-f]{0,2}:/.test(addr) ||
-    // fe80::/10 (link-local) covers fe8 through feb.
-    /^fe[89ab][0-9a-f]?:/.test(addr) ||
-    // fec0::/10 (site-local). DEPRECATED by RFC 3879 and therefore easy to
-    // leave out -- but deprecated means routers may ignore it, not that
-    // nobody types it, and an address the internet will not route is exactly
-    // what this function exists to catch.
-    /^fe[cdef][0-9a-f]?:/.test(addr) ||
-    // ff00::/8 multicast -- an address a browser cannot fetch a page from.
-    /^ff[0-9a-f]{0,2}:/.test(addr) ||
-    // 2001:db8::/32, reserved for documentation and examples. Not routable,
-    // and a very plausible copy-paste out of a tutorial.
+    // 2001:db8::/32 -- documentation. A very plausible copy-paste from a
+    // tutorial, which is why it was the first one anybody noticed.
     /^2001:0?db8:/.test(addr) ||
-    // Discard-Only (100::/64, RFC 6666) -- traffic is dropped by design.
-    /^100:(?::|0{1,4}:)/.test(addr) ||
-    // Local-use IPv4/IPv6 translation (64:ff9b:1::/48, RFC 8215).
-    /^64:ff9b:1:/.test(addr) ||
-    // 6to4 (2002::/16). Reachable only through relays that RFC 7526
-    // deprecated, so in practice a dead address.
-    /^2002:/.test(addr)
+    // 2001:2::/48 -- benchmarking (RFC 5180).
+    /^2001:0{0,3}2:/.test(addr) ||
+    // 2001::/32 -- Teredo. Globally routable in principle, but it is a
+    // tunnelling transition mechanism, not somewhere a service is hosted.
+    /^2001:0{0,4}(?::|$)/.test(addr) ||
+    // 2002::/16 -- 6to4, reachable only through relays RFC 7526 deprecated.
+    /^2002:/.test(addr) ||
+    // 3fff::/20 -- documentation (RFC 9637, allocated 2024). The range that
+    // made the case for inverting this function rather than extending it.
+    //
+    // /20 is the first hextet PLUS the top nibble of the second, so the
+    // second group must start with 0. A first attempt matched `3ff[0-9a-f]:`
+    // and swept in 3ffe::/16 -- the decommissioned 6bone, since returned to
+    // IANA as ordinary unallocated space, not special-purpose.
+    /^3fff:(?::|0)/.test(addr)
   );
 }
 
