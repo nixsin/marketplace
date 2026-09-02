@@ -41,6 +41,11 @@ const source = readFileSync(
 
 const SECRET = /^\$\{\{\s*secrets\.[A-Z0-9_]+\s*\}\}$/;
 
+// The migration secret is pinned by NAME. Accepting any secret let an
+// accidental `${{ secrets.API_KEY }}` read as a valid production migration
+// configuration — a check that says "a secret" when it means "this one".
+const MIGRATION_SECRET = /^\$\{\{\s*secrets\.PROD_DATABASE_URL\s*\}\}$/;
+
 /**
  * Is `index` inside the body of a `beforeAll(` / `beforeEach(` call?
  *
@@ -133,8 +138,8 @@ test("migrate uses a production secret, and only migrate does", () => {
   // pasted as a literal — so printing the value writes real credentials into
   // a CI log, which is the one place they must never appear.
   assert.ok(
-    urls.every((u) => SECRET.test(u)),
-    `migrate must use a secret; got ${urls.map(redactUrlCredentials).join(", ")}`,
+    urls.every((u) => MIGRATION_SECRET.test(u)),
+    `migrate must use secrets.PROD_DATABASE_URL; got ${urls.map(redactUrlCredentials).join(", ")}`,
   );
 
   // test-e2e-web and load-test run migrations and seeds, so a secret URL
@@ -195,6 +200,30 @@ test("every Postgres assignment is the shared literal or a reference to it", () 
 
   for (const [name, value] of Object.entries(expected)) {
     assert.equal(workflowEnv(source)[name], value);
+  }
+});
+
+test("every postgres service maps all three account variables", () => {
+  // The literal count stays at three when a SERVICE mapping is deleted, so
+  // a container could silently lose POSTGRES_PASSWORD while every other
+  // check here passed.
+  const wanted = ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"];
+  const withService = ["test-api-e2e", "test-e2e-web", "load-test"];
+
+  for (const job of withService) {
+    const text = jobSource(source, job);
+    assert.ok(text, `${job} not found`);
+
+    const env = envBlock(text, 8);
+    assert.ok(env, `${job}'s postgres service has no env block`);
+
+    for (const name of wanted) {
+      assert.equal(
+        env[name],
+        `\${{ env.${name} }}`,
+        `${job}'s service must map ${name} to the workflow value`,
+      );
+    }
   }
 });
 
