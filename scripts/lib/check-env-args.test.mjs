@@ -1,0 +1,411 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  envFilesFor,
+  expandValue,
+  nodeEnvForTarget,
+  parseArgs,
+} from "./check-env-args.mjs";
+
+const ENVS = ["render", "github-ci", "ci-local", "test", "localhost", "unknown"];
+
+test("no arguments checks both apps", () => {
+  const result = parseArgs([], ENVS);
+  assert.deepEqual(result.apps, ["api", "web"]);
+  assert.equal(result.forced, undefined);
+});
+
+test("--env's value is not mistaken for the app", () => {
+  // The bug this file exists for: `argv.find(a => !a.startsWith("-"))` picked
+  // up "render" whenever no app was given, so a valid invocation exited with
+  // `Unknown app "render"`.
+  const result = parseArgs(["--env", "render"], ENVS);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.apps, ["api", "web"]);
+  assert.equal(result.forced, "render");
+});
+
+test("an app and --env together still work in either order", () => {
+  for (const argv of [
+    ["api", "--env", "render"],
+    ["--env", "render", "api"],
+  ]) {
+    const result = parseArgs(argv, ENVS);
+    assert.equal(result.ok, true, argv.join(" "));
+    assert.deepEqual(result.apps, ["api"], argv.join(" "));
+    assert.equal(result.forced, "render", argv.join(" "));
+  }
+});
+
+test("--env with nothing after it is refused, not read as undefined", () => {
+  const result = parseArgs(["--env"], ENVS);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /needs a value/);
+});
+
+test("--env followed by another flag is refused", () => {
+  // `--env --list` would otherwise take "--list" as the environment.
+  const result = parseArgs(["--env", "--list"], ENVS);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /needs a value/);
+});
+
+test("an unknown environment is refused with the accepted list", () => {
+  const result = parseArgs(["--env", "staging"], ENVS);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /Unknown --env "staging"/);
+  assert.match(result.message, /render/);
+});
+
+test("an unknown app is refused", () => {
+  const result = parseArgs(["mobile"], ENVS);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /Unknown app "mobile"/);
+});
+
+test("two apps are refused rather than silently taking the first", () => {
+  const result = parseArgs(["api", "web"], ENVS);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /Expected one app/);
+});
+
+test("--list and --show are recognised anywhere", () => {
+  const result = parseArgs(["--show", "api", "--list"], ENVS);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.apps, ["api"]);
+  assert.equal(result.list, true);
+  assert.equal(result.show, true);
+});
+
+test("an unknown flag is refused rather than ignored", () => {
+  // Every flag selects a different operation, so skipping an unrecognised
+  // one runs the wrong operation and reports success.
+  for (const bad of ["--lis", "--showw", "--verbose", "-l"]) {
+    const result = parseArgs([bad], ENVS);
+    assert.equal(result.ok, false, `${bad} should be refused`);
+    assert.equal(result.code, 2);
+    assert.match(result.message, /Unknown option/);
+  }
+});
+
+test("--env=render is refused with the form that works", () => {
+  // The worst of the silent cases: it leaves `forced` undefined, so the CLI
+  // checks the environment you are in rather than the one you asked about --
+  // the single question this tool exists to answer differently.
+  const result = parseArgs(["--env=render"], ENVS);
+  assert.equal(result.ok, false);
+  assert.match(result.message, /--env render/);
+
+  // A boolean flag gets DIFFERENT advice, covered in its own test below:
+  // "--list true" would then parse `true` as the positional app.
+  const listEquals = parseArgs(["--list=true"], ENVS);
+  assert.equal(listEquals.ok, false);
+  assert.match(listEquals.message, /takes no value/);
+});
+
+test("every valid invocation still parses", () => {
+  // The guard runs before everything else, so a regression in it breaks the
+  // whole CLI rather than one flag.
+  for (const argv of [
+    [],
+    ["api"],
+    ["web", "--list"],
+    ["--show"],
+    ["--env", "render"],
+    ["api", "--env", "render", "--show"],
+  ]) {
+    const result = parseArgs(argv, ENVS);
+    assert.equal(result.ok, true, `${JSON.stringify(argv)} should parse`);
+  }
+});
+
+test("the API reads .env alone, whatever NODE_ENV says", () => {
+  // Nest's ConfigModule default. An apps/api/.env.local is read by nothing,
+  // so reporting values from one would describe a configuration the service
+  // never sees.
+  for (const nodeEnv of ["development", "production", "test"]) {
+    assert.deepEqual(envFilesFor("api", nodeEnv), [".env"]);
+  }
+});
+
+test("the web app reads Next's list in Next's order", () => {
+  assert.deepEqual(envFilesFor("web", "development"), [
+    ".env.development.local",
+    ".env.local",
+    ".env.development",
+    ".env",
+  ]);
+
+  assert.deepEqual(envFilesFor("web", "production"), [
+    ".env.production.local",
+    ".env.local",
+    ".env.production",
+    ".env",
+  ]);
+});
+
+test("the web app skips .env.local under test, matching Next", () => {
+  // Next excludes it deliberately, so a developer's local overrides cannot
+  // change what a test run sees. A checker that read it would report a
+  // configuration the test run does not have.
+  const files = envFilesFor("web", "test");
+  assert.ok(!files.includes(".env.local"));
+  assert.deepEqual(files, [".env.test.local", ".env.test", ".env"]);
+});
+
+test("every list ends at .env, and lists highest precedence first", () => {
+  // The loader relies on both: process.loadEnvFile never overwrites an
+  // already-set value, so the order IS the precedence, and `.env` last is
+  // what makes it the fallback rather than the winner.
+  for (const app of ["api", "web"]) {
+    for (const nodeEnv of ["development", "production", "test"]) {
+      const files = envFilesFor(app, nodeEnv);
+      assert.equal(files[files.length - 1], ".env");
+      assert.equal(new Set(files).size, files.length, "no duplicates");
+    }
+  }
+});
+
+test("a repeated flag is refused", () => {
+  // Only the first occurrence is read, so a second one silently answers a
+  // different question than the one typed.
+  for (const argv of [
+    ["--env", "render", "--env"],
+    ["--env", "render", "--env", "localhost"],
+    ["--list", "--list"],
+    ["--show", "api", "--show"],
+  ]) {
+    const result = parseArgs(argv, ENVS);
+    assert.equal(result.ok, false, `${JSON.stringify(argv)} should be refused`);
+    assert.match(result.message, /more than once/);
+  }
+});
+
+test("an unrecognised NODE_ENV falls back to production, not a made-up file", () => {
+  // Next only ever uses development/production/test and sets NODE_ENV itself.
+  // Interpolating whatever is in the environment sent this looking for
+  // `.env.staging.local` -- a file Next never reads -- so the checker would
+  // report values from somewhere the app does not look, which is the exact
+  // failure the per-app split exists to prevent.
+  const production = envFilesFor("web", "production");
+  for (const odd of ["staging", "", "PRODUCTION", "dev", "qa"]) {
+    assert.deepEqual(
+      envFilesFor("web", odd),
+      production,
+      `NODE_ENV=${JSON.stringify(odd)} should fall back to production`,
+    );
+  }
+
+  // No file name may carry an unrecognised mode into it.
+  for (const odd of ["staging", "qa"]) {
+    for (const file of envFilesFor("web", odd)) {
+      assert.ok(!file.includes(odd), `${file} leaked ${odd}`);
+    }
+  }
+});
+
+test("a forced target selects the files that target actually reads", () => {
+  // `--env render` asks "would this pass in production?" — answering it from
+  // `.env.development*` answers a different question, about files the deploy
+  // will never open.
+  // The split is BUILD versus DEV SERVER, not deployment versus laptop.
+  // github-ci was development and that was wrong: the only thing CI does
+  // with a web env file is `next build`, which is production mode, so a dry
+  // run validated `.env.development*` while the job reads `.env.production*`.
+  assert.equal(nodeEnvForTarget("render"), "production");
+  assert.equal(nodeEnvForTarget("github-ci"), "production");
+  assert.equal(nodeEnvForTarget("ci-local"), "production");
+  assert.equal(nodeEnvForTarget("unknown"), "production");
+  assert.equal(nodeEnvForTarget("test"), "test");
+  // The one target whose defining activity is the dev server. Someone
+  // asking about a local production build wants --env unknown, which is
+  // what such a process actually detects as.
+  assert.equal(nodeEnvForTarget("localhost"), "development");
+
+  // The interaction is the point: the two functions compose into the file
+  // list a dry run against Render should read.
+  assert.deepEqual(envFilesFor("web", nodeEnvForTarget("render")), [
+    ".env.production.local",
+    ".env.local",
+    ".env.production",
+    ".env",
+  ]);
+
+  // ...and the API is unaffected, because it reads one file regardless.
+  for (const target of ["render", "test", "localhost"]) {
+    assert.deepEqual(envFilesFor("api", nodeEnvForTarget(target)), [".env"]);
+  }
+});
+
+test("a boolean flag with a value is told to drop the value, not move it", () => {
+  // `--list=true` was answered with `Use "--list true"`, which then parses
+  // `true` as the positional app and fails with `Unknown app "true"` —
+  // advice that trades one error for another.
+  for (const arg of ["--list=true", "--show=1"]) {
+    const result = parseArgs([arg], ENVS);
+    assert.equal(result.ok, false);
+    assert.match(result.message, /takes no value/);
+    assert.ok(
+      !/ true| 1/.test(result.message),
+      `the suggestion must not carry the value: ${result.message}`,
+    );
+  }
+
+  // The suggestion it gives must itself parse, which is the property the
+  // old message failed.
+  assert.equal(parseArgs(["--list"], ENVS).ok, true);
+  assert.equal(parseArgs(["--show"], ENVS).ok, true);
+
+  // --env is the one flag that does take a value, and keeps its advice.
+  const env = parseArgs(["--env=render"], ENVS);
+  assert.match(env.message, /Use "--env render"/);
+  assert.equal(parseArgs(["--env", "render"], ENVS).ok, true);
+});
+
+test("expandValue resolves the forms dotenv-expand does", () => {
+  const scope = {
+    PUBLIC_ORIGIN: "https://laxair.shop",
+    PORT: "3000",
+    EMPTY: "",
+  };
+
+  assert.equal(expandValue("$PUBLIC_ORIGIN", scope), "https://laxair.shop");
+  assert.equal(expandValue("${PUBLIC_ORIGIN}", scope), "https://laxair.shop");
+  assert.equal(
+    expandValue("${PUBLIC_ORIGIN}/en", scope),
+    "https://laxair.shop/en",
+  );
+  assert.equal(
+    expandValue("$PUBLIC_ORIGIN:$PORT", scope),
+    "https://laxair.shop:3000",
+  );
+
+  // A defined-but-empty variable resolves to empty, which is a real value.
+  assert.equal(expandValue("$EMPTY", scope), "");
+
+  // `\$` escapes, matching dotenv-expand — and it has to survive ITERATION.
+  // Consuming the backslash inside a pass leaves `$PUBLIC_ORIGIN`, which the
+  // next pass expands, so the escaped reference resolves to the very value
+  // the author escaped it to avoid. Adding iteration broke exactly this.
+  assert.equal(expandValue("\\$PUBLIC_ORIGIN", scope), "$PUBLIC_ORIGIN");
+  assert.equal(
+    expandValue("a\\$b-$PORT", scope),
+    "a$b-3000",
+    "an escape beside a real reference must not disturb it",
+  );
+});
+
+test("a reference resolving to another reference is followed", () => {
+  // `A=$B` with `B=https://example.com` means `$A` is a URL. A single
+  // substitution pass returned `$B` and the contract rejected it as an
+  // invalid URL — an environment Next resolves without complaint.
+  const scope = {
+    A: "$B",
+    B: "$C",
+    C: "https://example.com",
+    PORT: "3000",
+  };
+  assert.equal(expandValue("$A", scope), "https://example.com");
+  assert.equal(expandValue("${A}:${PORT}", scope), "https://example.com:3000");
+});
+
+test("a self-referential chain terminates instead of hanging", () => {
+  // `A=$A` and `A=$B` / `B=$A` have no fixed point. The loop is bounded and
+  // leaves what it could not resolve, which the contract then reports —
+  // rather than spinning, which in a boot check is indistinguishable from a
+  // hung service.
+  assert.equal(expandValue("$SELF", { SELF: "$SELF" }), "$SELF");
+
+  // For a MUTUAL cycle the residue is whichever link the loop stopped on --
+  // `$A` under the old depth cap, `$B` under cycle detection. Which one is
+  // not the property that matters: what matters is that it terminates and
+  // leaves an unresolved reference for the contract to report, rather than
+  // inventing a value or spinning.
+  const mutual = expandValue("$A", { A: "$B", B: "$A" });
+  assert.match(mutual, /^\$[AB]$/, `unexpected residue: ${mutual}`);
+});
+
+test("default forms follow the shell's colon rule, as dotenv-expand does", () => {
+  const scope = { SET: "real-value", EMPTY: "" };
+
+  // `:-` substitutes for unset OR empty.
+  assert.equal(expandValue("${MISSING:-fallback}", scope), "fallback");
+  assert.equal(expandValue("${EMPTY:-fallback}", scope), "fallback");
+  assert.equal(expandValue("${SET:-fallback}", scope), "real-value");
+
+  // Plain `-` substitutes only for unset, so a deliberate empty survives —
+  // which matters here, because empty is a documented value in this
+  // contract rather than an absence.
+  assert.equal(expandValue("${MISSING-fallback}", scope), "fallback");
+  assert.equal(expandValue("${EMPTY-fallback}", scope), "");
+  assert.equal(expandValue("${SET-fallback}", scope), "real-value");
+
+  // An empty default is legal and means empty.
+  assert.equal(expandValue("${MISSING:-}", scope), "");
+});
+
+test("an unresolved reference is left as written, not blanked", () => {
+  // dotenv-expand substitutes nothing and hands the app a silently empty
+  // value. Leaving the text intact makes the contract's own rules report it,
+  // which is the loud version of the same fact — an unresolved reference is
+  // a broken configuration either way, and an empty string hides it.
+  assert.equal(expandValue("$MISSING", {}), "$MISSING");
+  assert.equal(expandValue("${MISSING}/x", {}), "${MISSING}/x");
+});
+
+test("expandValue leaves ordinary values alone", () => {
+  // A dollar sign is not expansion syntax unless a name follows it.
+  for (const value of [
+    "no-vars-here",
+    "price-is-100$",
+    "https://laxair.shop",
+    "a$-b",
+    "",
+  ]) {
+    assert.equal(expandValue(value, { A: "x" }), value);
+  }
+});
+
+test("the alternate-value operators work, not just the defaults", () => {
+  // `${VAR:+r}` and `${VAR+r}` are dotenv-expand's inverse forms: substitute
+  // when the name IS set rather than when it is not. They were left literal,
+  // so a value using them was judged as text and rejected — a configuration
+  // Next resolves without complaint.
+  const scope = { SET: "value", EMPTY: "" };
+
+  // `+` substitutes when set at all; `:+` requires non-empty.
+  assert.equal(expandValue("${SET:+yes}", scope), "yes");
+  assert.equal(expandValue("${SET+yes}", scope), "yes");
+  assert.equal(expandValue("${EMPTY:+yes}", scope), "");
+  assert.equal(expandValue("${EMPTY+yes}", scope), "yes");
+  assert.equal(expandValue("${MISSING:+yes}", scope), "");
+  assert.equal(expandValue("${MISSING+yes}", scope), "");
+
+  // The `-` forms keep behaving as before — the two operators must not have
+  // been collapsed into one code path.
+  assert.equal(expandValue("${MISSING:-no}", scope), "no");
+  assert.equal(expandValue("${EMPTY:-no}", scope), "no");
+  assert.equal(expandValue("${EMPTY-no}", scope), "");
+  assert.equal(expandValue("${SET-no}", scope), "value");
+
+  // An empty replacement is legal and means empty.
+  assert.equal(expandValue("${SET:+}", scope), "");
+});
+
+test("a long reference chain resolves; only a cycle stops it", () => {
+  // The old ten-pass cap was an arbitrary rule dressed up as a safety net: a
+  // valid chain of eleven references was left unresolved and then rejected.
+  // What needs guarding is a cycle, which has no fixed point at any depth.
+  const chain = { K: "https://deep.example" };
+  let previous = "K";
+  for (const name of "JIHGFEDCBA") {
+    chain[name] = `$${previous}`;
+    previous = name;
+  }
+  assert.equal(expandValue("$A", chain), "https://deep.example");
+
+  // Cycles terminate rather than spinning, which in a boot check is
+  // indistinguishable from a hung service.
+  assert.equal(expandValue("$P", { P: "$P" }), "$P");
+  assert.doesNotThrow(() => expandValue("$P", { P: "$Q", Q: "$P" }));
+});
