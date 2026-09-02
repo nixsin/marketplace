@@ -802,3 +802,53 @@ test("a job key with a trailing comment is attributed to itself", () => {
     "migrate's source must stop at the next job",
   );
 });
+
+test("prose containing a raw-SQL call is not a real statement", () => {
+  // `code` keeps strings so the SQL inside a real call stays visible, which
+  // also means a test title mentioning one reads as code unless the CALL
+  // token is checked against the strings-stripped view.
+  const prose = [
+    "describe('s',()=>{",
+    "  it('mentions $executeRawUnsafe(\"TRUNCATE users\") in its name',()=>{});",
+    "});",
+  ].join("\n");
+  assert.deepEqual(unguardedTruncates(prose), [], "prose must be inert");
+
+  // ...while the real call beside it is still caught.
+  const real = [
+    "describe('s',()=>{",
+    "  it('mentions $executeRawUnsafe(\"TRUNCATE users\")',()=>{});",
+    "  beforeEach(async()=>{await p.$executeRawUnsafe('TRUNCATE TABLE t');});",
+    "});",
+  ].join("\n");
+  assert.equal(unguardedTruncates(real).length, 1);
+});
+
+test("describe.each scopes its callback, not its cases argument", () => {
+  // `describe.each(cases)(name, cb)` is two calls. Matching to the first `(`
+  // gave the extent of `cases`, so a guard inside the callback had no
+  // enclosing scope, read as file-level, and covered truncates elsewhere.
+  const guard = "await assertConnectedToTestDatabase(p);";
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+
+  const leaky = [
+    "describe('outer',()=>{",
+    `  describe.each([1,2])('inner %i',()=>{beforeAll(async()=>{${guard}});});`,
+    `  beforeEach(async()=>{${trunc}});`,
+    "});",
+  ].join("\n");
+  assert.equal(
+    unguardedTruncates(leaky).length,
+    1,
+    "a guard inside describe.each must not cover the parent",
+  );
+
+  // And it still covers its own body.
+  const contained = [
+    `describe.each([1,2])('s %i',()=>{`,
+    `  beforeAll(async()=>{${guard}});`,
+    `  beforeEach(async()=>{${trunc}});`,
+    "});",
+  ].join("\n");
+  assert.deepEqual(unguardedTruncates(contained), []);
+});

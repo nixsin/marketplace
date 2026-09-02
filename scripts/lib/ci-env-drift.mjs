@@ -273,7 +273,66 @@ function blank(text, { strings }) {
 }
 
 /** Every `describe` form Jest offers, as a scope opener. */
-const DESCRIBE = /(?<![\w$.])(?:x|f)?describe(?:\.(?:each|only|skip|todo))?\s*(?:`|\()/g;
+const DESCRIBE = /(?<![\w$.])(?:x|f)?describe(\.each)?(?:\.(?:only|skip|todo))?\s*(?:`|\()/g;
+
+/**
+ * The body extents of every `describe` in `text`.
+ *
+ * `describe.each` is the reason this is a function rather than a regex.
+ * `describe.each(cases)(name, cb)` is TWO calls, and matching up to the
+ * first `(` gave the extent of `cases` — so a guard inside the callback had
+ * no enclosing scope, read as file-level, and covered truncates in sibling
+ * and parent scopes.
+ */
+function describeExtents(text) {
+  const out = [];
+  for (const m of text.matchAll(DESCRIBE)) {
+    let open = m.index + m[0].length - 1;
+
+    // Step over the cases argument to the call that takes the callback.
+    if (m[1] === ".each" && text[open] === "(") {
+      const cases = closingIndex(text, open);
+      if (cases === -1) continue;
+      const next = text.indexOf("(", cases + 1);
+      if (next === -1) continue;
+      open = next;
+    }
+
+    const end = closingIndex(text, open);
+    if (end !== -1) out.push({ start: open, end });
+  }
+  return out;
+}
+
+/** Index of the bracket or backtick closing the one at `open`, or -1. */
+function closingIndex(text, open) {
+  if (text[open] === "`") {
+    let i = open + 1;
+    while (i < text.length && text[i] !== "`") i += text[i] === "\\" ? 2 : 1;
+    return i < text.length ? i : -1;
+  }
+  let depth = 0;
+  for (let i = open; i < text.length; i += 1) {
+    const c = text[i];
+    if (c === "(" || c === "{" || c === "[") depth += 1;
+    else if (c === ")" || c === "}" || c === "]") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** The innermost describe body containing `index`, or null. */
+export function enclosingDescribe(text, index) {
+  let best = null;
+  for (const { start, end } of describeExtents(text)) {
+    if (index > start && index < end && (best === null || start > best.start)) {
+      best = { start, end };
+    }
+  }
+  return best;
+}
 const SETUP_HOOK = /(?<![\w$])before(All|Each)\s*\(/g;
 
 /**
@@ -375,8 +434,26 @@ export function unguardedTruncates(spec) {
   for (const m of code.matchAll(TRUNCATE_WORD)) {
     const at = m.index;
 
-    // Only inside a raw-SQL call. Prose mentioning the word is inert.
-    if (enclosingExtent(code, at, RAW_SQL_CALL) === null) continue;
+    // The statement lives inside the call's string argument, so the extent
+    // must be found in `code` (strings kept). But the CALL ITSELF has to be
+    // real code, or prose such as
+    // `it('mentions $executeRawUnsafe("TRUNCATE users")')` reads as a
+    // statement and fails a required check.
+    //
+    // So: locate the extent in `code`, then check the call token survives in
+    // `executable`, where anything inside a string has been blanked to
+    // spaces. Both strippers preserve offsets, so the indices line up.
+    //
+    // Testing the token rather than the whole extent is what keeps tagged
+    // templates working: `$executeRaw` is real code while its backticked
+    // body is blanked, so an extent-wide test would reject it.
+    const call = enclosingExtent(code, at, RAW_SQL_CALL);
+    if (call === null) continue;
+
+    const token = code.lastIndexOf("$", call.start);
+    if (token === -1 || /^\s*$/.test(executable.slice(token, token + 2))) {
+      continue;
+    }
 
     const truncateHook = hookKindAt(executable, at);
 
@@ -386,7 +463,7 @@ export function unguardedTruncates(spec) {
       if (truncateHook === "All" && hookKindAt(executable, g) === "Each") {
         return false;
       }
-      const scope = enclosingExtent(executable, g, DESCRIBE);
+      const scope = enclosingDescribe(executable, g);
       return scope === null || (at > scope.start && at < scope.end);
     });
 
