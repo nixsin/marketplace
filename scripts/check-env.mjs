@@ -1,0 +1,207 @@
+#!/usr/bin/env node
+/**
+ * Check an app's environment variables and report what is wrong.
+ *
+ * This is the by-hand and CI entry point, and TODAY IT IS THE ONLY ONE.
+ * Nothing calls the contract at boot yet; that wiring is a later change in
+ * this series, and docs/environments.md says the same.
+ *
+ * When it lands it will go in apps/api/src/main.ts and
+ * apps/web/next.config.ts rather than a `prestart` hook, because both prod
+ * images bypass npm scripts entirely -- the API's CMD is
+ * `node dist/src/main.js` and the web's is `next start` -- so a hook would
+ * work locally and silently do nothing in the container, which is the
+ * failure mode this whole module exists to remove.
+ *
+ * All the decisions live in the environment contract, so this file and both
+ * future boot hooks share one implementation rather than three that drift.
+ *
+ * Imported by RELATIVE path for the same reason ci-env.mjs is: nothing under
+ * scripts/ can rely on the workspace package being linked into the root
+ * node_modules, and a checkout with no install must still be able to run it.
+ *
+ *   node scripts/check-env.mjs api
+ *   node scripts/check-env.mjs web
+ *   node scripts/check-env.mjs all
+ *
+ *   --env <environment>   Check AGAINST an environment you are not in.
+ *                         Answers "would this pass on Render?" from a laptop,
+ *                         which is the question worth asking before a deploy.
+ *                         Different from APP_ENV, which changes what you ARE.
+ *
+ *   --list                Print the contract instead of checking anything:
+ *                         every variable, whether empty is legal, which are
+ *                         secret, and where the value rules are stricter.
+ *
+ *   --show                Print the startup banner -- every variable and its
+ *                         current value, secrets masked -- without booting a
+ *                         service.
+ */
+import { fileURLToPath } from "node:url";
+import {
+  envFilesFor,
+  expandValue,
+  nodeEnvForTarget,
+  parseArgs,
+} from "./lib/check-env-args.mjs";
+import {
+  DEPLOY_ENVIRONMENTS,
+  checkEnv,
+  detectEnvironment,
+  formatMatrix,
+  formatReport,
+  formatStartupBanner,
+} from "../packages/config/src/env-contract.js";
+
+const parsed = parseArgs(process.argv.slice(2), DEPLOY_ENVIRONMENTS);
+if (!parsed.ok) {
+  console.error(parsed.message);
+  process.exit(parsed.code);
+}
+const { apps, forced, list, show } = parsed;
+
+/**
+ * Load the same .env the app itself loads at boot.
+ *
+ * Without this the CLI answers a question nobody asked: it reports what a
+ * bare shell has, while apps/api reads apps/api/.env through dotenv and
+ * apps/web has Next load apps/web/.env. Every variable would come back "not
+ * declared" on a perfectly configured laptop, which trains people to ignore
+ * it.
+ *
+ * `process.loadEnvFile` is built into Node, so this needs no dependency at
+ * the workspace root -- and like dotenv it never overwrites a variable that
+ * is already set, so an explicit `FOO=bar node scripts/check-env.mjs` still
+ * wins over the file.
+ */
+function readAppEnv(app, forcedTarget) {
+  // NODE'S OWN PARSER, not a hand-rolled one.
+  //
+  // Three review rounds found three separate bugs in a hand-written parser --
+  // trailing comments, escaped quotes, then backslash semantics -- and each
+  // fix was correct without ending the class. A checker that parses .env
+  // differently from the application reports errors nobody else sees and
+  // misses ones everybody hits, so the only real fix is to stop having a
+  // second parser at all.
+  //
+  // THE FILE LIST IS PER-APP, because the two apps genuinely differ and a
+  // checker that reads files the application does not is worse than no
+  // checker: it reports a valid configuration sourced from somewhere the
+  // service will never look.
+  //
+  //   api  -- `ConfigModule.forRoot({ isGlobal: true })` with no envFilePath,
+  //           which is Nest's default of `.env` alone. An apps/api/.env.local
+  //           is read by nothing.
+  //   web  -- Next's full order, highest precedence first:
+  //           `.env.<NODE_ENV>.local`, `.env.local`, `.env.<NODE_ENV>`,
+  //           `.env`. Only `.env` and `.env.local` exist in this repo today,
+  //           but a file that appears later must be read the moment it does,
+  //           not the next time someone remembers this list exists.
+  //
+  //           `.env.local` is SKIPPED when NODE_ENV is `test`, matching Next,
+  //           so that a developer's local overrides cannot change what a test
+  //           run sees.
+  //
+  // VARIABLE EXPANSION IS RESOLVED HERE, and only here, because this is the
+  // only place that knows PROVENANCE. Next runs a web .env FILE through
+  // dotenv-expand, so `$PUBLIC_ORIGIN` there is not what the app sees;
+  // nothing expands a value already in process.env, so there the literal IS
+  // the value. `process.loadEnvFile` never overwrites, which makes the two
+  // sets separable: whatever this function's own reads ADDED came from a
+  // file, and everything else was already in the environment.
+  //
+  // The contract therefore keeps judging literals with no special case, and
+  // neither a false failure on a valid .env nor a false pass on a
+  // dashboard-set `$KEY` is possible. See expandValue for the API's
+  // exclusion.
+  //
+  // `process.loadEnvFile` mutates process.env and never overwrites an
+  // existing value, so this snapshots, loads the app's files in that app's
+  // own precedence order, captures the result, and restores -- which also
+  // keeps `check-env.mjs all` from letting the API's values leak into the
+  // web app's report.
+  // A FORCED TARGET SELECTS THE FILES TOO, not just the rules. `--env render`
+  // from a dev shell used to load `.env.development*` and judge it against
+  // production rules -- a verdict about files that deploy will never open.
+  const files = envFilesFor(
+    app,
+    forcedTarget
+      ? nodeEnvForTarget(forcedTarget)
+      : (process.env.NODE_ENV ?? "development"),
+  );
+  const before = { ...process.env };
+  try {
+    for (const file of files) {
+      const path = new URL(`../apps/${app}/${file}`, import.meta.url);
+      try {
+        process.loadEnvFile(path);
+      } catch (error) {
+        // ONLY a missing file is silent. Absent is a legitimate state -- CI
+        // and the containers declare their values in the environment itself.
+        //
+        // Anything else is not: a permission error or an unparseable file
+        // would have been swallowed and reported as "variable not declared",
+        // sending the reader to look for a missing value when the real
+        // problem is that their .env could not be read at all.
+        if (error?.code !== "ENOENT") {
+          console.error(
+            `Could not read ${fileURLToPath(path)}: ${error?.message ?? error}`,
+          );
+          process.exit(2);
+        }
+      }
+    }
+    const loaded = { ...process.env };
+
+    // Only the keys this function's own file reads introduced, and only for
+    // the app whose loader expands them.
+    if (app === "web") {
+      for (const key of Object.keys(loaded)) {
+        if (key in before) continue;
+        const raw = loaded[key];
+        if (typeof raw === "string") loaded[key] = expandValue(raw, loaded);
+      }
+    }
+
+    return loaded;
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in before)) delete process.env[key];
+    }
+    Object.assign(process.env, before);
+  }
+}
+for (const app of apps) {
+  if (app !== "api" && app !== "web") {
+    console.error(`Unknown app "${app}". Expected api, web, or all.`);
+    process.exit(2);
+  }
+}
+
+if (list) {
+  for (const app of apps) console.log(formatMatrix(app) + "\n");
+  process.exit(0);
+}
+
+let failed = false;
+for (const app of apps) {
+  const env = readAppEnv(app, forced);
+
+  // DETECTED FROM THE LOADED ENVIRONMENT, and inside the loop, because
+  // APP_ENV is one of the variables an app's own .env may declare. Printed
+  // once before the loop from `process.env` alone, this line reported the
+  // bare shell's answer while the report below it used the file's -- two
+  // different environments, one screen, no indication which was which. It is
+  // also genuinely per-app: `check-env.mjs all` reads two separate files.
+  if (!forced) {
+    console.log(`${app}: detected environment ${detectEnvironment(env)}`);
+  }
+
+  const result = checkEnv({ app, env, environment: forced });
+  if (show) console.log(formatStartupBanner(result, env));
+  console.log(formatReport(result));
+  console.log("");
+  if (!result.ok) failed = true;
+}
+
+process.exit(failed ? 1 : 0);
