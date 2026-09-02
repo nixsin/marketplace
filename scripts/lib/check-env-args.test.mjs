@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseArgs } from "./check-env-args.mjs";
+import { envFilesFor, parseArgs } from "./check-env-args.mjs";
 
 const ENVS = ["render", "github-ci", "ci-local", "test", "localhost", "unknown"];
 
@@ -109,5 +109,52 @@ test("every valid invocation still parses", () => {
   ]) {
     const result = parseArgs(argv, ENVS);
     assert.equal(result.ok, true, `${JSON.stringify(argv)} should parse`);
+  }
+});
+
+test("the API reads .env alone, whatever NODE_ENV says", () => {
+  // Nest's ConfigModule default. An apps/api/.env.local is read by nothing,
+  // so reporting values from one would describe a configuration the service
+  // never sees.
+  for (const nodeEnv of ["development", "production", "test"]) {
+    assert.deepEqual(envFilesFor("api", nodeEnv), [".env"]);
+  }
+});
+
+test("the web app reads Next's list in Next's order", () => {
+  assert.deepEqual(envFilesFor("web", "development"), [
+    ".env.development.local",
+    ".env.local",
+    ".env.development",
+    ".env",
+  ]);
+
+  assert.deepEqual(envFilesFor("web", "production"), [
+    ".env.production.local",
+    ".env.local",
+    ".env.production",
+    ".env",
+  ]);
+});
+
+test("the web app skips .env.local under test, matching Next", () => {
+  // Next excludes it deliberately, so a developer's local overrides cannot
+  // change what a test run sees. A checker that read it would report a
+  // configuration the test run does not have.
+  const files = envFilesFor("web", "test");
+  assert.ok(!files.includes(".env.local"));
+  assert.deepEqual(files, [".env.test.local", ".env.test", ".env"]);
+});
+
+test("every list ends at .env, and lists highest precedence first", () => {
+  // The loader relies on both: process.loadEnvFile never overwrites an
+  // already-set value, so the order IS the precedence, and `.env` last is
+  // what makes it the fallback rather than the winner.
+  for (const app of ["api", "web"]) {
+    for (const nodeEnv of ["development", "production", "test"]) {
+      const files = envFilesFor(app, nodeEnv);
+      assert.equal(files[files.length - 1], ".env");
+      assert.equal(new Set(files).size, files.length, "no duplicates");
+    }
   }
 });

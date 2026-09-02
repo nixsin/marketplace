@@ -107,3 +107,35 @@ export function parseArgs(argv, environments) {
     show: argv.includes("--show"),
   };
 }
+
+/**
+ * Which .env files does this app actually read, in precedence order?
+ *
+ * Extracted from check-env.mjs's loader for the reason everything else in
+ * this directory is: it is a DECISION, and a decision inline in a CLI is one
+ * nothing can test. The loader keeps the I/O; this answers the question.
+ *
+ * The two apps genuinely differ, and a checker that reads files the
+ * application does not is worse than no checker -- it reports a valid
+ * configuration sourced from somewhere the service will never look.
+ *
+ *   api -- `ConfigModule.forRoot({ isGlobal: true })` with no envFilePath,
+ *          which is Nest's default of `.env` alone.
+ *   web -- Next's order, highest precedence first.
+ *
+ * `.env.local` is skipped when NODE_ENV is `test`, matching Next, so a
+ * developer's local overrides cannot change what a test run sees.
+ *
+ * @param {App} app
+ * @param {string} nodeEnv
+ * @returns {string[]} Filenames, highest precedence first.
+ */
+export function envFilesFor(app, nodeEnv) {
+  if (app !== "web") return [".env"];
+  return [
+    `.env.${nodeEnv}.local`,
+    ...(nodeEnv === "test" ? [] : [".env.local"]),
+    `.env.${nodeEnv}`,
+    ".env",
+  ];
+}

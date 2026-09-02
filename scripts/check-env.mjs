@@ -34,7 +34,7 @@
  *                         service.
  */
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "./lib/check-env-args.mjs";
+import { envFilesFor, parseArgs } from "./lib/check-env-args.mjs";
 import {
   DEPLOY_ENVIRONMENTS,
   checkEnv,
@@ -83,14 +83,27 @@ function readAppEnv(app) {
   //   api  -- `ConfigModule.forRoot({ isGlobal: true })` with no envFilePath,
   //           which is Nest's default of `.env` alone. An apps/api/.env.local
   //           is read by nothing.
-  //   web  -- Next loads `.env.local` ahead of `.env`.
+  //   web  -- Next's full order, highest precedence first:
+  //           `.env.<NODE_ENV>.local`, `.env.local`, `.env.<NODE_ENV>`,
+  //           `.env`. Only `.env` and `.env.local` exist in this repo today,
+  //           but a file that appears later must be read the moment it does,
+  //           not the next time someone remembers this list exists.
+  //
+  //           `.env.local` is SKIPPED when NODE_ENV is `test`, matching Next,
+  //           so that a developer's local overrides cannot change what a test
+  //           run sees.
+  //
+  // WHAT THIS STILL DOES NOT REPRODUCE is Next's variable expansion --
+  // `A=$B` is left literal here. Worth knowing before trusting a report on
+  // an expanded value; not worth a second parser to fix, which is the trap
+  // the note below is about.
   //
   // `process.loadEnvFile` mutates process.env and never overwrites an
   // existing value, so this snapshots, loads the app's files in that app's
   // own precedence order, captures the result, and restores -- which also
   // keeps `check-env.mjs all` from letting the API's values leak into the
   // web app's report.
-  const files = app === "web" ? [".env.local", ".env"] : [".env"];
+  const files = envFilesFor(app, process.env.NODE_ENV ?? "development");
   const before = { ...process.env };
   try {
     for (const file of files) {
