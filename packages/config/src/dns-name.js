@@ -128,7 +128,15 @@ export function isLoopbackHost(hostname) {
   if (mappedHex) return parseInt(mappedHex[1], 16) >> 8 === 127;
 
   return (
+    // EVERY NAME BENEATH `.localhost` TOO, not just the bare label. RFC 6761
+    // reserves the whole subtree and requires resolvers to answer it with
+    // loopback, so `db.localhost` reaches the same machine `localhost` does.
+    // isPublicDnsName already refused it through RESERVED_SUFFIXES; this
+    // function is the one the INTERNAL hosts use -- DATABASE_URL and
+    // REDIS_URL, which are not required to be public names -- so the gap was
+    // exactly where a production database URL is checked.
     /^localhost\.?$/i.test(addr) ||
+    /\.localhost\.?$/i.test(addr) ||
     /^127\./.test(addr) ||
     addr === "::1" ||
     // THE UNSPECIFIED ADDRESSES, both families. `0.0.0.0` means "every

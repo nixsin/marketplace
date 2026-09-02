@@ -1533,3 +1533,39 @@ test("a test marker must be SET, not merely present", () => {
     "test must beat both CI branches",
   );
 });
+
+test("names beneath .localhost are internal too, for the internal hosts", () => {
+  // RFC 6761 reserves the whole subtree and requires resolvers to answer it
+  // with loopback, so `db.localhost` reaches the same machine `localhost`
+  // does. isPublicDnsName already refused it through RESERVED_SUFFIXES, but
+  // DATABASE_URL and REDIS_URL are not required to be public names — they go
+  // through isLoopbackHost, which knew only the bare label. The gap was
+  // exactly where a production database URL is checked.
+  const cases = [
+    ["DATABASE_URL", "postgresql://u:p@db.localhost:5432/db"],
+    ["DATABASE_URL", "postgresql://u:p@localhost.:5432/db"],
+    ["REDIS_URL", "redis://cache.localhost:6379"],
+    ["REDIS_URL", "rediss://a.b.localhost:6379"],
+  ];
+
+  for (const [name, url] of cases) {
+    const result = checkEnv({
+      app: "api",
+      env: { ...completeApiRender, [name]: url },
+      environment: "render",
+    });
+    assert.equal(result.ok, false, `${url} should be refused`);
+    assert.match(messages(result.errors), new RegExp(name));
+  }
+
+  // A near-miss must still pass: the rule is on the SUFFIX, not a substring.
+  const fine = checkEnv({
+    app: "api",
+    env: {
+      ...completeApiRender,
+      DATABASE_URL: "postgresql://u:p@my-localhost.example.com:5432/db",
+    },
+    environment: "render",
+  });
+  assert.equal(fine.ok, true, formatReport(fine));
+});
