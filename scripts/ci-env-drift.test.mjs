@@ -730,3 +730,75 @@ test("unquoted TRUNCATE targets are detected", () => {
     );
   }
 });
+
+test("a tagged-template TRUNCATE is checked, not skipped", () => {
+  // `$executeRaw` is a tagged template in ordinary Prisma use. The call
+  // pattern matched the backtick while the extent scan only counted
+  // brackets, so it returned null and the statement was skipped entirely —
+  // the common form going unchecked.
+  const guard = "await assertConnectedToTestDatabase(p);";
+  const tagged = "await p.$executeRaw`TRUNCATE TABLE t`;";
+
+  assert.equal(
+    unguardedTruncates(
+      `describe('s',()=>{beforeEach(async()=>{${tagged}});});`,
+    ).length,
+    1,
+    "an unguarded tagged-template truncate must be reported",
+  );
+
+  assert.deepEqual(
+    unguardedTruncates(
+      `describe('s',()=>{beforeAll(async()=>{${guard}});beforeEach(async()=>{${tagged}});});`,
+    ),
+    [],
+    "a guarded one must be accepted",
+  );
+});
+
+test("an unawaited guard does not count", () => {
+  // Jest proceeds before the database-name query resolves, which is exactly
+  // the race the guard removes.
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+
+  const bare = `describe('s',()=>{beforeAll(()=>{assertConnectedToTestDatabase(p);});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(unguardedTruncates(bare).length, 1, "a bare call must not count");
+
+  for (const form of [
+    "await assertConnectedToTestDatabase(p);",
+    "return assertConnectedToTestDatabase(p);",
+  ]) {
+    assert.deepEqual(
+      unguardedTruncates(
+        `describe('s',()=>{beforeAll(async()=>{${form}});beforeEach(async()=>{${trunc}});});`,
+      ),
+      [],
+      `must accept: ${form}`,
+    );
+  }
+});
+
+test("a job key with a trailing comment is attributed to itself", () => {
+  // Requiring end-of-line after the colon meant such a job's lines went to
+  // the PREVIOUS one — and if that was `migrate`, a production secret read
+  // as migrate's own.
+  const src = [
+    "jobs:",
+    "  migrate:",
+    "    env:",
+    "      DATABASE_URL: ${{ secrets.PROD }}",
+    "  Deploy_Web: # deployment job",
+    "    env:",
+    "      DATABASE_URL: ${{ secrets.ALSO_PROD }}",
+  ].join("\n");
+
+  assert.deepEqual(jobsAssigningDatabaseUrl(src).sort(), [
+    "Deploy_Web",
+    "migrate",
+  ]);
+  assert.ok(jobSource(src, "Deploy_Web"), "jobSource must find it too");
+  assert.ok(
+    !jobSource(src, "migrate").includes("ALSO_PROD"),
+    "migrate's source must stop at the next job",
+  );
+});

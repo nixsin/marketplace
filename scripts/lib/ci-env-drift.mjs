@@ -57,8 +57,15 @@ export const WATCHED = [
 
 const WATCHED_RE = `(?:${WATCHED.join("|")})`;
 
-/** A job key at column 2, quoted or not, in any case. */
-const JOB_KEY = /^  ["']?([A-Za-z_][\w-]*)["']?:\s*$/;
+/**
+ * A job key at column 2 — quoted or not, any case, trailing comment allowed.
+ *
+ * Requiring end-of-line after the colon meant `Deploy_Web: # deploy` was not
+ * recognised, so that job's lines were attributed to the PREVIOUS one. If
+ * that was `migrate`, a production secret in the unrecognised job read as
+ * migrate's own, which is the one place a secret is permitted.
+ */
+const JOB_KEY = /^  ["']?([A-Za-z_][\w-]*)["']?:\s*(?:#.*)?$/;
 
 /** One job's lines, from its key to the next job's. */
 export function jobSource(source, name) {
@@ -286,6 +293,22 @@ export function enclosingExtent(text, index, pattern) {
   let best = null;
   for (const m of text.matchAll(pattern)) {
     const open = m.index + m[0].length - 1;
+
+    // A TAGGED TEMPLATE ends at its closing backtick, not a bracket.
+    // RAW_SQL_CALL matches `$executeRaw` followed by a backtick, and the
+    // bracket scan never opened an extent for it — so it returned null and
+    // unguardedTruncates SKIPPED the statement entirely. Prisma's
+    // $executeRaw is a tagged template in ordinary use, so that was the
+    // common form going unchecked.
+    if (text[open] === "`") {
+      let i = open + 1;
+      while (i < text.length && text[i] !== "`") i += text[i] === "\\" ? 2 : 1;
+      if (index > open && index < i && (best === null || open > best.start)) {
+        best = { start: open, end: i };
+      }
+      continue;
+    }
+
     let depth = 0;
     for (let i = open; i < text.length; i += 1) {
       const c = text[i];
@@ -339,8 +362,13 @@ export function unguardedTruncates(spec) {
 
   // The identifier boundary matters: `fakeAssertConnectedToTestDatabase()`
   // would otherwise satisfy the lint with the real guard removed.
+  // AWAITED OR RETURNED. `beforeAll(() => { assertConnectedToTestDatabase(p); })`
+  // lets Jest proceed before the database-name query resolves, which is the
+  // race this guard exists to remove — so a bare call does not count.
   const guards = [
-    ...executable.matchAll(/(?<![\w$])assertConnectedToTestDatabase\s*\(/g),
+    ...executable.matchAll(
+      /(?<![\w$])(await|return)\s+(?:[\w$.]+\.)?assertConnectedToTestDatabase\s*\(/g,
+    ),
   ].map((m) => m.index);
 
   const unguarded = [];
