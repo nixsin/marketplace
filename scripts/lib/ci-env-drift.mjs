@@ -283,7 +283,11 @@ function blank(text, { strings }) {
 }
 
 /** Every `describe` form Jest offers, as a scope opener. */
-const DESCRIBE = /(?<![\w$.])(?:x|f)?describe(\.each)?(?:\.(?:only|skip|todo))?\s*(?:`|\()/g;
+// Jest accepts the modifier on either side: `describe.only.each` and
+// `describe.each` are both valid, and only one order was recognised — so a
+// guard inside the unrecognised form had no scope and read as file-level.
+const DESCRIBE =
+  /(?<![\w$.])(?:x|f)?describe(?:\.(?:only|skip|todo))?(\.each)?(?:\.(?:only|skip|todo))?\s*(?:`|\()/g;
 
 /**
  * The body extents of every `describe` in `text`.
@@ -347,7 +351,9 @@ export function enclosingDescribe(text, index) {
   }
   return best;
 }
-const SETUP_HOOK = /(?<![\w$])before(All|Each)\s*\(/g;
+// `.` excluded as well as `[\w$]`: `suite.beforeAll(...)` is a method call,
+// not Jest's global hook, and a guard inside one never runs as setup.
+const SETUP_HOOK = /(?<![\w$.])before(All|Each)\s*\(/g;
 
 /**
  * Raw-SQL execution call sites — where a TRUNCATE is actually a statement.
@@ -462,7 +468,20 @@ export function unguardedTruncates(spec) {
     // templates working: `$executeRaw` is real code while its backticked
     // body is blanked, so an extent-wide test would reject it.
     const call = enclosingExtent(code, at, RAW_SQL_CALL);
-    if (call === null) continue;
+    if (call === null) {
+      // NOT INSIDE A CALL. Two very different things look like this:
+      //
+      //   prose      it('rejects TRUNCATE in user input')
+      //   extracted  const sql = 'TRUNCATE TABLE t'; ... execute(sql)
+      //
+      // The first is inert. The second is destructive and this lint cannot
+      // follow the variable to its call site — so rather than skip both, a
+      // SQL-SHAPED string outside any call is reported as an arrangement
+      // that cannot be verified. Prose does not match those shapes.
+      const line = code.slice(at, code.indexOf("\n", at) + 1 || undefined);
+      if (/^truncate\s+(?:table\b|only\b|")/i.test(line)) unguarded.push(at);
+      continue;
+    }
 
     const token = code.lastIndexOf("$", call.start);
     if (token === -1 || /^\s*$/.test(executable.slice(token, token + 2))) {

@@ -116,7 +116,22 @@ test("test-api-e2e has no DATABASE_URL, at any level", () => {
   assert.ok(!/^\s+DATABASE_URL:/m.test(job));
 });
 
-test("a production database URL appears in migrate only", () => {
+test("migrate uses a production secret, and only migrate does", () => {
+  // BOTH DIRECTIONS. The one-way version rejected a secret outside migrate
+  // but never checked migrate had one — so pointing the production migration
+  // at the dev database, or at ${{ env.DATABASE_URL }}, passed every check
+  // here while breaking production migrations.
+  const migrate = jobSource(source, "migrate");
+  assert.ok(migrate, "the migrate job is gone — production migrations run there");
+  const urls = [...migrate.matchAll(/^\s+DATABASE_URL:\s*(.+)$/gm)].map((m) =>
+    m[1].trim(),
+  );
+  assert.ok(urls.length > 0, "migrate declares no DATABASE_URL");
+  assert.ok(
+    urls.every((u) => SECRET.test(u)),
+    `migrate must use a secret, got: ${urls.join(", ")}`,
+  );
+
   // test-e2e-web and load-test run migrations and seeds, so a secret URL
   // there is a destructive write to the real database.
   for (const job of jobsAssigningDatabaseUrl(source)) {
@@ -885,4 +900,46 @@ test("describe.each scopes its callback in the tagged-table form too", () => {
     "});",
   ].join("\n");
   assert.deepEqual(unguardedTruncates(contained), []);
+});
+
+test("hook and describe forms Jest does not provide are not scopes", () => {
+  const guard = "await assertConnectedToTestDatabase(p);";
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+
+  // `suite.beforeAll(...)` is a method call, not Jest's global hook — a
+  // guard inside one never runs as setup.
+  assert.equal(
+    unguardedTruncates(
+      `describe('s',()=>{suite.beforeAll(async()=>{${guard}});beforeEach(async()=>{${trunc}});});`,
+    ).length,
+    1,
+  );
+
+  // Jest accepts the modifier on either side of `.each`; only one order was
+  // recognised, so a guard in the other had no scope and read as file-level.
+  for (const form of ["describe.only.each([1])", "describe.skip.each([1])"]) {
+    assert.equal(
+      unguardedTruncates(
+        `describe('o',()=>{${form}('i',()=>{beforeAll(async()=>{${guard}});});beforeEach(async()=>{${trunc}});});`,
+      ).length,
+      1,
+      `${form} must not leak its guard to the parent`,
+    );
+  }
+});
+
+test("SQL extracted into a variable is reported, prose is not", () => {
+  // This lint cannot follow a variable to its call site. Rather than skip
+  // both that and inert prose, a SQL-SHAPED string outside any call is
+  // reported as an arrangement it cannot verify.
+  const extracted =
+    "describe('s',()=>{const sql='TRUNCATE TABLE users';beforeEach(async()=>{await p.$executeRawUnsafe(sql);});});";
+  assert.equal(unguardedTruncates(extracted).length, 1);
+
+  for (const inert of [
+    "describe('s',()=>{it('rejects TRUNCATE in user input',()=>{});});",
+    "describe('s',()=>{expect(e).toBe('TRUNCATE is not permitted');});",
+  ]) {
+    assert.deepEqual(unguardedTruncates(inert), [], inert);
+  }
 });
