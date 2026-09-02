@@ -39,14 +39,25 @@ export function jobSource(source, name) {
   return lines.slice(start, end === -1 ? undefined : end).join("\n");
 }
 
-/** `NAME: value` pairs under the first `env:` in `text`, at its indentation. */
-export function envBlock(text) {
+/**
+ * `NAME: value` pairs under the `env:` at exactly `indent` spaces.
+ *
+ * The indentation is required, not inferred. Taking the FIRST `env:` in a
+ * job returned a service container's block whenever one appeared above the
+ * job-level one — so a job could have no job-level env at all while the
+ * check read a service's and passed, leaving every
+ * `${{ env.DATABASE_URL }}` in that job resolving to nothing.
+ *
+ * Job-level is 4; a service container's is 8.
+ */
+export function envBlock(text, indentOf = 4) {
   if (!text) return null;
   const lines = text.split("\n");
-  const start = lines.findIndex((l) => /^\s*env:\s*$/.test(l));
+  const header = " ".repeat(indentOf) + "env:";
+  const start = lines.findIndex((l) => l === header);
   if (start === -1) return null;
 
-  const indent = lines[start].search(/\S/) + 2;
+  const indent = indentOf + 2;
   const out = {};
   for (const line of lines.slice(start + 1)) {
     if (line.trim() === "" || line.trim().startsWith("#")) continue;
@@ -69,7 +80,7 @@ export function workflowEnv(source) {
   const lines = head.split("\n");
   const start = lines.findIndex((l) => l === "env:");
   if (start === -1) return {};
-  return envBlock(lines.slice(start).join("\n")) ?? {};
+  return envBlock(lines.slice(start).join("\n"), 0) ?? {};
 }
 
 /** Job names that assign DATABASE_URL anywhere in their body. */
@@ -101,6 +112,14 @@ export function unreadableSpellings(source) {
 
     if (new RegExp(`^\\s*["']${WATCHED_RE}["']\\s*:`).test(line)) {
       offenders.push(`${at}   (quoted key)`);
+      return;
+    }
+    // A quoted key carrying a backslash escape. YAML resolves `"\u0044ATABASE_URL"`
+    // to DATABASE_URL, which the exact-name test above cannot see. Nothing
+    // this workflow legitimately writes needs an escape in a key — the only
+    // quoted keys here are inside an embedded JSON heredoc, which has none.
+    if (/^\s*"[^"]*\\[^"]*"\s*:/.test(line)) {
+      offenders.push(`${at}   (escaped key)`);
       return;
     }
     if (new RegExp(`^\\s*${WATCHED_RE}\\s+:`).test(line)) {

@@ -63,7 +63,17 @@ test("test-api-e2e has no DATABASE_URL, at any level", () => {
   // Checked at the workflow level too, because hoisting it there is the
   // natural tidy-up and exactly the wrong move.
   assert.ok(!("DATABASE_URL" in workflowEnv(source)));
-  assert.ok(!/^\s+DATABASE_URL:/m.test(jobSource(source, "test-api-e2e")));
+
+  // The job must EXIST first. `jobSource` returns null when the job is
+  // renamed or removed, and `!/regex/.test(null)` tests the string "null",
+  // finds no match, and passes — so the guard would silently stop guarding
+  // at the exact moment someone restructured the file.
+  const job = jobSource(source, "test-api-e2e");
+  assert.ok(
+    job,
+    "test-api-e2e not found — this guard protects it, so its absence is a failure, not a pass",
+  );
+  assert.ok(!/^\s+DATABASE_URL:/m.test(job));
 });
 
 test("a production database URL appears in migrate only", () => {
@@ -239,4 +249,57 @@ test("jobsAssigningDatabaseUrl attributes each line to its own job", () => {
   ].join("\n");
 
   assert.deepEqual(jobsAssigningDatabaseUrl(src).sort(), ["alpha", "gamma"]);
+});
+
+test("a missing job is a failure, not a silent pass", () => {
+  // jobSource returns null, and `!/x/.test(null)` passes because it tests
+  // the string "null". Anything protecting a job by name has to assert the
+  // job is there.
+  assert.equal(jobSource("jobs:\n  other:\n", "test-api-e2e"), null);
+  assert.ok(!/^\s+DATABASE_URL:/m.test(null), "the trap this guards against");
+});
+
+test("an escaped quoted key is rejected", () => {
+  // YAML resolves "\u0044ATABASE_URL" to DATABASE_URL, which the exact-name
+  // scan cannot see.
+  const escaped = String.raw`  "\u0044ATABASE_URL": postgresql://x/y`;
+  const found = unreadableSpellings(`name: CI\n${escaped}\n`);
+  assert.equal(found.length, 1, `not rejected: ${escaped}`);
+  assert.match(found[0], /escaped key/);
+
+  // The embedded JSON heredoc uses quoted keys with no escapes, and must
+  // keep passing.
+  assert.deepEqual(
+    unreadableSpellings('name: CI\n            "path_filter": {\n'),
+    [],
+  );
+});
+
+test("envBlock reads the level it was asked for", () => {
+  // A service container's env sits above the job-level one in some layouts.
+  // Taking the first `env:` meant a job with NO job-level block still
+  // passed, reading the service's — while every ${{ env.X }} in that job
+  // resolved to nothing.
+  const job = [
+    "  a-job:",
+    "    services:",
+    "      postgres:",
+    "        env:",
+    "          DATABASE_URL: postgresql://service/db",
+    "    env:",
+    "      DATABASE_URL: postgresql://job/db",
+  ].join("\n");
+
+  assert.equal(envBlock(job, 4).DATABASE_URL, "postgresql://job/db");
+  assert.equal(envBlock(job, 8).DATABASE_URL, "postgresql://service/db");
+
+  // A job with only a service-level block has no job-level env at all.
+  const serviceOnly = [
+    "  a-job:",
+    "    services:",
+    "      postgres:",
+    "        env:",
+    "          DATABASE_URL: postgresql://service/db",
+  ].join("\n");
+  assert.equal(envBlock(serviceOnly, 4), null);
 });
