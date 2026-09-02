@@ -11,6 +11,8 @@
  * entry must stay safe to import from anywhere.
  */
 
+import { isPublicDnsName } from "./dns-name.js";
+
 /**
  * Resolve a public URL that has a localhost development default.
  *
@@ -152,53 +154,13 @@ function resolvePublicUrl(name, value, devDefault) {
     );
   }
 
-  // MUST BE A DNS NAME. Not "which of the IANA special-purpose ranges is
-  // this", which is what five review rounds were spent on -- fec0::/10, then
-  // 100::/64 and 64:ff9b:1::/48, then 2001:2::/48 and 3fff::/20, then
-  // ORCHIDv2 -- each one real, and the enumeration unbounded because IANA is
-  // still assigning blocks (3fff::/20 landed in 2024).
-  //
-  // In production this value is always a DNS name: an IP literal cannot get
-  // a certificate from the CDN in front of it, and the scheme check above
-  // already requires https. The incident this guard exists for was
-  // `http://localhost:3000` -- a HOSTNAME, not an address.
-  //
-  // So the rule is "a public DNS name", which rejects every IP literal in
-  // both families at once, rejects single-label internal names like `api`,
-  // and cannot be defeated by a range IANA has not invented yet.
-  // A DOT IS NOT A HOSTNAME. The first version tested `includes(".")`, which
-  // accepts `example..com` and `-.com` -- malformed names that resolve
-  // nowhere, so the guard would have passed exactly the kind of typo it
-  // exists to catch.
-  //
-  // Two or more labels, each 1-63 characters of letters, digits and internal
-  // hyphens, with an alphabetic top label. That is the shape of every name a
-  // certificate is issued for, which is the actual requirement here. An IPv4
-  // literal fails it (a numeric top label) and an IPv6 literal fails it (the
-  // brackets), so both families are rejected without naming either.
-  // 253 is DNS's presentation-format limit for a whole name. The per-label
-  // rule below caps each label at 63 but says nothing about how many there
-  // are, so `(?:label\.)+` would accept a name no resolver will answer for.
-  const host = parsed.hostname.replace(/\.$/, "");
-  const withinDnsLimit = host.length <= 253;
-  //
-  // EVERY LABEL USES THE SAME RULE, including the last one. Special-casing
-  // the top label as "letters only" rejected punycode (`xn--zckzah`), and
-  // widening it to `xn--[a-z0-9]+` then rejected punycode containing an
-  // internal hyphen -- which is most of it, since the encoding uses `-` as
-  // its delimiter: `münchen` becomes `xn--mnchen-3ya`.
-  //
-  // The only thing the top label must NOT be is all digits, which is what
-  // separates `example.com` from the IPv4 literal `1.2.3.4`. That is one
-  // condition instead of a charset that needed widening every round.
-  const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
-  const labels = host.split(".");
-  const isDnsName =
-    labels.length >= 2 &&
-    labels.every((label) => LABEL.test(label)) &&
-    !/^\d+$/.test(labels[labels.length - 1]);
+  // MUST BE A PUBLIC DNS NAME -- see dns-name.js for why this is not an
+  // IP-range check. In production this value is always a name: an IP literal
+  // cannot get a certificate from the CDN in front of it, and the scheme
+  // check above already requires https. The incident this guard exists for
+  // was `http://localhost:3000`, a hostname rather than an address.
+  if (!isPublicDnsName(parsed.hostname)) {
 
-  if (!isDnsName || !withinDnsLimit) {
     throw new Error(
       `${name} must be a public DNS name in production — got a bare host with ` +
         `no domain, or an IP literal. Visitors reach this over the CDN, which ` +
