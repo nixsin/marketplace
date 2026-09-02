@@ -289,9 +289,15 @@ function isLoopbackHost(hostname: string): boolean {
  *
  * That is degradation, not a silent fallback: the old
  * `SITE_URL = ... ?? "http://localhost:3000"` meant production resolved a
- * localhost link and SENT it. The contract marks NEXT_PUBLIC_SITE_URL
- * required on render, so a real deploy still refuses to start without it --
- * the hard failure lives at boot, where it can be acted on.
+ * localhost link and SENT it. Omitting the link is honest about what is
+ * known; inventing a localhost one is not.
+ *
+ * The environment contract DECLARES NEXT_PUBLIC_SITE_URL required and
+ * non-empty on render, so `node scripts/check-env.mjs all --env render`
+ * reports its absence today. It is not yet enforced at boot -- that wiring
+ * is a later change in this series, and until it lands the guarantee here
+ * is "a deploy missing this sends an actionable message without a link",
+ * not "a deploy missing this cannot start".
  */
 function configuredSiteUrl(): string | undefined {
   return process.env.NEXT_PUBLIC_SITE_URL;

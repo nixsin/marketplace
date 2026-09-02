@@ -11,6 +11,13 @@
  * entry must stay safe to import from anywhere.
  */
 
+import { isPublicDnsName } from "./dns-name.js";
+import {
+  detectEnvironment,
+  isDeployedEnvironment,
+  unknownEnvironmentHint,
+} from "./environment.js";
+
 /**
  * Resolve a public URL that has a localhost development default.
  *
@@ -45,7 +52,35 @@
  * image sets NODE_ENV=production wherever it is built, including in the CI
  * boot test that must keep passing with no configuration.
  */
-function resolvePublicUrl(name, value, devDefault) {
+/**
+ * A production-looking process on no platform we recognise gets ONE line.
+ *
+ * The permissive branch stays permissive, and that is deliberate rather than
+ * an oversight: `docker-web-prod-boot` boots the real production image with
+ * no configuration at all, on purpose, and asserts a genuine 200 -- so
+ * anything required there fails a required check for doing its job. See the
+ * `unknown` section of docs/environments.md.
+ *
+ * What was missing is that this path said NOTHING. The contract warns on
+ * `unknown`; the runtime silently applied the weaker rules, which is the
+ * precise silent-failure shape this module exists to remove. So it now says
+ * the same thing the contract does, and docs/environments.md already
+ * promised it did: a bare `pnpm build` lands in `unknown` and prints the
+ * hint. A warning, never a failure.
+ *
+ * Once per process. `next.config.ts` is loaded several times during a build
+ * and a diagnostic repeated four times is one nobody reads.
+ */
+let unknownProductionWarned = false;
+function warnIfUnknownProduction() {
+  if (unknownProductionWarned) return;
+  if (process.env.NODE_ENV !== "production") return;
+  if (detectEnvironment() !== "unknown") return;
+  unknownProductionWarned = true;
+  console.warn(`[@medinstru/config] ${unknownEnvironmentHint()}`);
+}
+
+function resolvePublicUrl(name, value, devDefault, options) {
   // SERVER ONLY, and this is not a shortcut -- it is where the check belongs.
   //
   // NEXT_PUBLIC_* values are inlined into the client bundle at BUILD time, and
@@ -65,29 +100,79 @@ function resolvePublicUrl(name, value, devDefault) {
   // any environment where `window` exists but the value was never inlined --
   // jsdom under vitest, most obviously -- got `undefined` and threw
   // `Invalid URL` somewhere far away. Caught by product-detail.spec.tsx.
-  if (typeof window !== "undefined") return value || devDefault;
+  if (typeof window !== "undefined") return value ?? devDefault;
 
-  // TWO SIGNALS, because a Docker deploy on Render splits into a build and a
-  // runtime that see different environments. `RENDER=true` reaches the
-  // running container; `RENDER_GIT_COMMIT` is passed into the image build via
-  // an explicit ARG (Render hands a Docker build nothing else). Checking both
-  // means a bad value is caught at build -- while it can still be fixed
-  // before being inlined into the bundle -- and again at every boot.
+  // DESTRUCTURED AFTER the window check, not in the signature. A default in
+  // the parameter list is emitted before the early return, so the client
+  // bundle carried `arguments.length > 3 ? ... : {}` plus a property read of
+  // an option only the server uses. Small, and this budget has no headroom:
+  // the whole reason this file returns early is to keep the browser's copy
+  // to the one line it actually needs.
+  const { bareOrigin = false } = options ?? {};
+
+  // SHARED WITH THE CONTRACT, not a second copy. This was
+  // `RENDER === "true" || RENDER_GIT_COMMIT`, which meant `APP_ENV=render`
+  // switched on the contract's production rules but not these -- two modules
+  // disagreeing about the same question, with the strict half missing
+  // exactly where someone had said "this is production".
   //
-  // Neither is inlined into the client bundle (only NEXT_PUBLIC_* are), so
-  // this is false in the browser and the browser never throws; it receives
-  // whatever the server already validated.
-  const onRender =
-    process.env.RENDER === "true" || Boolean(process.env.RENDER_GIT_COMMIT);
-  if (!onRender) return value || devDefault;
+  // Imported from ./environment.js rather than ./env-contract.js: apps/web
+  // pages import this module, and the contract's rule tables have no
+  // business in a client bundle.
+  if (!isDeployedEnvironment()) {
+    warnIfUnknownProduction();
+
+    // ABSENT AND EMPTY ARE DIFFERENT, and `||` collapsed them. `undefined`
+    // means nobody declared it, and the localhost default is right; `""`
+    // means somebody wrote `FOO=`, which the contract calls invalid for both
+    // of these variables (`emptyMeans: null`). Substituting localhost for a
+    // deliberate empty hid a malformed local or CI configuration behind a
+    // value that looks healthy -- the same silent-substitution shape the
+    // whole module exists to remove, and the reason the contract draws that
+    // distinction at all.
+    if (value === "") {
+      throw new Error(
+        `${name} is declared but empty. That is not the same as unset: an ` +
+          `unset value falls back to ${devDefault} for local development, ` +
+          `while an empty one is a configuration that says nothing. Remove ` +
+          `the line or give it a value.`,
+      );
+    }
+
+    return value ?? devDefault;
+  }
 
   if (!value) {
     throw new Error(
-      `${name} is not set, and this process is running on Render. ` +
-        `Refusing to fall back to ${devDefault}: that would publish localhost ` +
-        `links to real visitors and crawlers. Set it on the Render service ` +
-        `AND pass it as a Docker build arg -- NEXT_PUBLIC_* values are inlined ` +
-        `into the client bundle at build time.`,
+      // NOT "running on Render". isDeployedEnvironment is also true for
+      // APP_ENV=render with no platform marker, so this fired on a manually
+      // identified environment and told the reader something false about
+      // where they were -- which sends them to check the wrong dashboard.
+      `${name} is not set, and this is a deployed environment ` +
+        `(APP_ENV=render, or a Render platform marker). Refusing to fall ` +
+        `back to ${devDefault}: that would publish localhost links to real ` +
+        `visitors and crawlers. Set it on the service AND pass it as a ` +
+        `Docker build arg -- NEXT_PUBLIC_* values are inlined into the ` +
+        `client bundle at build time.`,
+    );
+  }
+
+  // WHITESPACE IS REFUSED BEFORE PARSING, because `new URL()` trims it and
+  // this function returns the ORIGINAL string. `"https://laxair.shop "`
+  // therefore passed the scheme, name and origin checks and then produced
+  // `https://laxair.shop /en/products/<id>` at every concatenation site --
+  // a broken link in every canonical tag and OpenGraph URL, from a value
+  // three separate checks had just called valid.
+  //
+  // The contract catches this, and that is not enough on its own: the
+  // contract is not wired at boot yet, and this module is the guard that
+  // runs on every import path regardless.
+  if (value !== value.trim()) {
+    throw new Error(
+      `${name} has leading or trailing whitespace. URL parsing silently ` +
+        `trims it while concatenation does not, so the value would validate ` +
+        `and still build broken links. (Value not shown: a mistyped value ` +
+        `can itself be a secret.)`,
     );
   }
 
@@ -152,58 +237,35 @@ function resolvePublicUrl(name, value, devDefault) {
     );
   }
 
-  // MUST BE A DNS NAME. Not "which of the IANA special-purpose ranges is
-  // this", which is what five review rounds were spent on -- fec0::/10, then
-  // 100::/64 and 64:ff9b:1::/48, then 2001:2::/48 and 3fff::/20, then
-  // ORCHIDv2 -- each one real, and the enumeration unbounded because IANA is
-  // still assigning blocks (3fff::/20 landed in 2024).
-  //
-  // In production this value is always a DNS name: an IP literal cannot get
-  // a certificate from the CDN in front of it, and the scheme check above
-  // already requires https. The incident this guard exists for was
-  // `http://localhost:3000` -- a HOSTNAME, not an address.
-  //
-  // So the rule is "a public DNS name", which rejects every IP literal in
-  // both families at once, rejects single-label internal names like `api`,
-  // and cannot be defeated by a range IANA has not invented yet.
-  // A DOT IS NOT A HOSTNAME. The first version tested `includes(".")`, which
-  // accepts `example..com` and `-.com` -- malformed names that resolve
-  // nowhere, so the guard would have passed exactly the kind of typo it
-  // exists to catch.
-  //
-  // Two or more labels, each 1-63 characters of letters, digits and internal
-  // hyphens, with an alphabetic top label. That is the shape of every name a
-  // certificate is issued for, which is the actual requirement here. An IPv4
-  // literal fails it (a numeric top label) and an IPv6 literal fails it (the
-  // brackets), so both families are rejected without naming either.
-  // 253 is DNS's presentation-format limit for a whole name. The per-label
-  // rule below caps each label at 63 but says nothing about how many there
-  // are, so `(?:label\.)+` would accept a name no resolver will answer for.
-  const host = parsed.hostname.replace(/\.$/, "");
-  const withinDnsLimit = host.length <= 253;
-  //
-  // EVERY LABEL USES THE SAME RULE, including the last one. Special-casing
-  // the top label as "letters only" rejected punycode (`xn--zckzah`), and
-  // widening it to `xn--[a-z0-9]+` then rejected punycode containing an
-  // internal hyphen -- which is most of it, since the encoding uses `-` as
-  // its delimiter: `münchen` becomes `xn--mnchen-3ya`.
-  //
-  // The only thing the top label must NOT be is all digits, which is what
-  // separates `example.com` from the IPv4 literal `1.2.3.4`. That is one
-  // condition instead of a charset that needed widening every round.
-  const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
-  const labels = host.split(".");
-  const isDnsName =
-    labels.length >= 2 &&
-    labels.every((label) => LABEL.test(label)) &&
-    !/^\d+$/.test(labels[labels.length - 1]);
+  // MUST BE A PUBLIC DNS NAME -- see dns-name.js for why this is not an
+  // IP-range check. In production this value is always a name: an IP literal
+  // cannot get a certificate from the CDN in front of it, and the scheme
+  // check above already requires https. The incident this guard exists for
+  // was `http://localhost:3000`, a hostname rather than an address.
+  if (!isPublicDnsName(parsed.hostname)) {
 
-  if (!isDnsName || !withinDnsLimit) {
     throw new Error(
       `${name} must be a public DNS name in production — got a bare host with ` +
         `no domain, or an IP literal. Visitors reach this over the CDN, which ` +
         `needs a name it holds a certificate for. (Value not shown: a mistyped ` +
         `value can itself be a secret.)`,
+    );
+  }
+
+  // A BARE ORIGIN for SITE_URL, matching `mustBeOrigin` in the contract.
+  //
+  // Paths are concatenated onto this value -- `${SITE_URL}/en/products/${id}`
+  // -- so a trailing slash produces `//en/...` and a path or query produces
+  // `https://h/app/en/...` or a link with the query silently dropped. The
+  // contract enforced this and the runtime did not, which is the same
+  // two-modules-disagreeing shape that `isDeployedEnvironment` above exists
+  // to prevent. API_URL is exempt because it legitimately ends in /graphql.
+  if (bareOrigin && (parsed.search || parsed.hash || parsed.pathname !== "/" || value.endsWith("/"))) {
+    throw new Error(
+      `${name} must be a bare origin in production — no path, no query, no ` +
+        `fragment, no trailing slash — because paths are concatenated onto ` +
+        `it to build canonical and OpenGraph URLs. (Value not shown: a ` +
+        `mistyped value can itself be a secret.)`,
     );
   }
 
@@ -222,4 +284,5 @@ export const SITE_URL = resolvePublicUrl(
   "NEXT_PUBLIC_SITE_URL",
   process.env.NEXT_PUBLIC_SITE_URL,
   "http://localhost:3000",
+  { bareOrigin: true },
 );

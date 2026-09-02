@@ -46,6 +46,14 @@ async function importWithEnv(overrides) {
     // outcome of the cases covering non-Render behaviour.
     "RENDER",
     "RENDER_GIT_COMMIT",
+    // APP_ENV reaches the same decision through detectEnvironment, so a
+    // developer shell carrying `APP_ENV=render` pushed the cases covering
+    // NON-deployed behaviour into production validation. Same class as the
+    // two markers above, arriving by the other route.
+    "APP_ENV",
+    // NODE_ENV gates the unknown-production hint, so leaving it set makes
+    // one case print a warning the others do not.
+    "NODE_ENV",
     ...Object.keys(overrides),
   ]);
   const saved = Object.fromEntries(
@@ -90,7 +98,7 @@ describe("web config", () => {
     // every page still returns 200.
     await assert.rejects(
       () => importWithEnv({ RENDER: "true" }),
-      /NEXT_PUBLIC_API_URL is not set, and this process is running on Render/,
+      /NEXT_PUBLIC_API_URL is not set, and this is a deployed environment/,
     );
   });
 
@@ -118,6 +126,75 @@ describe("web config", () => {
     });
     assert.equal(cfg.API_URL, "https://api.laxair.shop/graphql");
     assert.equal(cfg.SITE_URL, "https://laxair.shop");
+  });
+
+  test("SITE_URL must be a bare origin, while API_URL keeps its path", async () => {
+    // Paths are concatenated onto SITE_URL -- `${SITE_URL}/en/products/${id}`
+    // -- so a trailing slash produces `//en/...` and a path or query produces
+    // a wrong canonical URL or one with the query silently dropped. The
+    // contract enforced this and the runtime did not, which is the same
+    // two-modules-disagreeing shape isDeployedEnvironment exists to prevent.
+    for (const bad of [
+      "https://laxair.shop/",
+      "https://laxair.shop/app",
+      "https://laxair.shop?ref=x",
+      "https://laxair.shop#top",
+    ]) {
+      await assert.rejects(
+        () =>
+          importWithEnv({
+            RENDER: "true",
+            NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+            NEXT_PUBLIC_SITE_URL: bad,
+          }),
+        /must be a bare origin/,
+        `${bad} should be refused`,
+      );
+    }
+
+    // API_URL is exempt on purpose: it legitimately ends in /graphql, which
+    // the test above already relies on.
+    const cfg = await importWithEnv({
+      RENDER: "true",
+      NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql?x=1",
+      NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+    });
+    assert.equal(cfg.API_URL, "https://api.laxair.shop/graphql?x=1");
+  });
+
+  test("whitespace is refused, because URL parsing trims and concatenation does not", async () => {
+    // `new URL("https://laxair.shop ")` succeeds and reports a clean origin,
+    // so the scheme, public-name and bare-origin checks all passed — and the
+    // function returns the ORIGINAL string, which then built
+    // `https://laxair.shop /en/products/<id>` at every concatenation site.
+    for (const bad of [
+      "https://laxair.shop ",
+      " https://laxair.shop",
+      "https://laxair.shop\n",
+    ]) {
+      await assert.rejects(
+        () =>
+          importWithEnv({
+            RENDER: "true",
+            NEXT_PUBLIC_API_URL: "https://api.laxair.shop/graphql",
+            NEXT_PUBLIC_SITE_URL: bad,
+          }),
+        /whitespace/,
+        `${JSON.stringify(bad)} should be refused`,
+      );
+    }
+
+    // API_URL is held to it too — it is concatenated with nothing, but a
+    // value nobody meant to have a space in is wrong either way.
+    await assert.rejects(
+      () =>
+        importWithEnv({
+          RENDER: "true",
+          NEXT_PUBLIC_API_URL: " https://api.laxair.shop/graphql",
+          NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+        }),
+      /whitespace/,
+    );
   });
 
   test("the localhost defaults still apply everywhere that is not Render", async () => {
@@ -517,4 +594,85 @@ test("a real production hostname is accepted", async () => {
     NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
   });
   assert.equal(cfg.API_URL, "https://api.laxair.shop/graphql");
+});
+
+test("every runtime export is declared in its .d.ts", async () => {
+  // THE CLASS, not the instance. Thirteen exports were added to index.js
+  // without declarations, so TypeScript consumers could not import them at
+  // all — and nothing failed, because the package is plain JS with a
+  // hand-written .d.ts and neither half checks the other.
+  //
+  // Reading the source rather than importing it: a declaration file has no
+  // runtime form, so the only way to compare the two is textually.
+  const { readFileSync } = await import("node:fs");
+  const read = (f) =>
+    readFileSync(new URL(f, import.meta.url), "utf8");
+
+  // EVERY module with a .d.ts, not just index. displaySafe and
+  // redactUrlCredentials were exported from env-contract.js and declared
+  // nowhere, which the index-only version of this test could not see.
+  const modules = [
+    "index",
+    "env-contract",
+    "environment",
+    "dns-name",
+    "web-runtime",
+    "dev-defaults",
+  ];
+
+  let checked = 0;
+  for (const name of modules) {
+    const exported = [
+      ...read(`./${name}.js`).matchAll(
+        /^export (?:const|function) ([A-Za-z_][\w]*)/gm,
+      ),
+    ].map((m) => m[1]);
+    const declared = new Set(
+      [
+        ...read(`./${name}.d.ts`).matchAll(
+          /^export declare (?:const|function) ([A-Za-z_][\w]*)/gm,
+        ),
+      ].map((m) => m[1]),
+    );
+
+    checked += exported.length;
+    const undeclared = exported.filter((n) => !declared.has(n));
+    assert.deepEqual(
+      undeclared,
+      [],
+      `exported from ${name}.js but not declared in ${name}.d.ts: ${undeclared.join(", ")}`,
+    );
+  }
+
+  assert.ok(checked > 60, "the export scan found nothing to check");
+});
+
+test("every exported subpath has a declaration file beside it", async () => {
+  // `./environment` shipped without one, so a TypeScript consumer importing
+  // `@medinstru/config/environment` got a missing-declaration error while
+  // `./web` and `./dns-name` beside it were fine. Declarations living in
+  // ANOTHER module's .d.ts do not describe a separately exported subpath.
+  const { readFileSync, existsSync } = await import("node:fs");
+  const pkg = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  );
+
+  const subpaths = Object.entries(pkg.exports ?? {});
+  assert.ok(subpaths.length > 1, "the exports map was not found");
+
+  const missing = subpaths
+    .filter(([, target]) => {
+      const declaration = new URL(
+        String(target).replace(/\.js$/, ".d.ts"),
+        new URL("../", import.meta.url),
+      );
+      return !existsSync(declaration);
+    })
+    .map(([name]) => name);
+
+  assert.deepEqual(
+    missing,
+    [],
+    `exported without a .d.ts: ${missing.join(", ")}`,
+  );
 });

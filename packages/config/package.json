@@ -6,9 +6,14 @@
   "main": "./src/index.js",
   "exports": {
     ".": "./src/index.js",
+    "./env-contract": "./src/env-contract.js",
     "./sourcemap-token": "./src/sourcemap-token.js",
-    "./web": "./src/web-runtime.js"
+    "./web": "./src/web-runtime.js",
+    "./dns-name": "./src/dns-name.js",
+    "./environment": "./src/environment.js",
+    "./dev-defaults": "./src/dev-defaults.js"
   },
+  "sideEffects": false,
   "scripts": {
     "test": "node --test src/*.test.js"
   }

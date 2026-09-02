@@ -314,6 +314,15 @@ jobs:
       # filter that stops matching. The package's own `pnpm test` already
       # globs; this now matches it.
       - run: node --test packages/config/src/*.test.js
+      # The CLI's argument parsing has been wrong twice, both times in ways
+      # that looked like a configuration problem rather than a usage one.
+      - run: node --test scripts/lib/check-env-args.test.mjs
+      # Runs the real CLI as a subprocess. The loader's behaviour -- reading
+      # each app's own .env, letting the shell win over the file, restoring
+      # process.env between apps -- is a side effect on a live process that
+      # the unit tests above cannot observe, and a failure there misreports
+      # an otherwise correct check.
+      - run: node --test scripts/check-env.test.mjs
       # Separate from the package's own tests on purpose: those exercise
       # resolveApiKey() in isolation and pass even when no consumer calls
       # it, which is exactly how apiKeyEnv shipped as decorative config

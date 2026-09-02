@@ -252,6 +252,49 @@ describe('publicSiteUrl', () => {
     expect(publicSiteUrl(value)).toBe(value);
   });
 
+  describe('the default argument reads the environment at CALL time', () => {
+    // It used to be an import-time constant, so a value set after this
+    // module loaded was never seen -- which in a test run is every value,
+    // and in a deploy is anything the platform injects late. The change is
+    // only observable through the default parameter, so it needs its own
+    // coverage rather than riding on the explicit-argument cases above.
+    const original = process.env.NEXT_PUBLIC_SITE_URL;
+
+    afterEach(() => {
+      if (original === undefined) delete process.env.NEXT_PUBLIC_SITE_URL;
+      else process.env.NEXT_PUBLIC_SITE_URL = original;
+    });
+
+    it('returns null when the variable is unset, so no link is built', () => {
+      delete process.env.NEXT_PUBLIC_SITE_URL;
+      expect(publicSiteUrl()).toBeNull();
+    });
+
+    it('returns null when the variable is empty', () => {
+      process.env.NEXT_PUBLIC_SITE_URL = '';
+      expect(publicSiteUrl()).toBeNull();
+    });
+
+    it('uses a value set AFTER this module was imported', () => {
+      process.env.NEXT_PUBLIC_SITE_URL = 'https://laxair.shop';
+      expect(publicSiteUrl()).toBe('https://laxair.shop');
+    });
+
+    it('still refuses a localhost value through the default path', () => {
+      // The unconfigured-fallback case, reached the way production reaches
+      // it rather than through an explicit argument.
+      process.env.NEXT_PUBLIC_SITE_URL = 'http://localhost:3000';
+      expect(publicSiteUrl()).toBeNull();
+    });
+
+    it('an explicit argument still wins over the environment', () => {
+      process.env.NEXT_PUBLIC_SITE_URL = 'https://from-env.example.com';
+      expect(publicSiteUrl('https://explicit.example.com')).toBe(
+        'https://explicit.example.com',
+      );
+    });
+  });
+
   it.each([
     ['https://example.com?x=1', 'a query string'],
     ['https://user:pass@example.com', 'embedded credentials'],
