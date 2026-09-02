@@ -34,6 +34,10 @@
  * misconfiguration from being merged in the first place. Neither replaces
  * the other, and neither should be described as doing the other's job.
  *
+ * The spec check in the test file is a LINT over that guard's call sites —
+ * it catches the call being deleted, commented out or moved, not Jest's
+ * execution order, which would need an AST and a lifecycle model.
+ *
  * It is NOT an adversarial boundary, and cannot be. Anyone who can edit
  * ci.yml can add a step that runs arbitrary code with the repository's
  * secrets — reaching for `? DATABASE_URL` explicit-key syntax to smuggle a
@@ -53,10 +57,16 @@ export const WATCHED = [
 
 const WATCHED_RE = `(?:${WATCHED.join("|")})`;
 
+/** A job key at column 2, quoted or not, in any case. */
+const JOB_KEY = /^  ["']?([A-Za-z_][\w-]*)["']?:\s*$/;
+
 /** One job's lines, from its key to the next job's. */
 export function jobSource(source, name) {
   const lines = source.split("\n");
-  const start = lines.findIndex((l) => l === `  ${name}:`);
+  // Quoted ids too. jobsAssigningDatabaseUrl strips the quotes and returns
+  // `quoted-job`, so an exact-line lookup found nothing and every caller ran
+  // `.matchAll` on null.
+  const start = lines.findIndex((l) => JOB_KEY.exec(l)?.[1] === name);
   if (start === -1) return null;
   const end = lines.findIndex((l, i) => i > start && JOB_KEY.test(l));
   return lines.slice(start, end === -1 ? undefined : end).join("\n");
@@ -106,8 +116,6 @@ export function workflowEnv(source) {
   return envBlock(lines.slice(start).join("\n"), 0) ?? {};
 }
 
-/** A job key at column 2, quoted or not, in any case. */
-const JOB_KEY = /^  ["']?([A-Za-z_][\w-]*)["']?:\s*$/;
 
 /**
  * Job names that assign DATABASE_URL anywhere in their body.

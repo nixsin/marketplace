@@ -477,15 +477,27 @@ test("explicit-key syntax is rejected", () => {
   }
 });
 
-test("every truncating e2e spec guards its connection first", () => {
-  // THE ACTUAL PREVENTION, and nothing was checking it. A spec that
-  // TRUNCATEs without calling assertConnectedToTestDatabase would destroy
-  // whatever database it happened to be pointed at — which is how the dev
-  // catalogue was lost once already.
+test("every truncating e2e spec calls the database guard", () => {
+  // A LINT, NOT A PROOF — and the distinction matters, because an earlier
+  // version of this comment claimed to be the prevention.
   //
-  // The guard asks Postgres `SELECT current_database()` rather than reading
-  // DATABASE_URL, so it cannot be fooled by the env-var indirection that
-  // caused the incident.
+  // What actually prevents the damage is assertConnectedToTestDatabase
+  // itself: it asks Postgres `SELECT current_database()` and throws unless
+  // the name ends in `_test`. That is unconditional at runtime and cannot be
+  // fooled by env-var indirection, which is what caused the original
+  // incident.
+  //
+  // This checks that no spec LOSES that call — deleted, commented out,
+  // hidden in a string, moved after the TRUNCATE, or lifted out of its
+  // setup hook. Those are the ways it goes missing by accident.
+  //
+  // It does NOT prove execution order. `beforeAll` runs before `beforeEach`
+  // regardless of which appears first in the file, a guard in one `describe`
+  // does not cover a truncate in another, and an un-awaited call resolves
+  // after the hook returns. Establishing any of that needs an AST and a
+  // model of Jest's lifecycle — a different tool from a text lint, and not
+  // one worth building to re-prove something the runtime guard already
+  // enforces on every single run.
   const dir = fileURLToPath(new URL("../apps/api/test/", import.meta.url));
   const specs = findSpecs(dir);
   assert.ok(specs.length > 0, "no e2e specs found — did they move?");
@@ -560,5 +572,29 @@ test("the inline-map and explicit-key rules handle quoting and boundaries", () =
   }
   for (const line of ["  ? DATABASE_URL", '  ? "DATABASE_URL"']) {
     assert.equal(unreadableSpellings(`name: CI\n${line}\n`).length, 1, line);
+  }
+});
+
+test("jobSource finds every id jobsAssigningDatabaseUrl reports", () => {
+  // The two used the same ids and different lookups: one stripped quotes
+  // and returned `quoted-job`, the other searched for the exact line, found
+  // nothing, and every caller then ran `.matchAll` on null.
+  const src = [
+    "jobs:",
+    '  "quoted-job":',
+    "    env:",
+    "      DATABASE_URL: postgresql://q/db",
+    "  Upper_Case:",
+    "    env:",
+    "      DATABASE_URL: postgresql://u/db",
+    "  _leading:",
+    "    env:",
+    "      DATABASE_URL: postgresql://l/db",
+  ].join("\n");
+
+  const jobs = jobsAssigningDatabaseUrl(src);
+  assert.ok(jobs.length >= 3);
+  for (const job of jobs) {
+    assert.ok(jobSource(src, job), `jobSource cannot find "${job}"`);
   }
 });
