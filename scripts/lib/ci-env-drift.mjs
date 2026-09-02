@@ -146,8 +146,11 @@ export function jobsAssigningDatabaseUrl(source) {
 
 /** Column-0 `env:` blocks. More than one means the checks read only the first. */
 export function workflowEnvBlockCount(source) {
-  const head = source.slice(0, source.indexOf("\njobs:"));
-  return head.split("\n").filter((l) => l === "env:").length;
+  // THE WHOLE FILE, not just the header. A second column-0 `env:` appended
+  // after the jobs mapping is still workflow-level and still reaches every
+  // job — including test-api-e2e — while a header-only count stayed at one
+  // and workflowEnv kept reading the first block.
+  return source.split("\n").filter((l) => l === "env:").length;
 }
 
 /**
@@ -207,7 +210,9 @@ export function unreadableSpellings(source) {
     const yamlOnly = line.replace(/\$\{\{[^}]*\}\}/g, "");
     // The key may be quoted inside the map — `{ "DATABASE_URL": v }` — so
     // an optional quote is allowed between the name and the colon.
-    const INLINE_KEY = new RegExp(`["']?${WATCHED_RE}["']?\\s*:`);
+    // Boundaries, or `MY_DATABASE_URL` matches by suffix and a false positive
+    // fails a required check.
+    const INLINE_KEY = new RegExp(`(?<![\\w$])["']?${WATCHED_RE}["']?\\s*:`);
     if (
       /^\s*env:\s*\{/.test(yamlOnly) ||
       (yamlOnly.includes("{") && INLINE_KEY.test(yamlOnly))
@@ -440,7 +445,10 @@ const TRUNCATE_WORD = /(?<![\w$])truncate(?![\w$])/gi;
  * word, so the target list is not the discriminator — what follows it is.
  * SQL permits RESTART / IDENTITY / CASCADE or the end; prose keeps going.
  */
-const TARGET = String.raw`(?:"[^"]+"|[a-z_][\w$]*(?:\.[a-z_][\w$]*)?)`;
+// Each component may be quoted independently, so `"public"."User"`,
+// `public."User"` and `public.User` are all one target.
+const PART = String.raw`(?:"[^"]+"|[a-z_][\w$]*)`;
+const TARGET = String.raw`${PART}(?:\.${PART})?`;
 const SQL_STATEMENT = new RegExp(
   String.raw`^truncate\s+(?:table\s+|only\s+)?${TARGET}(?:\s*,\s*${TARGET})*` +
     String.raw`(?:\s+(?:restart|identity|continue|cascade|restrict))*\s*;?\s*$`,

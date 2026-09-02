@@ -1092,3 +1092,56 @@ test("a guard-shaped regex is not a guard", () => {
   const src = "const re = /a'b/; const s = 'x';";
   assert.equal(stripCommentsAndStrings(src).length, src.length);
 });
+
+test("quoted and schema-qualified TRUNCATE targets are detected", () => {
+  // Each component may be quoted independently, and this repo's own specs
+  // use the `"Product", "License"` form.
+  for (const stmt of [
+    'TRUNCATE "public"."User"',
+    'TRUNCATE public."User"',
+    'TRUNCATE "User"',
+    "TRUNCATE public.users",
+  ]) {
+    const src = `describe('s',()=>{const q='${stmt}';beforeEach(async()=>{await p.$executeRawUnsafe(q);});});`;
+    assert.equal(unguardedTruncates(src).length, 1, `missed: ${stmt}`);
+  }
+});
+
+test("a second workflow env block after jobs: is counted", () => {
+  // The count read only the header, so an appended column-0 `env:` stayed
+  // invisible — while still reaching every job, test-api-e2e included.
+  const appended = [
+    "name: CI",
+    "env:",
+    "  POSTGRES_USER: postgres",
+    "",
+    "jobs:",
+    "  build:",
+    "    steps: []",
+    "env:",
+    "  DATABASE_URL: postgresql://sneaky/db",
+  ].join("\n");
+
+  assert.equal(workflowEnvBlockCount(appended), 2);
+  assert.equal(workflowEnvBlockCount("name: CI\n\njobs:\n  b:\n"), 0);
+});
+
+test("an inline-map key matching only by suffix is not flagged", () => {
+  // `MY_DATABASE_URL` and `OLD_POSTGRES_USER` are unrelated variables, and a
+  // false positive here fails a required check.
+  for (const line of [
+    "  x: { MY_DATABASE_URL: v }",
+    "  x: { OLD_POSTGRES_USER: v }",
+  ]) {
+    assert.deepEqual(
+      unreadableSpellings(`name: CI\n${line}\n`),
+      [],
+      `false positive: ${line}`,
+    );
+  }
+
+  assert.equal(
+    unreadableSpellings("name: CI\n  x: { DATABASE_URL: v }\n").length,
+    1,
+  );
+});
