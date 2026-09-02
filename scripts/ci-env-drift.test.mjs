@@ -153,30 +153,46 @@ test("test-api-e2e has no DATABASE_URL, at any level", () => {
   );
 });
 
-test("the Postgres account is declared once, and nowhere else", () => {
-  // Values come from the contract, not typed here: hard-coding them meant a
-  // changed contract matched zero lines and the test passed while checking
-  // nothing.
+test("every Postgres assignment is the shared literal or a reference to it", () => {
+  // EVERY assignment, not just the ones that already look right. A filter
+  // keyed on the expected value skipped `POSTGRES_USER: wrong-user`
+  // entirely — the count stayed at three and the test passed while that
+  // job's container got a different account. A service block CAN override
+  // the inherited workflow value, which is exactly the drift this exists
+  // to catch.
   const expected = {
     POSTGRES_USER: DEV_POSTGRES_USER,
     POSTGRES_PASSWORD: DEV_POSTGRES_PASSWORD,
     POSTGRES_DB: DEV_POSTGRES_DB,
   };
 
-  const declared = source
-    .split("\n")
-    .filter((line) => {
-      const m = /^\s+(POSTGRES_(?:USER|PASSWORD|DB)):\s*(.+)$/.exec(line);
-      return m && m[2].trim() === expected[m[1]];
-    });
+  const assignments = [
+    ...source.matchAll(/^\s+(POSTGRES_(?:USER|PASSWORD|DB)):\s*(.+)$/gm),
+  ].map((m) => ({ line: m[0].trim(), name: m[1], value: m[2].trim() }));
+
+  assert.ok(assignments.length > 0, "no POSTGRES_* assignments found");
+
+  const literals = [];
+  for (const { line, name, value } of assignments) {
+    // A reference must name the SAME variable: `POSTGRES_DB: ${{ env.POSTGRES_USER }}`
+    // is a real mistake this would otherwise wave through.
+    if (value === `\${{ env.${name} }}`) continue;
+
+    assert.equal(
+      value,
+      expected[name],
+      `${line} — must be the contract's value or \${{ env.${name} }}`,
+    );
+    literals.push(line);
+  }
 
   assert.equal(
-    declared.length,
+    literals.length,
     3,
-    `the account must be declared exactly once; found ${declared.length} literal lines:\n${declared.join("\n")}`,
+    `the account must be declared exactly once; found ${literals.length} literal lines:\n${literals.join("\n")}`,
   );
 
-  // ...and those three are the workflow-level block, not a job's copy.
+  // ...and those three are the workflow-level block, not some job's copy.
   const env = workflowEnv();
   for (const [name, value] of Object.entries(expected)) {
     assert.equal(env[name], value, `${name} is not the workflow-level value`);
