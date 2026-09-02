@@ -201,3 +201,31 @@ test("every generated file is tracked by git", () => {
     assert.equal(tracked, path, `${path} is not tracked by git`);
   }
 });
+
+test("variables whose danger is in setting them carry a CAUTION", () => {
+  // Generating these files replaced hand-written prose with the contract's
+  // one-line `why`, and two warnings went with it: that enabling proxy-header
+  // trust asserts the origin refuses non-proxied traffic, and that filling in
+  // REDIS_URL here breaks every CI job. Both are about the ACT of setting the
+  // variable, which no `why` or `emptyMeans` covers.
+  //
+  // Listed explicitly rather than derived: this is the set someone can only
+  // decide deliberately, so a new entry should be a deliberate edit here too.
+  const MUST_WARN = ["INQUIRY_TRUST_PROXY_HEADERS", "REDIS_URL"];
+
+  const text = readFileSync(resolve("apps/api/.env.example"), "utf8");
+  for (const name of MUST_WARN) {
+    const rule = CONTRACTS.api.find((r) => r.name === name);
+    assert.ok(rule, `${name} is no longer in the contract`);
+    assert.ok(rule.caution, `${name} must carry a caution`);
+
+    // And it has to reach the file, which is where an operator reads it.
+    const block = text.slice(0, text.indexOf(`\n${name}=`));
+    const lastBreak = block.lastIndexOf("\n\n");
+    assert.match(
+      block.slice(lastBreak),
+      /CAUTION:/,
+      `${name}'s caution did not reach .env.example`,
+    );
+  }
+});

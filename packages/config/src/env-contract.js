@@ -265,6 +265,11 @@ function universalProblem(value) {
  * @property {boolean} secret        Never echo this value into a message.
  * @property {string} why            What actually breaks, in one line.
  * @property {string | null} emptyMeans  What `FOO=` means, or null if empty is invalid.
+ * @property {string} [caution]      What goes wrong if you set this carelessly.
+ *   For the variables where the danger is in the ACT of setting one rather
+ *   than in the value: a precondition that must hold first, or a reason to
+ *   leave it alone. Rendered into .env.example, which is what an operator
+ *   reads at the moment they are about to change it.
  * @property {string} devValue       The localhost value, written into .env.example.
  * @property {(value: string) => string | null} check
  * @property {Partial<Record<DeployEnvironment, (value: string) => string | null>>} [perEnvironment]
@@ -399,6 +404,11 @@ export const API_ENV_CONTRACT = [
     emptyMeans:
       "no shared cache — the API uses a null cache and reads Postgres directly, " +
       "which is a supported state rather than a degraded one",
+    caution:
+      "leave this blank in .env.example. CI copies that file verbatim, so a " +
+      "URL pointing at a Redis nobody started makes every job build a client, " +
+      "fail to connect, and log cache-unavailable for the whole run. The dev " +
+      "stack supplies a real one through docker-compose.",
     devValue: "",
     check: isUrl(["redis:", "rediss:"]),
     perEnvironment: {
@@ -450,6 +460,14 @@ export const API_ENV_CONTRACT = [
     why: 'Only the exact string "true" enables it; anything else reads as off.',
     emptyMeans: null,
     devValue: "false",
+    caution:
+      "enabling this asserts the origin REFUSES traffic that did not come " +
+      "through Cloudflare — not merely that a proxy exists. This service also " +
+      "answers directly on its .onrender.com hostname, so until that is " +
+      "closed a caller can skip the edge and set cf-connecting-ip themselves, " +
+      "choosing which bucket the per-IP limit charges. Only cf-connecting-ip " +
+      "is ever believed: Cloudflare overwrites it, while x-forwarded-for is " +
+      "appended to, leaving its left-most entry attacker-controlled.",
     check: isOneOf(["true", "false"]),
   },
   {
@@ -1527,6 +1545,10 @@ export function renderEnvExample(app) {
     if (rule.emptyMeans) {
       lines.push("#");
       lines.push(...wrap(`EMPTY means: ${rule.emptyMeans}`).map((l) => `# ${l}`));
+    }
+    if (rule.caution) {
+      lines.push("#");
+      lines.push(...wrap(`CAUTION: ${rule.caution}`).map((l) => `# ${l}`));
     }
     if (rule.secret) {
       lines.push("#");
