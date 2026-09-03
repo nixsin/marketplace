@@ -17,6 +17,20 @@ on:
         type: string
         default: ""
 
+# The dev Postgres account, declared once. Every value here is pinned to
+# packages/config/src/dev-defaults.js by scripts/ci-env-drift.test.mjs —
+# ci.yml cannot import JavaScript, so a test is what keeps the two in step.
+#
+# DATABASE_URL is deliberately NOT here. It is set per job, because
+# test-api-e2e must NOT have one: its suite loads apps/api/.env.test, and
+# dotenv never overwrites an already-set value — so a workflow-level
+# DATABASE_URL would silently point that suite at the dev database, whose
+# beforeEach TRUNCATEs every table.
+env:
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD: postgres
+  POSTGRES_DB: medinstru
+
 jobs:
   # Split into small, independent jobs on purpose — GitHub runs jobs with
   # no `needs:` between them concurrently, on separate runners. Lint and
@@ -333,6 +347,10 @@ jobs:
       # edit a rule, forget to regenerate, and the committed files describe
       # a contract that no longer exists.
       - run: node scripts/generate-env-example.mjs --check
+      # ci.yml cannot import JavaScript, so its env values are literals. This
+      # is what keeps them equal to the contract, and what stops a
+      # DATABASE_URL from reaching test-api-e2e.
+      - run: node --test scripts/ci-env-drift.test.mjs
       # Separate from the package's own tests on purpose: those exercise
       # resolveApiKey() in isolation and pass even when no consumer calls
       # it, which is exactly how apiKeyEnv shipped as decorative config
@@ -442,13 +460,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: medinstru
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --health-cmd "pg_isready -U $POSTGRES_USER"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -828,6 +846,13 @@ jobs:
   # seeded data), not just the UI. An API-only change to that logic
   # could break the catalog flow without this filter ever noticing.
   test-e2e-web:
+    # Job-scoped on purpose, never workflow-level: test-api-e2e must NOT
+    # have a DATABASE_URL, or dotenv's never-overwrite rule points its
+    # suite at the dev database, which its beforeEach TRUNCATEs.
+    # Pinned to the contract by scripts/ci-env-drift.test.mjs.
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medinstru?schema=public
+      NEXT_PUBLIC_API_URL: http://localhost:4000/graphql
     name: Web e2e (Playwright)
     timeout-minutes: 20
     runs-on: ubuntu-latest
@@ -846,13 +871,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: medinstru
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --health-cmd "pg_isready -U $POSTGRES_USER"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -878,7 +903,7 @@ jobs:
         working-directory: apps/api
         run: pnpm seed
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medinstru?schema=public
+          DATABASE_URL: ${{ env.DATABASE_URL }}
 
       # Real prod-style build + start (same as load-test.mjs's own
       # approach), not `nest start --watch` — this is testing the actual
@@ -897,13 +922,13 @@ jobs:
           cat /tmp/api.log
           exit 1
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medinstru?schema=public
+          DATABASE_URL: ${{ env.DATABASE_URL }}
 
       - name: Build web
         working-directory: apps/web
         run: pnpm build
         env:
-          NEXT_PUBLIC_API_URL: http://localhost:4000/graphql
+          NEXT_PUBLIC_API_URL: ${{ env.NEXT_PUBLIC_API_URL }}
 
       - name: Start web
         working-directory: apps/web
@@ -1052,6 +1077,12 @@ jobs:
         run: node scripts/mutation-test.mjs | tee "$GITHUB_STEP_SUMMARY"
 
   load-test:
+    # Job-scoped on purpose, never workflow-level: test-api-e2e must NOT
+    # have a DATABASE_URL, or dotenv's never-overwrite rule points its
+    # suite at the dev database, which its beforeEach TRUNCATEs.
+    # Pinned to the contract by scripts/ci-env-drift.test.mjs.
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medinstru?schema=public
     name: API load test (autocannon)
     timeout-minutes: 15
     runs-on: ubuntu-latest
@@ -1072,13 +1103,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: medinstru
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --health-cmd "pg_isready -U $POSTGRES_USER"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -1107,13 +1138,13 @@ jobs:
         working-directory: apps/api
         run: pnpm seed
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medinstru?schema=public
+          DATABASE_URL: ${{ env.DATABASE_URL }}
 
       - name: Run API load test
         working-directory: apps/api
         run: pnpm test:load
         env:
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/medinstru?schema=public
+          DATABASE_URL: ${{ env.DATABASE_URL }}
 
   ai-failure-analysis:
     name: AI CI failure analysis
