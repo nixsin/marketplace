@@ -63,14 +63,23 @@ test("every API variable is delivered by an env group", () => {
   const groups = envGroups(main);
   const delivered = new Set([...(groups.api ?? []), ...(groups.cache ?? [])]);
 
-  const missing = CONTRACTS.api
-    .map((r) => r.name)
-    .filter((name) => !delivered.has(name));
+  const wanted = new Set(CONTRACTS.api.map((r) => r.name));
 
+  const missing = [...wanted].filter((name) => !delivered.has(name));
   assert.deepEqual(
     missing,
     [],
     `the API contract requires these and Terraform creates none of them: ${missing.join(", ")}`,
+  );
+
+  // BOTH DIRECTIONS. Checking only what is missing let a variable removed
+  // from the contract keep being delivered forever — a value production
+  // still receives that nothing declares or validates any more.
+  const unexpected = [...delivered].filter((name) => !wanted.has(name));
+  assert.deepEqual(
+    unexpected,
+    [],
+    `delivered to the API but no longer in the contract: ${unexpected.join(", ")}`,
   );
 });
 
@@ -78,11 +87,17 @@ test("every web variable is delivered by an env group", () => {
   const groups = envGroups(main);
   const delivered = new Set(groups.web ?? []);
 
-  const missing = CONTRACTS.web
-    .map((r) => r.name)
-    .filter((name) => !delivered.has(name));
+  const wanted = new Set(CONTRACTS.web.map((r) => r.name));
 
+  const missing = [...wanted].filter((name) => !delivered.has(name));
   assert.deepEqual(missing, [], `undelivered: ${missing.join(", ")}`);
+
+  const unexpected = [...delivered].filter((name) => !wanted.has(name));
+  assert.deepEqual(
+    unexpected,
+    [],
+    `delivered to the web app but no longer in the contract: ${unexpected.join(", ")}`,
+  );
 });
 
 test("the web group carries no secret", () => {

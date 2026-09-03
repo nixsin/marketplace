@@ -231,12 +231,14 @@ run "contract_variables_are_delivered_to_both_services" {
     error_message = "INQUIRY_TRUST_PROXY_HEADERS must default to false while the origin still answers directly."
   }
 
-  # Both generated secrets are long enough for the contract's own rules, and
-  # neither is a placeholder.
+  # The CONFIGURED length, not the generated result. A password's `result` is
+  # computed at apply time, so in a plan-only run it is unknown and the
+  # assertion could not enforce anything -- it would have passed whatever the
+  # configuration said.
   assert {
     condition = (
-      length(random_password.inquiry_ip_hash_secret.result) >= 32 &&
-      length(random_password.sourcemap_signing_key.result) >= 32
+      random_password.inquiry_ip_hash_secret.length >= 32 &&
+      random_password.sourcemap_signing_key.length >= 32
     )
     error_message = "Generated secrets must be at least 32 characters; the contract refuses shorter ones."
   }

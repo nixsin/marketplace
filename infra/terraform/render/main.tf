@@ -309,6 +309,28 @@ resource "render_env_group_link" "cache_api" {
 # the service resources are update-frozen, and a group is its own resource
 # with its own link.
 #
+# ONE MANUAL STEP IS REQUIRED, and until it is done these groups are not
+# authoritative. Render's documented rule: "If a service defines an
+# environment variable in its individual settings, that value always takes
+# precedence over any linked environment groups that also define the
+# variable." Linking a group does not remove or override what is already on
+# the service.
+#
+# So every key currently set DIRECTLY on either service shadows the value
+# here -- silently, and with no error anywhere. The keys that were in the
+# removed env_vars blocks and in render.yaml are the ones to expect:
+#
+#   API   PORT, DATABASE_URL, JWT_SECRET, NEXT_PUBLIC_SITE_URL,
+#         NEXT_PUBLIC_BLOB_BASE_URL
+#   web   NEXT_PUBLIC_API_URL, NEXT_PUBLIC_SITE_URL,
+#         NEXT_PUBLIC_BLOB_BASE_URL
+#
+# Delete those from each service in the Render dashboard once this is
+# applied. Nothing here can do it: the service resources are update-frozen,
+# and this configuration has no way to remove a variable it does not manage.
+# Until then production runs on a mix of the two sources, and a Terraform
+# change to a shadowed key does nothing at all.
+#
 # SPLIT BY APP, and that is not tidiness. Everything in a group reaches the
 # container it is linked to, and Render also turns it into a Docker build
 # argument — so a secret in the web group would be inlined into a build whose
