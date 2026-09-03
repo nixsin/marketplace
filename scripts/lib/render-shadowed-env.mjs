@@ -14,24 +14,28 @@
  */
 
 /**
- * @param {{service: string, names: string[]}[]} services  Direct env var
- *   names, per service, as returned by Render's API.
+ * @param {{service: string, app: string, names: string[]}[]} services  Direct
+ *   env var names per service, each tagged with the contract that governs
+ *   it, as returned by Render's API.
  * @param {Record<string, {name: string}[]>} contracts  CONTRACTS.
  * @returns {{service: string, shadowed: string[]}[]}  Only services with a
  *   problem; empty when the migration is complete.
  */
 export function shadowedVariables(services, contracts) {
-  const declared = new Set(
-    Object.values(contracts)
-      .flat()
-      .map((rule) => rule.name),
-  );
-
   return services
-    .map(({ service, names }) => ({
-      service,
-      shadowed: names.filter((name) => declared.has(name)).sort(),
-    }))
+    .map(({ service, app, names }) => {
+      // EACH SERVICE AGAINST ITS OWN CONTRACT. A single union across both
+      // reported an API variable set on the WEB service as shadowing —
+      // telling an operator to delete configuration that conflicts with
+      // nothing, since the web group never sets it.
+      const declared = new Set(
+        (contracts[app] ?? []).map((rule) => rule.name),
+      );
+      return {
+        service,
+        shadowed: names.filter((name) => declared.has(name)).sort(),
+      };
+    })
     .filter(({ shadowed }) => shadowed.length > 0);
 }
 

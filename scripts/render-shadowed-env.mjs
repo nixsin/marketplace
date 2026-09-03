@@ -19,10 +19,13 @@ import {
   shadowedVariables,
 } from "./lib/render-shadowed-env.mjs";
 
-const SERVICES = {
-  "medinstru-api": "srv-da02lnojo6nc73djh9bg",
-  "medinstru-web": "srv-da02mt61egvs73fopb00",
-};
+// Each service is checked against ITS OWN contract: a variable the other
+// app declares is not a conflict here, because this service's group never
+// sets it.
+const SERVICES = [
+  { service: "medinstru-api", app: "api", id: "srv-da02lnojo6nc73djh9bg" },
+  { service: "medinstru-web", app: "web", id: "srv-da02mt61egvs73fopb00" },
+];
 
 const apiKey = process.env.RENDER_API_KEY;
 if (!apiKey) {
@@ -33,28 +36,53 @@ if (!apiKey) {
   process.exit(2);
 }
 
-const services = [];
-for (const [name, id] of Object.entries(SERVICES)) {
-  const response = await fetch(
-    `https://api.render.com/v1/services/${id}/env-vars?limit=100`,
-    { headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" } },
-  );
+/**
+ * Every env var name on a service, FOLLOWING THE CURSOR.
+ *
+ * One page of 100 looked like enough and is not: a service with more would
+ * have had its later keys missed, and the script would then report that the
+ * groups are authoritative while a shadowing variable sat on page two.
+ */
+async function envVarNames(id, label) {
+  const names = [];
+  let cursor;
 
-  if (!response.ok) {
-    console.error(
-      `Render returned ${response.status} for ${name}. The key needs read ` +
-        `access to this service.`,
-    );
-    process.exit(2);
+  for (;;) {
+    const url = new URL(`https://api.render.com/v1/services/${id}/env-vars`);
+    url.searchParams.set("limit", "100");
+    if (cursor) url.searchParams.set("cursor", cursor);
+
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    });
+    if (!response.ok) {
+      console.error(
+        `Render returned ${response.status} for ${label}. The key needs read ` +
+          `access to this service.`,
+      );
+      process.exit(2);
+    }
+
+    // Each item wraps the variable and carries the cursor for the next page.
+    const page = await response.json();
+    if (!Array.isArray(page) || page.length === 0) break;
+
+    for (const item of page) {
+      const key = item?.envVar?.key ?? item?.key;
+      if (typeof key === "string") names.push(key);
+    }
+
+    const next = page[page.length - 1]?.cursor;
+    if (!next || next === cursor) break;
+    cursor = next;
   }
 
-  // The list endpoint wraps each item; a cursor response nests under envVar.
-  const body = await response.json();
-  const names = body
-    .map((item) => item?.envVar?.key ?? item?.key)
-    .filter((key) => typeof key === "string");
+  return names;
+}
 
-  services.push({ service: name, names });
+const services = [];
+for (const { service, app, id } of SERVICES) {
+  services.push({ service, app, names: await envVarNames(id, service) });
 }
 
 const findings = shadowedVariables(services, CONTRACTS);
