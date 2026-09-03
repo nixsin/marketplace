@@ -1,0 +1,165 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  formatShadowReport,
+  nextPage,
+  parseEnvVarPage,
+  shadowedVariables,
+} from "./render-shadowed-env.mjs";
+import { CONTRACTS } from "../../packages/config/src/env-contract.js";
+
+test("a contract variable set directly on a service is reported", () => {
+  // Render always prefers a service's own variable, so this one silently
+  // wins over Terraform's and a rotation there does nothing.
+  const findings = shadowedVariables(
+    [
+      { service: "medinstru-api", app: "api", names: ["JWT_SECRET", "SOME_OTHER"] },
+      { service: "medinstru-web", app: "web", names: [] },
+    ],
+    CONTRACTS,
+  );
+
+  assert.deepEqual(findings, [
+    { service: "medinstru-api", shadowed: ["JWT_SECRET"] },
+  ]);
+});
+
+test("variables outside the contract are ignored", () => {
+  // A service may legitimately carry its own operational variables. Only the
+  // ones Terraform also sets are a conflict.
+  const findings = shadowedVariables(
+    [{ service: "medinstru-api", app: "api", names: ["RENDER_GIT_COMMIT", "PYTHONPATH"] }],
+    CONTRACTS,
+  );
+  assert.deepEqual(findings, []);
+});
+
+test("a completed migration reports nothing", () => {
+  assert.deepEqual(
+    shadowedVariables([{ service: "medinstru-api", app: "api", names: [] }], CONTRACTS),
+    [],
+  );
+  assert.match(formatShadowReport([]), /authoritative/);
+});
+
+test("the report names the service, the keys, and the fix", () => {
+  // It is read by someone about to change a dashboard, so it has to say
+  // which service and what to do — not just that something is wrong.
+  const report = formatShadowReport([
+    { service: "medinstru-api", shadowed: ["DATABASE_URL", "JWT_SECRET"] },
+  ]);
+
+  assert.match(report, /medinstru-api/);
+  assert.match(report, /DATABASE_URL/);
+  assert.match(report, /JWT_SECRET/);
+  assert.match(report, /Render dashboard/);
+  assert.match(report, /does nothing at all/);
+});
+
+test("a variable is judged against its own service's contract", () => {
+  // JWT_SECRET is an API variable. Set on the WEB service it conflicts with
+  // nothing, because the web group never sets it — reporting it would tell
+  // an operator to delete unrelated configuration.
+  const onWeb = shadowedVariables(
+    [{ service: "medinstru-web", app: "web", names: ["JWT_SECRET"] }],
+    CONTRACTS,
+  );
+  assert.deepEqual(onWeb, []);
+
+  // The same name on the API service IS a conflict.
+  const onApi = shadowedVariables(
+    [{ service: "medinstru-api", app: "api", names: ["JWT_SECRET"] }],
+    CONTRACTS,
+  );
+  assert.deepEqual(onApi, [
+    { service: "medinstru-api", shadowed: ["JWT_SECRET"] },
+  ]);
+
+  // A name in BOTH contracts is a conflict on either service.
+  const shared = "NEXT_PUBLIC_SITE_URL";
+  for (const app of ["api", "web"]) {
+    assert.equal(
+      shadowedVariables(
+        [{ service: `medinstru-${app}`, app, names: [shared] }],
+        CONTRACTS,
+      ).length,
+      1,
+      `${shared} must conflict on ${app}`,
+    );
+  }
+});
+
+test("a page this code cannot read is refused, not read as empty", () => {
+  // Failing open here produces the most reassuring possible wrong answer:
+  // "the env groups are authoritative" while shadowing variables sit in a
+  // response the parser did not understand.
+  for (const malformed of [null, undefined, {}, "a string", 42, { items: [] }]) {
+    assert.throws(
+      () => parseEnvVarPage(malformed),
+      /not a list of env vars/,
+      `accepted: ${JSON.stringify(malformed)}`,
+    );
+  }
+
+  // An entry with no readable key is refused too, rather than skipped.
+  assert.throws(
+    () => parseEnvVarPage([{ envVar: { value: "x" } }]),
+    /no readable key/,
+  );
+  assert.throws(() => parseEnvVarPage([{ key: 42 }]), /no readable key/);
+});
+
+test("both shapes Render returns are read, with the cursor", () => {
+  // The list endpoint wraps each variable; some responses carry it flat.
+  const wrapped = parseEnvVarPage([
+    { envVar: { key: "A" }, cursor: "c1" },
+    { envVar: { key: "B" }, cursor: "c2" },
+  ]);
+  assert.deepEqual(wrapped.names, ["A", "B"]);
+  assert.equal(wrapped.cursor, "c2");
+
+  const flat = parseEnvVarPage([{ key: "C" }]);
+  assert.deepEqual(flat.names, ["C"]);
+  assert.equal(flat.cursor, undefined);
+
+  // An empty page is legal and yields nothing.
+  assert.deepEqual(parseEnvVarPage([]).names, []);
+});
+
+test("a repeated or cycling cursor is refused, not read as completion", () => {
+  // Treating it as "done" reads a partial list and then reports the env
+  // groups authoritative — the same fail-open shape as an unreadable page,
+  // arriving through the loop instead of the parser.
+  assert.throws(
+    () => nextPage({ names: ["A"], cursor: "same" }, new Set(["same"])),
+    /Pagination looped/,
+  );
+
+  // A CYCLE, not just an immediate repeat: c1 to c2 and back to c1 is not a
+  // stall the loop notices but an infinite one it runs forever.
+  assert.throws(
+    () => nextPage({ names: ["A"], cursor: "c1" }, new Set(["c1", "c2"])),
+    /Pagination looped/,
+  );
+
+  // Genuine completion: no cursor, or an empty page.
+  assert.deepEqual(
+    nextPage({ names: ["A"], cursor: undefined }, new Set(["c1"])),
+    { done: true },
+  );
+  assert.deepEqual(nextPage({ names: [], cursor: "c2" }, new Set(["c1"])), {
+    done: true,
+  });
+
+  // Progress continues.
+  assert.deepEqual(nextPage({ names: ["A"], cursor: "c2" }, new Set(["c1"])), {
+    done: false,
+    cursor: "c2",
+  });
+
+  // The first page has seen nothing, and must not read as a loop.
+  assert.deepEqual(nextPage({ names: ["A"], cursor: "c1" }, new Set()), {
+    done: false,
+    cursor: "c1",
+  });
+});

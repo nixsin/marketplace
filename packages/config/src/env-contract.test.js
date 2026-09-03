@@ -148,6 +148,7 @@ const completeApi = {
   BLOB_ACCESS_KEY_ID: "",
   BLOB_SECRET_ACCESS_KEY: "",
   NEXT_PUBLIC_SITE_URL: "http://localhost:3000",
+  NEXT_PUBLIC_BLOB_BASE_URL: "",
   WHATSAPP_ACCESS_TOKEN: "",
   WHATSAPP_PHONE_NUMBER_ID: "",
   WHATSAPP_TEMPLATE_NAME: "",
@@ -174,6 +175,7 @@ const completeApiRender = {
   BLOB_ACCESS_KEY_ID: "an-access-key-id",
   BLOB_SECRET_ACCESS_KEY: "an-access-key-secret", // scan-ignore
   NEXT_PUBLIC_SITE_URL: "https://laxair.shop",
+  NEXT_PUBLIC_BLOB_BASE_URL: "https://images.laxair.shop",
 };
 
 const completeWeb = {
@@ -285,7 +287,7 @@ test("BLOB_PROVIDER=local is allowed everywhere — the WRITE path refuses it", 
   const deployed = checkEnv({
     app: "api",
     env: {
-      ...completeApi,
+      ...completeApiRender,
       APP_ENV: "render",
       DATABASE_URL: "postgresql://u:p@dpg-x.render.com/medinstru",
       JWT_SECRET: "example-secret-of-suitable-length",
@@ -302,7 +304,7 @@ test("BLOB_PROVIDER=local is allowed everywhere — the WRITE path refuses it", 
   // A value that is not a known provider is still an error everywhere.
   const bogus = checkEnv({
     app: "api",
-    env: { ...completeApi, BLOB_PROVIDER: "dropbox" },
+    env: { ...completeApiRender, BLOB_PROVIDER: "dropbox" },
     environment: "render",
   });
   assert.match(messages(bogus.errors), /must be exactly one of/);
@@ -702,7 +704,7 @@ test("an INTERNAL host keeps the weaker check, and single labels are fine", () =
   const internal = checkEnv({
     app: "api",
     env: {
-      ...completeApi,
+      ...completeApiRender,
       APP_ENV: "render",
       DATABASE_URL: "postgresql://u:p@dpg-da02hq7lk1mc73f01hkg-a/medinstru",
       JWT_SECRET: "example-secret-of-suitable-length",
@@ -717,7 +719,7 @@ test("an INTERNAL host keeps the weaker check, and single labels are fine", () =
   // production, which is the mistake this catches.
   const loopback = checkEnv({
     app: "api",
-    env: { ...completeApi, DATABASE_URL: "postgresql://u:p@localhost:5432/medinstru" },
+    env: { ...completeApiRender, DATABASE_URL: "postgresql://u:p@localhost:5432/medinstru" },
     environment: "render",
   });
   assert.match(messages(loopback.errors), /points at this machine/);

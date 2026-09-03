@@ -531,6 +531,31 @@ export const API_ENV_CONTRACT = [
     },
   },
   {
+    name: "NEXT_PUBLIC_BLOB_BASE_URL",
+    secret: false,
+    why: "The API rewrites every product's imageUrl with it before returning one.",
+    emptyMeans:
+      "products keep their stored root-relative paths, which apps/web serves " +
+      "directly — the state before object storage was switched on",
+    devValue: DEV_BLOB_BASE_URL,
+    caution:
+      "this must match the web app's value. The API rewrites image URLs and " +
+      "the web app's CSP and next/image allowlists permit the host; setting " +
+      "it on only one leaves the other half silently inert — the web app " +
+      "permitting a host the API never points at, or the reverse.",
+    check: (value) => (value === "" ? null : all(isUrl(["https:"]), mustBeOrigin)(value)),
+    perEnvironment: {
+      // Required in production for the same reason it is on the web side:
+      // empty means every product image is served from the app's own origin
+      // instead of the CDN, which is correct on a laptop and a silent
+      // regression here.
+      render: (value) =>
+        value === ""
+          ? "must not be empty in production — every product would keep a local image path while the CDN serves nothing"
+          : null,
+    },
+  },
+  {
     name: "WHATSAPP_ACCESS_TOKEN",
     secret: true,
     why: "Absent, inquiries are still recorded but never delivered to the seller.",
