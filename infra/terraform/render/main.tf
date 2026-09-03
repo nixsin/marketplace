@@ -388,9 +388,15 @@ resource "render_env_group" "api" {
     BLOB_ACCESS_KEY_ID     = { value = var.blob_access_key_id }
     BLOB_SECRET_ACCESS_KEY = { value = var.blob_secret_access_key }
 
-    # The API builds inquiry links from this. Not NEXT_PUBLIC_* behaviour
-    # here — the API reads it at runtime like any other value.
-    NEXT_PUBLIC_SITE_URL = { value = var.web_public_url }
+    # Both read at RUNTIME here, not inlined: apps/api reads process.env when
+    # it builds an inquiry link and when it rewrites each product's imageUrl,
+    # unlike the web app where NEXT_PUBLIC_* is baked in at build time.
+    #
+    # The blob URL must match the web app's. The API rewrites image URLs and
+    # the web app's CSP and next/image allowlists permit the host; setting it
+    # on one service only leaves the other half inert.
+    NEXT_PUBLIC_SITE_URL      = { value = var.web_public_url }
+    NEXT_PUBLIC_BLOB_BASE_URL = { value = var.blob_public_url }
 
     WHATSAPP_ACCESS_TOKEN      = { value = var.whatsapp_access_token }
     WHATSAPP_PHONE_NUMBER_ID   = { value = var.whatsapp_phone_number_id }

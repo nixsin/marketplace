@@ -34,6 +34,13 @@ function envGroups(source) {
   const groups = {};
   const lines = source.split("\n");
 
+  // Braces are counted on a copy with comments and quoted strings blanked —
+  // a `{` in either would shift the depth and make the scan read the wrong
+  // region. The raw line is still what patterns match against, because the
+  // resource header is itself quoted strings.
+  const forDepth = (line) =>
+    line.replace(/"[^"]*"/g, (m) => " ".repeat(m.length)).replace(/#.*$/, "");
+
   for (let i = 0; i < lines.length; i += 1) {
     const header = /^resource "render_env_group" "(\w+)"/.exec(lines[i]);
     if (!header) continue;
@@ -45,8 +52,9 @@ function envGroups(source) {
 
     for (let j = i; j < lines.length; j += 1) {
       const line = lines[j];
-      depth += (line.match(/\{/g) ?? []).length;
-      depth -= (line.match(/\}/g) ?? []).length;
+      const counted = forDepth(line);
+      depth += (counted.match(/\{/g) ?? []).length;
+      depth -= (counted.match(/\}/g) ?? []).length;
 
       // `inVars` is CLOSED at the depth it opened. It used to stay true for
       // the rest of the resource, so any later four-space uppercase
