@@ -260,3 +260,41 @@ run "blob_provider_only_accepts_known_backends" {
 
   expect_failures = [var.blob_provider]
 }
+
+# Both failures from the 2026-09-03 partial apply, pinned so neither returns.
+run "env_groups_can_link_to_services_outside_an_environment" {
+  command = plan
+
+  variables {
+    jwt_secret = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+  }
+
+  # A group that declares an environment cannot link to a service that is not
+  # in one, and the two web services are legacy free services that cannot be
+  # moved. Render refuses the link with "service must be in the same
+  # environment as the environment group" -- after creating the group, so the
+  # apply half-succeeds.
+  assert {
+    condition = (
+      render_env_group.api.environment_id == null &&
+      render_env_group.web.environment_id == null &&
+      (length(render_env_group.cache) == 0 || render_env_group.cache[0].environment_id == null)
+    )
+    error_message = "An env group linked to a web service must not declare an environment_id, or Render refuses the link."
+  }
+}
+
+run "free_tier_postgres_is_sent_no_parameter_overrides" {
+  command = plan
+
+  variables {
+    jwt_secret = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+  }
+
+  # An empty map still counts as sending them: "parameter overrides are not
+  # available on free tier databases" failed the apply while changing nothing.
+  assert {
+    condition     = render_postgres.main.parameter_overrides == null
+    error_message = "parameter_overrides must be null when empty; free-tier Render refuses them outright."
+  }
+}
