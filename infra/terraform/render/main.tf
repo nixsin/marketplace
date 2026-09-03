@@ -328,6 +328,11 @@ resource "render_env_group_link" "cache_api" {
 # Delete those from each service in the Render dashboard once this is
 # applied. Nothing here can do it: the service resources are update-frozen,
 # and this configuration has no way to remove a variable it does not manage.
+#
+#   RENDER_API_KEY=... node scripts/render-shadowed-env.mjs
+#
+# lists exactly which keys are still shadowing, per service, and exits
+# non-zero while any remain.
 # Until then production runs on a mix of the two sources, and a Terraform
 # change to a shadowed key does nothing at all.
 #

@@ -140,7 +140,14 @@ test("no secret value is written into the Terraform source", () => {
   // Generated secrets come from random_password and supplied ones from
   // TF_VAR_*. A literal here would be committed, and a committed credential
   // stays in git history.
-  for (const rule of CONTRACTS.api.filter((r) => r.secret)) {
+  // EVERY contract's secrets. Checking only the API list left
+  // SOURCEMAP_SIGNING_KEY unprotected — and the web-group test exempts that
+  // key by name, so a literal there would have evaded both.
+  const secrets = Object.values(CONTRACTS)
+    .flat()
+    .filter((r) => r.secret);
+
+  for (const rule of secrets) {
     const assignment = new RegExp(
       `${rule.name}\\s*=\\s*\\{\\s*value\\s*=\\s*"[^"]+"`,
     );

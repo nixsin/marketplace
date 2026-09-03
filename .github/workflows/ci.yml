@@ -355,6 +355,7 @@ jobs:
       # variables equal to it — and what stops a new one reaching production
       # undefined with every check green.
       - run: node --test scripts/terraform-env-drift.test.mjs
+      - run: node --test scripts/lib/render-shadowed-env.test.mjs
       # Separate from the package's own tests on purpose: those exercise
       # resolveApiKey() in isolation and pass even when no consumer calls
       # it, which is exactly how apiKeyEnv shipped as decorative config
