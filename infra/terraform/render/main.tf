@@ -78,14 +78,22 @@ resource "render_postgres" "main" {
   #
   # Render manages backups and PITR at the plan level rather than through
   # parameters, so those are a plan decision, not a setting.
-  # NULL when empty, not an empty map. Render refuses parameter overrides on
-  # a free-tier database outright -- "parameter overrides are not available
-  # on free tier databases" -- and sending `{}` still counts as sending them,
-  # which failed the apply while changing nothing.
+  # GATED ON THE PLAN, not on emptiness. Render refuses parameter overrides
+  # on a free-tier database outright -- "parameter overrides are not
+  # available on free tier databases" -- and an empty map still counts as
+  # sending them, which failed a real apply while changing nothing.
+  #
+  # Keying on emptiness alone left the failure reachable: a non-empty map on
+  # the free tier would have been sent and refused exactly as before. The
+  # variable's own validation rejects that combination up front, so the error
+  # names the cause instead of arriving from Render's API.
+  #
+  # `try` because an explicitly null value is a legal input and `length(null)`
+  # is an error in Terraform.
   parameter_overrides = (
-    length(var.postgres_parameter_overrides) > 0
-    ? var.postgres_parameter_overrides
-    : null
+    var.postgres_plan == "free" || try(length(var.postgres_parameter_overrides), 0) == 0
+    ? null
+    : var.postgres_parameter_overrides
   )
 
   lifecycle {

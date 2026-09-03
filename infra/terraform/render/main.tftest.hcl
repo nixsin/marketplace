@@ -278,7 +278,9 @@ run "env_groups_can_link_to_services_outside_an_environment" {
     condition = (
       render_env_group.api.environment_id == null &&
       render_env_group.web.environment_id == null &&
-      (length(render_env_group.cache) == 0 || render_env_group.cache[0].environment_id == null)
+      # A `for` over the list rather than `||`: Terraform does not
+      # short-circuit, so an index would still be evaluated when count is 0.
+      alltrue([for g in render_env_group.cache : g.environment_id == null])
     )
     error_message = "An env group linked to a web service must not declare an environment_id, or Render refuses the link."
   }
@@ -296,5 +298,37 @@ run "free_tier_postgres_is_sent_no_parameter_overrides" {
   assert {
     condition     = render_postgres.main.parameter_overrides == null
     error_message = "parameter_overrides must be null when empty; free-tier Render refuses them outright."
+  }
+}
+
+run "free_tier_refuses_parameter_overrides_up_front" {
+  command = plan
+
+  variables {
+    jwt_secret                   = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+    postgres_parameter_overrides = { wal_compression = "on" }
+  }
+
+  # Gating the resource on the plan keeps a free-tier apply working, but
+  # silently dropping overrides someone deliberately set is its own surprise:
+  # they would look configured and do nothing. The variable's validation
+  # names the cause instead.
+  expect_failures = [var.postgres_parameter_overrides]
+}
+
+run "a_null_overrides_value_is_accepted" {
+  command = plan
+
+  variables {
+    jwt_secret                   = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+    postgres_parameter_overrides = null
+  }
+
+  # `length(null)` is an error in Terraform, so the emptiness check has to be
+  # null-safe -- an explicitly null value is a legal input and the previous
+  # direct assignment accepted it.
+  assert {
+    condition     = render_postgres.main.parameter_overrides == null
+    error_message = "A null overrides value must be accepted, not error inside length()."
   }
 }
