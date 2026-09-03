@@ -16,6 +16,7 @@
 import { CONTRACTS } from "../packages/config/src/env-contract.js";
 import {
   formatShadowReport,
+  parseEnvVarPage,
   shadowedVariables,
 } from "./lib/render-shadowed-env.mjs";
 
@@ -63,18 +64,22 @@ async function envVarNames(id, label) {
       process.exit(2);
     }
 
-    // Each item wraps the variable and carries the cursor for the next page.
+    // Parsed by a function that THROWS on a shape it does not recognise,
+    // rather than returning nothing and reading as "no shadowing".
     const page = await response.json();
-    if (!Array.isArray(page) || page.length === 0) break;
+    if (Array.isArray(page) && page.length === 0) break;
 
-    for (const item of page) {
-      const key = item?.envVar?.key ?? item?.key;
-      if (typeof key === "string") names.push(key);
+    let parsed;
+    try {
+      parsed = parseEnvVarPage(page);
+    } catch (error) {
+      console.error(`${label}: ${error.message}`);
+      process.exit(2);
     }
 
-    const next = page[page.length - 1]?.cursor;
-    if (!next || next === cursor) break;
-    cursor = next;
+    names.push(...parsed.names);
+    if (!parsed.cursor || parsed.cursor === cursor) break;
+    cursor = parsed.cursor;
   }
 
   return names;

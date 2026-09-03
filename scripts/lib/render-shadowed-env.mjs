@@ -61,3 +61,38 @@ export function formatShadowReport(findings) {
   );
   return lines.join("\n");
 }
+
+/**
+ * Env var names from one page of Render's list response.
+ *
+ * FAILS CLOSED. The first version treated a non-array payload as "this
+ * service has no variables" and skipped any item whose key it did not
+ * recognise — so a Render schema change would have produced "the env groups
+ * are authoritative" while shadowing variables sat there unread. That is the
+ * worst available answer: it is the reassuring one.
+ *
+ * @param {unknown} page
+ * @returns {{names: string[], cursor: string | undefined}}
+ * @throws {Error} when the shape is not what this code knows how to read.
+ */
+export function parseEnvVarPage(page) {
+  if (!Array.isArray(page)) {
+    throw new Error(
+      `Render returned ${typeof page}, not a list of env vars. Refusing to ` +
+        `report "no shadowing" from a response this code cannot read.`,
+    );
+  }
+
+  const names = [];
+  for (const item of page) {
+    const key = item?.envVar?.key ?? item?.key;
+    if (typeof key !== "string") {
+      throw new Error(
+        `An env var entry carried no readable key: ${JSON.stringify(item)?.slice(0, 120)}`,
+      );
+    }
+    names.push(key);
+  }
+
+  return { names, cursor: page[page.length - 1]?.cursor };
+}

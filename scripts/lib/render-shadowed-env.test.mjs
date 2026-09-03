@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   formatShadowReport,
+  parseEnvVarPage,
   shadowedVariables,
 } from "./render-shadowed-env.mjs";
 import { CONTRACTS } from "../../packages/config/src/env-contract.js";
@@ -85,4 +86,41 @@ test("a variable is judged against its own service's contract", () => {
       `${shared} must conflict on ${app}`,
     );
   }
+});
+
+test("a page this code cannot read is refused, not read as empty", () => {
+  // Failing open here produces the most reassuring possible wrong answer:
+  // "the env groups are authoritative" while shadowing variables sit in a
+  // response the parser did not understand.
+  for (const malformed of [null, undefined, {}, "a string", 42, { items: [] }]) {
+    assert.throws(
+      () => parseEnvVarPage(malformed),
+      /not a list of env vars/,
+      `accepted: ${JSON.stringify(malformed)}`,
+    );
+  }
+
+  // An entry with no readable key is refused too, rather than skipped.
+  assert.throws(
+    () => parseEnvVarPage([{ envVar: { value: "x" } }]),
+    /no readable key/,
+  );
+  assert.throws(() => parseEnvVarPage([{ key: 42 }]), /no readable key/);
+});
+
+test("both shapes Render returns are read, with the cursor", () => {
+  // The list endpoint wraps each variable; some responses carry it flat.
+  const wrapped = parseEnvVarPage([
+    { envVar: { key: "A" }, cursor: "c1" },
+    { envVar: { key: "B" }, cursor: "c2" },
+  ]);
+  assert.deepEqual(wrapped.names, ["A", "B"]);
+  assert.equal(wrapped.cursor, "c2");
+
+  const flat = parseEnvVarPage([{ key: "C" }]);
+  assert.deepEqual(flat.names, ["C"]);
+  assert.equal(flat.cursor, undefined);
+
+  // An empty page is legal and yields nothing.
+  assert.deepEqual(parseEnvVarPage([]).names, []);
 });
