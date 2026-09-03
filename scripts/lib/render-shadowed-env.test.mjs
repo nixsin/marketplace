@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   formatShadowReport,
+  nextPage,
   parseEnvVarPage,
   shadowedVariables,
 } from "./render-shadowed-env.mjs";
@@ -123,4 +124,32 @@ test("both shapes Render returns are read, with the cursor", () => {
 
   // An empty page is legal and yields nothing.
   assert.deepEqual(parseEnvVarPage([]).names, []);
+});
+
+test("a repeated cursor is a stall, not completion", () => {
+  // Treating it as "done" reads a partial list and then reports the env
+  // groups authoritative — the same fail-open shape as an unreadable page,
+  // arriving through the loop instead of the parser.
+  assert.throws(
+    () => nextPage({ names: ["A"], cursor: "same" }, "same"),
+    /Pagination stalled/,
+  );
+
+  // Genuine completion: no cursor, or an empty page.
+  assert.deepEqual(nextPage({ names: ["A"], cursor: undefined }, "c1"), {
+    done: true,
+  });
+  assert.deepEqual(nextPage({ names: [], cursor: "c2" }, "c1"), { done: true });
+
+  // Progress continues.
+  assert.deepEqual(nextPage({ names: ["A"], cursor: "c2" }, "c1"), {
+    done: false,
+    cursor: "c2",
+  });
+
+  // The first page has no previous cursor, and must not read as a stall.
+  assert.deepEqual(nextPage({ names: ["A"], cursor: "c1" }, undefined), {
+    done: false,
+    cursor: "c1",
+  });
 });

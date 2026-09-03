@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import { CONTRACTS } from "../packages/config/src/env-contract.js";
 import {
   formatShadowReport,
+  nextPage,
   parseEnvVarPage,
   shadowedVariables,
 } from "./lib/render-shadowed-env.mjs";
@@ -99,8 +100,16 @@ async function envVarNames(id, label) {
     }
 
     names.push(...parsed.names);
-    if (!parsed.cursor || parsed.cursor === cursor) break;
-    cursor = parsed.cursor;
+
+    let step;
+    try {
+      step = nextPage(parsed, cursor);
+    } catch (error) {
+      console.error(`${label}: ${error.message}`);
+      process.exit(2);
+    }
+    if (step.done) break;
+    cursor = step.cursor;
   }
 
   return names;

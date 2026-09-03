@@ -96,3 +96,28 @@ export function parseEnvVarPage(page) {
 
   return { names, cursor: page[page.length - 1]?.cursor };
 }
+
+/**
+ * What to do after a page: stop, or fetch the next cursor?
+ *
+ * A REPEATED CURSOR IS A STALL, not completion. Treating it as "done" reads
+ * a partial list and then reports that the env groups are authoritative —
+ * the same fail-open shape as an unreadable page, arriving through the loop
+ * instead of the parser.
+ *
+ * @param {{names: string[], cursor: string | undefined}} page
+ * @param {string | undefined} previous  The cursor used to fetch this page.
+ * @returns {{done: boolean, cursor?: string}}
+ * @throws {Error} when pagination made no progress.
+ */
+export function nextPage(page, previous) {
+  if (page.names.length === 0 || !page.cursor) return { done: true };
+
+  if (page.cursor === previous) {
+    throw new Error(
+      `Pagination stalled: Render returned the same cursor (${page.cursor}) ` +
+        `for a non-empty page. Refusing to report on a partial list.`,
+    );
+  }
+  return { done: false, cursor: page.cursor };
+}
