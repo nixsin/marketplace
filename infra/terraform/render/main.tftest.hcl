@@ -207,14 +207,15 @@ run "contract_variables_are_delivered_to_both_services" {
   # The API talks to Postgres over the internal network. The external string
   # exists for connecting from a laptop, which is not what the API is doing.
   assert {
-    condition = strcontains(
-      render_env_group.api.env_vars["DATABASE_URL"].value,
-      "internal"
-      ) || !strcontains(
-      render_env_group.api.env_vars["DATABASE_URL"].value,
-      "external"
+    # Compared with the attribute itself. The previous condition -- contains
+    # "internal" OR does not contain "external" -- accepted any value with
+    # neither word in it, including an arbitrary public database URL, so it
+    # asserted essentially nothing.
+    condition = (
+      render_env_group.api.env_vars["DATABASE_URL"].value ==
+      render_postgres.main.connection_info.internal_connection_string
     )
-    error_message = "DATABASE_URL must be the internal connection string."
+    error_message = "DATABASE_URL must be the internal connection string; the external one exists for connecting from a laptop."
   }
 
   # Free-form WhatsApp is refused in production by the contract: every

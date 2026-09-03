@@ -130,8 +130,12 @@ test("the web group carries no secret", () => {
     fileURLToPath(new URL("../apps/web/Dockerfile", import.meta.url)),
     "utf8",
   );
+  // Case-insensitive and indentation-tolerant: Dockerfile instructions are
+  // both, so `arg SOURCEMAP_SIGNING_KEY` or an indented ARG would have
+  // slipped past a `/^ARG/` match while doing exactly the damage this
+  // guards against.
   assert.ok(
-    !/^ARG\s+SOURCEMAP_SIGNING_KEY/m.test(dockerfile),
+    !/^[ \t]*arg[ \t]+SOURCEMAP_SIGNING_KEY\b/im.test(dockerfile),
     "SOURCEMAP_SIGNING_KEY became a build ARG — it would be baked into the image",
   );
 });
