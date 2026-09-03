@@ -98,6 +98,11 @@ run "free_services_ignore_configuration_drift" {
   # that still exists is needed to show the freeze working, and `plan` is the
   # one whose accidental change would be most expensive: it is a paid
   # upgrade.
+  #
+  # ONE VARIABLE COVERS BOTH SERVICES: `var.web_service_plan` is the plan for
+  # render_web_service.api as well as .web, so moving it exercises the freeze
+  # on each. Verified rather than assumed -- replacing the API service's
+  # `ignore_changes = all` with a narrower list makes this run fail.
   assert {
     condition = (
       render_web_service.api.plan != "standard" &&
