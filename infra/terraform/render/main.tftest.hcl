@@ -267,6 +267,11 @@ run "env_groups_can_link_to_services_outside_an_environment" {
 
   variables {
     jwt_secret = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+    # Set explicitly so the cache group EXISTS. Iterating a `count`-ed
+    # resource passes vacuously when the count is zero, so relying on the
+    # variable's default would leave that group's assertion asserting
+    # nothing the day the default changed.
+    enable_key_value = true
   }
 
   # A group that declares an environment cannot link to a service that is not
@@ -330,5 +335,23 @@ run "a_null_overrides_value_is_accepted" {
   assert {
     condition     = render_postgres.main.parameter_overrides == null
     error_message = "A null overrides value must be accepted, not error inside length()."
+  }
+}
+
+run "a_paid_plan_keeps_its_parameter_overrides" {
+  command = plan
+
+  variables {
+    jwt_secret                   = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+    postgres_plan                = "basic_256mb"
+    postgres_parameter_overrides = { wal_compression = "on" }
+  }
+
+  # THE OTHER BRANCH. Every other run here sets a free plan, so a regression
+  # that always emitted null would satisfy all of them while silently
+  # discarding overrides a paid plan is entitled to.
+  assert {
+    condition     = render_postgres.main.parameter_overrides["wal_compression"] == "on"
+    error_message = "A paid plan must keep the overrides it was given."
   }
 }
