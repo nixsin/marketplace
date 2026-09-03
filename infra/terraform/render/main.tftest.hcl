@@ -88,25 +88,31 @@ run "free_services_ignore_configuration_drift" {
   command = plan
 
   variables {
-    jwt_secret     = "changed"
-    api_public_url = "https://changed.invalid/graphql"
+    jwt_secret       = "changed" # scan-ignore: invented, opens nothing
+    api_public_url   = "https://changed.invalid/graphql"
+    web_service_plan = "standard"
   }
 
-  # One probe per service, each driven by a variable this run block changes:
-  # JWT_SECRET covers the API service (jwt_secret moved to "changed") and
-  # NEXT_PUBLIC_API_URL covers the web service (api_public_url moved to an
-  # invalid host). Both must still report their prior-state values, which is
-  # what proves ignore_changes = all is doing its job.
-  #
-  # The API service no longer declares NEXT_PUBLIC_API_URL at all -- apps/api
-  # never reads it -- so probing that key here would assert on config that
-  # does not exist rather than on drift being ignored.
+  # The probe is `plan`, because the services no longer declare env_vars at
+  # all -- those blocks were inert under ignore_changes and are gone. A field
+  # that still exists is needed to show the freeze working, and `plan` is the
+  # one whose accidental change would be most expensive: it is a paid
+  # upgrade.
   assert {
     condition = (
-      render_web_service.api.env_vars["JWT_SECRET"].value == "test" &&
-      render_web_service.web.env_vars["NEXT_PUBLIC_API_URL"].value == "https://api.laxair.shop/graphql"
+      render_web_service.api.plan != "standard" &&
+      render_web_service.web.plan != "standard"
     )
-    error_message = "Legacy free service configuration drift must remain ignored after import."
+    error_message = "Legacy free service configuration drift must remain ignored after import; a plan change must never reach Render."
+  }
+
+  # AND THE COMPLEMENT, which is the whole architecture: the env groups are
+  # NOT frozen, so the same run that cannot change a service does change what
+  # the service receives. Without this the freeze and the delivery could both
+  # be broken and only one of them noticed.
+  assert {
+    condition     = render_env_group.web.env_vars["NEXT_PUBLIC_API_URL"].value == "https://changed.invalid/graphql"
+    error_message = "The env group must track its variables; if it were frozen too, nothing would deliver."
   }
 }
 
@@ -176,4 +182,73 @@ run "cache_defaults_are_free_and_non_persistent" {
     )
     error_message = "REDIS_URL must be delivered to the API service via a linked env group."
   }
+}
+
+# The contract's variables reach the services, and the secrets stay where
+# they belong. scripts/terraform-env-drift.test.mjs checks that the NAMES
+# match the contract; this checks the wiring Terraform itself controls.
+run "contract_variables_are_delivered_to_both_services" {
+  command = plan
+
+  variables {
+    jwt_secret = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+  }
+
+  # Linked, not set on the service. Both web services carry
+  # ignore_changes = all, so env_vars written there are applied never.
+  assert {
+    condition = (
+      contains(render_env_group_link.api.service_ids, local.api_service_id) &&
+      contains(render_env_group_link.web.service_ids, local.web_service_id)
+    )
+    error_message = "Each env group must be linked to its own service, or nothing is delivered."
+  }
+
+  # The API talks to Postgres over the internal network. The external string
+  # exists for connecting from a laptop, which is not what the API is doing.
+  assert {
+    condition = strcontains(
+      render_env_group.api.env_vars["DATABASE_URL"].value,
+      "internal"
+      ) || !strcontains(
+      render_env_group.api.env_vars["DATABASE_URL"].value,
+      "external"
+    )
+    error_message = "DATABASE_URL must be the internal connection string."
+  }
+
+  # Free-form WhatsApp is refused in production by the contract: every
+  # message here is business-initiated, so the 24h window is never open.
+  assert {
+    condition     = render_env_group.api.env_vars["WHATSAPP_ALLOW_FREE_FORM"].value == "false"
+    error_message = "WHATSAPP_ALLOW_FREE_FORM must be false on Render; Meta rejects every free-form send here."
+  }
+
+  # Proxy-header trust defaults OFF. Enabling it asserts the origin refuses
+  # traffic that did not come through Cloudflare, which is not yet true.
+  assert {
+    condition     = render_env_group.api.env_vars["INQUIRY_TRUST_PROXY_HEADERS"].value == "false"
+    error_message = "INQUIRY_TRUST_PROXY_HEADERS must default to false while the origin still answers directly."
+  }
+
+  # Both generated secrets are long enough for the contract's own rules, and
+  # neither is a placeholder.
+  assert {
+    condition = (
+      length(random_password.inquiry_ip_hash_secret.result) >= 32 &&
+      length(random_password.sourcemap_signing_key.result) >= 32
+    )
+    error_message = "Generated secrets must be at least 32 characters; the contract refuses shorter ones."
+  }
+}
+
+run "blob_provider_only_accepts_known_backends" {
+  command = plan
+
+  variables {
+    jwt_secret    = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+    blob_provider = "not-a-backend"
+  }
+
+  expect_failures = [var.blob_provider]
 }

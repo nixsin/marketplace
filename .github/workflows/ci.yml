@@ -351,6 +351,10 @@ jobs:
       # is what keeps them equal to the contract, and what stops a
       # DATABASE_URL from reaching test-api-e2e.
       - run: node --test scripts/ci-env-drift.test.mjs
+      # Terraform cannot import the contract, so a test is what keeps Render's
+      # variables equal to it — and what stops a new one reaching production
+      # undefined with every check green.
+      - run: node --test scripts/terraform-env-drift.test.mjs
       # Separate from the package's own tests on purpose: those exercise
       # resolveApiKey() in isolation and pass even when no consumer calls
       # it, which is exactly how apiKeyEnv shipped as decorative config

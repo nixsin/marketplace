@@ -130,14 +130,9 @@ resource "render_web_service" "api" {
     })
   }
 
-  env_vars = {
-    PORT = { value = "4000" }
-    DATABASE_URL = {
-      value = render_postgres.main.connection_info.internal_connection_string
-    }
-    JWT_SECRET                = { value = var.jwt_secret }
-    NEXT_PUBLIC_BLOB_BASE_URL = { value = var.blob_public_url }
-  }
+  # NO env_vars HERE. This resource carries `ignore_changes = all`, so
+  # anything written in this block is applied never — it read as delivery and
+  # did nothing. render_env_group.api below is what actually sets them.
 
   custom_domains = var.manage_custom_domains ? [
     for domain in var.api_custom_domains : { name = domain }
@@ -172,11 +167,8 @@ resource "render_web_service" "web" {
     })
   }
 
-  env_vars = {
-    NEXT_PUBLIC_API_URL       = { value = var.api_public_url }
-    NEXT_PUBLIC_SITE_URL      = { value = var.web_public_url }
-    NEXT_PUBLIC_BLOB_BASE_URL = { value = var.blob_public_url }
-  }
+  # NO env_vars HERE — see the API service above. render_env_group.web is
+  # what actually sets them.
 
   custom_domains = var.manage_custom_domains ? [
     for domain in var.web_custom_domains : { name = domain }
@@ -301,4 +293,120 @@ resource "render_env_group_link" "cache_api" {
 
   env_group_id = render_env_group.cache[0].id
   service_ids  = [local.api_service_id]
+}
+
+# ---------------------------------------------------------------------
+# The environment contract, delivered
+# ---------------------------------------------------------------------
+#
+# packages/config/src/env-contract.js declares what every service must have.
+# Until now nothing created those variables on Render: the `env_vars` blocks
+# on the two web services sit under `ignore_changes = all`, so they read as
+# delivery and apply nothing. A simulated Render boot against the contract
+# reported 11 API and 1 web variables missing.
+#
+# Env GROUPS instead, for the reason the cache group above already records:
+# the service resources are update-frozen, and a group is its own resource
+# with its own link.
+#
+# SPLIT BY APP, and that is not tidiness. Everything in a group reaches the
+# container it is linked to, and Render also turns it into a Docker build
+# argument — so a secret in the web group would be inlined into a build whose
+# output ships to every visitor. The web group therefore holds public values
+# only.
+
+# Secrets Terraform can generate, so nobody has to hold them.
+#
+# JWT_SECRET is deliberately NOT here: it already exists in production, and
+# regenerating it would invalidate every live session. It stays a supplied
+# variable.
+resource "random_password" "inquiry_ip_hash_secret" {
+  length  = 48
+  special = false
+}
+
+resource "random_password" "sourcemap_signing_key" {
+  length  = 48
+  special = false
+}
+
+resource "render_env_group" "api" {
+  name           = "medinstru-api-env"
+  environment_id = var.environment_id
+
+  env_vars = {
+    APP_ENV = { value = "render" }
+    PORT    = { value = "4000" }
+
+    # The INTERNAL string: both services sit in the same Render environment,
+    # so this keeps database traffic off the public network. Terraform reads
+    # it off the resource and writes it here — it is never handled by a
+    # person.
+    DATABASE_URL = {
+      value = render_postgres.main.connection_info.internal_connection_string
+    }
+    JWT_SECRET = { value = var.jwt_secret }
+
+    # Without this the per-IP limit does not run at all: an unkeyed hash of
+    # an IPv4 address is enumerable, so storing nothing is the honest
+    # alternative and the limiter skips a null bucket by design.
+    INQUIRY_IP_HASH_SECRET = {
+      value = random_password.inquiry_ip_hash_secret.result
+    }
+    INQUIRY_TRUST_PROXY_HEADERS = {
+      value = var.trust_proxy_headers ? "true" : "false"
+    }
+
+    BLOB_PROVIDER          = { value = var.blob_provider }
+    BLOB_ACCESS_KEY_ID     = { value = var.blob_access_key_id }
+    BLOB_SECRET_ACCESS_KEY = { value = var.blob_secret_access_key }
+
+    # The API builds inquiry links from this. Not NEXT_PUBLIC_* behaviour
+    # here — the API reads it at runtime like any other value.
+    NEXT_PUBLIC_SITE_URL = { value = var.web_public_url }
+
+    WHATSAPP_ACCESS_TOKEN      = { value = var.whatsapp_access_token }
+    WHATSAPP_PHONE_NUMBER_ID   = { value = var.whatsapp_phone_number_id }
+    WHATSAPP_TEMPLATE_NAME     = { value = var.whatsapp_template_name }
+    WHATSAPP_TEMPLATE_LANGUAGE = { value = var.whatsapp_template_language }
+
+    # Refused in production by the contract: every message here is
+    # business-initiated, so the 24h free-form window is never open and Meta
+    # rejects every such send.
+    WHATSAPP_ALLOW_FREE_FORM = { value = "false" }
+  }
+}
+
+resource "render_env_group_link" "api" {
+  env_group_id = render_env_group.api.id
+  service_ids  = [local.api_service_id]
+}
+
+resource "render_env_group" "web" {
+  name           = "medinstru-web-env"
+  environment_id = var.environment_id
+
+  # PUBLIC VALUES ONLY. Render turns these into Docker build arguments, and
+  # NEXT_PUBLIC_* is inlined into the client bundle at build time — which is
+  # why setting them here is what actually reaches a visitor's browser, and
+  # equally why a secret must never appear in this group.
+  env_vars = {
+    APP_ENV                   = { value = "render" }
+    NEXT_PUBLIC_API_URL       = { value = var.api_public_url }
+    NEXT_PUBLIC_SITE_URL      = { value = var.web_public_url }
+    NEXT_PUBLIC_BLOB_BASE_URL = { value = var.blob_public_url }
+
+    # NOT a build argument: apps/web/Dockerfile declares no ARG for it, so it
+    # stays a runtime value and never enters the image. Signs source-map
+    # access tokens; unset would make /sourcemaps fail closed, which is safe
+    # but gives up the debugging aid for nothing.
+    SOURCEMAP_SIGNING_KEY = {
+      value = random_password.sourcemap_signing_key.result
+    }
+  }
+}
+
+resource "render_env_group_link" "web" {
+  env_group_id = render_env_group.web.id
+  service_ids  = [local.web_service_id]
 }
