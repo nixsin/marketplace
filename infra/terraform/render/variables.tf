@@ -174,3 +174,76 @@ variable "postgres_parameter_overrides" {
   type        = map(string)
   default     = {}
 }
+
+# ---------------------------------------------------------------------
+# Values the environment contract requires, that Terraform cannot invent
+# ---------------------------------------------------------------------
+#
+# Each of these is owned by an external service, so it has to be supplied
+# through TF_VAR_* and never committed. Every one defaults to "" because the
+# contract documents empty as a legal, meaningful state — delivery off,
+# storage local — rather than a missing value.
+
+variable "blob_provider" {
+  description = "Where the API writes uploads: s3 (Cloudflare R2) or local."
+  type        = string
+  default     = "local"
+
+  validation {
+    condition     = contains(["s3", "local"], var.blob_provider)
+    error_message = "blob_provider must be s3 or local."
+  }
+}
+
+variable "blob_access_key_id" {
+  description = "R2 access key id. Empty keeps BLOB_PROVIDER=local viable."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "blob_secret_access_key" {
+  description = "R2 secret. Supply through TF_VAR_blob_secret_access_key."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "whatsapp_access_token" {
+  description = "Meta Cloud API token. Empty means inquiry delivery is off."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "whatsapp_phone_number_id" {
+  description = "Meta sender id. Empty means inquiry delivery is off."
+  type        = string
+  default     = ""
+}
+
+variable "whatsapp_template_name" {
+  description = "Approved template. Required before any message can be sent."
+  type        = string
+  default     = ""
+}
+
+variable "whatsapp_template_language" {
+  description = "Template language code, such as en or en_US."
+  type        = string
+  default     = ""
+}
+
+variable "trust_proxy_headers" {
+  description = <<-EOT
+    Derive the submitter's address from cf-connecting-ip.
+
+    Enabling this asserts the origin REFUSES traffic that did not come
+    through Cloudflare — not merely that a proxy exists. This service still
+    answers directly on its .onrender.com hostname, so until that is closed a
+    caller can skip the edge and choose which bucket the per-IP limit
+    charges.
+  EOT
+  type        = bool
+  default     = false
+}

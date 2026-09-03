@@ -14,6 +14,13 @@ terraform {
       source  = "render-oss/render"
       version = "~> 1.9"
     }
+    # Generates the secrets nobody should have to hold. A value produced here
+    # lives in Terraform state and reaches Render directly — it is never
+    # typed, pasted, or written into this repository.
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 }
 
