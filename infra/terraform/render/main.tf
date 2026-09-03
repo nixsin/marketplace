@@ -78,7 +78,23 @@ resource "render_postgres" "main" {
   #
   # Render manages backups and PITR at the plan level rather than through
   # parameters, so those are a plan decision, not a setting.
-  parameter_overrides = var.postgres_parameter_overrides
+  # GATED ON THE PLAN, not on emptiness. Render refuses parameter overrides
+  # on a free-tier database outright -- "parameter overrides are not
+  # available on free tier databases" -- and an empty map still counts as
+  # sending them, which failed a real apply while changing nothing.
+  #
+  # Keying on emptiness alone left the failure reachable: a non-empty map on
+  # the free tier would have been sent and refused exactly as before. The
+  # variable's own validation rejects that combination up front, so the error
+  # names the cause instead of arriving from Render's API.
+  #
+  # `try` because an explicitly null value is a legal input and `length(null)`
+  # is an error in Terraform.
+  parameter_overrides = (
+    var.postgres_plan == "free" || try(length(var.postgres_parameter_overrides), 0) == 0
+    ? null
+    : var.postgres_parameter_overrides
+  )
 
   lifecycle {
     prevent_destroy = true
@@ -278,8 +294,17 @@ resource "render_keyvalue" "cache" {
 resource "render_env_group" "cache" {
   count = var.enable_key_value ? 1 : 0
 
-  name           = "medinstru-cache-env"
-  environment_id = var.environment_id
+  name = "medinstru-cache-env"
+  # NO environment_id, and this is the fix for a real failed apply:
+  #
+  #   Error: Unable to add service to environment group
+  #   service must be in the same environment as the environment group
+  #
+  # The two web services are not in any environment -- they are legacy free
+  # services, imported, and update-frozen, so they cannot be moved into one.
+  # A group that declares an environment therefore cannot link to them.
+  # `environment_id` is optional on render_env_group; the Postgres resource
+  # keeps its own because that database genuinely is in the environment.
 
   env_vars = {
     REDIS_URL = {
@@ -358,8 +383,17 @@ resource "random_password" "sourcemap_signing_key" {
 }
 
 resource "render_env_group" "api" {
-  name           = "medinstru-api-env"
-  environment_id = var.environment_id
+  name = "medinstru-api-env"
+  # NO environment_id, and this is the fix for a real failed apply:
+  #
+  #   Error: Unable to add service to environment group
+  #   service must be in the same environment as the environment group
+  #
+  # The two web services are not in any environment -- they are legacy free
+  # services, imported, and update-frozen, so they cannot be moved into one.
+  # A group that declares an environment therefore cannot link to them.
+  # `environment_id` is optional on render_env_group; the Postgres resource
+  # keeps its own because that database genuinely is in the environment.
 
   env_vars = {
     APP_ENV = { value = "render" }
@@ -416,8 +450,17 @@ resource "render_env_group_link" "api" {
 }
 
 resource "render_env_group" "web" {
-  name           = "medinstru-web-env"
-  environment_id = var.environment_id
+  name = "medinstru-web-env"
+  # NO environment_id, and this is the fix for a real failed apply:
+  #
+  #   Error: Unable to add service to environment group
+  #   service must be in the same environment as the environment group
+  #
+  # The two web services are not in any environment -- they are legacy free
+  # services, imported, and update-frozen, so they cannot be moved into one.
+  # A group that declares an environment therefore cannot link to them.
+  # `environment_id` is optional on render_env_group; the Postgres resource
+  # keeps its own because that database genuinely is in the environment.
 
   # PUBLIC VALUES ONLY. Render turns these into Docker build arguments, and
   # NEXT_PUBLIC_* is inlined into the client bundle at build time — which is

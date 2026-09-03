@@ -173,7 +173,22 @@ variable "postgres_parameter_overrides" {
   EOT
   type        = map(string)
   default     = {}
+  nullable    = true
+
+  # Refused up front rather than by Render. Gating the resource on the plan
+  # keeps a free-tier apply working, but silently DROPPING overrides someone
+  # deliberately set is its own surprise -- they would look configured and do
+  # nothing. This makes the combination a Terraform error that names the
+  # cause.
+  validation {
+    condition = (
+      try(length(var.postgres_parameter_overrides), 0) == 0 ||
+      var.postgres_plan != "free"
+    )
+    error_message = "Free-tier Render Postgres does not accept parameter_overrides. Move to a paid plan first, or leave them empty."
+  }
 }
+
 
 # ---------------------------------------------------------------------
 # Values the environment contract requires, that Terraform cannot invent

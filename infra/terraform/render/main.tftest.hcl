@@ -260,3 +260,98 @@ run "blob_provider_only_accepts_known_backends" {
 
   expect_failures = [var.blob_provider]
 }
+
+# Both failures from the 2026-09-03 partial apply, pinned so neither returns.
+run "env_groups_can_link_to_services_outside_an_environment" {
+  command = plan
+
+  variables {
+    jwt_secret = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+    # Set explicitly so the cache group EXISTS. Iterating a `count`-ed
+    # resource passes vacuously when the count is zero, so relying on the
+    # variable's default would leave that group's assertion asserting
+    # nothing the day the default changed.
+    enable_key_value = true
+  }
+
+  # A group that declares an environment cannot link to a service that is not
+  # in one, and the two web services are legacy free services that cannot be
+  # moved. Render refuses the link with "service must be in the same
+  # environment as the environment group" -- after creating the group, so the
+  # apply half-succeeds.
+  assert {
+    condition = (
+      render_env_group.api.environment_id == null &&
+      render_env_group.web.environment_id == null &&
+      # A `for` over the list rather than `||`: Terraform does not
+      # short-circuit, so an index would still be evaluated when count is 0.
+      alltrue([for g in render_env_group.cache : g.environment_id == null])
+    )
+    error_message = "An env group linked to a web service must not declare an environment_id, or Render refuses the link."
+  }
+}
+
+run "free_tier_postgres_is_sent_no_parameter_overrides" {
+  command = plan
+
+  variables {
+    jwt_secret = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+  }
+
+  # An empty map still counts as sending them: "parameter overrides are not
+  # available on free tier databases" failed the apply while changing nothing.
+  assert {
+    condition     = render_postgres.main.parameter_overrides == null
+    error_message = "parameter_overrides must be null when empty; free-tier Render refuses them outright."
+  }
+}
+
+run "free_tier_refuses_parameter_overrides_up_front" {
+  command = plan
+
+  variables {
+    jwt_secret                   = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+    postgres_parameter_overrides = { wal_compression = "on" }
+  }
+
+  # Gating the resource on the plan keeps a free-tier apply working, but
+  # silently dropping overrides someone deliberately set is its own surprise:
+  # they would look configured and do nothing. The variable's validation
+  # names the cause instead.
+  expect_failures = [var.postgres_parameter_overrides]
+}
+
+run "a_null_overrides_value_is_accepted" {
+  command = plan
+
+  variables {
+    jwt_secret                   = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+    postgres_parameter_overrides = null
+  }
+
+  # `length(null)` is an error in Terraform, so the emptiness check has to be
+  # null-safe -- an explicitly null value is a legal input and the previous
+  # direct assignment accepted it.
+  assert {
+    condition     = render_postgres.main.parameter_overrides == null
+    error_message = "A null overrides value must be accepted, not error inside length()."
+  }
+}
+
+run "a_paid_plan_keeps_its_parameter_overrides" {
+  command = plan
+
+  variables {
+    jwt_secret                   = "a-supplied-production-secret-value" # scan-ignore: invented, opens nothing
+    postgres_plan                = "basic_256mb"
+    postgres_parameter_overrides = { wal_compression = "on" }
+  }
+
+  # THE OTHER BRANCH. Every other run here sets a free plan, so a regression
+  # that always emitted null would satisfy all of them while silently
+  # discarding overrides a paid plan is entitled to.
+  assert {
+    condition     = render_postgres.main.parameter_overrides["wal_compression"] == "on"
+    error_message = "A paid plan must keep the overrides it was given."
+  }
+}

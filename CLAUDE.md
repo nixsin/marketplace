@@ -2323,6 +2323,31 @@ from planning duplicate production resources. Keep service settings managed
 via the Render dashboard/API until the services are upgraded or the provider
 fixes this behavior. Render Postgres is still fully managed.
 
+**An env group that declares an environment cannot link to a service that is
+not in one.** Both web services are legacy free services, imported and
+update-frozen, so they belong to no environment and cannot be moved into one.
+A group carrying `environment_id` is created successfully and then refuses the
+link — `service must be in the same environment as the environment group` —
+which half-applies: the group exists, nothing is linked. `environment_id` is
+optional on `render_env_group`, so the groups linking to services omit it.
+Postgres and Key Value keep theirs, because those resources genuinely are in
+the environment.
+
+**Free-tier Postgres refuses `parameter_overrides` outright, and an empty map
+still counts as sending them.** `parameter overrides are not available on free
+tier databases` failed a real apply while changing nothing. The value must be
+`null` when empty, not `{}`. Both failures are pinned by runs in
+`main.tftest.hcl`, verified by reintroducing each.
+
+**A resource in state but not in configuration is destroyed on the next
+apply, including one this repo never declared.** The 2026-09-03 apply reaped
+`render_env_group.app_env` (`evg-daausoss728c73e87svg`), which existed in the
+HCP workspace and in no committed `.tf` file — created outside this repo, then
+orphaned. Production kept serving, because service-level variables take
+precedence over groups anyway, which is the same fact that makes the migration
+step below necessary. Check `terraform plan` for unexpected destroys before
+approving one.
+
 Render Postgres must explicitly keep `ip_allow_list = 0.0.0.0/0` while GitHub
 Actions applies migrations through its external endpoint. Provider v1.9.1
 cleared the imported allow-all entry when this optional-computed field was
