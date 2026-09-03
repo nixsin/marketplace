@@ -126,29 +126,39 @@ test("both shapes Render returns are read, with the cursor", () => {
   assert.deepEqual(parseEnvVarPage([]).names, []);
 });
 
-test("a repeated cursor is a stall, not completion", () => {
+test("a repeated or cycling cursor is refused, not read as completion", () => {
   // Treating it as "done" reads a partial list and then reports the env
   // groups authoritative — the same fail-open shape as an unreadable page,
   // arriving through the loop instead of the parser.
   assert.throws(
-    () => nextPage({ names: ["A"], cursor: "same" }, "same"),
-    /Pagination stalled/,
+    () => nextPage({ names: ["A"], cursor: "same" }, new Set(["same"])),
+    /Pagination looped/,
+  );
+
+  // A CYCLE, not just an immediate repeat: c1 to c2 and back to c1 is not a
+  // stall the loop notices but an infinite one it runs forever.
+  assert.throws(
+    () => nextPage({ names: ["A"], cursor: "c1" }, new Set(["c1", "c2"])),
+    /Pagination looped/,
   );
 
   // Genuine completion: no cursor, or an empty page.
-  assert.deepEqual(nextPage({ names: ["A"], cursor: undefined }, "c1"), {
+  assert.deepEqual(
+    nextPage({ names: ["A"], cursor: undefined }, new Set(["c1"])),
+    { done: true },
+  );
+  assert.deepEqual(nextPage({ names: [], cursor: "c2" }, new Set(["c1"])), {
     done: true,
   });
-  assert.deepEqual(nextPage({ names: [], cursor: "c2" }, "c1"), { done: true });
 
   // Progress continues.
-  assert.deepEqual(nextPage({ names: ["A"], cursor: "c2" }, "c1"), {
+  assert.deepEqual(nextPage({ names: ["A"], cursor: "c2" }, new Set(["c1"])), {
     done: false,
     cursor: "c2",
   });
 
-  // The first page has no previous cursor, and must not read as a stall.
-  assert.deepEqual(nextPage({ names: ["A"], cursor: "c1" }, undefined), {
+  // The first page has seen nothing, and must not read as a loop.
+  assert.deepEqual(nextPage({ names: ["A"], cursor: "c1" }, new Set()), {
     done: false,
     cursor: "c1",
   });

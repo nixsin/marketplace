@@ -68,6 +68,7 @@ if (!apiKey) {
  */
 async function envVarNames(id, label) {
   const names = [];
+  const seen = new Set();
   let cursor;
 
   for (;;) {
@@ -75,9 +76,22 @@ async function envVarNames(id, label) {
     url.searchParams.set("limit", "100");
     if (cursor) url.searchParams.set("cursor", cursor);
 
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-    });
+    // A network failure or malformed JSON would otherwise throw an unhandled
+    // rejection and exit 1 -- the code this script documents as "shadowed
+    // variables were found". An operational failure must never read as a
+    // result.
+    let response;
+    try {
+      response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: "application/json",
+        },
+      });
+    } catch (error) {
+      console.error(`${label}: could not reach Render — ${error.message}`);
+      process.exit(2);
+    }
     if (!response.ok) {
       console.error(
         `Render returned ${response.status} for ${label}. The key needs read ` +
@@ -88,7 +102,13 @@ async function envVarNames(id, label) {
 
     // Parsed by a function that THROWS on a shape it does not recognise,
     // rather than returning nothing and reading as "no shadowing".
-    const page = await response.json();
+    let page;
+    try {
+      page = await response.json();
+    } catch (error) {
+      console.error(`${label}: Render returned unreadable JSON — ${error.message}`);
+      process.exit(2);
+    }
     if (Array.isArray(page) && page.length === 0) break;
 
     let parsed;
@@ -103,12 +123,13 @@ async function envVarNames(id, label) {
 
     let step;
     try {
-      step = nextPage(parsed, cursor);
+      step = nextPage(parsed, seen);
     } catch (error) {
       console.error(`${label}: ${error.message}`);
       process.exit(2);
     }
     if (step.done) break;
+    seen.add(step.cursor);
     cursor = step.cursor;
   }
 

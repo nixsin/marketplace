@@ -106,17 +106,20 @@ export function parseEnvVarPage(page) {
  * instead of the parser.
  *
  * @param {{names: string[], cursor: string | undefined}} page
- * @param {string | undefined} previous  The cursor used to fetch this page.
+ * @param {Set<string>} seen  Every cursor already used for this service.
  * @returns {{done: boolean, cursor?: string}}
  * @throws {Error} when pagination made no progress.
  */
-export function nextPage(page, previous) {
+export function nextPage(page, seen) {
   if (page.names.length === 0 || !page.cursor) return { done: true };
 
-  if (page.cursor === previous) {
+  // EVERY cursor seen, not just the previous one. Comparing with the last
+  // cursor alone missed a cycle -- c1 to c2 back to c1 -- which is not a
+  // stall the loop notices but an infinite one it runs forever.
+  if (seen.has(page.cursor)) {
     throw new Error(
-      `Pagination stalled: Render returned the same cursor (${page.cursor}) ` +
-        `for a non-empty page. Refusing to report on a partial list.`,
+      `Pagination looped: Render returned cursor ${page.cursor} again for a ` +
+        `non-empty page. Refusing to report on a partial list.`,
     );
   }
   return { done: false, cursor: page.cursor };
