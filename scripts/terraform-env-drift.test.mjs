@@ -40,6 +40,7 @@ function envGroups(source) {
 
     let depth = 0;
     let inVars = false;
+    let varsDepth = 0;
     const names = [];
 
     for (let j = i; j < lines.length; j += 1) {
@@ -47,10 +48,19 @@ function envGroups(source) {
       depth += (line.match(/\{/g) ?? []).length;
       depth -= (line.match(/\}/g) ?? []).length;
 
-      if (/^\s*env_vars\s*=\s*\{/.test(line)) inVars = true;
-      else if (inVars) {
-        const m = /^\s{4}([A-Z][A-Z0-9_]*)\s*=/.exec(line);
-        if (m) names.push(m[1]);
+      // `inVars` is CLOSED at the depth it opened. It used to stay true for
+      // the rest of the resource, so any later four-space uppercase
+      // assignment was counted as a delivered variable.
+      if (/^\s*env_vars\s*=\s*\{/.test(line)) {
+        inVars = true;
+        varsDepth = depth;
+      } else if (inVars) {
+        if (depth < varsDepth) {
+          inVars = false;
+        } else {
+          const m = /^\s{4}([A-Z][A-Z0-9_]*)\s*=/.exec(line);
+          if (m) names.push(m[1]);
+        }
       }
       if (depth === 0 && j > i) break;
     }

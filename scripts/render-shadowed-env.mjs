@@ -13,6 +13,8 @@
  * is not wired into any workflow, which is why this is a command you run
  * rather than a check that runs itself.
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { CONTRACTS } from "../packages/config/src/env-contract.js";
 import {
   formatShadowReport,
@@ -20,12 +22,31 @@ import {
   shadowedVariables,
 } from "./lib/render-shadowed-env.mjs";
 
-// Each service is checked against ITS OWN contract: a variable the other
-// app declares is not a conflict here, because this service's group never
-// sets it.
+// IDs read from Terraform, not copied. Duplicating them meant this script
+// could inspect one service while the env groups were linked to another —
+// and then report "authoritative" about a service that receives nothing.
+const main = readFileSync(
+  fileURLToPath(new URL("../infra/terraform/render/main.tf", import.meta.url)),
+  "utf8",
+);
+
+function serviceId(local) {
+  const m = new RegExp(`${local}\\s*=\\s*"(srv-[a-z0-9]+)"`).exec(main);
+  if (!m) {
+    console.error(
+      `Could not read ${local} from infra/terraform/render/main.tf. ` +
+        `Refusing to guess which service to inspect.`,
+    );
+    process.exit(2);
+  }
+  return m[1];
+}
+
+// Each service is checked against ITS OWN contract: a variable the other app
+// declares is not a conflict here, because this service's group never sets it.
 const SERVICES = [
-  { service: "medinstru-api", app: "api", id: "srv-da02lnojo6nc73djh9bg" },
-  { service: "medinstru-web", app: "web", id: "srv-da02mt61egvs73fopb00" },
+  { service: "medinstru-api", app: "api", id: serviceId("api_service_id") },
+  { service: "medinstru-web", app: "web", id: serviceId("web_service_id") },
 ];
 
 const apiKey = process.env.RENDER_API_KEY;
