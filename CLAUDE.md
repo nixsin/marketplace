@@ -835,6 +835,99 @@ CommonJS test run and fails with `Unexpected token 'export'` — which looks
 exactly like a file that was never transformed.
 
 
+## Startup environment contract (`packages/config/src/env-contract.js`)
+
+One list of variables per app, shared by every environment, checked before
+either service serves anything. Six PRs: the contract and checker (#185),
+generated `.env` files (#186), `ci.yml` pinned to it (#188), Terraform
+delivering it to Render (#189), enforcement at boot (this one).
+
+**Absent and empty are different states.** A variable set to `""` is a
+decision — `emptyMeans` records what that decision means, so an empty
+`REDIS_URL` reads as "no shared cache, reads go to Postgres" rather than as
+something forgotten. A variable that is simply missing is an error in every
+environment. That is why every environment declares every variable: the
+interesting question is not *which* variables apply here, it is *what counts
+as a valid value* here.
+
+### Where a failed check actually stops the process
+
+| Environment | Boot | Why |
+|---|---|---|
+| `render` | **refuses** | production; the whole point |
+| `unknown` | **refuses** | a production-mode process that cannot name itself |
+| `localhost` | reports | `dev-defaults.js` exists so a laptop needs no config |
+| `test` | reports | suites supply their own fixtures |
+| `github-ci`, `ci-local` | reports | a build is not a deployment |
+
+`enforcesAtBoot` owns this, so both apps cannot drift. **Anything unlisted
+refuses** — a future environment fails loudly rather than deploying
+unguarded, and a test pins that direction rather than the list.
+
+`unknown` refusing is the load-bearing half. The production image boots that
+way, so `docker-web-prod-boot` exercises the enforcing path on every
+Docker-touching PR. Without it, enforcement would first execute in
+production — the shape of failure this repo has already had once.
+
+Reporting is never silent: the banner and every error still print, and the
+closing line says which happened. It used to read "Refusing to start" even
+where the process then carried on booting, and a diagnostic that contradicts
+the next line of the log is one people learn to skim.
+
+### Two traps, both found by wiring it in
+
+**`ConfigModule` loads `.env` at IMPORT time, not when Nest initialises.**
+`ConfigModule.forRoot({ isGlobal: true })` is an argument to `AppModule`'s
+`@Module` decorator, so it is invoked while the module is being imported —
+confirmed directly: importing `app.module` and nothing else already
+populates `process.env`. Static imports are evaluated before any module-body
+statement, so a plain `import { AppModule }` at the top of `main.ts` would
+evaluate the whole provider tree *before* the check could report anything,
+and any import-time failure would preempt it — replacing a report naming
+every missing variable with whichever stack trace fired first.
+
+So `main.ts` imports `AppModule` inside `bootstrap()` instead. That is
+load-bearing, not style. With the import deferred nothing has read `.env`
+yet, which is why `process.loadEnvFile()` is called first; it has dotenv's
+precedence (a real environment variable beats the file, verified rather than
+assumed), so loading it here and again in `ConfigModule` changes no value.
+ENOENT is the normal case on Render and is swallowed; anything else is
+re-thrown, because an unreadable `.env` would otherwise present as a pile of
+"not declared" errors naming variables the file actually sets.
+
+**A Dockerfile stage inherits nothing across a `FROM`.** `apps/web`'s
+`NEXT_PUBLIC_*` were declared only in `build`, so the running container had
+none of them. That was already a latent gap rather than just a check
+failure: `next.config.ts` is re-executed at every container start and derives
+the CSP's `connect-src` from `NEXT_PUBLIC_API_URL`, so a container started
+without it computed that header from a fallback. Render injects the same
+values at runtime, so it never bit — and nothing in the image said so.
+Both stages now declare the whole contract.
+
+`SOURCEMAP_SIGNING_KEY` is `ENV` with no `ARG`, deliberately: a build
+argument is recorded in the image history. BuildKit still warns
+`SecretsUsedInArgOrEnv` on the name — a false positive on an empty value.
+It cannot fail anything (CI uses plain `docker build`), and the alternative,
+a file-wide `check=skip`, would disable that rule for a future real secret.
+
+### What keeps it honest
+
+Nothing can import the contract into HCL, YAML or a Dockerfile, so tests
+compare them instead — the same mechanism as the Cloudflare locale list:
+
+| Test | Pins |
+|---|---|
+| `scripts/terraform-env-drift.test.mjs` | every variable is delivered by a Render env group, both directions |
+| `scripts/dockerfile-env-drift.test.mjs` | both web stages declare it; no secret is an `ARG` |
+| `scripts/ci-env-drift.test.mjs` | `ci.yml`'s values match |
+| `scripts/generate-env-example.test.mjs` | the generated `.env` files are current |
+
+**Render service-level variables override a linked env group**, and linking
+removes nothing. Until the shadowing variables are deleted by hand, the
+groups are not the source of truth they look like —
+`scripts/render-shadowed-env.mjs` reports which ones still shadow.
+
+
 ## Buyer product inquiries (#91)
 
 Shipped in three parts. This is part 2, **capture**: a buyer submits a question
