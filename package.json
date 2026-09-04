@@ -13,7 +13,7 @@
     "lint": "pnpm -r lint",
     "lint:check": "pnpm --filter web lint && pnpm --filter api lint:check",
     "prepare": "husky",
-    "env:check": "node scripts/check-local-env.mjs"
+    "env:check": "sh scripts/check-local-env.sh"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
