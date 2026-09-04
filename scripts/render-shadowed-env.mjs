@@ -93,10 +93,19 @@ async function envVarNames(id, label) {
       process.exit(2);
     }
     if (!response.ok) {
-      console.error(
-        `Render returned ${response.status} for ${label}. The key needs read ` +
-          `access to this service.`,
-      );
+      // 401 and 403 are different problems and were reported as the same
+      // one. "The key needs read access to this service" sent a reader to
+      // check permissions when the actual cause was an invalid key.
+      const reason =
+        response.status === 401
+          ? "RENDER_API_KEY is not valid. Create one under Account Settings " +
+            "-> API Keys in the Render dashboard."
+          : response.status === 403
+            ? "The key is valid but has no access to this service."
+            : response.status === 404
+              ? "No such service. The IDs come from infra/terraform/render/main.tf."
+              : "Unexpected response from Render.";
+      console.error(`${label}: HTTP ${response.status} — ${reason}`);
       process.exit(2);
     }
 
