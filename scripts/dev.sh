@@ -23,7 +23,7 @@ cd "$(dirname "$0")/.."
 # DEVELOPER aid: on a runner there is no shell profile to repair and nobody
 # to ask, and the jobs that need a tool already install it themselves.
 if [ -z "${CI:-}" ]; then
-  sh "$(dirname "$0")/check-local-env.sh" --tools-only --gate-stack
+  sh "$(dirname "$0")/check-local-env.sh" --fix --gate-stack
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
