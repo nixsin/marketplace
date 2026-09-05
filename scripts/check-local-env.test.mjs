@@ -1,30 +1,32 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  evaluate,
-  mask,
-  report,
-  requirements,
-  sensitiveVariables,
-  terraformRequirements,
-  toolingRequirements,
-} from "./check-local-env.mjs";
-
-import {
   REQUIRED_TOOLS,
   STACK_TOOLS,
   candidateBinDirs,
   checkNode,
   checkTools,
+  corepackState,
+  evaluate,
   freshShellTools,
+  installedNodeVersions,
   locateOffPath,
+  mask,
+  nonInteractiveTools,
   parseVersion,
   pinnedPnpmVersion,
   probeVersion,
+  proposeFixes,
+  report,
   reportShellGaps,
   reportTools,
+  requirements,
   satisfiesFloor,
+  sensitiveVariables,
   shellGaps,
+  shellQuote,
+  terraformRequirements,
+  toolingRequirements,
 } from "./check-local-env.mjs";
 
 test("a value is never shown, at any length", () => {
@@ -507,9 +509,10 @@ test("the tool report names what is missing and how to install it", () => {
   // software they already have.
   assert.match(text, /NOT INSTALLED/);
   assert.match(text, /terraform — infra/);
-  // Names the install command rather than pointing at `--fix`, which this
-  // build does not implement.
-  assert.match(text, /brew install terraform/);
+  // Points at `--fix`, which THIS change implements. The previous change
+  // deliberately did not mention it, because advertising a flag the build
+  // ignores is worse than saying nothing.
+  assert.match(text, /--fix/);
 });
 
 test("installed-but-off-PATH is reported as such, not as missing", () => {
@@ -613,12 +616,256 @@ test("nvm candidates point at a version's bin, not the versions directory", () =
   );
 });
 
-test("the report does not advertise an option this build ignores", () => {
-  // `--fix` arrives with the repair flow in a later change. Telling someone
-  // to re-run with a flag that does nothing is worse than saying nothing.
-  const text = reportTools([
-    { name: "terraform", why: "infra", present: false, ok: false, version: null },
+
+test("a fix never invents a credential", () => {
+  // The hard line. A generated secret looks configured, works locally, and is
+  // wrong everywhere else — worse than the missing value it replaced.
+  const variables = [
+    { name: "TF_VAR_jwt_secret", ok: false, emptyMeans: null, why: "w", breaks: "b" },
+    { name: "OPENAI_API_KEY", ok: false, emptyMeans: null, why: "w", breaks: "b" },
+  ];
+  const fixes = proposeFixes({ variables });
+
+  assert.equal(fixes.length, 2);
+  for (const fix of fixes) {
+    assert.equal(fix.manual, true, `${fix.title} must not be automated`);
+    assert.equal(fix.command, undefined);
+    assert.equal(fix.appendToRc, undefined);
+  }
+});
+
+test("a variable whose empty is documented can be recorded automatically", () => {
+  // Safe because it writes a DECISION, not a value.
+  const [fix] = proposeFixes({
+    variables: [
+      {
+        name: "TF_VAR_whatsapp_access_token",
+        ok: false,
+        emptyMeans: "delivery is off",
+        why: "w",
+        breaks: "b",
+      },
+    ],
+  });
+
+  assert.equal(fix.manual, undefined);
+  assert.match(fix.appendToRc, /^export TF_VAR_whatsapp_access_token=/);
+  assert.match(fix.appendToRc, /delivery is off/, "the reason goes on record");
+  assert.ok(!/=\S/.test(fix.appendToRc.split("#")[0]), "must assign nothing");
+});
+
+test("the nvm fix prefers the major CI runs, not the newest installed", () => {
+  // Newest is the obvious pick and the wrong one: it puts local development
+  // on a Node that CI never exercises.
+  const [fix] = proposeFixes({
+    gaps: ["node"],
+    declared: { node: ">=22.0.0", ciNode: "22" },
+    installedNode: ["v22.23.2", "v24.19.0"],
+  });
+  assert.equal(fix.command, "nvm alias default 22");
+  assert.equal(fix.shell, true, "nvm is a shell function, not a binary");
+
+  // Falls back to newest-satisfying when CI's major is not installed.
+  const [fallback] = proposeFixes({
+    gaps: ["node"],
+    declared: { node: ">=22.0.0", ciNode: "22" },
+    installedNode: ["v24.19.0"],
+  });
+  assert.equal(fallback.command, "nvm alias default 24");
+
+  // Nothing installed satisfies engines: propose nothing rather than
+  // something that would fail.
+  assert.deepEqual(
+    proposeFixes({
+      gaps: ["node"],
+      declared: { node: ">=22.0.0", ciNode: "22" },
+      installedNode: ["v18.0.0"],
+    }),
+    [],
+  );
+});
+
+test("a missing tool proposes an install, a wrong pnpm proposes corepack", () => {
+  const fixes = proposeFixes({
+    tools: [
+      { name: "terraform", ok: false, present: false, why: "infra" },
+      { name: "pnpm", ok: false, present: true, problem: "wrong", why: "builds" },
+    ],
+    declared: { pnpm: "11.21.0" },
+  });
+
+  assert.deepEqual(fixes.map((f) => f.command), [
+    "brew install terraform",
+    "corepack use pnpm@11.21.0",
   ]);
-  assert.ok(!text.includes("--fix"), "advertised an unimplemented option");
-  assert.match(text, /brew install terraform/);
+});
+
+test("a MISSING pnpm is corepack's problem, never brew's", () => {
+  // package.json's packageManager means corepack provisions pnpm, and it
+  // lives inside the active node version. Observed directly: repairing nvm's
+  // default moved node from v24 to v22 and pnpm vanished, because it had
+  // only ever been installed under v24. `brew install pnpm` would have
+  // "fixed" that by installing a second, unmanaged copy.
+  const [fix] = proposeFixes({
+    tools: [{ name: "pnpm", ok: false, present: false, why: "builds" }],
+    declared: { pnpm: "11.21.0" },
+  });
+  assert.equal(fix.command, "corepack enable");
+  assert.equal(fix.shell, true, "corepack needs the shell's active node");
+});
+
+test("the node switch is offered BEFORE corepack, and drags it along", () => {
+  // Not cosmetic. pnpm is provisioned per node version, so a corepack fix
+  // applied before the switch installs the shim for the version being
+  // switched away from — leaving pnpm missing after the very repair that was
+  // meant to leave the machine working.
+  const fixes = proposeFixes({
+    gaps: ["node"],
+    declared: { node: ">=22.0.0", ciNode: "22", pnpm: "11.21.0" },
+    installedNode: ["v22.23.2", "v24.19.0"],
+  });
+
+  assert.deepEqual(fixes.map((f) => f.command), [
+    "nvm alias default 22",
+    "corepack enable",
+  ]);
+  assert.match(fixes[1].detail, /after the node switch/);
+});
+
+test("corepack is offered once, not twice", () => {
+  // Both a missing pnpm and a node switch want it; proposing it twice would
+  // ask the developer the same question two ways.
+  const fixes = proposeFixes({
+    gaps: ["node"],
+    tools: [{ name: "pnpm", ok: false, present: false, why: "builds" }],
+    declared: { node: ">=22.0.0", ciNode: "22", pnpm: "11.21.0" },
+    installedNode: ["v22.23.2"],
+  });
+  assert.equal(fixes.filter((f) => f.id === "corepack").length, 1);
+});
+
+test("an off-PATH tool proposes a PATH line, not an install", () => {
+  const [fix] = proposeFixes({
+    tools: [{ name: "psql", ok: false, present: false, why: "recovery",
+              foundAt: "/opt/homebrew/opt/postgresql@16/bin" }],
+  });
+  assert.equal(fix.command, undefined, "must not offer to reinstall it");
+  assert.equal(fix.appendToRc, 'export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"');
+  assert.equal(fix.rcFile, ".zshenv", "PATH belongs where every zsh reads it");
+});
+
+test("a wrong psql major proposes the right formula, not an upgrade", () => {
+  // brew keeps postgresql@15 and @16 side by side; upgrading 15 never
+  // produces 16.
+  const [fix] = proposeFixes({
+    tools: [{ name: "psql", ok: false, present: true, why: "x", problem: "major 16 wanted." }],
+    declared: { psql: "16" },
+  });
+  assert.equal(fix.command, "brew install postgresql@16");
+});
+
+test("installedNodeVersions ignores anything that is not a version", () => {
+  assert.deepEqual(
+    installedNodeVersions("v22.23.2\nv24.19.0\n\nnot-a-version\n"),
+    ["v22.23.2", "v24.19.0"],
+  );
+  assert.deepEqual(installedNodeVersions(null), []);
+});
+
+test("a tool only interactive shells find gets a ~/.zshenv PATH line", () => {
+  // nvm loads from ~/.zshrc, which non-interactive shells never read — so
+  // hooks, editor terminals and spawned scripts see nothing.
+  const [fix] = proposeFixes({
+    nonInteractiveMissing: ["node", "pnpm"],
+    nodeBinDir: "/Users/x/.nvm/versions/node/v22.23.2/bin",
+  });
+
+  assert.equal(fix.rcFile, ".zshenv", "every zsh reads it; .zshrc does not");
+  assert.equal(
+    fix.appendToRc,
+    'export PATH="/Users/x/.nvm/versions/node/v22.23.2/bin:$PATH"',
+  );
+  assert.match(fix.detail, /needs updating when you switch/, "states the trade");
+
+  // Nothing missing, or nowhere to point at: propose nothing.
+  assert.deepEqual(proposeFixes({ nonInteractiveMissing: [], nodeBinDir: "/x" }), []);
+  assert.deepEqual(proposeFixes({ nonInteractiveMissing: ["node"], nodeBinDir: null }), []);
+});
+
+test("a shell-significant character in a path is escaped, not executed", () => {
+  // These lines are appended to a shell profile and run on every start, so an
+  // unescaped `"` or `$(...)` in a directory name would not merely corrupt
+  // the file — it would execute.
+  assert.equal(shellQuote('/tmp/a"b'), '/tmp/a\\"b');
+  assert.equal(shellQuote("/tmp/$(whoami)"), "/tmp/\\$(whoami)");
+  assert.equal(shellQuote("/tmp/`id`"), "/tmp/\\`id\\`");
+  assert.equal(shellQuote("/plain/path"), "/plain/path");
+
+  const [fix] = proposeFixes({
+    nonInteractiveMissing: ["node"],
+    nodeBinDir: '/tmp/a"b/bin',
+  });
+  assert.ok(!/[^\\]"/.test(fix.appendToRc.slice(13, -8)), "quote left unescaped");
+});
+
+test("a fix writes to the file it names, not always ~/.zshrc", () => {
+  // The PATH repair exists FOR ~/.zshenv, the file every zsh reads. Writing
+  // it to ~/.zshrc left the non-interactive problem unfixed while the
+  // success line claimed otherwise.
+  const [pathFix] = proposeFixes({
+    nonInteractiveMissing: ["node"],
+    nodeBinDir: "/x/bin",
+  });
+  assert.equal(pathFix.rcFile, ".zshenv");
+
+  const [declared] = proposeFixes({
+    variables: [
+      { name: "TF_VAR_x", ok: false, emptyMeans: "off", why: "w", breaks: "b" },
+    ],
+  });
+  assert.equal(declared.rcFile, undefined, "a variable belongs in ~/.zshrc");
+});
+
+test("co-location alone does not prove pnpm is corepack's", () => {
+  // A globally installed pnpm can sit in node's own bin directory and would
+  // read as corepack's while still ignoring the pin.
+  const paths = {
+    pnpmPath: "/n/bin/pnpm",
+    nodePath: "/n/bin/node",
+  };
+  assert.equal(
+    corepackState({ ...paths, readHead: () => "#!/usr/bin/env node\nrequire('corepack')" }).state,
+    "corepack",
+  );
+  assert.equal(
+    corepackState({ ...paths, readHead: () => "#!/usr/bin/env node\n// a real pnpm bundle" }).state,
+    "unmanaged",
+  );
+  // Unreadable: claim nothing rather than accuse.
+  assert.equal(corepackState({ ...paths, readHead: () => null }).state, "unknown");
+});
+
+test("pnpm that is not corepack's is reported and repaired", () => {
+  // It satisfies `command -v` while ignoring packageManager entirely, so the
+  // version drifts from the pin with nothing failing.
+  const unmanaged = corepackState({
+    pnpmPath: "/opt/homebrew/bin/pnpm",
+    nodePath: "/Users/x/.nvm/versions/node/v22.23.2/bin/node",
+  });
+  assert.equal(unmanaged.ok, false);
+  assert.equal(unmanaged.state, "unmanaged");
+
+  const shim = corepackState({
+    pnpmPath: "/Users/x/.nvm/versions/node/v22.23.2/bin/pnpm",
+    nodePath: "/Users/x/.nvm/versions/node/v22.23.2/bin/node",
+    // Co-location is necessary but not sufficient, so the shim's own
+    // contents are what settle it.
+    readHead: () => "#!/usr/bin/env node\nrequire('corepack/dist/pnpm.js')",
+  });
+  assert.equal(shim.ok, true);
+  assert.equal(shim.state, "corepack");
+
+  const [fix] = proposeFixes({ corepack: unmanaged, declared: { pnpm: "11.21.0" } });
+  assert.equal(fix.command, "corepack enable");
+  assert.match(fix.detail, /not corepack's/);
 });

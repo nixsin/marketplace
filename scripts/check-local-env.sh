@@ -42,8 +42,6 @@ if [ "${1:-}" = "--export" ]; then
   # ASK ZSH, do not dot-source its config into sh. ~/.zshenv is a zsh file and
   # may legally contain zsh-only syntax; a parse error in a sourced file can
   # abort this shell outright, which `2>/dev/null || true` does not catch.
-  # zsh reads .zshenv for every invocation, so `zsh -c` yields exactly the
-  # PATH that file produces.
   if command -v zsh >/dev/null 2>&1; then
     zsh_path=$(zsh -c 'printf %s "$PATH"' 2>/dev/null || true)
     if [ -n "$zsh_path" ]; then
@@ -63,8 +61,6 @@ fi
 # A stale terminal is the common case: ~/.zshenv gained the PATH line after
 # this shell started, so the file is right and the session is old. Sourcing it
 # repairs THIS script's environment, which is enough for the run to proceed.
-# Asked of zsh rather than dot-sourced, for the reason given above --
-# .zshenv may contain zsh-only syntax that sh cannot parse.
 #
 # It cannot repair the CALLER's shell -- a child process cannot alter its
 # parent's environment -- so the message below still says what to run, and
