@@ -18,14 +18,17 @@
  * check ask for it the same day — the failure the whole env-contract series
  * exists to remove, applied to the laptop instead of the deployment.
  *
- * Run it as `pnpm env:check`.
+ * Run it as `pnpm env:check`, which goes through
+ * scripts/check-local-env.sh -- that wrapper exists to report a missing node,
+ * which this file cannot do, being a node script.
  *
  * VALUES ARE NEVER PRINTED. Only whether something is set, and how long it
  * is. This file exists partly because four live credentials were read out of
  * a dotfile while debugging something unrelated; a checker that echoed them
  * would be worse than no checker.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AI_ROLES } from "../packages/config/src/index.js";
@@ -230,6 +233,364 @@ export function toolingRequirements(roles) {
 }
 
 /**
+ * The subset the LOCAL DEV STACK actually needs.
+ *
+ * terraform, psql and gh are for infrastructure, database recovery and PR
+ * workflows -- none of which is starting Postgres and the API. Blocking
+ * `./scripts/dev.sh` on them would stop someone with node, pnpm and docker
+ * from working for a reason unrelated to what they are doing, which is how a
+ * preflight becomes something people comment out.
+ *
+ * They are still CHECKED and still reported; they simply do not gate.
+ */
+export const STACK_TOOLS = ["node", "pnpm", "docker"];
+
+export const REQUIRED_TOOLS = [
+  {
+    name: "pnpm",
+    why: "every build, test and script in this workspace.",
+    // package.json's `packageManager` is an exact pin, and corepack honours
+    // it -- so a different version means corepack is not managing pnpm here.
+    floor: { kind: "exact", from: "package.json packageManager" },
+  },
+  {
+    name: "terraform",
+    why: "infra/terraform — Render and Cloudflare.",
+    floor: { kind: "min", from: "versions.tf required_version" },
+  },
+  {
+    name: "psql",
+    why: "the database recovery steps in CLAUDE.md's known gotchas.",
+    // The dev stack runs postgres:16-alpine. A client from a different major
+    // is what produces the confusing half-working session.
+    floor: { kind: "major", from: "docker-compose postgres image" },
+  },
+  // No declared requirement anywhere in the repo, so none is invented here.
+  // Their version is reported; nothing is enforced against a number nobody
+  // chose.
+  { name: "docker", why: "the dev stack (./scripts/dev.sh) and the smoke tests." },
+  { name: "git", why: "the whole workflow." },
+  { name: "gh", why: "opening PRs, reading CI, the review workflows." },
+];
+
+/** The first dotted version in a `--version` line. */
+export function parseVersion(text) {
+  // Every tool words it differently: "Terraform v1.15.8", "git version
+  // 2.50.1 (Apple Git-155)", "psql (PostgreSQL) 16.15 (Homebrew)",
+  // "Docker version 29.7.2, build a7dcaa", and pnpm's bare "11.21.0".
+  // Minor and patch are OPTIONAL. A declared floor is often just a major --
+  // the postgres image tag is `16` -- and requiring a dot made that parse to
+  // null, which satisfiesFloor treats as "cannot judge" and passes. A psql 15
+  // client against a 16 server sailed through.
+  const match = /(\d+)(?:\.(\d+))?(?:\.(\d+))?/.exec(text ?? "");
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2] ?? 0), Number(match[3] ?? 0)];
+}
+
+/** -1, 0 or 1, comparing two parsed versions. */
+export function compareVersions(a, b) {
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * Does `found` satisfy `floor`?
+ *
+ *   min     at or above it -- a declared `>=` range
+ *   exact   the same version -- a pin
+ *   major   the same major -- a client/server pairing
+ */
+export function satisfiesFloor(found, floor) {
+  if (!floor?.value) return true;
+  const want = parseVersion(floor.value);
+  const have = parseVersion(found);
+  if (!want || !have) return true;
+
+  if (floor.kind === "exact") return compareVersions(have, want) === 0;
+  if (floor.kind === "major") return have[0] === want[0];
+  return compareVersions(have, want) >= 0;
+}
+
+/**
+ * The versions this repo declares, read from where it already declares them.
+ *
+ * Nothing here is a number someone chose for this file. A floor that is not
+ * declared anywhere is not enforced -- inventing one turns a green check into
+ * an argument about whose laptop is right.
+ */
+export function declaredVersions({ root = repoRoot } = {}) {
+  const read = (rel) => readFileSync(join(root, rel), "utf8");
+  const pkg = JSON.parse(read("package.json"));
+
+  const terraform = /required_version\s*=\s*"([^"]+)"/.exec(
+    read("infra/terraform/render/versions.tf"),
+  );
+  const postgres = /image:\s*postgres:(\d+)/.exec(read("docker-compose.yml"));
+
+  // What CI actually runs, so a proposed local version matches it.
+  const ciNode = /node-version:\s*"?(\d+)/.exec(
+    read(".github/workflows/ci.yml"),
+  );
+
+  return {
+    node: pkg.engines?.node ?? null,
+    ciNode: ciNode ? ciNode[1] : null,
+    pnpm: pinnedPnpmVersion(pkg),
+    terraform: terraform ? terraform[1] : null,
+    psql: postgres ? postgres[1] : null,
+  };
+}
+
+/** Run `<tool> --version` and return its first line, or null if absent. */
+export function probeVersion(tool, run) {
+  try {
+    return run(tool).split("\n")[0].trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Homebrew's prefix, or null where brew is not installed. */
+function defaultBrewPrefix() {
+  try {
+    return execFileSync("brew", ["--prefix"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Node versions nvm has installed, or none when nvm is absent. */
+function defaultNodeVersions() {
+  try {
+    return readdirSync(join(process.env.HOME ?? "", ".nvm/versions/node")).filter(
+      (entry) => /^v\d+\./.test(entry),
+    );
+  } catch {
+    return [];
+  }
+}
+
+const defaultLocate = (name, dirs) =>
+  locateOffPath(name, dirs, (candidate) => existsSync(candidate));
+
+const defaultRun = (tool) =>
+  execFileSync(tool, ["--version"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+
+/**
+ * Is each tool present, and does its version satisfy what the repo declares?
+ *
+ * A version violation FAILS. It was a note once, on the reasoning that
+ * corepack reconciles pnpm anyway -- but a check that reports a wrong
+ * version and exits 0 is one people stop reading, and the wrong version is
+ * exactly what produces a confusing failure three steps later.
+ */
+export function checkTools(
+  tools,
+  {
+    run = defaultRun,
+    declared = {},
+    brewPrefix = defaultBrewPrefix(),
+    locate = defaultLocate,
+    nodeVersions = defaultNodeVersions(),
+  } = {},
+) {
+  return tools.map((tool) => {
+    const version = probeVersion(tool.name, run);
+    if (version === null) {
+      // Look for it before declaring it missing: installed-but-off-PATH and
+      // not-installed need opposite fixes.
+      const foundAt = locate
+        ? locate(
+            tool.name,
+            candidateBinDirs(tool.name, {
+              home: process.env.HOME,
+              brewPrefix,
+              postgresMajor: declared.psql,
+              nodeVersions,
+            }),
+          )
+        : null;
+      return {
+        ...tool,
+        present: false,
+        ok: false,
+        version: null,
+        foundAt,
+        problem: foundAt
+          ? `installed at ${foundAt}, but not on PATH.`
+          : null,
+      };
+    }
+
+    const floor = tool.floor
+      ? { ...tool.floor, value: declared[tool.name] }
+      : null;
+
+    if (floor?.value && !satisfiesFloor(version, floor)) {
+      const wording =
+        floor.kind === "exact"
+          ? `must be exactly ${floor.value}`
+          : floor.kind === "major"
+            ? `must be major ${floor.value}`
+            : `must be ${floor.value}`;
+      return {
+        ...tool,
+        present: true,
+        ok: false,
+        version,
+        problem: `${wording} (${floor.from}).`,
+      };
+    }
+    return { ...tool, present: true, ok: true, version, problem: null };
+  });
+}
+
+/** Is the running node new enough for what this repo installs? */
+export function checkNode(declaredRange, actual = process.version) {
+  const ok = satisfiesFloor(actual, { kind: "min", value: declaredRange });
+  return {
+    name: "node",
+    why: "everything.",
+    present: true,
+    ok,
+    version: actual,
+    problem: ok ? null : `must be ${declaredRange} (package.json engines).`,
+  };
+}
+
+/** The pnpm version package.json pins, or null. */
+export function pinnedPnpmVersion(packageJson) {
+  const match = /^pnpm@(\S+)$/.exec((packageJson.packageManager ?? "").trim());
+  return match ? match[1] : null;
+}
+
+/**
+ * Does a FRESH shell find these tools, or only this one?
+ *
+ * The check that would have caught the failure that prompted all of this.
+ * `node` worked in the terminal someone had open and not in a new one,
+ * because nvm's `default` alias pointed at an LTS release that was never
+ * installed -- so `nvm use default` failed silently and put nothing on PATH.
+ * Every probe that inherits the caller's environment reports success there,
+ * which is why the first diagnosis of it was wrong.
+ *
+ * So the probe starts from NOTHING: `env -i` with only HOME, in a login
+ * interactive shell, which is what a new terminal actually is. Anything the
+ * current process already had is deliberately discarded.
+ *
+ * Best-effort by design. An unknown login shell, or one that cannot be
+ * spawned, yields null and the section is skipped -- this is a diagnosis
+ * aid, and a machine it cannot introspect must not fail the whole check.
+ */
+export function freshShellTools(names, { shell = process.env.SHELL, run } = {}) {
+  if (!shell || !/\/(zsh|bash)$/.test(shell)) return null;
+
+  // ONE invocation, not one per tool: a login shell reads the whole profile
+  // each time, and six of those is a visible pause on a check meant to be
+  // cheap enough to run before every dev session.
+  // `; true` because the shell exits with the status of its LAST command --
+  // so a script whose final `command -v` finds nothing exits non-zero, the
+  // spawn throws, and the catch below reports "cannot introspect" for the one
+  // case that matters most: everything missing.
+  const script = `${names
+    .map((n) => `command -v ${n} >/dev/null 2>&1 && echo "${n}"`)
+    .join("; ")}; true`;
+
+  try {
+    const output = (run ?? defaultFreshRun)(shell, script);
+    const found = new Set(output.split("\n").map((l) => l.trim()).filter(Boolean));
+    return names.map((name) => ({ name, resolves: found.has(name) }));
+  } catch {
+    return null;
+  }
+}
+
+const defaultFreshRun = (shell, script) =>
+  execFileSync("env", ["-i", `HOME=${process.env.HOME}`, "TERM=dumb", shell, "-lic", script], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 15_000,
+  });
+
+/**
+ * Tools this process can run that a new terminal could not.
+ *
+ * PATH belongs in ~/.zshenv, which every zsh reads. That is the opposite of
+ * the advice for secrets, and deliberately so: a secret in .zshenv is handed
+ * to every subprocess, while a PATH entry NOT there is missing from every
+ * non-interactive one -- hooks, editors, and anything a script spawns.
+ */
+export function shellGaps(tools, fresh) {
+  if (!fresh) return [];
+  const resolves = new Map(fresh.map((f) => [f.name, f.resolves]));
+  return tools
+    .filter((t) => t.ok && t.present && resolves.get(t.name) === false)
+    .map((t) => t.name);
+}
+
+/**
+ * Where a tool might be installed but invisible.
+ *
+ * "Not on PATH" and "not installed" look identical to `command -v` and need
+ * opposite fixes -- one is a PATH line, the other a download. Getting that
+ * backwards means telling someone to install software they already have.
+ *
+ * The keg-only case is real here: Homebrew does not link postgresql@N into
+ * bin, which is exactly why CLAUDE.md's recovery steps spell out
+ * /opt/homebrew/opt/postgresql@16/bin/psql in full. The major comes from the
+ * compose file, so it follows the image rather than being written twice.
+ */
+export function candidateBinDirs(
+  name,
+  { home, brewPrefix, postgresMajor, nodeVersions = [] },
+) {
+  const dirs = [];
+
+  if (brewPrefix) {
+    dirs.push(join(brewPrefix, "bin"));
+    if (name === "psql" && postgresMajor) {
+      dirs.push(join(brewPrefix, "opt", `postgresql@${postgresMajor}`, "bin"));
+    }
+  }
+  // node and pnpm live under a VERSION's bin, not under the versions
+  // directory itself. This pushed `~/.nvm/versions/node`, so locateOffPath
+  // looked for `~/.nvm/versions/node/node` -- a path that never exists, so an
+  // nvm-installed node was reported "not installed" rather than "off PATH",
+  // and the fix offered would have been `brew install node`.
+  //
+  // The versions are passed in rather than read here, so this stays a pure
+  // function; the caller enumerates the directory once.
+  if ((name === "node" || name === "pnpm") && home) {
+    for (const version of nodeVersions) {
+      dirs.push(join(home, ".nvm", "versions", "node", version, "bin"));
+    }
+  }
+  return dirs;
+}
+
+/** The directory holding `name`, if one of `dirs` has it. */
+export function locateOffPath(name, dirs, exists) {
+  for (const dir of dirs) {
+    if (exists(join(dir, name))) return dir;
+  }
+  return null;
+}
+
+/**
+ * What could be done about each problem, if the developer agrees.
+ *
+ * THE HARD LINE: a fix may change CONFIGURATION and may never invent a
+ * VALUE. Pointing nvm at a version already installed, installing a tool from
+
+/**
  * Everything this repo wants declared in a developer's shell.
  *
  * A missing Terraform stack is an ERROR rather than a skip: silently
@@ -310,6 +671,60 @@ export function mask(value) {
 }
 
 const ICON = { set: "\u2713", empty: "\u25cb", absent: "\u2717" };
+export function reportTools(tools) {
+  const width = Math.max(...tools.map((t) => t.name.length));
+  const lines = ["", "  TOOLS"];
+
+  for (const t of tools) {
+    const state = t.version ?? (t.foundAt ? "(INSTALLED, NOT ON PATH)" : "(NOT INSTALLED)");
+    lines.push(
+      `  ${t.ok ? "\u2713" : "\u2717"} ${t.name.padEnd(width)}  ${state}` +
+        (t.problem ? `\n      ${t.problem}` : ""),
+    );
+  }
+
+  const missing = tools.filter((t) => !t.ok);
+  if (missing.length > 0) {
+    lines.push("", "  PROBLEMS:");
+    for (const t of missing) {
+      lines.push(`    ${t.name} — ${t.why}`);
+    }
+    lines.push(
+      "",
+      // Deliberately no "--fix" hint: that flag arrives with the repair
+      // flow in a later change. Telling someone to re-run with an option
+      // this build ignores is worse than saying nothing.
+      `    brew install ${missing.filter((t) => !t.foundAt).map((t) => t.formula ?? t.name).join(" ")}`.trimEnd(),
+    );
+  }
+
+  return lines.join("\n");
+}
+
+/** Tools this shell has that a new terminal would not. */
+export function reportShellGaps(names) {
+  if (names.length === 0) return "";
+  return [
+    "",
+    "  ONLY IN THIS SHELL — a new terminal would not find these:",
+    ...names.map((n) => `    ${n}`),
+    "",
+    "  They work here because this process inherited them, not because your",
+    "  shell config provides them. Anything starting from a clean environment",
+    "  — a git hook, an editor's terminal, a script — will fail.",
+    "",
+    "  For nvm specifically, the usual cause is `default` pointing at a version",
+    "  that is not installed, which makes `nvm use default` fail silently:",
+    "",
+    "    nvm current            # 'none' means nothing was activated",
+    "    nvm alias default 22   # pin it to an installed version",
+    "",
+    "  PATH belongs in ~/.zshenv, which every zsh reads — the opposite of the",
+    "  advice for secrets below, and deliberately so.",
+  ].join("\n");
+}
+
+
 export function report(results) {
   const width = Math.max(...results.map((r) => r.name.length));
   const lines = [""];
@@ -378,11 +793,48 @@ export function report(results) {
  * profile, so ambiguity has to mean stop.
  */
 
-// CLI. Exits non-zero when anything is undeclared, so it can gate a setup
-// script. Declining a variable is still possible -- declare it empty and the
-// reason is on record, rather than being indistinguishable from forgetting it.
+// CLI. Exits non-zero when a tool is missing, a version is wrong, or a
+// variable is undeclared, so it can gate a setup script.
+//
+// `--tools-only` is what scripts/dev.sh uses: the dev stack genuinely needs
+// node, pnpm and docker, and genuinely does not need a WhatsApp token. A
+// preflight that blocked the local stack on an unrelated credential is one
+// people would route around within a week.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const results = evaluate(requirements(), process.env);
-  console.log(report(results));
-  process.exit(results.every((r) => r.ok) ? 0 : 1);
+  const toolsOnly = process.argv.includes("--tools-only");
+  // `--gate-stack`: report everything, but let only a STACK-essential tool
+  // stop the caller. What dev.sh wants -- a missing `gh` is worth saying and
+  // is no reason to refuse to start Postgres.
+  const gateStack = process.argv.includes("--gate-stack");
+  const declared = declaredVersions();
+
+  const tools = [
+    checkNode(declared.node),
+    ...checkTools(REQUIRED_TOOLS, { declared }),
+  ];
+  console.log(reportTools(tools));
+
+  const gaps = shellGaps(tools, freshShellTools(tools.map((t) => t.name)));
+  const gapReport = reportShellGaps(gaps);
+  if (gapReport) console.log(gapReport);
+
+  let variables = [];
+  if (!toolsOnly) {
+    variables = evaluate(requirements(), process.env);
+    console.log("\n  VARIABLES");
+    console.log(report(variables));
+  }
+
+  // A shell gap does NOT fail the check. Everything works in the shell you
+  // are in, which is the one running this -- it is a warning about the next
+  // one, and failing here would block work that is about to succeed.
+  // Under --gate-stack only a stack-essential tool stops the caller.
+  // Everything else is still checked and still printed; it simply is not a
+  // reason to refuse to start Postgres.
+  const blocking = gateStack
+    ? tools.filter((t) => STACK_TOOLS.includes(t.name) && !t.ok)
+    : tools.filter((t) => !t.ok);
+
+  const ok = blocking.length === 0 && variables.every((v) => v.ok);
+  process.exit(ok ? 0 : 1);
 }

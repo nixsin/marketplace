@@ -10,6 +10,23 @@ import {
   toolingRequirements,
 } from "./check-local-env.mjs";
 
+import {
+  REQUIRED_TOOLS,
+  STACK_TOOLS,
+  candidateBinDirs,
+  checkNode,
+  checkTools,
+  freshShellTools,
+  locateOffPath,
+  parseVersion,
+  pinnedPnpmVersion,
+  probeVersion,
+  reportShellGaps,
+  reportTools,
+  satisfiesFloor,
+  shellGaps,
+} from "./check-local-env.mjs";
+
 test("a value is never shown, at any length", () => {
   // The property that matters most here, and the one this script got wrong
   // on its first run: it borrowed a helper that sanitises rather than masks
@@ -341,6 +358,200 @@ variable "after_comment" {
   assert.ok(found.includes("after_comment"));
 });
 
+test("a tool missing from PATH is a failure, not a warning", () => {
+  // There is no "declare it empty" equivalent for a tool: you either have
+  // psql or you cannot follow the recovery steps it is needed for.
+  const absent = () => {
+    throw Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" });
+  };
+  assert.equal(probeVersion("nope", absent), null);
+
+  const [checked] = checkTools([{ name: "nope", why: "x" }], { run: absent });
+  assert.equal(checked.present, false);
+  assert.equal(checked.ok, false);
+  assert.equal(checked.version, null);
+});
+
+test("a version that violates what the repo declares FAILS", () => {
+  // Was a note once, on the reasoning that corepack reconciles pnpm anyway.
+  // A check that reports a wrong version and exits 0 is one people stop
+  // reading, and the wrong version is what produces a confusing failure
+  // three steps later.
+  const [mismatch] = checkTools([{ name: "pnpm", why: "x", floor: { kind: "exact", from: "packageManager" } }], {
+    run: () => "11.25.0\n",
+    declared: { pnpm: "11.21.0" },
+  });
+  assert.equal(mismatch.ok, false);
+  assert.match(mismatch.problem, /exactly 11\.21\.0/);
+
+  const [matching] = checkTools([{ name: "pnpm", why: "x", floor: { kind: "exact", from: "packageManager" } }], {
+    run: () => "11.21.0\n",
+    declared: { pnpm: "11.21.0" },
+  });
+  assert.equal(matching.ok, true);
+  assert.equal(matching.problem, null);
+});
+
+test("each floor kind compares the way its source means", () => {
+  //   min     a declared `>=` range   (terraform's required_version)
+  //   exact   a pin                   (packageManager)
+  //   major   a client/server pairing (the postgres image tag)
+  assert.equal(satisfiesFloor("Terraform v1.15.8", { kind: "min", value: ">= 1.9.0" }), true);
+  assert.equal(satisfiesFloor("Terraform v1.8.0", { kind: "min", value: ">= 1.9.0" }), false);
+
+  assert.equal(satisfiesFloor("psql (PostgreSQL) 16.15", { kind: "major", value: "16" }), true);
+  assert.equal(satisfiesFloor("psql (PostgreSQL) 15.4", { kind: "major", value: "16" }), false);
+
+  assert.equal(satisfiesFloor("11.21.0", { kind: "exact", value: "11.21.0" }), true);
+  assert.equal(satisfiesFloor("11.21.1", { kind: "exact", value: "11.21.0" }), false);
+});
+
+test("versions are read out of each tool's own wording", () => {
+  // They all phrase it differently, and a parser that only handled one of
+  // them would silently compare nothing.
+  assert.deepEqual(parseVersion("Terraform v1.15.8"), [1, 15, 8]);
+  assert.deepEqual(parseVersion("git version 2.50.1 (Apple Git-155)"), [2, 50, 1]);
+  assert.deepEqual(parseVersion("psql (PostgreSQL) 16.15 (Homebrew)"), [16, 15, 0]);
+  assert.deepEqual(parseVersion("Docker version 29.7.2, build a7dcaa"), [29, 7, 2]);
+  assert.deepEqual(parseVersion("11.21.0"), [11, 21, 0]);
+  assert.equal(parseVersion("no digits here"), null);
+});
+
+test("a floor that is only a major still compares", () => {
+  // The postgres image tag is `16`, with no dots. Requiring a dot made this
+  // parse to null, which satisfiesFloor reads as "cannot judge" and passes —
+  // so a psql 15 client against a 16 server went unreported.
+  assert.deepEqual(parseVersion("16"), [16, 0, 0]);
+  assert.equal(satisfiesFloor("psql (PostgreSQL) 15.4", { kind: "major", value: "16" }), false);
+});
+
+test("a tool with no declared requirement is not held to an invented one", () => {
+  // docker, git and gh have no version declared anywhere in the repo.
+  // Enforcing a number nobody chose turns a green check into an argument.
+  for (const name of ["docker", "git", "gh"]) {
+    const tool = REQUIRED_TOOLS.find((t) => t.name === name);
+    assert.ok(tool, `${name} should be checked for presence`);
+    assert.equal(tool.floor, undefined, `${name} must not carry a floor`);
+  }
+});
+
+test("node is checked against engines, and is not in REQUIRED_TOOLS", () => {
+  assert.equal(checkNode(">=22.0.0", "v22.23.2").ok, true);
+  assert.equal(checkNode(">=22.0.0", "v20.11.0").ok, false);
+  assert.match(checkNode(">=22.0.0", "v20.11.0").problem, /engines/);
+
+  // It cannot be in REQUIRED_TOOLS: this is a node script, so a machine
+  // without node never reaches the check. The .sh wrapper covers that.
+  assert.ok(!REQUIRED_TOOLS.some((t) => t.name === "node"));
+});
+
+test("node is deliberately not among the checked tools", () => {
+  // It cannot be. This is a node script, so a machine without node never
+  // reaches the check at all — scripts/check-local-env.sh covers it, and
+  // listing node here would imply a guarantee this file cannot give.
+  assert.ok(
+    !REQUIRED_TOOLS.some((t) => t.name === "node"),
+    "node belongs in the shell bootstrap, not here",
+  );
+});
+
+test("the pnpm pin is read from packageManager", () => {
+  assert.equal(pinnedPnpmVersion({ packageManager: "pnpm@11.21.0" }), "11.21.0");
+  assert.equal(pinnedPnpmVersion({ packageManager: "yarn@4.0.0" }), null);
+  assert.equal(pinnedPnpmVersion({}), null);
+});
+
+test("a tool present here but not in a fresh shell is reported, not failed", () => {
+  // Everything works in the shell running this, so failing would block work
+  // that is about to succeed. It is a warning about the NEXT terminal.
+  const tools = [
+    { name: "node", ok: true, present: true },
+    { name: "docker", ok: true, present: true },
+  ];
+  const fresh = [
+    { name: "node", resolves: false },
+    { name: "docker", resolves: true },
+  ];
+  assert.deepEqual(shellGaps(tools, fresh), ["node"]);
+
+  // Unknown shell, or a probe that failed: no claim either way.
+  assert.deepEqual(shellGaps(tools, null), []);
+  assert.equal(freshShellTools(["node"], { shell: "/usr/bin/fish" }), null);
+  assert.equal(
+    freshShellTools(["node"], {
+      shell: "/bin/zsh",
+      run: () => {
+        throw new Error("spawn failed");
+      },
+    }),
+    null,
+  );
+});
+
+test("the fresh-shell probe explains the nvm cause it exists for", () => {
+  const text = reportShellGaps(["node"]);
+  assert.match(text, /a new terminal would not find these/);
+  assert.match(text, /nvm alias default/);
+  assert.match(text, /~\/\.zshenv/, "PATH advice differs from the secrets advice");
+  assert.equal(reportShellGaps([]), "", "nothing to say when there are no gaps");
+});
+
+test("the tool report names what is missing and how to install it", () => {
+  const text = reportTools([
+    { name: "terraform", why: "infra", present: false, ok: false, version: null, note: null },
+    { name: "git", why: "workflow", present: true, ok: true, version: "2.50.1", note: null },
+  ]);
+
+  // Not-installed and installed-but-off-PATH read differently, because they
+  // need opposite fixes and conflating them tells someone to install
+  // software they already have.
+  assert.match(text, /NOT INSTALLED/);
+  assert.match(text, /terraform — infra/);
+  // Names the install command rather than pointing at `--fix`, which this
+  // build does not implement.
+  assert.match(text, /brew install terraform/);
+});
+
+test("installed-but-off-PATH is reported as such, not as missing", () => {
+  const text = reportTools([
+    { name: "psql", why: "recovery", present: false, ok: false, version: null,
+      foundAt: "/opt/homebrew/opt/postgresql@16/bin",
+      problem: "installed at /opt/homebrew/opt/postgresql@16/bin, but not on PATH." },
+  ]);
+  assert.match(text, /INSTALLED, NOT ON PATH/);
+  assert.ok(!text.includes("NOT INSTALLED"), "it is installed");
+});
+
+test("candidateBinDirs knows the keg-only postgres location", () => {
+  // Homebrew does not link postgresql@N into bin, which is why CLAUDE.md's
+  // recovery steps spell the path out in full. The major follows the compose
+  // image rather than being written twice.
+  const dirs = candidateBinDirs("psql", {
+    home: "/Users/x", brewPrefix: "/opt/homebrew", postgresMajor: "16",
+  });
+  assert.ok(dirs.includes("/opt/homebrew/opt/postgresql@16/bin"));
+
+  const found = locateOffPath("psql", dirs, (p) =>
+    p === "/opt/homebrew/opt/postgresql@16/bin/psql");
+  assert.equal(found, "/opt/homebrew/opt/postgresql@16/bin");
+  assert.equal(locateOffPath("psql", dirs, () => false), null);
+});
+
+test("a probe whose every lookup fails reports all missing, not 'unknown'", () => {
+  // The shell exits with the status of its LAST command, so a script whose
+  // final `command -v` finds nothing exits non-zero and the spawn throws.
+  // The catch then reported "cannot introspect" for the one case that matters
+  // most — everything missing — which is exactly the state this machine was
+  // in when the probe was written.
+  assert.deepEqual(
+    freshShellTools(["node", "pnpm"], { shell: "/bin/zsh", run: () => "" }),
+    [
+      { name: "node", resolves: false },
+      { name: "pnpm", resolves: false },
+    ],
+  );
+});
+
 test("a block comment sharing a line with a declaration is seen through", () => {
   // Invisible to both passes before this: the skipping pass does not enter
   // comment mode because the line also closes it, and the reading pass's
@@ -351,9 +562,63 @@ test("a block comment sharing a line with a declaration is seen through", () => 
     ["secret"],
   );
 
-  // And a comment after the header, on the same line.
   assert.deepEqual(
     sensitiveVariables('variable "other" { /* x */\n  sensitive = true\n}\n'),
     ["other"],
   );
+});
+
+test("only stack-essential tools are allowed to block the dev stack", () => {
+  // terraform, psql and gh are for infrastructure, database recovery and PR
+  // workflows — none of which is starting Postgres. Blocking ./scripts/dev.sh
+  // on them stops someone with node, pnpm and docker from working for an
+  // unrelated reason, which is how a preflight gets commented out.
+  assert.deepEqual(STACK_TOOLS, ["node", "pnpm", "docker"]);
+
+  for (const name of ["terraform", "psql", "gh"]) {
+    assert.ok(
+      REQUIRED_TOOLS.some((t) => t.name === name),
+      `${name} must still be CHECKED`,
+    );
+    assert.ok(
+      !STACK_TOOLS.includes(name),
+      `${name} must not gate the dev stack`,
+    );
+  }
+});
+
+test("nvm candidates point at a version's bin, not the versions directory", () => {
+  // It pushed `~/.nvm/versions/node`, so locateOffPath looked for
+  // `~/.nvm/versions/node/node` — a path that never exists. An nvm-installed
+  // node was therefore reported "not installed" rather than "off PATH", and
+  // the repair offered would have been `brew install node`.
+  const dirs = candidateBinDirs("node", {
+    home: "/Users/x",
+    brewPrefix: "/opt/homebrew",
+    nodeVersions: ["v22.23.2", "v24.19.0"],
+  });
+
+  assert.ok(dirs.includes("/Users/x/.nvm/versions/node/v22.23.2/bin"));
+  assert.ok(!dirs.includes("/Users/x/.nvm/versions/node"), "the bare dir holds no binary");
+
+  assert.equal(
+    locateOffPath("node", dirs, (p) => p === "/Users/x/.nvm/versions/node/v24.19.0/bin/node"),
+    "/Users/x/.nvm/versions/node/v24.19.0/bin",
+  );
+
+  // No nvm at all: only the Homebrew candidate remains.
+  assert.deepEqual(
+    candidateBinDirs("node", { home: "/Users/x", brewPrefix: "/opt/homebrew" }),
+    ["/opt/homebrew/bin"],
+  );
+});
+
+test("the report does not advertise an option this build ignores", () => {
+  // `--fix` arrives with the repair flow in a later change. Telling someone
+  // to re-run with a flag that does nothing is worse than saying nothing.
+  const text = reportTools([
+    { name: "terraform", why: "infra", present: false, ok: false, version: null },
+  ]);
+  assert.ok(!text.includes("--fix"), "advertised an unimplemented option");
+  assert.match(text, /brew install terraform/);
 });
