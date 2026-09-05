@@ -28,8 +28,15 @@
  * would be worse than no checker.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AI_ROLES } from "../packages/config/src/index.js";
 
@@ -85,12 +92,8 @@ function scanSensitive(source, { skipBodies }) {
 
   for (const raw of source.split("\n")) {
     // A COMPLETE `/* ... */` span is removed before anything else looks at
-    // the line. `/* note */ variable "secret" {` was invisible to both
-    // passes: the skipping pass does not enter comment mode because the line
-    // also closes it, and the reading pass's anchored header regex cannot
-    // match through the leading comment. Neither recorded the header, so the
-    // `sensitive` below it attached to whatever came before -- a silent miss,
-    // which is the one direction the union exists to rule out.
+    // the line -- `/* note */ variable "secret" {` was invisible to both
+    // passes, a silent miss the union exists to rule out.
     const line = raw.replace(/\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\//g, " ");
 
     if (skipBodies) {
@@ -236,12 +239,8 @@ export function toolingRequirements(roles) {
  * The subset the LOCAL DEV STACK actually needs.
  *
  * terraform, psql and gh are for infrastructure, database recovery and PR
- * workflows -- none of which is starting Postgres and the API. Blocking
- * `./scripts/dev.sh` on them would stop someone with node, pnpm and docker
- * from working for a reason unrelated to what they are doing, which is how a
- * preflight becomes something people comment out.
- *
- * They are still CHECKED and still reported; they simply do not gate.
+ * workflows -- none of which is starting Postgres and the API. They are
+ * still checked and reported; they simply do not gate.
  */
 export const STACK_TOOLS = ["node", "pnpm", "docker"];
 
@@ -498,8 +497,8 @@ export function freshShellTools(names, { shell = process.env.SHELL, run } = {}) 
   // cheap enough to run before every dev session.
   // `; true` because the shell exits with the status of its LAST command --
   // so a script whose final `command -v` finds nothing exits non-zero, the
-  // spawn throws, and the catch below reports "cannot introspect" for the one
-  // case that matters most: everything missing.
+  // spawn throws, and the catch below reports "cannot introspect" for the
+  // one case that matters most: everything missing.
   const script = `${names
     .map((n) => `command -v ${n} >/dev/null 2>&1 && echo "${n}"`)
     .join("; ")}; true`;
@@ -560,14 +559,12 @@ export function candidateBinDirs(
       dirs.push(join(brewPrefix, "opt", `postgresql@${postgresMajor}`, "bin"));
     }
   }
+  // node and pnpm live under whichever nvm version is active, so a specific
+  // version's bin is a real place they can exist while PATH has none.
   // node and pnpm live under a VERSION's bin, not under the versions
   // directory itself. This pushed `~/.nvm/versions/node`, so locateOffPath
   // looked for `~/.nvm/versions/node/node` -- a path that never exists, so an
-  // nvm-installed node was reported "not installed" rather than "off PATH",
-  // and the fix offered would have been `brew install node`.
-  //
-  // The versions are passed in rather than read here, so this stays a pure
-  // function; the caller enumerates the directory once.
+  // nvm-installed node was reported "not installed" rather than "off PATH".
   if ((name === "node" || name === "pnpm") && home) {
     for (const version of nodeVersions) {
       dirs.push(join(home, ".nvm", "versions", "node", version, "bin"));
@@ -589,6 +586,323 @@ export function locateOffPath(name, dirs, exists) {
  *
  * THE HARD LINE: a fix may change CONFIGURATION and may never invent a
  * VALUE. Pointing nvm at a version already installed, installing a tool from
+
+ * a package manager, or recording a deliberate "this feature is off" are all
+ * reversible and carry no secret. Generating a JWT secret or an API key is
+ * not a fix -- it produces something that looks configured, works locally,
+ * and is wrong everywhere else. Those print instructions and stop.
+ *
+ * Everything returned here is a PROPOSAL. Nothing runs without an explicit
+ * yes, and the default is no.
+ */
+/**
+ * A path, safe inside a double-quoted shell string.
+ *
+ * These lines are appended to a shell profile and executed on every start,
+ * so an unescaped `"`, backtick or `$(...)` in a directory name would not
+ * merely corrupt the file -- it would run. Rare, and the consequence is bad
+ * enough that guessing is not worth it.
+ */
+export function shellQuote(value) {
+  return value.replace(/([\\"$`])/g, "\\$1");
+}
+
+/**
+ * Which tools a NON-interactive shell finds.
+ *
+ * A second, separate question from freshShellTools, and the distinction is
+ * the whole point. `.zshrc` runs only for INTERACTIVE shells, so a tool
+ * provided there works in a terminal and is invisible to everything else:
+ * git hooks, editor terminals, anything a script spawns. That is a real
+ * state this machine was in -- `zsh -lic` found node while `zsh -c` did not.
+ *
+ * Same clean-environment discipline: `env -i`, only HOME, so the probe
+ * cannot inherit what it is trying to detect.
+ */
+export function nonInteractiveTools(names, { shell = process.env.SHELL, run } = {}) {
+  if (!shell || !/\/(zsh|bash)$/.test(shell)) return null;
+
+  // `; true` because the shell exits with the status of its LAST command --
+  // so a script whose final `command -v` finds nothing exits non-zero, the
+  // spawn throws, and the catch below reports "cannot introspect" for the
+  // one case that matters most: everything missing.
+  const script = `${names
+    .map((n) => `command -v ${n} >/dev/null 2>&1 && echo "${n}"`)
+    .join("; ")}; true`;
+
+  try {
+    const output = (run ?? defaultNonInteractiveRun)(shell, script);
+    const found = new Set(output.split("\n").map((l) => l.trim()).filter(Boolean));
+    return names.filter((name) => !found.has(name));
+  } catch {
+    return null;
+  }
+}
+
+const defaultNonInteractiveRun = (shell, script) =>
+  execFileSync("env", ["-i", `HOME=${process.env.HOME}`, shell, "-c", script], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 15_000,
+  });
+
+/**
+ * A PATH line for ~/.zshenv, covering tools only interactive shells find.
+ *
+ * ~/.zshenv because EVERY zsh reads it -- the opposite of where secrets
+ * belong, and for the same reason stated from the other side: a PATH entry
+ * missing from it is missing from every non-interactive shell, while a
+ * secret in it is handed to every subprocess.
+ *
+ * One directory, not one per tool: node and its corepack shims share a bin,
+ * so a single line covers both.
+ */
+function zshenvPathFix(missing, binDir) {
+  if (missing.length === 0 || !binDir) return null;
+  return {
+    id: "zshenv-path",
+    title: `Put ${missing.join(" and ")} on PATH for non-interactive shells`,
+    detail:
+      `Found in a terminal but not in \`zsh -c\`, because nvm loads from ` +
+      `~/.zshrc, which only interactive shells read. Hooks, editor terminals ` +
+      `and spawned scripts therefore cannot see ${missing.join(" or ")}. ` +
+      `Note this pins a version path, so it needs updating when you switch.`,
+    appendToRc: `export PATH="${shellQuote(binDir)}:$PATH"`,
+    rcFile: ".zshenv",
+  };
+}
+
+/**
+ * Is pnpm the corepack shim for the ACTIVE node, or some other copy?
+ *
+ * "pnpm exists" is not the same as "pnpm is the pinned one". A brew or
+ * global-npm pnpm satisfies `command -v` and ignores package.json's
+ * `packageManager` entirely, so the version silently drifts from the pin and
+ * `corepack use` is never what decides it.
+ *
+ * The test is co-location: corepack writes its shims into the bin directory
+ * of the node running them, so a pnpm anywhere else is not corepack's.
+ *
+ * This is also the state that a node switch leaves behind -- shims belong to
+ * one version, so moving nvm's default silently removes pnpm.
+ */
+export function corepackState({ pnpmPath, nodePath, readHead = defaultReadHead }) {
+  if (!pnpmPath) return { ok: false, state: "absent" };
+  if (!nodePath) return { ok: true, state: "unknown" };
+
+  // Co-location is necessary and NOT sufficient. A globally installed pnpm
+  // can sit in the same bin directory as node and would read as corepack's
+  // while still ignoring the pin entirely -- so the file itself is asked.
+  // Corepack's shims say so in their first bytes; a real pnpm bundle does
+  // not.
+  if (dirname(pnpmPath) !== dirname(nodePath)) {
+    return { ok: false, state: "unmanaged", pnpmPath };
+  }
+
+  const head = readHead(pnpmPath);
+  if (head === null) return { ok: true, state: "unknown", pnpmPath };
+
+  const isShim = /corepack/i.test(head);
+  return {
+    ok: isShim,
+    state: isShim ? "corepack" : "unmanaged",
+    pnpmPath,
+  };
+}
+
+/** The first bytes of a file, or null when it cannot be read. */
+function defaultReadHead(path) {
+  try {
+    return readFileSync(path, "utf8").slice(0, 4096);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Point nvm's default at a version that is actually installed.
+ *
+ * `nvm current` reporting "none" means the default alias names something
+ * nvm does not have, so `nvm use default` fails silently and PATH gets no
+ * node at all. Seen here: default -> lts/* -> lts/krypton -> v24.20.0, with
+ * only v22.23.2 and v24.19.0 installed.
+ */
+function nvmDefaultFix({ gaps, declared, installedNode }) {
+  if (!gaps.includes("node") || installedNode.length === 0) return null;
+
+  const floor = parseVersion(declared.node ?? "");
+  const usable = installedNode
+    .map((v) => ({ raw: v, parsed: parseVersion(v) }))
+    .filter((v) => v.parsed && (!floor || compareVersions(v.parsed, floor) >= 0))
+    .sort((a, b) => compareVersions(b.parsed, a.parsed));
+  if (usable.length === 0) return null;
+
+  // PREFER THE MAJOR CI RUNS, not the newest installed. Newest is the
+  // obvious pick and the wrong one: it puts local development on a Node that
+  // CI never exercises, which is how a version-skew bug reaches a PR green on
+  // someone's laptop.
+  const matchingCi = declared.ciNode
+    ? usable.find((v) => v.parsed[0] === Number(declared.ciNode))
+    : null;
+  const major = (matchingCi ?? usable[0]).parsed[0];
+
+  return {
+    id: "nvm-default",
+    title: `Point nvm's default at Node ${major}`,
+    detail:
+      "`nvm current` is 'none' — the default alias names a version that is " +
+      "not installed, so nvm activates nothing and a new terminal has no node.",
+    command: `nvm alias default ${major}`,
+    // nvm is a shell function, not a binary, so it exists only inside a
+    // shell that has sourced nvm.sh.
+    shell: true,
+  };
+}
+
+/** Provision pnpm for the active node version, the way packageManager means. */
+function corepackFix(declared, because = null) {
+  return {
+    id: "corepack",
+    title: "Enable corepack for pnpm",
+    detail:
+      `pnpm is provisioned per node version from package.json's ` +
+      `packageManager (${declared.pnpm ?? "pinned"})` +
+      (because ? `, and needs re-enabling ${because}.` : "."),
+    command: "corepack enable",
+    shell: true,
+  };
+}
+
+export function proposeFixes({ tools = [], gaps = [], variables = [], declared = {}, installedNode = [], corepack = null, nonInteractiveMissing = [], nodeBinDir = null }) {
+  const fixes = [];
+
+  // ORDER MATTERS, and this one is not cosmetic. Switching nvm's default
+  // changes which node is active, and pnpm is provisioned PER NODE VERSION
+  // -- so a corepack fix proposed before the switch installs the shim for
+  // the version being switched away from. Node first, always.
+  const nodeFix = nvmDefaultFix({ gaps, declared, installedNode });
+  if (nodeFix) fixes.push(nodeFix);
+
+  // pnpm present but not corepack's: it satisfies `command -v` while ignoring
+  // the pin, so the version drifts from packageManager with nothing failing.
+  const pathFix = zshenvPathFix(nonInteractiveMissing, nodeBinDir);
+  if (pathFix) fixes.push(pathFix);
+
+  if (corepack && !corepack.ok && corepack.state === "unmanaged") {
+    fixes.push(
+      corepackFix(declared, `— pnpm at ${corepack.pnpmPath} is not corepack's`),
+    );
+  }
+
+  for (const tool of tools) {
+    if (tool.ok) continue;
+
+    if (!tool.present) {
+      // INSTALLED BUT INVISIBLE is a different problem with a different fix.
+      // Telling someone to install software they already have is how a setup
+      // script loses their trust.
+      const dir = tool.foundAt;
+      if (dir) {
+        fixes.push({
+          id: `path-${tool.name}`,
+          title: `Add ${tool.name} to PATH`,
+          detail: `Already installed at ${dir}/${tool.name}, but not on PATH.`,
+          // ~/.zshenv, not ~/.zshrc: every zsh reads it, so hooks, editors
+          // and scripts get it too. The opposite of where secrets belong.
+          appendToRc: `export PATH="${shellQuote(dir)}:$PATH"`,
+          rcFile: ".zshenv",
+        });
+        continue;
+      }
+      // pnpm is NOT a brew package here. package.json's `packageManager`
+      // field means corepack provisions it, and it lives inside the active
+      // node version -- so a missing pnpm usually means the node version
+      // changed, not that anything needs downloading. Observed directly:
+      // repairing nvm's default moved node from v24 to v22 and pnpm
+      // vanished, because it had only ever been installed under v24.
+      if (tool.name === "pnpm") {
+        fixes.push(corepackFix(declared));
+        continue;
+      }
+      fixes.push({
+        id: `install-${tool.name}`,
+        title: `Install ${tool.name}`,
+        detail: tool.why,
+        command: `brew install ${tool.formula ?? tool.name}`,
+      });
+      continue;
+    }
+    if (tool.name === "pnpm" && declared.pnpm) {
+      // corepack is what package.json's packageManager field is for, so this
+      // makes the machine match the repo rather than the other way round.
+      fixes.push({
+        id: "pin-pnpm",
+        title: `Pin pnpm to ${declared.pnpm}`,
+        detail: tool.problem,
+        command: `corepack use pnpm@${declared.pnpm}`,
+      });
+      continue;
+    }
+
+    // Present, wrong version, not pnpm. psql's major mismatch means a
+    // DIFFERENT formula rather than an upgrade of the same one -- brew keeps
+    // postgresql@15 and @16 side by side, and upgrading 15 never produces 16.
+    if (tool.name === "psql" && declared.psql) {
+      fixes.push({
+        id: "install-psql-major",
+        title: `Install PostgreSQL ${declared.psql} client`,
+        detail: `${tool.problem} The dev stack runs postgres:${declared.psql}.`,
+        command: `brew install postgresql@${declared.psql}`,
+      });
+      continue;
+    }
+    fixes.push({
+      id: `upgrade-${tool.name}`,
+      title: `Upgrade ${tool.name}`,
+      detail: tool.problem,
+      command: `brew upgrade ${tool.formula ?? tool.name}`,
+    });
+  }
+
+  // Switching node re-provisions pnpm, so offer it in the same pass rather
+  // than making someone re-run the check to discover pnpm has gone.
+  if (nodeFix && !fixes.some((f) => f.id === "corepack")) {
+    fixes.push(corepackFix(declared, "after the node switch above"));
+  }
+
+  for (const variable of variables) {
+    if (variable.ok) continue;
+
+    // ONLY where empty is a documented decision. A variable that needs a real
+    // value gets instructions, never a generated one.
+    if (variable.emptyMeans) {
+      fixes.push({
+        id: `declare-${variable.name}`,
+        title: `Record ${variable.name} as deliberately empty`,
+        detail: `Means: ${variable.emptyMeans}.`,
+        appendToRc: `export ${variable.name}=  # ${variable.emptyMeans}`,
+      });
+    } else {
+      fixes.push({
+        id: `manual-${variable.name}`,
+        title: `${variable.name} needs a real value`,
+        detail: `${variable.why} Without it: ${variable.breaks}`,
+        manual: true,
+      });
+    }
+  }
+
+  return fixes;
+}
+
+/** Node versions nvm has installed, newest last. */
+export function installedNodeVersions(list) {
+  return (list ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => /^v\d+\./.test(line));
+}
+
 
 /**
  * Everything this repo wants declared in a developer's shell.
@@ -689,13 +1003,7 @@ export function reportTools(tools) {
     for (const t of missing) {
       lines.push(`    ${t.name} — ${t.why}`);
     }
-    lines.push(
-      "",
-      // Deliberately no "--fix" hint: that flag arrives with the repair
-      // flow in a later change. Telling someone to re-run with an option
-      // this build ignores is worse than saying nothing.
-      `    brew install ${missing.filter((t) => !t.foundAt).map((t) => t.formula ?? t.name).join(" ")}`.trimEnd(),
-    );
+    lines.push("", "  Re-run with --fix to be walked through repairing these.");
   }
 
   return lines.join("\n");
@@ -792,20 +1100,118 @@ export function report(results) {
  * a stray keypress. These edit the developer's machine and their shell
  * profile, so ambiguity has to mean stop.
  */
+async function confirm(question) {
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const answer = await rl.question(`${question} [y/N] `);
+    return answer.trim().toLowerCase() === "y";
+  } finally {
+    rl.close();
+  }
+}
+
+function applyFix(fix) {
+  if (fix.appendToRc) {
+    // HONOUR fix.rcFile. It defaulted to ~/.zshrc unconditionally, so the
+    // PATH repair -- whose whole purpose is ~/.zshenv, the file every zsh
+    // reads -- was written where non-interactive shells never look. The
+    // problem stayed broken and the success line said otherwise.
+    const rc = join(process.env.HOME ?? "", fix.rcFile ?? ".zshrc");
+    // Backed up first. This is someone's shell profile, and an append that
+    // goes wrong should never be the only copy.
+    const backup = `${rc}.bak-${Date.now()}`;
+    if (existsSync(rc)) {
+      // The backup inherits the ORIGINAL's mode, not the umask. These files
+      // hold credentials -- a 0600 .zshrc copied under a common umask
+      // becomes a world-readable 0644 backup sitting next to it.
+      const { mode } = statSync(rc);
+      writeFileSync(backup, readFileSync(rc, "utf8"), { mode });
+    }
+    appendFileSync(rc, `\n${fix.appendToRc}\n`);
+    const short = (path) => path.replace(process.env.HOME ?? "", "~");
+    return `appended to ${short(rc)} (backup: ${short(backup)})`;
+  }
+
+  // `shell: true` for nvm, which is a shell function rather than a binary and
+  // exists only inside a shell that has sourced nvm.sh.
+  const [command, ...args] = fix.command.split(" ");
+  if (fix.shell) {
+    execFileSync(process.env.SHELL ?? "/bin/zsh", ["-lic", fix.command], {
+      stdio: "inherit",
+    });
+  } else {
+    execFileSync(command, args, { stdio: "inherit" });
+  }
+  return "done";
+}
+
+async function offerFixes(fixes) {
+  const actionable = fixes.filter((f) => !f.manual);
+  const manual = fixes.filter((f) => f.manual);
+
+  if (manual.length > 0) {
+    console.log("\n  NEEDS A REAL VALUE — nothing can be generated for these:");
+    for (const fix of manual) {
+      console.log(`    ${fix.title}\n      ${fix.detail}`);
+    }
+    console.log(
+      "\n    A generated secret is worse than a missing one: it looks " +
+        "configured,\n    works locally, and is wrong everywhere else.",
+    );
+  }
+
+  if (actionable.length === 0) return;
+
+  // Non-interactive (a hook, CI, a pipe): print the commands and change
+  // nothing. A prompt nobody can answer must not become a silent yes.
+  if (!process.stdin.isTTY) {
+    console.log("\n  FIXABLE — run with a terminal attached, or by hand:");
+    for (const fix of actionable) {
+      console.log(`    ${fix.title}`);
+      console.log(`      ${fix.command ?? fix.appendToRc}`);
+    }
+    return;
+  }
+
+  console.log("\n  FIXABLE:");
+  for (const fix of actionable) {
+    console.log(`\n  ${fix.title}`);
+    console.log(`    ${fix.detail}`);
+    console.log(`    → ${fix.command ?? `add to ~/.zshrc:  ${fix.appendToRc}`}`);
+
+    if (!(await confirm("    Apply this?"))) {
+      console.log("    skipped.");
+      continue;
+    }
+    try {
+      console.log(`    ${applyFix(fix)}`);
+    } catch (error) {
+      console.log(`    failed: ${error.message}`);
+    }
+  }
+  console.log("\n  Re-run to confirm, and `source ~/.zshrc` in open terminals.");
+}
 
 // CLI. Exits non-zero when a tool is missing, a version is wrong, or a
 // variable is undeclared, so it can gate a setup script.
 //
-// `--tools-only` is what scripts/dev.sh uses: the dev stack genuinely needs
-// node, pnpm and docker, and genuinely does not need a WhatsApp token. A
-// preflight that blocked the local stack on an unrelated credential is one
-// people would route around within a week.
+// `--fix` offers each repairable problem for confirmation. `--tools-only`
+// skips the credential half entirely; `--gate-stack` still checks and offers
+// to fix it, but lets only a tool failure stop the caller -- which is what
+// dev.sh wants, so a missing WhatsApp token is reported and fixable without
+// blocking the local stack.
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const toolsOnly = process.argv.includes("--tools-only");
-  // `--gate-stack`: report everything, but let only a STACK-essential tool
-  // stop the caller. What dev.sh wants -- a missing `gh` is worth saying and
-  // is no reason to refuse to start Postgres.
+  // `--gate-tools`: check and offer to fix EVERYTHING, but let only a tool
+  // failure stop the caller. What dev.sh wants -- the stack genuinely needs
+  // docker and pnpm and genuinely does not need a WhatsApp token, while the
+  // developer still gets told about the token and offered the one-line fix.
   const gateStack = process.argv.includes("--gate-stack");
+  const wantsFixes = process.argv.includes("--fix");
   const declared = declaredVersions();
 
   const tools = [
@@ -814,7 +1220,40 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   ];
   console.log(reportTools(tools));
 
+  // Where pnpm actually comes from, which "pnpm --version" cannot tell you.
+  let corepack = null;
+  try {
+    corepack = corepackState({
+      pnpmPath: execFileSync("command", ["-v", "pnpm"], {
+        encoding: "utf8",
+        shell: "/bin/sh",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim(),
+      nodePath: process.execPath,
+    });
+  } catch {
+    corepack = corepackState({ pnpmPath: null, nodePath: process.execPath });
+  }
+  if (corepack.state === "unmanaged") {
+    console.log(
+      `\n  ⚠ pnpm at ${corepack.pnpmPath} is not corepack's shim, so ` +
+        `package.json's\n    packageManager pin is not what decides its version.`,
+    );
+  }
+
   const gaps = shellGaps(tools, freshShellTools(tools.map((t) => t.name)));
+
+  // Separately: what a NON-interactive shell finds. `.zshrc` does not run for
+  // those, so a tool provided there is invisible to hooks and scripts.
+  const nonInteractiveMissing = (
+    nonInteractiveTools(["node", "pnpm"]) ?? []
+  ).filter((name) => tools.some((t) => t.name === name && t.ok));
+  if (nonInteractiveMissing.length > 0) {
+    console.log(
+      `\n  ⚠ ${nonInteractiveMissing.join(", ")} not found by \`zsh -c\` — ` +
+        `hooks and scripts\n    that start a clean shell will not see them.`,
+    );
+  }
   const gapReport = reportShellGaps(gaps);
   if (gapReport) console.log(gapReport);
 
@@ -825,16 +1264,43 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.log(report(variables));
   }
 
+  if (wantsFixes) {
+    let installedNode = [];
+    try {
+      installedNode = installedNodeVersions(
+        execFileSync("ls", [join(process.env.HOME ?? "", ".nvm/versions/node")], {
+          encoding: "utf8",
+        }),
+      );
+    } catch {
+      installedNode = [];
+    }
+    await offerFixes(
+      proposeFixes({
+        tools,
+        gaps,
+        variables,
+        declared,
+        installedNode,
+        corepack,
+        nonInteractiveMissing,
+        nodeBinDir: dirname(process.execPath),
+      }),
+    );
+  } else if (tools.some((t) => !t.ok) || gaps.length > 0) {
+    console.log("  Re-run with --fix to be walked through repairing these.\n");
+  }
+
   // A shell gap does NOT fail the check. Everything works in the shell you
   // are in, which is the one running this -- it is a warning about the next
   // one, and failing here would block work that is about to succeed.
-  // Under --gate-stack only a stack-essential tool stops the caller.
-  // Everything else is still checked and still printed; it simply is not a
-  // reason to refuse to start Postgres.
+  // Under --gate-stack only a stack-essential tool stops the caller, and
+  // credentials are reported without gating -- what dev.sh wants.
   const blocking = gateStack
     ? tools.filter((t) => STACK_TOOLS.includes(t.name) && !t.ok)
     : tools.filter((t) => !t.ok);
 
-  const ok = blocking.length === 0 && variables.every((v) => v.ok);
+  const ok =
+    blocking.length === 0 && (gateStack || variables.every((v) => v.ok));
   process.exit(ok ? 0 : 1);
 }
