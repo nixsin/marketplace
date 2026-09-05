@@ -14,6 +14,69 @@ set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 
+# --export: print the PATH this script would need, for the CALLER to adopt.
+#
+#   eval "$(sh scripts/check-local-env.sh --export)"
+#
+# A child process cannot change its parent's environment -- the environment is
+# copied at exec and there is no way back -- so this is the same idiom
+# `brew shellenv` and `ssh-agent` use: the child prints assignments and the
+# parent evaluates them in its own shell.
+#
+# The alternative, making dev.sh itself sourceable, is deliberately NOT
+# offered: it runs `set -euo pipefail`, and in a sourced script that exits the
+# USER'S TERMINAL on the first failure. A setup script that can close your
+# terminal is worse than one that asks you to run one more command.
+#
+# Prints nothing when the PATH is already correct, so it is safe to eval
+# unconditionally from a shell profile or by hand.
+if [ "${1:-}" = "--export" ]; then
+  # Gate on CAPABILITY, not on whether PATH changed. Sourcing ~/.zshenv
+  # prepends the same directory again, so a string comparison always reports
+  # a difference -- it emitted an assignment on every call, and evaluating
+  # that repeatedly grows PATH with duplicates.
+  if command -v node >/dev/null 2>&1; then
+    exit 0
+  fi
+
+  # ASK ZSH, do not dot-source its config into sh. ~/.zshenv is a zsh file and
+  # may legally contain zsh-only syntax; a parse error in a sourced file can
+  # abort this shell outright, which `2>/dev/null || true` does not catch.
+  # zsh reads .zshenv for every invocation, so `zsh -c` yields exactly the
+  # PATH that file produces.
+  if command -v zsh >/dev/null 2>&1; then
+    zsh_path=$(zsh -c 'printf %s "$PATH"' 2>/dev/null || true)
+    if [ -n "$zsh_path" ]; then
+      PATH=$zsh_path
+      export PATH
+    fi
+  fi
+  if command -v node >/dev/null 2>&1; then
+    # Single-quoted, with embedded quotes closed and re-opened, so a path
+    # containing a quote cannot end the assignment early.
+    escaped=$(printf '%s' "$PATH" | sed "s/'/'\\\\''/g")
+    printf "export PATH='%s'\n" "$escaped"
+  fi
+  exit 0
+fi
+
+# A stale terminal is the common case: ~/.zshenv gained the PATH line after
+# this shell started, so the file is right and the session is old. Sourcing it
+# repairs THIS script's environment, which is enough for the run to proceed.
+# Asked of zsh rather than dot-sourced, for the reason given above --
+# .zshenv may contain zsh-only syntax that sh cannot parse.
+#
+# It cannot repair the CALLER's shell -- a child process cannot alter its
+# parent's environment -- so the message below still says what to run, and
+# says why rather than implying the script could have done it.
+if ! command -v node >/dev/null 2>&1 && command -v zsh >/dev/null 2>&1; then
+  zsh_path=$(zsh -c 'printf %s "$PATH"' 2>/dev/null || true)
+  if [ -n "$zsh_path" ]; then
+    PATH=$zsh_path
+    export PATH
+  fi
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   cat >&2 <<'EOF'
 
@@ -23,10 +86,15 @@ if ! command -v node >/dev/null 2>&1; then
   install. nvm is initialised from ~/.zshrc, which only runs for INTERACTIVE
   shells, so a stale terminal or a non-interactive one has no node.
 
-  Try, in order:
+  This script already tried sourcing ~/.zshenv for its own run and still
+  found nothing. It cannot fix your shell either way -- a child process
+  cannot change its parent's environment -- so run one of these yourself:
 
+    source ~/.zshenv           # a terminal opened before the PATH line
+    eval "$(sh scripts/check-local-env.sh --export)"   # same, from this repo
     source ~/.zshrc            # a terminal opened before nvm was configured
     ls ~/.nvm/versions/node    # is nvm installed at all?
+    nvm alias default 22       # `nvm current` says none -> nothing activated
     nvm install --lts          # if that directory is empty
 
   Nothing else can be checked until node runs, so this stops here.

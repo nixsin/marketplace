@@ -6,6 +6,26 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Preflight: the tools this stack needs, at the versions this repo declares.
+#
+# Replaces a bare `command -v docker` check with the full set -- node, pnpm,
+# docker, terraform, gh, psql -- and their versions, read from where the repo
+# already declares them. It also reports tools that resolve in THIS shell but
+# would not in a new terminal, which is the failure that motivated it.
+#
+# --tools-only deliberately: the dev stack needs docker and pnpm and does not
+# need a WhatsApp token. A preflight that blocked the local stack on an
+# unrelated credential is one people would route around within a week.
+#
+# Skipped in CI, which runs this script too. A GitHub runner has no global
+# pnpm or terraform -- it installs what it needs through actions -- so the
+# preflight found them missing and blocked docker-smoke. This check is a
+# DEVELOPER aid: on a runner there is no shell profile to repair and nobody
+# to ask, and the jobs that need a tool already install it themselves.
+if [ -z "${CI:-}" ]; then
+  sh "$(dirname "$0")/check-local-env.sh" --tools-only --gate-stack
+fi
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "Docker isn't installed. Get it from https://docs.docker.com/get-docker/ and re-run this script." >&2
   exit 1
