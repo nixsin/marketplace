@@ -173,7 +173,7 @@ function readAppEnv(app, forcedTarget) {
 }
 for (const app of apps) {
   if (app !== "api" && app !== "web") {
-    console.error(`Unknown app "${app}". Expected api, web, or all.`);
+    console.error(`Unknown app "${String(app)}". Expected api, web, or all.`);
     process.exit(2);
   }
 }

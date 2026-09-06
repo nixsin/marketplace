@@ -27,7 +27,11 @@ export default tseslint.config(
   {
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
-      '@typescript-eslint/no-floating-promises': 'warn',
+      // ERROR, not warn. A missing await is not a style preference: the
+      // failure it produces is an unhandled rejection, which is the quietest
+      // one Node has. It sat at 'warn' with three real instances unfixed,
+      // which is what a warning in a large codebase becomes.
+      '@typescript-eslint/no-floating-promises': 'error',
       '@typescript-eslint/no-unsafe-argument': 'warn',
       "prettier/prettier": ["error", { endOfLine: "auto" }],
     },

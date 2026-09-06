@@ -48,4 +48,11 @@ async function bootstrap() {
   // thing that drifted. scripts/api-port-drift.test.mjs pins them together.
   await app.listen(process.env.PORT ?? API_DEFAULT_PORT);
 }
-bootstrap();
+// Rejections handled explicitly rather than left floating. This file exists
+// to fail loudly on a bad environment, and an unhandled rejection is the
+// quietest failure Node has -- the exit code and the message both depend on
+// runtime flags rather than on anything stated here.
+bootstrap().catch((error) => {
+  console.error('API failed to start:', error);
+  process.exit(1);
+});

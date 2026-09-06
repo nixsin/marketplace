@@ -1,0 +1,28 @@
+{
+  // Type information for linting scripts/ and packages/config/, nothing else.
+  //
+  // `@typescript-eslint/no-floating-promises` is type-aware: without a TS
+  // program it cannot know a call returns a promise, so a dropped `await` is
+  // invisible to it. These directories are plain JavaScript, so `allowJs`
+  // is what lets typescript-eslint infer types for them at all.
+  //
+  // `checkJs` stays OFF deliberately. Turning it on would report every
+  // ordinary type error in 19,000 lines of working JavaScript as a lint
+  // failure, which is a separate and much larger change. Inference for the
+  // lint rules does not need it — only `allowJs` does.
+  //
+  // Its own file rather than the root tsconfig: nothing builds from this,
+  // and a `noEmit` config used only by ESLint should not be mistaken for a
+  // compilation target.
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["scripts/**/*.mjs", "scripts/**/*.js", "packages/config/**/*.js"]
+}

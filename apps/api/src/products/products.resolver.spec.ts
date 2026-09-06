@@ -46,8 +46,8 @@ describe('ProductsResolver', () => {
       expect(result).toBe(expected);
     });
 
-    it('calls findPage(undefined, undefined) when called with no args', () => {
-      resolver.products();
+    it('calls findPage(undefined, undefined) when called with no args', async () => {
+      await resolver.products();
 
       expect(mockProductsService.findPage).toHaveBeenCalledWith(
         undefined,
@@ -67,8 +67,8 @@ describe('ProductsResolver', () => {
       expect(result).toBe(expected);
     });
 
-    it('calls findPaged(undefined, undefined) when called with no args', () => {
-      resolver.productsPaged();
+    it('calls findPaged(undefined, undefined) when called with no args', async () => {
+      await resolver.productsPaged();
 
       expect(mockProductsService.findPaged).toHaveBeenCalledWith(
         undefined,
