@@ -14,6 +14,15 @@
  *   SITE=https://staging… node scripts/production-audit.mjs
  */
 import { setTimeout as sleep } from "node:timers/promises";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { CONTRACTS } from "../packages/config/src/env-contract.js";
+import { shadowedVariables } from "./lib/render-shadowed-env.mjs";
+import {
+  configurationRows,
+  environmentSeenBy,
+  missingFromContract,
+} from "./lib/render-config-audit.mjs";
 import {
   formatReport, daysUntil, classifyDeadline, overallStatus,
   cspAllowsImageHost, extractOgContent,
@@ -370,6 +379,118 @@ function checkDeadlines() {
   }
 }
 
+
+/**
+ * Is production configured the way the repository declares?
+ *
+ * Everything else here asks whether production WORKS. This asks whether it
+ * matches the contract — the gap that let three real problems sit unnoticed
+ * until someone went looking by hand on 2026-09-05.
+ *
+ * SKIPPED, not failed, without RENDER_API_KEY. The key is what lets CI read
+ * the services, and adding it is a deliberate decision about a long-lived
+ * credential in repo secrets. Failing here would force that decision by
+ * turning the nightly report red for a reason unrelated to production.
+ */
+async function checkConfiguration() {
+  const apiKey = process.env.RENDER_API_KEY;
+  if (!apiKey) {
+    add("Configuration", "Render configuration", "skip",
+      "RENDER_API_KEY not set — add it as a repo secret to audit env groups");
+    return;
+  }
+
+  const main = readFileSync(
+    fileURLToPath(new URL("../infra/terraform/render/main.tf", import.meta.url)),
+    "utf8",
+  );
+  const serviceId = (local) =>
+    new RegExp(`${local}\\s*=\\s*"(srv-[a-z0-9]+)"`).exec(main)?.[1];
+
+  const render = async (path) => {
+    const res = await get(`https://api.render.com/v1${path}`, {
+      headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    });
+    if (!res.ok) throw new Error(`${path} -> ${res.status}`);
+    return res.json();
+  };
+
+  // Fetched once and shared: listing every group per service would multiply
+  // the calls for an answer that cannot differ between them.
+  let allGroups;
+  try {
+    allGroups = (await render("/env-groups?limit=100")).map((row) => {
+      const g = row.envGroup ?? row;
+      return {
+        name: g.name ?? g.id,
+        names: (g.envVars ?? []).map((v) => v.key).filter(Boolean),
+        serviceIds: (g.serviceLinks ?? []).map((l) => l.id ?? l.serviceId),
+        id: g.id,
+      };
+    });
+  } catch (error) {
+    add("Configuration", "Render env groups readable", "fail", error.message);
+    return;
+  }
+
+  // The list endpoint omits envVars on some plans; fill them in per group
+  // rather than reporting an empty group as "supplies nothing".
+  for (const group of allGroups) {
+    if (group.names.length > 0) continue;
+    try {
+      const full = await render(`/env-groups/${group.id}`);
+      group.names = (full.envVars ?? []).map((v) => v.key).filter(Boolean);
+    } catch {
+      // Left empty deliberately: a group we cannot read shows up as missing
+      // contract variables below, which is the loud direction.
+    }
+  }
+
+  const services = [
+    { service: "medinstru-api", app: "api", id: serviceId("api_service_id") },
+    { service: "medinstru-web", app: "web", id: serviceId("web_service_id") },
+  ];
+
+  const forShadowCheck = [];
+  for (const { service, app, id } of services) {
+    if (!id) {
+      add("Configuration", `${service} service id`, "fail",
+        "not found in infra/terraform/render/main.tf — refusing to guess");
+      continue;
+    }
+
+    try {
+      const direct = (await render(`/services/${id}/env-vars?limit=100`))
+        .map((row) => row.envVar?.key ?? row.key)
+        .filter(Boolean);
+
+      const { names, linked } = await environmentSeenBy({
+        serviceId: id,
+        directNames: async () => direct,
+        groups: async () => allGroups,
+      });
+
+      forShadowCheck.push({ service, app, names: direct });
+
+      const shadowed =
+        shadowedVariables([{ service, app, names: direct }], CONTRACTS)[0]
+          ?.shadowed ?? [];
+
+      for (const row of configurationRows({
+        service,
+        missing: missingFromContract(names, CONTRACTS[app]),
+        shadowing: shadowed,
+        linked,
+        required: CONTRACTS[app].length,
+      })) {
+        add("Configuration", row.name, row.status, row.detail);
+      }
+    } catch (error) {
+      add("Configuration", `${service} configuration readable`, "fail", error.message);
+    }
+  }
+}
+
 // ── Run ─────────────────────────────────────────────────────────────────
 const commit = await (async () => {
   await checkAvailability();
@@ -380,6 +501,7 @@ const commit = await (async () => {
   await checkBlobIntegrity();
   await checkCorrelation();
   await checkCertificates();
+  await checkConfiguration();
   checkDeadlines();
   return c;
 })();
