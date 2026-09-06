@@ -11,16 +11,22 @@
     "dev:api": "pnpm --filter api start:dev",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint",
-    "lint:check": "pnpm --filter web lint && pnpm --filter api lint:check",
+    "lint:check": "pnpm lint:scripts && pnpm --filter web lint && pnpm --filter api lint:check",
     "prepare": "husky",
-    "env:check": "sh scripts/check-local-env.sh"
+    "env:check": "sh scripts/check-local-env.sh",
+    "lint:scripts": "eslint scripts packages"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
+    "@eslint/js": "^9.39.5",
     "@medinstru/config": "workspace:*",
+    "eslint": "^9.39.5",
+    "globals": "^17.11.0",
     "husky": "^9.1.7",
     "lint-staged": "^17.4.1",
-    "openai": "^7.8.0"
+    "openai": "^7.8.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.68.0"
   },
   "lint-staged": {
     "apps/api/**/*.ts": "pnpm --filter api exec eslint --fix",

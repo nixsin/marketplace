@@ -835,6 +835,55 @@ CommonJS test run and fails with `Unexpected token 'export'` — which looks
 exactly like a file that was never transformed.
 
 
+
+## Linting scripts/ and packages/ (`eslint.config.mjs` at the root)
+
+`apps/web` and `apps/api` have had lint configs since the beginning.
+**`scripts/` and `packages/` never did** — 19,118 lines across 75 files,
+holding most of the CI logic, the environment contract and the production
+audit. The root config covers them.
+
+**Two rules are the point, and both came from a real mistake.**
+
+`@typescript-eslint/no-floating-promises` is an **error**, not a warning. A
+dropped `await` in a script fails as an unhandled rejection at 08:00 inside a
+nightly audit, not at review — the quietest failure Node has. It sat at
+`warn` in `apps/api` with three real instances unfixed, which is what a
+warning in a large codebase becomes, so that is now an error too.
+
+`.then()` is banned via `no-restricted-syntax` — a selector rather than a
+plugin, so no new dependency. **`.catch()` is deliberately NOT banned**: it
+is the remedy `no-floating-promises` itself recommends, and `main().catch()`
+is the ordinary ESM entry-point idiom. Banning both would make the two rules
+contradict each other.
+
+**The rule is type-aware, which is why `tsconfig.lint.json` exists.** Without
+a TS program ESLint cannot know a call returns a promise. `allowJs` is what
+gives typescript-eslint types for plain `.mjs`; `checkJs` stays **off**,
+because turning it on would report every ordinary type error in 19,000 lines
+of working JavaScript and is a separate project.
+
+**Three configuration traps, each of which cost a run:**
+
+- `projectService`'s `allowDefaultProject` globs only match files at the
+  **root**, so every `scripts/*.mjs` came back "not found by the project
+  service". Use `project: ["./tsconfig.lint.json"]` and let the tsconfig's
+  own `include` decide.
+- The type-checked configs error out on any file the `files` globs do not
+  cover, which includes `**/*.d.ts`. Ignore declaration files — they carry no
+  runtime code, so the promise rules have nothing to say about them.
+- `node:test`'s `test()` returns a promise the **runner** owns. Without
+  `allowForKnownSafeCalls` it produced ~600 false positives, burying nine
+  real findings — the state in which a new rule gets switched off rather
+  than fixed.
+
+**Not yet covered: `apps/web`.** It lints through `eslint-config-next`, which
+is not type-aware, so it has no missing-await rule at all. The three `.then()`
+calls in the apps are two inside a React `useEffect` — where the callback
+cannot be async — and one spec. Extending there means type-aware linting for
+a Next app and converting effect code with cancellation logic, which is its
+own change.
+
 ## Startup environment contract (`packages/config/src/env-contract.js`)
 
 One list of variables per app, shared by every environment, checked before

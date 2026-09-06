@@ -236,7 +236,10 @@ test("decideStuckAction: a failed runs-JSON parse must skip, never resolve, even
   const { runs, parseOk } = parseRunsJson("not-valid-json");
   assert.deepEqual(
     decideStuckAction({
-      lookupOk: true && parseOk,
+      // parseOk is false here. The point is that a failed parse skips even
+      // when the caller's own lookup succeeded -- previously written as
+      // `true && parseOk`, which said that but read as a constant.
+      lookupOk: parseOk,
       commentLookupOk: true,
       runs,
       nowEpoch: 9999999999,

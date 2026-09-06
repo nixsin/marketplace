@@ -658,6 +658,9 @@ test("display is safe for every value, not just recognisable URLs", () => {
   // reasoning as sanitizeForLog stripping \p{Cf} as well as \p{Cc}.
   assert.doesNotMatch(displaySafe("a\nFAKE: line"), /\n/);
   assert.doesNotMatch(displaySafe("a\u202Eb"), /\u202E/);
+  // The escape character is exactly what this asserts is stripped; a regex
+  // without it would test nothing.
+  // eslint-disable-next-line no-control-regex
   assert.doesNotMatch(displaySafe("a\u001B[31mred"), /\u001B/);
 
   // An ordinary value is untouched: withholding everything would make the

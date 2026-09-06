@@ -1355,8 +1355,11 @@ export function formatReport(result, { enforced = true } = {}) {
 export function assertEnvOrExit({
   app,
   env = process.env,
-  exit = process.exit,
-  log = console.error,
+  // Wrapped rather than passed bare: `process.exit` and `console.error`
+  // detached from their objects are unbound methods, which the linter flags
+  // and which are only safe by accident of Node's implementation.
+  exit = (code) => process.exit(code),
+  log = (message) => console.error(message),
   enforce = true,
 }) {
   const result = checkEnv({ app, env });
@@ -1443,8 +1446,11 @@ export function enforcesAtBoot(environment) {
 export function assertBootEnv({
   app,
   env = process.env,
-  exit = process.exit,
-  log = console.error,
+  // Wrapped rather than passed bare: `process.exit` and `console.error`
+  // detached from their objects are unbound methods, which the linter flags
+  // and which are only safe by accident of Node's implementation.
+  exit = (code) => process.exit(code),
+  log = (message) => console.error(message),
 }) {
   return assertEnvOrExit({
     app,

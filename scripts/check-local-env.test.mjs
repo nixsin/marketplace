@@ -12,7 +12,6 @@ import {
   installedNodeVersions,
   locateOffPath,
   mask,
-  nonInteractiveTools,
   parseVersion,
   pinnedPnpmVersion,
   probeVersion,

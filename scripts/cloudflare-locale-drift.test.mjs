@@ -40,7 +40,8 @@ test("Terraform's locales match the web app's LOCALES", () => {
   assert.deepEqual(
     terraform,
     app,
-    `infra/terraform/cloudflare/variables.tf declares [${terraform}] but the app serves [${app}]. ` +
+    `infra/terraform/cloudflare/variables.tf declares [${terraform.join(", ")}] ` +
+      `but the app serves [${app.join(", ")}]. ` +
       "Adding a locale in only one place stops the new locale caching, or turns its paths into " +
       "shared-cacheable locale-negotiated redirects.",
   );

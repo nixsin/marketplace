@@ -65,7 +65,7 @@ const WATCHED_RE = `(?:${WATCHED.join("|")})`;
  * that was `migrate`, a production secret in the unrecognised job read as
  * migrate's own, which is the one place a secret is permitted.
  */
-const JOB_KEY = /^  ["']?([A-Za-z_][\w-]*)["']?:\s*(?:#.*)?$/;
+const JOB_KEY = /^ {2}["']?([A-Za-z_][\w-]*)["']?:\s*(?:#.*)?$/;
 
 /** One job's lines, from its key to the next job's. */
 export function jobSource(source, name) {
