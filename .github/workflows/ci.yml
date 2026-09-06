@@ -278,6 +278,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint:check
+      # Unused exports, which ESLint cannot see: an `export` counts as a use,
+      # so no-unused-vars is silent on a symbol nothing imports. Runs in this
+      # job rather than its own -- it needs the same install and nothing else,
+      # and Lint is already required, so a finding blocks a merge without a
+      # new required check to configure.
+      - run: pnpm knip:check
 
   # A live review caught that scripts/lib/pr-reconciliation.mjs's tests
   # only ever ran inside pr-reconciliation.yml's own steps — a workflow

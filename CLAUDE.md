@@ -1004,6 +1004,41 @@ compare them instead — the same mechanism as the Cloudflare locale list:
 | `scripts/ci-env-drift.test.mjs` | `ci.yml`'s values match |
 | `scripts/generate-env-example.test.mjs` | the generated `.env` files are current |
 
+### Unused exports are checked by knip, not by ESLint
+
+**No ESLint rule in this repo can see them, and `no-unused-vars` never will:**
+to that rule an `export` *is* a use, so a symbol nothing imports is invisible
+to it. The one ESLint answer is `import/no-unused-modules` with
+`unusedExports: true`, and it was rejected here for a specific reason —
+`eslint-plugin-import` is currently transitive-only, and it is one of the three
+plugins capping `eslint` at `^9` and blocking the ESLint 10 bump. Making it a
+direct dependency would deepen a blocker this file already tracks.
+
+`pnpm knip:check` runs in the **Lint** job — same install, no new runner, and
+Lint is already required, so a finding blocks a merge without configuring a new
+required check.
+
+**The config was wrong twice before it could catch anything, both times in the
+silent direction**, which is the part worth keeping:
+
+- `entry` for `packages/config` was `src/*.js`, making every file an entry
+  point — and an entry's exports are never reported. The package's own
+  `exports` map already tells knip what is public, so the override is removed.
+- the root workspace declared `scripts/**/*.{mjs,js}` as entry, so every
+  `scripts/lib/*.mjs` was an entry too — exactly where the findings live. Entry
+  is now `scripts/*.mjs` (the CLI wrappers) plus the test files, with
+  `scripts/lib/**` left as project code whose exports get checked.
+
+Both were found by adding a deliberate dead export and confirming it was
+reported. **Do that after any change to `knip.json`** — a misconfigured knip
+exits 0 and looks exactly like a clean repo.
+
+Two paths are ignored, with reasons: `apps/web/src/components/ui/**` is
+shadcn-vendored, so its exports are that library's public API and trimming them
+creates diff noise on the next `shadcn add`; `apps/web/src/i18n/navigation.ts`
+is a next-intl adapter whose `redirect`/`usePathname`/`useRouter` are the
+canonical surface, deliberately kept whole.
+
 **An exported constant that nothing imports is evidence, not just clutter.**
 `ISSUE_TITLE` in `scripts/lib/production-audit.mjs` was declared as the stable
 title the nightly audit reuses so it edits one issue instead of filing a new

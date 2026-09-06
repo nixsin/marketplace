@@ -1,0 +1,31 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/*.{mjs,js}", "scripts/**/*.test.mjs"],
+      "project": ["scripts/**/*.{mjs,js}"]
+    },
+    "apps/api": {
+      "entry": ["src/main.ts", "scripts/**/*.mjs", "test/**/*.ts"],
+      "project": ["src/**/*.ts"]
+    },
+    "apps/web": {
+      "entry": [
+        "src/app/**/*.{ts,tsx}",
+        "scripts/**/*.mjs",
+        "e2e/**/*.ts",
+        "test/**/*.ts"
+      ],
+      "project": ["src/**/*.{ts,tsx}"]
+    },
+    "packages/config": {
+      "entry": ["src/*.js"],
+      "project": ["src/**/*.js"]
+    }
+  },
+  "ignore": [
+    "apps/web/src/components/ui/**",
+    "apps/web/src/i18n/navigation.ts"
+  ],
+  "ignoreExportsUsedInFile": true
+}
