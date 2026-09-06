@@ -338,9 +338,26 @@ const GUARD =
  */
 const GUARD_VIA_HELPER = /(?<![\w$.])(?:await|return)[ \t]+bootstrapTestApp\s*\(/g;
 
-/** An import of the real helper — not merely something with the same name. */
-const HELPER_IMPORT =
-  /import\s*\{[^}]*\bbootstrapTestApp\b[^}]*\}\s*from\s*["'][^"']*helpers\/bootstrap["']/;
+/**
+ * An import of the real helper — not merely something with the same name.
+ *
+ * Three narrowings, each closing a way the name could be right and the
+ * binding wrong:
+ *
+ *   - the path is EXACTLY `./helpers/bootstrap` (optionally `.js`). Any path
+ *     ending that way would also admit `../fixtures/helpers/bootstrap`.
+ *   - the name must not be ALIASED, which is what requiring a `,` or `}`
+ *     straight after it enforces. `{ bootstrapTestApp as boot }` binds the
+ *     helper to `boot`, leaving a local `bootstrapTestApp` free to be the
+ *     thing actually called.
+ *   - `import type { ... }` cannot match, since `import` is followed directly
+ *     by the brace here. A type has no runtime call to guard anything.
+ *
+ * Callers must test this against comment-stripped text, or a commented-out
+ * import counts.
+ */
+export const HELPER_IMPORT =
+  /import\s*\{[^}]*(?<![\w$])bootstrapTestApp\s*[,}][^}]*\}?\s*from\s*["']\.\/helpers\/bootstrap(?:\.js)?["']/;
 
 const SETUP_HOOK = /(?<![\w$.])before(?:All|Each)\s*\(/g;
 

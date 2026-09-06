@@ -482,10 +482,20 @@ test("bootstrapTestApp really is a guard, not just a name on the list", () => {
     "utf8",
   );
 
+  // Comments stripped first. Reading raw text would accept a commented-out
+  // call -- the same mistake this whole check exists to catch one level down.
+  const code = stripComments(helper);
+
+  // And the call has to be INSIDE the exported helper, not merely somewhere
+  // in the file: moved into an unexported function, or below the export, it
+  // guards nothing while the file still contains the words.
+  const at = code.indexOf("export async function bootstrapTestApp");
+  assert.notEqual(at, -1, "helpers/bootstrap.ts must export bootstrapTestApp");
+
   assert.match(
-    helper,
+    code.slice(at),
     /await[ \t]+assertConnectedToTestDatabase\s*\(/,
-    "helpers/bootstrap.ts must await assertConnectedToTestDatabase — the e2e " +
+    "bootstrapTestApp must await assertConnectedToTestDatabase — the e2e " +
       "suites TRUNCATE, and unguardedTruncates treats bootstrapTestApp as a " +
       "guard on the strength of that call",
   );
@@ -752,6 +762,39 @@ test("bootstrapTestApp counts only when it is the imported helper", () => {
     unguardedTruncates(memberCall).length,
     1,
     "a member call is not the imported binding",
+  );
+
+  // An ALIASED import binds the helper to another name, which leaves a local
+  // bootstrapTestApp free to be the thing actually called.
+  const aliased = `import { bootstrapTestApp as boot } from './helpers/bootstrap';\ndescribe('s',()=>{const bootstrapTestApp=async()=>({});beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(aliased).length,
+    1,
+    "an aliased import does not bind the name being called",
+  );
+
+  // A path merely ENDING in helpers/bootstrap is a different module.
+  const lookalikePath = `import { bootstrapTestApp } from '../fixtures/helpers/bootstrap';\ndescribe('s',()=>{beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(lookalikePath).length,
+    1,
+    "only ./helpers/bootstrap is the helper",
+  );
+
+  // A type import has no runtime call behind it.
+  const typeOnly = `import type { bootstrapTestApp } from './helpers/bootstrap';\ndescribe('s',()=>{const bootstrapTestApp=async()=>({});beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(typeOnly).length,
+    1,
+    "a type import guards nothing",
+  );
+
+  // Extension-ful specifiers are the same module.
+  const withExtension = `import { bootstrapTestApp } from './helpers/bootstrap.js';\ndescribe('s',()=>{beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.deepEqual(
+    unguardedTruncates(withExtension),
+    [],
+    "./helpers/bootstrap.js is the same helper",
   );
 });
 

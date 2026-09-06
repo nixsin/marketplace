@@ -40,25 +40,30 @@ export async function bootstrapTestApp(
   ).compile();
 
   const app = moduleFixture.createNestApplication<INestApplication<App>>();
-  configureApp(app);
-  await app.init();
 
-  // Never the dev database. The suites TRUNCATE between tests, and pointing
-  // that at a real catalogue has destroyed local data before -- see CLAUDE.md.
-  //
-  // Closed before rethrowing, because the app is already initialised by this
-  // point and the caller never receives it: their `beforeAll` fails, `app`
-  // stays undefined, and their `afterAll` cannot close what it was never
-  // given. Jest then hangs on the open Nest and Prisma handles, and reports
-  // that instead of the reason -- burying "you are pointed at the wrong
-  // database", which is the single most important message this file emits.
-  const prisma = moduleFixture.get(PrismaService);
+  // EVERYTHING from here is inside the cleanup path, not just the database
+  // check. Once createNestApplication has returned there is something holding
+  // resources, and the caller does not have it: on any throw their `beforeAll`
+  // fails, `app` stays undefined, and their `afterAll` cannot close what it
+  // was never given. Jest then hangs on the open Nest and Prisma handles and
+  // reports THAT -- burying "you are pointed at the wrong database", which is
+  // the most important message this file emits.
   try {
+    configureApp(app);
+    await app.init();
+
+    // Never the dev database. The suites TRUNCATE between tests, and pointing
+    // that at a real catalogue has destroyed local data before -- CLAUDE.md
+    // has the incident.
+    const prisma = moduleFixture.get(PrismaService);
     await assertConnectedToTestDatabase(prisma);
+
+    return { app, prisma, moduleFixture };
   } catch (error) {
-    await app.close();
+    // A failed close must not replace the reason we are here. Closing an app
+    // that threw during init can itself throw, and that error is the less
+    // useful of the two by far.
+    await app.close().catch(() => undefined);
     throw error;
   }
-
-  return { app, prisma, moduleFixture };
 }

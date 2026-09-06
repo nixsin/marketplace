@@ -8,6 +8,10 @@ import {
   extractRelativeLinks,
   headingSlugs,
 } from "./repo-hygiene.mjs";
+// Reused rather than restated. Two copies of the rule for what counts as
+// importing the bootstrap helper is exactly the drift this whole change is
+// about -- and the copy that fell behind would be the permissive one.
+import { HELPER_IMPORT, stripComments } from "./ci-env-drift.mjs";
 
 const REPO = resolve(import.meta.dirname, "..", "..");
 
@@ -150,7 +154,9 @@ describe("e2e suites boot the app the way production does", () => {
 
   for (const spec of specs) {
     test(`${spec} uses bootstrapTestApp`, () => {
-      const source = readFileSync(join(REPO, spec), "utf8");
+      // Comments stripped, or `// await bootstrapTestApp()` satisfies the
+      // positive checks below while the suite boots nothing.
+      const source = stripComments(readFileSync(join(REPO, spec), "utf8"));
 
       // Absence is half the check. On its own it passes for a suite that
       // stopped booting an app at all, or reaches one through some third
@@ -166,8 +172,8 @@ describe("e2e suites boot the app the way production does", () => {
 
       assert.match(
         source,
-        /import\s*\{[^}]*\bbootstrapTestApp\b[^}]*\}\s*from\s*["'][^"']*helpers\/bootstrap["']/,
-        `${spec} must import bootstrapTestApp from helpers/bootstrap`,
+        HELPER_IMPORT,
+        `${spec} must import bootstrapTestApp from ./helpers/bootstrap`,
       );
 
       assert.match(
