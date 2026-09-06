@@ -1,11 +1,8 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { configureApp } from '../src/app.setup';
-import { assertConnectedToTestDatabase } from './helpers/assert-test-database';
+import { bootstrapTestApp } from './helpers/bootstrap';
 import { INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT } from '@medinstru/config';
 
 const CREATE_INQUIRY = `
@@ -47,16 +44,7 @@ describe('Inquiries (e2e)', () => {
   }
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    configureApp(app);
-    await app.init();
-
-    prisma = moduleFixture.get(PrismaService);
-    await assertConnectedToTestDatabase(prisma);
+    ({ app, prisma } = await bootstrapTestApp());
   });
 
   afterAll(async () => {

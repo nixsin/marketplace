@@ -8,6 +8,10 @@ import {
   extractRelativeLinks,
   headingSlugs,
 } from "./repo-hygiene.mjs";
+// Reused rather than restated. Two copies of the rule for what counts as
+// importing the bootstrap helper is exactly the drift this whole change is
+// about -- and the copy that fell behind would be the permissive one.
+import { stripComments, usesBootstrapHelper } from "./ci-env-drift.mjs";
 
 const REPO = resolve(import.meta.dirname, "..", "..");
 
@@ -125,4 +129,60 @@ describe("documentation cross-links resolve", () => {
     }
     assert.deepEqual(broken, [], `dead anchors:\n  ${broken.join("\n  ")}`);
   });
+});
+
+describe("e2e suites boot the app the way production does", () => {
+  // configureApp exists so the app under test matches the real one, and says
+  // so in its own comment. Six suites still bootstrapped by hand, and two had
+  // already drifted: auth and organizations replicated only its ValidationPipe
+  // line, so they ran without the correlation middleware, the correlation
+  // exception filter, the CORS policy and the GraphQL cache-control patch --
+  // in exactly the two suites covering authentication.
+  //
+  // Nothing failed when that happened, which is why this is a test rather than
+  // a comment: the suites passed either way, they just proved less than they
+  // appeared to.
+  const specs = trackedFiles().filter((f) =>
+    f.startsWith("apps/api/test/") && f.endsWith(".e2e-spec.ts"),
+  );
+
+  test("there are e2e suites to check", () => {
+    // Guards the filter itself. A renamed directory would otherwise make this
+    // whole block vacuously green.
+    assert.ok(specs.length >= 4, `expected several e2e suites, found ${specs.length}`);
+  });
+
+  for (const spec of specs) {
+    test(`${spec} uses bootstrapTestApp`, () => {
+      const raw = readFileSync(join(REPO, spec), "utf8");
+
+      // Comments stripped for the negative check, or a commented-out
+      // `createNestApplication` reads as a hand-rolled bootstrap.
+      // usesBootstrapHelper does its own stripping, so it takes the raw text.
+      const source = stripComments(raw);
+
+      // Absence is only half. On its own it passes for a suite that stopped
+      // booting an app at all, or reaches one some third way -- so the
+      // positive half below asserts the helper is really the thing used.
+      // Both halves, or the test's name is a claim its body does not make.
+      assert.ok(
+        !source.includes("createNestApplication"),
+        `${spec} builds its own Nest app. Use bootstrapTestApp from ` +
+          `apps/api/test/helpers/bootstrap.ts so the suite runs the same ` +
+          `configuration production does.`,
+      );
+
+      // One shared check rather than an import assertion and a call assertion
+      // side by side. Separately they passed for a suite that imported the
+      // real helper and called a nested local function of the same name --
+      // which is the drift this invariant exists to prevent, arriving through
+      // the gap between two checks that each looked fine.
+      assert.ok(
+        usesBootstrapHelper(raw),
+        `${spec} must import bootstrapTestApp from ./helpers/bootstrap and ` +
+          `call it -- and must not bind that name to anything else, which ` +
+          `would make which function runs a question this check cannot answer`,
+      );
+    });
+  }
 });

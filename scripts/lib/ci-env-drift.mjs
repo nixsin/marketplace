@@ -314,9 +314,165 @@ const TRUNCATE_SQL = /(?<![\w$])truncate\s+(?:table\b|only\b|["a-z_])/gi;
  * `return\n  assertConnectedToTestDatabase(p)` returns undefined —
  * automatic semicolon insertion ends the statement at the line break, so the
  * hook does not wait for the guard at all.
+ *
  */
 const GUARD =
   /(?<![\w$])(?:await|return)[ \t]+(?:[\w$.]+\.)?assertConnectedToTestDatabase\s*\(/g;
+
+/**
+ * The same guard reached through the shared bootstrap helper.
+ *
+ * Specs boot through `bootstrapTestApp`, which calls the guard itself, so the
+ * direct call no longer appears in their text. Accepting a wrapper costs two
+ * checks that a direct call does not need, because a bare name proves nothing:
+ *
+ *   1. the spec must IMPORT it from `helpers/bootstrap` — otherwise a spec
+ *      defining its own `bootstrapTestApp`, guarding nothing, would be read as
+ *      protected. No member call (`x.bootstrapTestApp()`) either; only the
+ *      imported binding.
+ *   2. the spec must not also DEFINE that name. If both an import and a local
+ *      definition are present, which one a given call resolves to is a
+ *      scoping question this file cannot answer without parsing — so it
+ *      answers "not guarded" and says why, rather than guessing in the
+ *      permissive direction. See HELPER_SHADOW.
+ *   3. that helper must really await the guard — pinned by a test in
+ *      `ci-env-drift.test.mjs`, which reads the file.
+ *
+ * All three exist because the failure mode here is truncating a real database,
+ * which this repo has already done to itself once.
+ */
+const GUARD_VIA_HELPER = /(?<![\w$.])(?:await|return)[ \t]+bootstrapTestApp\s*\(/g;
+
+/**
+ * An import of the real helper — not merely something with the same name.
+ *
+ * Three narrowings, each closing a way the name could be right and the
+ * binding wrong:
+ *
+ *   - the path is EXACTLY `./helpers/bootstrap` (optionally `.js`). Any path
+ *     ending that way would also admit `../fixtures/helpers/bootstrap`.
+ *   - the name must not be ALIASED, which is what requiring a `,` or `}`
+ *     straight after it enforces. `{ bootstrapTestApp as boot }` binds the
+ *     helper to `boot`, leaving a local `bootstrapTestApp` free to be the
+ *     thing actually called.
+ *   - `import type { ... }` cannot match, since `import` is followed directly
+ *     by the brace here. A type has no runtime call to guard anything.
+ *
+ * ANCHORED TO THE START OF A LINE. An import is a top-level statement, so it
+ * always begins one; import-shaped text inside a template literal generally
+ * does not, and this is the cheap half of not reading strings as code.
+ *
+ * Callers must test this against comment-stripped text, or a commented-out
+ * import counts.
+ */
+export const HELPER_IMPORT =
+  /^import\s*\{[^}]*(?<![\w$])bootstrapTestApp\s*[,}][^}]*\}?\s*from\s*["']\.\/helpers\/bootstrap(?:\.js)?["']/m;
+
+/**
+ * Any import statement, removed before counting mentions.
+ *
+ * All of them rather than the helper's alone: this runs over string-stripped
+ * text, where the module specifier no longer exists to match a path against —
+ * and an import line is never a call site regardless of what it names.
+ */
+const ANY_IMPORT_STATEMENT = /^import\b[^;\n]*;?/gm;
+
+/** The bare identifier, never a property access. */
+const HELPER_NAME = /(?<![\w$.])bootstrapTestApp(?![\w$])/g;
+
+/**
+ * Does this spec import the real helper AND use nothing else by that name?
+ *
+ * ENUMERATING SHADOWING FORMS IS THE WRONG SHAPE. An earlier version listed
+ * `const|let|var` and function declarations, and missed destructuring
+ * (`const { bootstrapTestApp } = helpers`) and a parameter of that name — and
+ * would have kept missing whatever form was thought of next. Listing the ways
+ * to be wrong can only ever be as complete as the last person's imagination.
+ *
+ * So the rule is inverted: after the import statement is removed, EVERY
+ * remaining mention of the name must be an awaited or returned call of it.
+ * Anything else — a destructured binding, a parameter, an assignment, a bare
+ * reference, even a mention inside a string — makes the spec ambiguous, and
+ * ambiguous is answered "not guarded".
+ *
+ * That direction is deliberate. A false "not guarded" costs a comment
+ * explaining why a spec must not reuse the name; a false "guarded" costs a
+ * truncated database, which this repo has already done to itself once.
+ *
+ * Shared with the repo-hygiene invariant rather than restated there, so the
+ * two cannot drift into disagreeing about what counts.
+ */
+export function usesBootstrapHelper(source) {
+  // TWO VIEWS OF THE SAME FILE, because the two questions need different ones.
+  //
+  // The import is found in comment-stripped text, which still has strings --
+  // the module specifier IS a string, so stripping strings would erase the
+  // thing being matched.
+  //
+  // The calls are counted in comment- AND string-stripped text. Keeping
+  // strings there was a real hole: a spec containing the literal
+  // `"await bootstrapTestApp("` satisfied the rule with no call anywhere,
+  // which is fail-OPEN on a check whose whole job is to fail closed.
+  const code = stripComments(source);
+  if (!HELPER_IMPORT.test(code)) return false;
+
+  // Every import line goes, not only the helper's -- in string-stripped text
+  // the specifier is gone, so there is nothing left to match a path against,
+  // and an import line is never a call site anyway.
+  const rest = stripCommentsAndStrings(source).replace(ANY_IMPORT_STATEMENT, "");
+  const mentions = [...rest.matchAll(HELPER_NAME)];
+
+  // Imported and never called is not a use. It is also how a suite looks
+  // after someone deletes the call but leaves the import behind.
+  if (mentions.length === 0) return false;
+
+  return mentions.every((m) => {
+    const before = rest.slice(Math.max(0, m.index - 16), m.index);
+    const after = rest.slice(m.index);
+    return (
+      /(?:await|return)[ \t]+$/.test(before) && /^bootstrapTestApp\s*\(/.test(after)
+    );
+  });
+}
+
+/**
+ * The body of the function whose declaration starts with `signature`, or null.
+ *
+ * Brace counting, not parsing — and it is only sound because callers pass text
+ * that has already been through `stripCommentsAndStrings`, so every brace left
+ * is a real one. A brace in a comment or a string would desynchronise the
+ * count; there are none left to find.
+ *
+ * Exists because "the text appears after the declaration" is not the same
+ * claim as "the text is in the function": a call below the closing brace
+ * satisfies the first and guards nothing.
+ */
+export function functionBody(code, name) {
+  // NAME BOUNDARY, not indexOf. `indexOf("...function bootstrapTestApp")` also
+  // finds `bootstrapTestApplication`, so a sibling with a longer name could
+  // supply the guard call while the real helper had none -- the safeguard
+  // passing on the strength of the wrong function.
+  const declaration = new RegExp(
+    `(?:export\\s+)?(?:async\\s+)?function\\s+${name}\\s*[(<]`,
+  );
+  const found = declaration.exec(code);
+  if (!found) return null;
+
+  const open = code.indexOf("{", found.index);
+  if (open === -1) return null;
+
+  let depth = 0;
+  for (let i = open; i < code.length; i += 1) {
+    if (code[i] === "{") depth += 1;
+    else if (code[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return code.slice(open + 1, i);
+    }
+  }
+  // Unbalanced. Null rather than the rest of the file, so a caller cannot
+  // read a truncated file as a body containing everything.
+  return null;
+}
 
 const SETUP_HOOK = /(?<![\w$.])before(?:All|Each)\s*\(/g;
 
@@ -351,7 +507,17 @@ export function unguardedTruncates(spec) {
   // EVERY candidate, not the first. One guard-shaped expression outside a
   // hook — in a helper, say — otherwise made the function report every
   // truncate as unguarded while a real guard sat in the hook below it.
-  const usable = [...executable.matchAll(GUARD)]
+  //
+  // The helper spelling is only in play when the spec actually imports it;
+  // tested against `code` rather than `executable` because the import path is
+  // a string, which `executable` has stripped — and against `code` rather than
+  // the raw spec so a commented-out import does not count.
+  const candidates = [...executable.matchAll(GUARD)];
+  if (usesBootstrapHelper(spec)) {
+    candidates.push(...executable.matchAll(GUARD_VIA_HELPER));
+  }
+
+  const usable = candidates
     .map((m) => m.index)
     .filter((i) => inSetupHook(executable, i));
   if (usable.length === 0) return truncates;

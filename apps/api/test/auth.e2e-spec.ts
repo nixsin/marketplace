@@ -1,11 +1,9 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { SmsService } from '../src/auth/sms.service';
-import { assertConnectedToTestDatabase } from './helpers/assert-test-database';
+import { bootstrapTestApp } from './helpers/bootstrap';
 
 class FakeSmsService {
   sentCodes = new Map<string, string>();
@@ -31,21 +29,9 @@ describe('Auth + onboarding (e2e)', () => {
   beforeAll(async () => {
     fakeSms = new FakeSmsService();
 
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    })
-      .overrideProvider(SmsService)
-      .useValue(fakeSms)
-      .compile();
-
-    app = moduleFixture.createNestApplication();
-    app.useGlobalPipes(
-      new ValidationPipe({ whitelist: true, transform: true }),
-    );
-    await app.init();
-
-    prisma = moduleFixture.get(PrismaService);
-    await assertConnectedToTestDatabase(prisma);
+    ({ app, prisma } = await bootstrapTestApp((builder) =>
+      builder.overrideProvider(SmsService).useValue(fakeSms),
+    ));
   });
 
   afterAll(async () => {

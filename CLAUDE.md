@@ -606,6 +606,36 @@ check` is clean for the first time in this repo's history. Verified with a
 real `nest generate service --dry-run`, not just `--help`. Re-add it only
 alongside a TypeScript 6 migration.
 
+## Every API e2e suite boots through `bootstrapTestApp`
+
+`configureApp` exists so the app under test matches the one in production, and
+says so in its own comment. Seven suites bootstrapped by hand anyway, and two
+of them had already drifted: `auth` and `organizations` replicated only its
+first line — the `ValidationPipe` — and therefore ran **without** the
+correlation middleware, the correlation exception filter, the CORS policy and
+the GraphQL cache-control patch. The two suites covering authentication were
+the two testing a differently-configured app.
+
+**Nothing failed while that was true**, which is the point worth keeping. The
+suites passed either way; they simply proved less than they looked like they
+proved, and no amount of reading them would say so. It surfaced from counting
+duplicate blocks, not from a failure.
+
+`apps/api/test/helpers/bootstrap.ts` is now the only way in. Suites needing a
+replaced provider pass a callback that receives the builder —
+`overrideProvider(X).useValue(y)` is a two-call chain, so it cannot be
+flattened into a plain options object.
+
+**`apps/api/test/app.e2e-spec.ts` is not leftover scaffolding.** It looks
+exactly like the file `nest new` generates, and `render.yaml` sets
+`healthCheckPath: /` — so the route it asserts is what Render polls to decide
+the service is alive. Deleting it as scaffold noise would remove the only
+coverage of the endpoint a failed deploy hinges on.
+
+The guard against recurrence is in `scripts/lib/repo-hygiene.test.mjs`: no
+`*.e2e-spec.ts` may call `createNestApplication` itself. It found the seventh
+suite that a duplicate-block scan had missed.
+
 ## The products queries are bounded, and offset pagination is the weak one
 
 `productsPaged(page:, pageSize:)` and `products(limit:)` are anonymous public

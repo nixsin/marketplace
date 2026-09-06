@@ -13,6 +13,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   envBlock,
+  functionBody,
   jobSource,
   jobsAssigningDatabaseUrl,
   stripComments,
@@ -468,6 +469,61 @@ test("no e2e spec has an unguarded TRUNCATE", () => {
   }
 });
 
+test("bootstrapTestApp really is a guard, not just a name on the list", () => {
+  // unguardedTruncates accepts `await bootstrapTestApp(` as a guard because
+  // that helper calls assertConnectedToTestDatabase itself. That is an
+  // indirection, and an indirection nothing checks is how a destructive
+  // operation ends up unguarded while every test stays green: delete the call
+  // inside the helper and the specs still read as protected.
+  //
+  // So the accepted spelling is verified rather than trusted. Anyone removing
+  // that call fails here, next to the reason.
+  const helper = readFileSync(
+    fileURLToPath(new URL("../apps/api/test/helpers/bootstrap.ts", import.meta.url)),
+    "utf8",
+  );
+
+  // Comments AND strings stripped. Comments alone would accept a commented-out
+  // call; leaving strings in would accept a call-shaped string literal. Both
+  // are the same mistake this check exists to catch one level down.
+  const code = stripCommentsAndStrings(helper);
+
+  // Bounded to the helper's own body, not "somewhere after it". Slicing to end
+  // of file also accepts a call sitting below the closing brace, which guards
+  // nothing while the file still contains the words.
+  const body = functionBody(code, "bootstrapTestApp");
+  assert.ok(body, "helpers/bootstrap.ts must export bootstrapTestApp");
+
+  assert.match(
+    body,
+    /await[ \t]+assertConnectedToTestDatabase\s*\(/,
+    "bootstrapTestApp must await assertConnectedToTestDatabase — the e2e " +
+      "suites TRUNCATE, and unguardedTruncates treats bootstrapTestApp as a " +
+      "guard on the strength of that call",
+  );
+});
+
+test("functionBody stops at the closing brace", () => {
+  // The bound above is only worth having if it actually bounds. Written as a
+  // real test rather than trusted, because its failure mode is silent: a body
+  // that runs to end-of-file passes the assertion above for the wrong reason.
+  const src = "export async function f() {\n  const x = { a: 1 };\n  inside();\n}\noutside();\n";
+  const body = functionBody(src, "f");
+
+  assert.match(body, /inside\(\)/);
+  assert.doesNotMatch(body, /outside\(\)/, "the body must end at its own brace");
+  assert.equal(functionBody(src, "missing"), null);
+
+  // A LONGER NAME IS A DIFFERENT FUNCTION. indexOf on the signature text also
+  // found `bootstrapTestApplication`, so a prefixed sibling holding the guard
+  // call would have satisfied the safeguard while the real helper had none.
+  const prefixed =
+    "export async function fooBarExtra() {\n  wrong();\n}\nexport async function fooBar() {\n  right();\n}\n";
+  const exact = functionBody(prefixed, "fooBar");
+  assert.match(exact, /right\(\)/);
+  assert.doesNotMatch(exact, /wrong\(\)/, "must not match a longer name");
+});
+
 test("the inline-map and explicit-key rules handle quoting and boundaries", () => {
   // A quoted key inside an inline map evaded both the line-anchored quoted
   // check and the inline-map check, which looked for `NAME:` with no quote
@@ -689,6 +745,149 @@ test("every way the guard goes missing by accident is caught", () => {
   for (const [why, src] of Object.entries(present)) {
     assert.deepEqual(unguardedTruncates(src), [], `rejected: ${why}`);
   }
+});
+
+test("bootstrapTestApp counts only when it is the imported helper", () => {
+  // The wrapper is accepted by name, so the name alone must not be enough:
+  // a spec defining its own bootstrapTestApp -- guarding nothing -- would
+  // otherwise read as protected while it truncated a live database.
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+  const call = "({app,prisma}=await bootstrapTestApp());";
+  const importLine =
+    "import { bootstrapTestApp } from './helpers/bootstrap';\n";
+
+  const imported = `${importLine}describe('s',()=>{beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.deepEqual(unguardedTruncates(imported), [], "the real helper is a guard");
+
+  const homegrown = `describe('s',()=>{const bootstrapTestApp=async()=>({});beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(homegrown).length,
+    1,
+    "a same-named local function is not the helper",
+  );
+
+  const wrongModule = `import { bootstrapTestApp } from './elsewhere';\ndescribe('s',()=>{beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(wrongModule).length,
+    1,
+    "imported from somewhere else is not the helper",
+  );
+
+  const commentedImport = `// ${importLine}describe('s',()=>{beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(commentedImport).length,
+    1,
+    "a commented-out import is not an import",
+  );
+
+  const memberCall = `${importLine}describe('s',()=>{beforeAll(async()=>{await x.bootstrapTestApp();});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(memberCall).length,
+    1,
+    "a member call is not the imported binding",
+  );
+
+  // An ALIASED import binds the helper to another name, which leaves a local
+  // bootstrapTestApp free to be the thing actually called.
+  const aliased = `import { bootstrapTestApp as boot } from './helpers/bootstrap';\ndescribe('s',()=>{const bootstrapTestApp=async()=>({});beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(aliased).length,
+    1,
+    "an aliased import does not bind the name being called",
+  );
+
+  // A path merely ENDING in helpers/bootstrap is a different module.
+  const lookalikePath = `import { bootstrapTestApp } from '../fixtures/helpers/bootstrap';\ndescribe('s',()=>{beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(lookalikePath).length,
+    1,
+    "only ./helpers/bootstrap is the helper",
+  );
+
+  // A type import has no runtime call behind it.
+  const typeOnly = `import type { bootstrapTestApp } from './helpers/bootstrap';\ndescribe('s',()=>{const bootstrapTestApp=async()=>({});beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(typeOnly).length,
+    1,
+    "a type import guards nothing",
+  );
+
+  // Extension-ful specifiers are the same module.
+  const withExtension = `import { bootstrapTestApp } from './helpers/bootstrap.js';\ndescribe('s',()=>{beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.deepEqual(
+    unguardedTruncates(withExtension),
+    [],
+    "./helpers/bootstrap.js is the same helper",
+  );
+
+  // SHADOWED: a correct import AND a local definition of the same name. Which
+  // one a call reaches is a scoping question this file cannot answer, so it
+  // answers "not guarded" rather than guessing in the permissive direction.
+  const shadowed = `${importLine}describe('s',()=>{const bootstrapTestApp=async()=>({});beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(shadowed).length,
+    1,
+    "a local definition alongside the import is ambiguous, so not a guard",
+  );
+
+  const shadowedByFunction = `${importLine}describe('s',()=>{async function bootstrapTestApp(){return {};}beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(shadowedByFunction).length,
+    1,
+    "a function declaration shadows just as effectively",
+  );
+
+  // The forms an enumerated list of declaration keywords missed. The rule is
+  // inverted precisely so these need no individual entry: any mention of the
+  // name that is not an awaited call makes the spec ambiguous.
+  const destructured = `${importLine}describe('s',()=>{const { bootstrapTestApp } = helpers;beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(destructured).length,
+    1,
+    "a destructured binding shadows the import",
+  );
+
+  const asParameter = `${importLine}describe('s',()=>{const run=(bootstrapTestApp)=>bootstrapTestApp();beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(asParameter).length,
+    1,
+    "a parameter of that name shadows the import",
+  );
+
+  const reassigned = `${importLine}describe('s',()=>{let x=bootstrapTestApp;beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(reassigned).length,
+    1,
+    "a bare reference is not a call, so the spec is ambiguous",
+  );
+
+  // Imported and never called. This is what a suite looks like after someone
+  // deletes the call and leaves the import behind.
+  const importedNotCalled = `${importLine}describe('s',()=>{beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(importedNotCalled).length,
+    1,
+    "importing is not calling",
+  );
+
+  // A CALL-SHAPED STRING is not a call. This was fail-OPEN: the mention scan
+  // kept strings, so the literal below read as a real invocation and a suite
+  // that never booted the helper counted as guarded.
+  const callInString = `${importLine}describe('s',()=>{const doc="await bootstrapTestApp(";beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(callInString).length,
+    1,
+    "a call-shaped string literal is not a call",
+  );
+
+  // Import-shaped text inside a template literal is not an import. The
+  // line-start anchor is what rejects it.
+  const inLiteral = `describe('s',()=>{const doc=\`  import { bootstrapTestApp } from './helpers/bootstrap';\`;beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(inLiteral).length,
+    1,
+    "an import inside a string is not an import",
+  );
 });
 
 test("a return broken by a newline does not count", () => {

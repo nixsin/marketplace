@@ -1,11 +1,8 @@
-import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
-import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { configureApp } from '../src/app.setup';
-import { assertConnectedToTestDatabase } from './helpers/assert-test-database';
+import { bootstrapTestApp } from './helpers/bootstrap';
 import { graphqlCacheControl } from '../src/graphql-cache';
 
 function gql(app: INestApplication<App>) {
@@ -33,16 +30,7 @@ describe('Products pagination (e2e)', () => {
   let sellerId: string;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    configureApp(app);
-    await app.init();
-
-    prisma = moduleFixture.get(PrismaService);
-    await assertConnectedToTestDatabase(prisma);
+    ({ app, prisma } = await bootstrapTestApp());
   });
 
   afterAll(async () => {
@@ -148,16 +136,7 @@ describe('Product by id (e2e)', () => {
   let prisma: PrismaService;
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    configureApp(app);
-    await app.init();
-
-    prisma = moduleFixture.get(PrismaService);
-    await assertConnectedToTestDatabase(prisma);
+    ({ app, prisma } = await bootstrapTestApp());
   });
 
   afterAll(async () => {
@@ -227,16 +206,7 @@ describe('GraphQL-over-GET caching (e2e)', () => {
     'query { productsPaged(page: 1, pageSize: 2) { totalCount items { id name } } }';
 
   beforeAll(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-
-    app = moduleFixture.createNestApplication();
-    configureApp(app);
-    await app.init();
-
-    prisma = moduleFixture.get(PrismaService);
-    await assertConnectedToTestDatabase(prisma);
+    ({ app, prisma } = await bootstrapTestApp());
   });
 
   afterAll(async () => {
