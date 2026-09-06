@@ -326,24 +326,31 @@ describe('Inquiries (e2e)', () => {
     );
   });
 
-  it('reports a DTO-level rejection without naming the field', async () => {
-    // NestJS 12 changed this: a class-validator failure used to surface its
-    // own text ("buyerName must be longer than or equal to 2 characters") and
-    // now surfaces a bare "Bad Request Exception".
+  it('names the field a DTO-level rejection failed on', async () => {
+    // NestJS 12 discarded class-validator's own text and surfaced a bare
+    // "Bad Request Exception", naming neither the field nor the constraint.
+    // This file used to PIN that limitation, on the grounds that it changed
+    // nothing for the buyer -- categorizeInquiryError matched neither string,
+    // so both landed in the same "unknown" branch.
     //
-    // No behaviour change for the buyer, which is why it is recorded rather
-    // than fixed -- categorizeInquiryError matched neither string, so both
-    // land in the same "unknown" branch and show the same copy. It matters
-    // for a different reason: the server no longer says WHICH field is wrong,
-    // so the form's own mirrored constraints (minLength=2 on the name, the
-    // phone placeholder) are now the only thing that can tell a buyer what to
-    // fix. Weakening one of those would strand them with "Something went
-    // wrong" and no way forward.
+    // That reasoning was right about the impact and wrong about the cost. The
+    // buyer's error copy is picked from this message, so a bad phone number --
+    // the one class of failure they can actually fix -- was showing generic
+    // "something went wrong" copy. Restoring the constraint text moves it into
+    // the "invalid" branch, which tells them to check the phone number.
+    //
+    // It also has to be true before validation can move to the edge at all:
+    // a rejection that names nothing is a fast answer to the wrong question.
     const badPhone = await submit({
       input: { ...input(), buyerPhone: '12345' },
     });
 
-    expect(badPhone.body.errors?.[0]?.message).toBe('Bad Request Exception');
+    expect(badPhone.body.errors?.[0]?.message).toMatch(/buyerPhone/);
+    expect(badPhone.body.errors?.[0]?.message).toMatch(/phone number/i);
+    // Still the standard code for bad input, unchanged by the message.
+    expect(badPhone.body.errors?.[0]?.extensions?.code).toBe(
+      GRAPHQL_ERROR_CODES.badUserInput,
+    );
     expect(await prisma.inquiry.count()).toBe(0);
   });
 
