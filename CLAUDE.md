@@ -1338,6 +1338,39 @@ cannot rotate around ([#152](https://github.com/nixsin/marketplace/issues/152)).
 A code per limit would publish exactly what the wording withholds, through a
 channel easier to parse than prose.
 
+**A throttle says WHEN to retry, per RFC 9110's `Retry-After` semantics** —
+carried in `extensions.retryAfterMs`, because GraphQL answers 200 and has no
+status line to hang a header on. The server states it because only the server
+knows the window; exponential backoff with jitter is the client-side algorithm
+for when *nobody* knows, and belongs on the transport-failure path instead.
+
+**Jitter is added UPWARD ONLY, and that is the detail to keep.** AWS's
+full-jitter formula is `random(0, min(cap, base·2^attempt))`, which can return
+zero — correct for backoff, wrong here: retrying before the window elapses is a
+guaranteed second rejection, so downward jitter turns a helpful hint into a
+promise the server will break. It still does jitter's real job, spreading
+everyone locked out by one seller cap so they do not retry in lockstep.
+
+**The hint is coarsened to whole minutes, because the precision is the leak.**
+All four limits share one code, so a caller cannot tell which they hit from
+that — but an exact countdown would separate the 2-per-hour product limit from
+the 60-per-hour seller cap and hand back the progress indicator
+[#152](https://github.com/nixsin/marketplace/issues/152) withholds. Rounding
+plus jitter leaves an estimate a caller could already approximate from the
+window. This is a deliberate, bounded relaxation of that decision, taken with
+sign-off; do not sharpen it back to exact without revisiting #152.
+
+**It costs no extra query.** The limiter's four `count()` calls became
+`aggregate({ _count, _min: { createdAt } })`, which returns the oldest row in
+the bucket alongside the count. A fifth query would have added request-level
+cost to a path that already runs four and consumes no rate-limit budget —
+exactly the surface #152 flags.
+
+**No hint is emitted when there is nothing to date it from**, rather than a
+guessed one, and only a throttle carries one at all: a validation error or a
+conflict does not become valid with time, so telling a caller to wait would
+point them at something that will never change.
+
 **`extensions.originalError` was leaking Nest's internals** — `statusCode` and
 `error` — to every anonymous caller, and is now dropped once the status has
 been read off it.

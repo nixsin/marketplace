@@ -14,6 +14,7 @@ import {
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
   INQUIRY_RATE_LIMIT_PER_SELLER,
   INQUIRY_RATE_LIMIT_WINDOW_MS,
+  retryAfterHintMs,
   INQUIRY_SUMMARY_NAME_MAX_LENGTH,
 } from '@medinstru/config';
 import { Prisma } from '../../generated/prisma/client';
@@ -456,6 +457,33 @@ export function sanitizeForLog(value: string, max = 200): string {
     ? `${truncateByCodePoint(flat, max - 1)}\u2026`
     : flat;
 }
+
+/**
+ * The shape `aggregate` returns for a bucket that was never queried.
+ *
+ * The per-IP limit is skipped when no trustworthy address resolved, and a
+ * zero count with no oldest row is exactly what "nothing counted" means -- so
+ * the limit cannot fire and no retry hint can be derived from it.
+ */
+const EMPTY_BUCKET = { _count: 0, _min: { createdAt: null } };
+
+/**
+ * The retry hint for a bucket, or undefined when there is nothing to date it
+ * from.
+ *
+ * A limit that fired always has rows, so `null` here means the bucket was
+ * never queried -- the skipped per-IP case. Returning undefined rather than
+ * a guessed number keeps the response honest: no hint is better than one the
+ * server cannot stand behind.
+ */
+const retryHint = (oldest: Date | null) =>
+  oldest
+    ? retryAfterHintMs(
+        oldest.getTime(),
+        Date.now(),
+        INQUIRY_RATE_LIMIT_WINDOW_MS,
+      )
+    : undefined;
 
 @Injectable()
 export class InquiriesService {
@@ -1054,6 +1082,7 @@ export class InquiriesService {
    * Takes the transaction client so the counts and the insert are one atomic
    * unit.
    */
+
   private async assertWithinRateLimit(
     tx: Prisma.TransactionClient,
     keys: {
@@ -1066,20 +1095,30 @@ export class InquiriesService {
     const since = new Date(Date.now() - INQUIRY_RATE_LIMIT_WINDOW_MS);
     const { buyerPhone, productId, sellerId, ipHash } = keys;
 
+    // aggregate, not count, and it costs NOTHING extra: one query returns both
+    // the count and the oldest row in the bucket, which is what dates the
+    // caller's next eligible attempt. Fetching that separately would add a
+    // fifth query to a path that already runs four and consumes no rate-limit
+    // budget -- a request-level cost an attacker gets for free (#152).
+    const bucket = (where: Prisma.InquiryWhereInput) =>
+      tx.inquiry.aggregate({
+        where,
+        _count: true,
+        _min: { createdAt: true },
+      });
+
     const [fromPhone, forThisProduct, fromIp, forSeller] = await Promise.all([
-      tx.inquiry.count({ where: { buyerPhone, createdAt: { gte: since } } }),
-      tx.inquiry.count({
-        where: { buyerPhone, productId, createdAt: { gte: since } },
-      }),
+      bucket({ buyerPhone, createdAt: { gte: since } }),
+      bucket({ buyerPhone, productId, createdAt: { gte: since } }),
       // Skipped when no trustworthy address resolved: counting every such
       // caller as one bucket would let a single one lock out all the others.
       ipHash
-        ? tx.inquiry.count({ where: { ipHash, createdAt: { gte: since } } })
-        : Promise.resolve(0),
-      tx.inquiry.count({ where: { sellerId, createdAt: { gte: since } } }),
+        ? bucket({ ipHash, createdAt: { gte: since } })
+        : Promise.resolve(EMPTY_BUCKET),
+      bucket({ sellerId, createdAt: { gte: since } }),
     ]);
 
-    if (forSeller >= INQUIRY_RATE_LIMIT_PER_SELLER) {
+    if (forSeller._count >= INQUIRY_RATE_LIMIT_PER_SELLER) {
       // FIX(#152): this cap is itself a targeted denial of service.
       //
       // It is shared across every buyer of this seller, so reaching it
@@ -1105,21 +1144,25 @@ export class InquiriesService {
       // around.
       throw new TooManyRequestsException(
         'Too many inquiries right now. Please try again later.',
+        retryHint(forSeller._min.createdAt),
       );
     }
-    if (fromIp >= INQUIRY_RATE_LIMIT_PER_IP) {
+    if (fromIp._count >= INQUIRY_RATE_LIMIT_PER_IP) {
       throw new TooManyRequestsException(
         'Too many inquiries from this network recently. Please try again later.',
+        retryHint(fromIp._min.createdAt),
       );
     }
-    if (fromPhone >= INQUIRY_RATE_LIMIT_PER_PHONE) {
+    if (fromPhone._count >= INQUIRY_RATE_LIMIT_PER_PHONE) {
       throw new TooManyRequestsException(
         'Too many inquiries from this number recently. Please try again later.',
+        retryHint(fromPhone._min.createdAt),
       );
     }
-    if (forThisProduct >= INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT) {
+    if (forThisProduct._count >= INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT) {
       throw new TooManyRequestsException(
         'You have already sent inquiries about this product recently.',
+        retryHint(forThisProduct._min.createdAt),
       );
     }
   }

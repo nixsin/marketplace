@@ -6,6 +6,7 @@ import { bootstrapTestApp } from './helpers/bootstrap';
 import {
   GRAPHQL_ERROR_CODES,
   INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
+  INQUIRY_RATE_LIMIT_WINDOW_MS,
 } from '@medinstru/config';
 
 const CREATE_INQUIRY = `
@@ -210,9 +211,37 @@ describe('Inquiries (e2e)', () => {
     expect(blocked.body.errors?.[0]?.extensions?.code).toBe(
       GRAPHQL_ERROR_CODES.tooManyRequests,
     );
+
+    // RFC 9110's Retry-After semantics, carried in extensions because GraphQL
+    // answers 200 and has no status line to hang a header off.
+    const retryAfterMs = blocked.body.errors?.[0]?.extensions
+      ?.retryAfterMs as number;
+    expect(typeof retryAfterMs).toBe('number');
+
+    // Coarsened to whole minutes before jitter, so the value cannot
+    // fingerprint WHICH limit was hit -- an exact countdown would separate the
+    // 2-per-hour product limit from the 60-per-hour seller cap and hand back
+    // the progress indicator #152 withholds.
+    expect(retryAfterMs % 60_000).toBeLessThan(60_000);
+    expect(retryAfterMs).toBeGreaterThanOrEqual(60_000);
+
+    // Never longer than the window plus the coarsening and jitter it can add.
+    expect(retryAfterMs).toBeLessThanOrEqual(
+      INQUIRY_RATE_LIMIT_WINDOW_MS + 2 * 60_000,
+    );
     expect(await prisma.inquiry.count()).toBe(
       INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
     );
+  });
+
+  it('does not hint a retry on anything but a throttle', async () => {
+    // A hint on a validation error or a conflict would be meaningless -- those
+    // do not become valid with time -- and would tell a caller to wait for
+    // something that will never change.
+    const res = await submit({
+      input: { ...input(), productId: 'does-not-exist' },
+    });
+    expect(res.body.errors?.[0]?.extensions?.retryAfterMs).toBeUndefined();
   });
 
   it('REJECTS a reused key carrying different details', async () => {
