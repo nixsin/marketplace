@@ -75,6 +75,17 @@ export declare const INQUIRY_RATE_LIMIT_PER_PHONE: number;
 export declare const INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT: number;
 export declare const INQUIRY_RATE_LIMIT_PER_IP: number;
 export declare const INQUIRY_RATE_LIMIT_PER_SELLER: number;
+/** Literal types, so a consumer switching on these keeps its exhaustiveness check. */
+export declare const GRAPHQL_ERROR_CODES: {
+  readonly badUserInput: "BAD_USER_INPUT";
+  readonly unauthenticated: "UNAUTHENTICATED";
+  readonly forbidden: "FORBIDDEN";
+  readonly notFound: "NOT_FOUND";
+  readonly conflict: "CONFLICT";
+  readonly tooManyRequests: "TOO_MANY_REQUESTS";
+};
+export type GraphqlErrorCode =
+  (typeof GRAPHQL_ERROR_CODES)[keyof typeof GRAPHQL_ERROR_CODES];
 export declare const INQUIRY_TRUST_PROXY_HEADERS_ENV: string;
 export declare const INQUIRY_IP_HASH_SECRET_ENV: string;
 export declare const OTP_TTL_MS: number;

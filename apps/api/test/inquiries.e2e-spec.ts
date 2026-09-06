@@ -3,7 +3,10 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { bootstrapTestApp } from './helpers/bootstrap';
-import { INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT } from '@medinstru/config';
+import {
+  GRAPHQL_ERROR_CODES,
+  INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
+} from '@medinstru/config';
 
 const CREATE_INQUIRY = `
   mutation CreateInquiry($input: CreateInquiryInput!) {
@@ -200,6 +203,13 @@ describe('Inquiries (e2e)', () => {
     expect(blocked.body.errors?.[0]?.message).toMatch(
       /already sent inquiries/i,
     );
+    // THE CODE, not the wording. apps/web branches on this; matching prose is
+    // what once told a buyer with an idempotency conflict that they had sent
+    // too many inquiries. All four rate limits share TOO_MANY_REQUESTS on
+    // purpose -- distinguishing them would leak which limit was hit.
+    expect(blocked.body.errors?.[0]?.extensions?.code).toBe(
+      GRAPHQL_ERROR_CODES.tooManyRequests,
+    );
     expect(await prisma.inquiry.count()).toBe(
       INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT,
     );
@@ -223,6 +233,13 @@ describe('Inquiries (e2e)', () => {
     });
 
     expect(edited.body.errors?.[0]?.message).toMatch(/different details/i);
+    // Distinct from the rate limit above, which is the entire point: these two
+    // were byte-identical apart from their prose before this.
+    expect(edited.body.errors?.[0]?.extensions?.code).toBe(
+      GRAPHQL_ERROR_CODES.conflict,
+    );
+    // Nest's internals are not shipped to an anonymous caller.
+    expect(edited.body.errors?.[0]?.extensions?.originalError).toBeUndefined();
     // The original is untouched, and no second row was written.
     expect(await prisma.inquiry.count()).toBe(1);
     const stored = await prisma.inquiry.findFirst();

@@ -1300,6 +1300,61 @@ Both sides are now specific (`"already used"` vs `"already sent inquiries"`),
 and a test asserts the conflict message contains neither of the rate-limit
 phrases.
 
+## Errors carry a standard code, not prose
+
+**Nothing here was invented, and that was the point.** GraphQL's spec makes
+`errors[].extensions` the extension point; Apollo's `ApolloServerErrorCode`
+supplies `BAD_USER_INPUT` and the protocol-level names; `UNAUTHENTICATED`,
+`FORBIDDEN`, `NOT_FOUND`, `CONFLICT` and `TOO_MANY_REQUESTS` are the
+conventional HTTP-derived codes the ecosystem has used since Apollo Server 3
+shipped the first two as built-ins. Both packages were already dependencies.
+
+**RFC 9457 Problem Details is the wrong standard here** despite being the
+obvious answer to "standard error format": it is built on HTTP status
+semantics, and GraphQL answers `200` with an `errors` array. Right for a REST
+surface, wrong inside a GraphQL envelope.
+
+**The discriminator is the HTTP status, so nothing names its category twice.**
+Services throw the semantically correct Nest exception — `ConflictException`
+because the situation *is* a conflict — and `formatGraphqlError` maps the
+status to the standard code. A parallel registry of app-specific codes would
+mean every throw site declaring its category in two vocabularies that can
+disagree.
+
+**Two throw sites were simply the wrong exception, and that was the bug.** The
+four rate limits and the idempotency conflict were all `BadRequestException` —
+a 400, "you sent something malformed", for requests that were perfectly
+well-formed. So every rejection arrived as the same generic `BAD_REQUEST`, and
+`categorizeInquiryError` in `apps/web` had to read the message *prose* to tell
+them apart. That made the wording a load-bearing API and it broke once: the
+conflict message read "already sent with different details", the rate-limit
+branch matched "already sent", and a buyer whose submission id collided was
+told they had sent too many inquiries recently — a wait that could not help.
+
+**All four rate limits share `TOO_MANY_REQUESTS`, and the standard code is what
+makes that natural.** Their messages are deliberately vague because naming the
+per-seller cap hands an attacker a progress indicator for the one limit they
+cannot rotate around ([#152](https://github.com/nixsin/marketplace/issues/152)).
+A code per limit would publish exactly what the wording withholds, through a
+channel easier to parse than prose.
+
+**`extensions.originalError` was leaking Nest's internals** — `statusCode` and
+`error` — to every anonymous caller, and is now dropped once the status has
+been read off it.
+
+**Nest has no 429 exception, and a bare `HttpException(msg, 429)` does not
+work.** `TooManyRequestsException` must build its body with
+`HttpException.createBody`, because `@nestjs/graphql` reads the
+`{ message, error, statusCode }` shape Nest's built-ins produce; a plain string
+passes every unit test and then surfaces over GraphQL as
+`INTERNAL_SERVER_ERROR` — a rate limit reported as a server fault. Caught by
+asserting the code **on the wire**, which is the only place this class of
+mistake is visible.
+
+**An unrecognised status keeps Apollo's own code rather than getting a new
+one.** A future exception type degrades to the generic answer instead of a
+confidently wrong one.
+
 ## Buyer inquiry delivery (#91, part 3)
 
 Part 3 of three. Part 1 (#150) added the schema and phone validation, part 2

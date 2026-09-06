@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { join } from 'path';
+import { formatGraphqlError } from './graphql-error';
 import type { Request } from 'express';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -27,6 +28,9 @@ import { StorageModule } from './storage/storage.module';
       // IDE. Same intent -- an explorer in dev, nothing exposed in prod.
       graphiql: process.env.NODE_ENV !== 'production',
       context: ({ req }: { req: Request }) => ({ req }),
+      // Every error leaves through here with a standard code, and without
+      // Nest's internals attached. See graphql-error.ts for both reasons.
+      formatError: formatGraphqlError,
     }),
     PrismaModule,
     CacheModule,
