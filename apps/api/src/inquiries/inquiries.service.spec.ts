@@ -409,6 +409,18 @@ describe('the outbound summary without a public site url', () => {
   });
 });
 
+/**
+ * What `aggregate` returns for a bucket holding `count` rows.
+ *
+ * The oldest row defaults to the start of the window, which is what dates the
+ * retry hint. The limiter reads count and oldest in ONE query -- the hint
+ * costs no extra round trip on a path that already runs four.
+ */
+const bucketOf = (count: number, oldest: Date = new Date()) => ({
+  _count: count,
+  _min: { createdAt: count === 0 ? null : oldest },
+});
+
 describe('InquiriesService', () => {
   let service: InquiriesService;
   let prisma: {
@@ -419,6 +431,7 @@ describe('InquiriesService', () => {
       create: jest.Mock;
       update: jest.Mock;
       count: jest.Mock;
+      aggregate: jest.Mock;
     };
   };
   let whatsapp: { sendInquiry: jest.Mock };
@@ -456,6 +469,11 @@ describe('InquiriesService', () => {
           }),
         ),
         count: jest.fn().mockResolvedValue(0),
+        // The limiter reads count AND the oldest row in one aggregate, so the
+        // retry hint costs no extra query. An empty bucket has no oldest row.
+        aggregate: jest
+          .fn()
+          .mockResolvedValue({ _count: 0, _min: { createdAt: null } }),
       },
     };
     whatsapp = {
@@ -519,7 +537,7 @@ describe('InquiriesService', () => {
     // per-phone limit is trivially sidestepped with spaces.
     await service.create({ ...ARGS, buyerPhone: '+91 98765 43210' });
 
-    const buckets = prisma.inquiry.count.mock.calls
+    const buckets = prisma.inquiry.aggregate.mock.calls
       .map(
         (call) =>
           (call[0] as { where: { buyerPhone?: string } }).where.buyerPhone,
@@ -551,6 +569,11 @@ describe('InquiriesService', () => {
             Promise.resolve({ id: 'inq-1', ...data }),
           ),
         count: jest.fn().mockResolvedValue(0),
+        // The limiter reads count AND the oldest row in one aggregate, so the
+        // retry hint costs no extra query. An empty bucket has no oldest row.
+        aggregate: jest
+          .fn()
+          .mockResolvedValue({ _count: 0, _min: { createdAt: null } }),
       },
     };
     prisma.$transaction.mockImplementation((fn: (client: unknown) => unknown) =>
@@ -696,7 +719,9 @@ describe('InquiriesService', () => {
         .mockResolvedValueOnce(null) // the pre-flight lookup, before the race
         .mockResolvedValue(winner); // inside the retried transaction
       // Every bucket is at its ceiling, which is what made this fail.
-      prisma.inquiry.count.mockResolvedValue(INQUIRY_RATE_LIMIT_PER_PHONE);
+      prisma.inquiry.aggregate.mockResolvedValue(
+        bucketOf(INQUIRY_RATE_LIMIT_PER_PHONE),
+      );
 
       await expect(service.create(ARGS)).resolves.toBe(winner);
       expect(prisma.inquiry.create).not.toHaveBeenCalled();
@@ -713,7 +738,7 @@ describe('InquiriesService', () => {
 
       await service.create(ARGS);
 
-      expect(prisma.inquiry.count).not.toHaveBeenCalled();
+      expect(prisma.inquiry.aggregate).not.toHaveBeenCalled();
       expect(prisma.inquiry.create).not.toHaveBeenCalled();
     });
 
@@ -784,7 +809,7 @@ describe('InquiriesService', () => {
       NotFoundException,
     );
     expect(prisma.$transaction).not.toHaveBeenCalled();
-    expect(prisma.inquiry.count).not.toHaveBeenCalled();
+    expect(prisma.inquiry.aggregate).not.toHaveBeenCalled();
   });
 
   it('denormalizes the seller so a later product reassignment cannot rewrite history', async () => {
@@ -1148,9 +1173,9 @@ describe('InquiriesService', () => {
 
   describe('rate limiting', () => {
     it('rejects once the per-phone limit is reached', async () => {
-      prisma.inquiry.count
-        .mockResolvedValueOnce(INQUIRY_RATE_LIMIT_PER_PHONE)
-        .mockResolvedValueOnce(0);
+      prisma.inquiry.aggregate
+        .mockResolvedValueOnce(bucketOf(INQUIRY_RATE_LIMIT_PER_PHONE))
+        .mockResolvedValueOnce(bucketOf(0));
 
       await expect(service.create(ARGS)).rejects.toBeInstanceOf(
         TooManyRequestsException,
@@ -1161,9 +1186,9 @@ describe('InquiriesService', () => {
     it('rejects once the per-phone-per-product limit is reached', async () => {
       // Stops one buyer pestering one seller about one item, which the
       // broader per-phone limit alone would allow up to its ceiling.
-      prisma.inquiry.count
-        .mockResolvedValueOnce(0)
-        .mockResolvedValueOnce(INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT);
+      prisma.inquiry.aggregate
+        .mockResolvedValueOnce(bucketOf(0))
+        .mockResolvedValueOnce(bucketOf(INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT));
 
       await expect(service.create(ARGS)).rejects.toBeInstanceOf(
         TooManyRequestsException,
@@ -1179,7 +1204,7 @@ describe('InquiriesService', () => {
       // per-seller cap. The IP bucket is deliberately skipped rather than
       // counted as null -- collapsing every unresolvable caller into one
       // shared bucket would let a single one lock out all the others.
-      expect(prisma.inquiry.count).toHaveBeenCalledTimes(3);
+      expect(prisma.inquiry.aggregate).toHaveBeenCalledTimes(3);
     });
 
     it('adds an IP bucket when the address resolves AND a secret exists', async () => {
@@ -1189,8 +1214,8 @@ describe('InquiriesService', () => {
       process.env.INQUIRY_IP_HASH_SECRET = TEST_IP_HASH_SECRET;
       await service.create({ ...ARGS, callerIp: '203.0.113.7' });
 
-      expect(prisma.inquiry.count).toHaveBeenCalledTimes(4);
-      const buckets = prisma.inquiry.count.mock.calls.map((call) =>
+      expect(prisma.inquiry.aggregate).toHaveBeenCalledTimes(4);
+      const buckets = prisma.inquiry.aggregate.mock.calls.map((call) =>
         Object.keys((call[0] as { where: object }).where)
           .sort()
           .join(','),
@@ -1244,9 +1269,11 @@ describe('InquiriesService', () => {
       // Asserted directly, not merely that the count happens -- the review
       // pointed out the old test proved the query ran and nothing more.
       process.env.INQUIRY_IP_HASH_SECRET = TEST_IP_HASH_SECRET;
-      prisma.inquiry.count.mockImplementation(
+      prisma.inquiry.aggregate.mockImplementation(
         ({ where }: { where: { ipHash?: string } }) =>
-          Promise.resolve(where.ipHash ? INQUIRY_RATE_LIMIT_PER_IP : 0),
+          Promise.resolve(
+            bucketOf(where.ipHash ? INQUIRY_RATE_LIMIT_PER_IP : 0),
+          ),
       );
 
       await expect(
@@ -1258,9 +1285,11 @@ describe('InquiriesService', () => {
       // The only limit still standing when an attacker rotates BOTH phone
       // numbers and addresses, so it is what actually bounds the spam a
       // seller can be made to receive.
-      prisma.inquiry.count.mockImplementation(
+      prisma.inquiry.aggregate.mockImplementation(
         ({ where }: { where: { sellerId?: string } }) =>
-          Promise.resolve(where.sellerId ? INQUIRY_RATE_LIMIT_PER_SELLER : 0),
+          Promise.resolve(
+            bucketOf(where.sellerId ? INQUIRY_RATE_LIMIT_PER_SELLER : 0),
+          ),
       );
 
       await expect(service.create(ARGS)).rejects.toBeInstanceOf(
@@ -1271,9 +1300,11 @@ describe('InquiriesService', () => {
     it('does not tell the caller which seller cap they hit', async () => {
       // Naming it hands an attacker a progress indicator for the one limit
       // they cannot rotate around.
-      prisma.inquiry.count.mockImplementation(
+      prisma.inquiry.aggregate.mockImplementation(
         ({ where }: { where: { sellerId?: string } }) =>
-          Promise.resolve(where.sellerId ? INQUIRY_RATE_LIMIT_PER_SELLER : 0),
+          Promise.resolve(
+            bucketOf(where.sellerId ? INQUIRY_RATE_LIMIT_PER_SELLER : 0),
+          ),
       );
 
       await expect(service.create(ARGS)).rejects.toThrow(
@@ -1308,7 +1339,9 @@ describe('InquiriesService', () => {
         attempts += 1;
         return Promise.resolve(fn(prisma));
       });
-      prisma.inquiry.count.mockResolvedValue(INQUIRY_RATE_LIMIT_PER_PHONE);
+      prisma.inquiry.aggregate.mockResolvedValue(
+        bucketOf(INQUIRY_RATE_LIMIT_PER_PHONE),
+      );
 
       await expect(service.create(ARGS)).rejects.toBeInstanceOf(
         TooManyRequestsException,
@@ -1341,7 +1374,9 @@ describe('InquiriesService', () => {
     });
 
     it('checks the limit before writing anything', async () => {
-      prisma.inquiry.count.mockResolvedValue(INQUIRY_RATE_LIMIT_PER_PHONE);
+      prisma.inquiry.aggregate.mockResolvedValue(
+        bucketOf(INQUIRY_RATE_LIMIT_PER_PHONE),
+      );
       await expect(service.create(ARGS)).rejects.toBeInstanceOf(
         TooManyRequestsException,
       );

@@ -6,6 +6,7 @@ import {
   ANTHROPIC_ANALYSIS_MODEL,
   CORRELATION_HEADERS,
   CORRELATION_ID_MAX_LENGTH,
+  retryAfterHintMs,
   CORRELATION_ID_PATTERN,
   DEFAULT_LOCALE,
   LOCALES,
@@ -675,4 +676,63 @@ test("every exported subpath has a declaration file beside it", async () => {
     [],
     `exported without a .d.ts: ${missing.join(", ")}`,
   );
+});
+
+describe("retryAfterHintMs", () => {
+  const WINDOW = 60 * 60 * 1000;
+  const MINUTE = 60 * 1000;
+  const now = 1_700_000_000_000;
+
+  test("NEVER earlier than the real wait, for any jitter", () => {
+    // The property that matters. A hint before the window elapses is a
+    // guaranteed second rejection -- it turns help into a broken promise.
+    // AWS's full-jitter formula can return zero, which is right for backoff
+    // and wrong here, so this is asserted across the whole random range.
+    for (const r of [0, 0.001, 0.25, 0.5, 0.75, 0.999]) {
+      for (const minutesAgo of [0, 1, 7, 33, 59, 59.9]) {
+        const oldest = now - minutesAgo * MINUTE;
+        const actual = oldest + WINDOW - now;
+        const hint = retryAfterHintMs(oldest, now, WINDOW, () => r);
+        assert.ok(
+          hint >= actual,
+          `early by ${(actual - hint) / 1000}s at r=${r}, ${minutesAgo}m ago`,
+        );
+      }
+    }
+  });
+
+  test("coarsened to whole minutes before jitter, so it cannot fingerprint a limit", () => {
+    // With no jitter the answer is always a whole number of minutes. An exact
+    // countdown would distinguish the 2/hour product limit from the 60/hour
+    // seller cap -- the progress indicator #152 withholds.
+    const oldest = now - (48 * MINUTE + 17_000); // 11m43s remaining
+    const hint = retryAfterHintMs(oldest, now, WINDOW, () => 0);
+    assert.equal(hint % MINUTE, 0);
+    assert.equal(hint, 12 * MINUTE);
+  });
+
+  test("jitter spreads callers who were all locked out together", () => {
+    // Everyone behind one seller cap would otherwise be told the same instant
+    // and retry in lockstep.
+    const oldest = now - 48 * MINUTE;
+    const spread = new Set(
+      [0, 0.2, 0.4, 0.6, 0.8].map((r) =>
+        retryAfterHintMs(oldest, now, WINDOW, () => r),
+      ),
+    );
+    assert.ok(spread.size > 1, "every caller got the same hint");
+  });
+
+  test("never below a minute, so the copy always reads sensibly", () => {
+    // Defensive: a limit should not be hit with the window already elapsed,
+    // but "try again in 0 minutes" would be worse than useless.
+    assert.ok(retryAfterHintMs(now - WINDOW, now, WINDOW, () => 0) >= MINUTE);
+    assert.ok(retryAfterHintMs(now - 2 * WINDOW, now, WINDOW, () => 0) >= MINUTE);
+  });
+
+  test("stays bounded by the window it is derived from", () => {
+    // A hint longer than the window would be wrong in the other direction.
+    const hint = retryAfterHintMs(now, now, WINDOW, () => 0.999);
+    assert.ok(hint <= WINDOW + 2 * MINUTE, `${hint} exceeds the window`);
+  });
 });
