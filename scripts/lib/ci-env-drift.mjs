@@ -368,19 +368,54 @@ const GUARD_VIA_HELPER = /(?<![\w$.])(?:await|return)[ \t]+bootstrapTestApp\s*\(
 export const HELPER_IMPORT =
   /^import\s*\{[^}]*(?<![\w$])bootstrapTestApp\s*[,}][^}]*\}?\s*from\s*["']\.\/helpers\/bootstrap(?:\.js)?["']/m;
 
+/** The whole import statement, so it can be removed before counting mentions. */
+const HELPER_IMPORT_STATEMENT =
+  /^import\s*\{[^}]*\}\s*from\s*["']\.\/helpers\/bootstrap(?:\.js)?["'];?/gm;
+
+/** The bare identifier, never a property access. */
+const HELPER_NAME = /(?<![\w$.])bootstrapTestApp(?![\w$])/g;
+
 /**
- * A spec defining `bootstrapTestApp` itself, whatever else it imports.
+ * Does this spec import the real helper AND use nothing else by that name?
  *
- * Resolving which binding a call reaches is a scoping question, and answering
- * it textually is guessing. When both exist this file declines to treat the
- * call as a guard — the same "declare what you cannot read and fail loudly"
- * rule the rest of this repo follows, pointed in the safe direction: the cost
- * of being wrong here is a truncated production database, and the cost of
- * being conservative is one comment explaining why a spec must not shadow the
- * helper's name.
+ * ENUMERATING SHADOWING FORMS IS THE WRONG SHAPE. An earlier version listed
+ * `const|let|var` and function declarations, and missed destructuring
+ * (`const { bootstrapTestApp } = helpers`) and a parameter of that name — and
+ * would have kept missing whatever form was thought of next. Listing the ways
+ * to be wrong can only ever be as complete as the last person's imagination.
+ *
+ * So the rule is inverted: after the import statement is removed, EVERY
+ * remaining mention of the name must be an awaited or returned call of it.
+ * Anything else — a destructured binding, a parameter, an assignment, a bare
+ * reference, even a mention inside a string — makes the spec ambiguous, and
+ * ambiguous is answered "not guarded".
+ *
+ * That direction is deliberate. A false "not guarded" costs a comment
+ * explaining why a spec must not reuse the name; a false "guarded" costs a
+ * truncated database, which this repo has already done to itself once.
+ *
+ * Shared with the repo-hygiene invariant rather than restated there, so the
+ * two cannot drift into disagreeing about what counts.
  */
-export const HELPER_SHADOW =
-  /(?:^|[;{}])\s*(?:(?:async\s+)?function\s+bootstrapTestApp\b|(?:const|let|var)\s+bootstrapTestApp\b)/m;
+export function usesBootstrapHelper(source) {
+  const code = stripComments(source);
+  if (!HELPER_IMPORT.test(code)) return false;
+
+  const rest = code.replace(HELPER_IMPORT_STATEMENT, "");
+  const mentions = [...rest.matchAll(HELPER_NAME)];
+
+  // Imported and never called is not a use. It is also how a suite looks
+  // after someone deletes the call but leaves the import behind.
+  if (mentions.length === 0) return false;
+
+  return mentions.every((m) => {
+    const before = rest.slice(Math.max(0, m.index - 16), m.index);
+    const after = rest.slice(m.index);
+    return (
+      /(?:await|return)[ \t]+$/.test(before) && /^bootstrapTestApp\s*\(/.test(after)
+    );
+  });
+}
 
 /**
  * The body of the function whose declaration starts with `signature`, or null.
@@ -453,7 +488,7 @@ export function unguardedTruncates(spec) {
   // a string, which `executable` has stripped — and against `code` rather than
   // the raw spec so a commented-out import does not count.
   const candidates = [...executable.matchAll(GUARD)];
-  if (HELPER_IMPORT.test(code) && !HELPER_SHADOW.test(executable)) {
+  if (usesBootstrapHelper(spec)) {
     candidates.push(...executable.matchAll(GUARD_VIA_HELPER));
   }
 

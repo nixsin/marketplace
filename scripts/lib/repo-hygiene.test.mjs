@@ -11,7 +11,7 @@ import {
 // Reused rather than restated. Two copies of the rule for what counts as
 // importing the bootstrap helper is exactly the drift this whole change is
 // about -- and the copy that fell behind would be the permissive one.
-import { HELPER_IMPORT, stripComments } from "./ci-env-drift.mjs";
+import { stripComments, usesBootstrapHelper } from "./ci-env-drift.mjs";
 
 const REPO = resolve(import.meta.dirname, "..", "..");
 
@@ -154,15 +154,17 @@ describe("e2e suites boot the app the way production does", () => {
 
   for (const spec of specs) {
     test(`${spec} uses bootstrapTestApp`, () => {
-      // Comments stripped, or `// await bootstrapTestApp()` satisfies the
-      // positive checks below while the suite boots nothing.
-      const source = stripComments(readFileSync(join(REPO, spec), "utf8"));
+      const raw = readFileSync(join(REPO, spec), "utf8");
 
-      // Absence is half the check. On its own it passes for a suite that
-      // stopped booting an app at all, or reaches one through some third
-      // route -- so the positive half asserts the helper is really imported
-      // and really called. Both halves, or the test's name is a claim its
-      // body does not make.
+      // Comments stripped for the negative check, or a commented-out
+      // `createNestApplication` reads as a hand-rolled bootstrap.
+      // usesBootstrapHelper does its own stripping, so it takes the raw text.
+      const source = stripComments(raw);
+
+      // Absence is only half. On its own it passes for a suite that stopped
+      // booting an app at all, or reaches one some third way -- so the
+      // positive half below asserts the helper is really the thing used.
+      // Both halves, or the test's name is a claim its body does not make.
       assert.ok(
         !source.includes("createNestApplication"),
         `${spec} builds its own Nest app. Use bootstrapTestApp from ` +
@@ -170,16 +172,16 @@ describe("e2e suites boot the app the way production does", () => {
           `configuration production does.`,
       );
 
-      assert.match(
-        source,
-        HELPER_IMPORT,
-        `${spec} must import bootstrapTestApp from ./helpers/bootstrap`,
-      );
-
-      assert.match(
-        source,
-        /(?<![\w$.])await[ \t]+bootstrapTestApp\s*\(/,
-        `${spec} must await bootstrapTestApp -- importing it is not calling it`,
+      // One shared check rather than an import assertion and a call assertion
+      // side by side. Separately they passed for a suite that imported the
+      // real helper and called a nested local function of the same name --
+      // which is the drift this invariant exists to prevent, arriving through
+      // the gap between two checks that each looked fine.
+      assert.ok(
+        usesBootstrapHelper(raw),
+        `${spec} must import bootstrapTestApp from ./helpers/bootstrap and ` +
+          `call it -- and must not bind that name to anything else, which ` +
+          `would make which function runs a question this check cannot answer`,
       );
     });
   }

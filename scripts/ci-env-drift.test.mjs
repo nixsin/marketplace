@@ -828,6 +828,39 @@ test("bootstrapTestApp counts only when it is the imported helper", () => {
     "a function declaration shadows just as effectively",
   );
 
+  // The forms an enumerated list of declaration keywords missed. The rule is
+  // inverted precisely so these need no individual entry: any mention of the
+  // name that is not an awaited call makes the spec ambiguous.
+  const destructured = `${importLine}describe('s',()=>{const { bootstrapTestApp } = helpers;beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(destructured).length,
+    1,
+    "a destructured binding shadows the import",
+  );
+
+  const asParameter = `${importLine}describe('s',()=>{const run=(bootstrapTestApp)=>bootstrapTestApp();beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(asParameter).length,
+    1,
+    "a parameter of that name shadows the import",
+  );
+
+  const reassigned = `${importLine}describe('s',()=>{let x=bootstrapTestApp;beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(reassigned).length,
+    1,
+    "a bare reference is not a call, so the spec is ambiguous",
+  );
+
+  // Imported and never called. This is what a suite looks like after someone
+  // deletes the call and leaves the import behind.
+  const importedNotCalled = `${importLine}describe('s',()=>{beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(importedNotCalled).length,
+    1,
+    "importing is not calling",
+  );
+
   // Import-shaped text inside a template literal is not an import. The
   // line-start anchor is what rejects it.
   const inLiteral = `describe('s',()=>{const doc=\`  import { bootstrapTestApp } from './helpers/bootstrap';\`;beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
