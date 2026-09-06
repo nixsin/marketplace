@@ -587,12 +587,11 @@ and is now allowlisted, since following `latest` would re-break Apollo.
 
 **Two v12 behaviour changes that touch this app.** `playground` is gone from
 `@nestjs/graphql` 14 — GraphiQL is the built-in IDE, so the option is
-`graphiql`. And a class-validator rejection now surfaces a bare `Bad Request
-Exception` rather than its own text. No behaviour change for the buyer, since
-`categorizeInquiryError` matched neither string and both land in `unknown` —
-but the server no longer says *which* field is wrong, so the inquiry form's
-mirrored constraints are now the only thing that can tell a buyer what to fix.
-Both are pinned by tests in `inquiries.e2e-spec.ts`.
+`graphiql`. And a class-validator rejection surfaced a bare `Bad Request
+Exception` rather than its own text — **now fixed**; see "A DTO rejection names
+the field" below. This entry previously argued the loss was harmless because
+`categorizeInquiryError` matched neither string, so both landed in `unknown`.
+Right about the impact, wrong about the cost.
 
 **`@nestjs/schematics` is deliberately NOT a direct dependency any more.** At
 v12 it peers to `typescript: >=6.0.0`, which this repo cannot satisfy —
@@ -1350,6 +1349,30 @@ passes every unit test and then surfaces over GraphQL as
 `INTERNAL_SERVER_ERROR` — a rate limit reported as a server fault. Caught by
 asserting the code **on the wire**, which is the only place this class of
 mistake is visible.
+
+**A DTO rejection names the field it failed on.** NestJS 12 discarded
+class-validator's text and sent a bare `Bad Request Exception`; this file used
+to *pin* that limitation. The buyer's copy is chosen from that message, so a
+malformed phone number — the one failure they can actually fix — was showing
+generic "something went wrong". `validationException`, wired into
+`app.setup`'s pipe, restores the constraint text and lands it in the "invalid"
+branch instead.
+
+It flattens `children`, because a nested DTO reports through those and carries
+no `constraints` of its own — reading the top level alone yields an empty
+message, which is a validator that looks like it works until someone uses a
+nested input.
+
+**Edge validation is NOT finished, and the ordering is the reason.** Trimming
+in the DTO and an E.164 constraint matching `normalizeE164` both belong there,
+so malformed input never reaches the transaction — CLAUDE.md's own note that a
+rejected inquiry still opens one and runs up to four counts is the argument for
+it. They are blocked on `apps/web` switching to `extensions.code`: while prose
+matching is still live, a `@Length` failure reads "buyerName must be longer
+than or equal to 2 characters", which matches none of the web's substrings and
+would regress a whitespace name from "invalid" copy to "unknown". Writing DTO
+messages to satisfy a prose matcher that is about to be deleted is the wrong
+fix.
 
 **An unrecognised status keeps Apollo's own code rather than getting a new
 one.** A future exception type degrades to the generic answer instead of a
