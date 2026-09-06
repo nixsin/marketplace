@@ -23,7 +23,7 @@
  */
 
 /** Severity ordering, worst first. */
-export const SEVERITY = ["fail", "warn", "pass", "skip"];
+const SEVERITY = ["fail", "warn", "pass", "skip"];
 
 /**
  * Overall run status: the worst severity present.

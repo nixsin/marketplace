@@ -10,7 +10,7 @@
 // full reasoning behind each directive -- this file is just the pure
 // computation, kept in sync with that reasoning, not a duplicate of it.
 
-export interface SecurityHeadersInput {
+interface SecurityHeadersInput {
   isDev: boolean;
   /**
    * The origin this build will actually be served from.
@@ -54,7 +54,7 @@ export interface SecurityHeadersInput {
  * like it does. Falls back to "" on an unparseable value so a bad env var
  * degrades to a stricter policy, never a broken page.
  */
-export function blobImgSrcEntry(blobBaseUrl: string | undefined): string {
+function blobImgSrcEntry(blobBaseUrl: string | undefined): string {
   if (!blobBaseUrl) return "";
   try {
     return ` ${new URL(blobBaseUrl).origin}`;

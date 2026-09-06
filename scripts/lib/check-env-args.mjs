@@ -13,7 +13,7 @@
 
 /** @typedef {"api" | "web"} App */
 
-export const APPS = /** @type {const} */ (["api", "web"]);
+const APPS = /** @type {const} */ (["api", "web"]);
 
 /**
  * @param {string[]} argv                Arguments after the script name.

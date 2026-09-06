@@ -45,7 +45,7 @@ export function parseCiJobs(yamlText) {
 }
 
 /** True when `key` is declared at job level (not nested inside a step). */
-export function hasJobLevelKey(jobBody, key) {
+function hasJobLevelKey(jobBody, key) {
   return new RegExp(`^ {${JOB_KEY_INDENT}}${key}:`, "m").test(jobBody);
 }
 
@@ -122,7 +122,7 @@ export function findFileFlagMisuse(text) {
  * comment *documenting* the --paginate --jq hazard, and a detector that
  * flags prose describing the thing it detects is just noise.
  */
-export function codeLines(text) {
+function codeLines(text) {
   return joinContinuations(text).filter((line) => {
     const t = line.trim();
     return t !== "" && !t.startsWith("//") && !t.startsWith("#") && !t.startsWith("*");
@@ -155,7 +155,7 @@ export function findConstructingPaginateJq(text) {
 }
 
 /** Collapse trailing-backslash continuations into single logical lines. */
-export function joinContinuations(text) {
+function joinContinuations(text) {
   const out = [];
   let buf = null;
   for (const line of text.split("\n")) {

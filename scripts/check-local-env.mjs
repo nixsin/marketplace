@@ -287,7 +287,7 @@ export function parseVersion(text) {
 }
 
 /** -1, 0 or 1, comparing two parsed versions. */
-export function compareVersions(a, b) {
+function compareVersions(a, b) {
   for (let i = 0; i < 3; i += 1) {
     if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
   }
@@ -319,7 +319,7 @@ export function satisfiesFloor(found, floor) {
  * declared anywhere is not enforced -- inventing one turns a green check into
  * an argument about whose laptop is right.
  */
-export function declaredVersions({ root = repoRoot } = {}) {
+function declaredVersions({ root = repoRoot } = {}) {
   const read = (rel) => readFileSync(join(root, rel), "utf8");
   const pkg = JSON.parse(read("package.json"));
 
@@ -619,7 +619,7 @@ export function shellQuote(value) {
  * Same clean-environment discipline: `env -i`, only HOME, so the probe
  * cannot inherit what it is trying to detect.
  */
-export function nonInteractiveTools(names, { shell = process.env.SHELL, run } = {}) {
+function nonInteractiveTools(names, { shell = process.env.SHELL, run } = {}) {
   if (!shell || !/\/(zsh|bash)$/.test(shell)) return null;
 
   // `; true` because the shell exits with the status of its LAST command --

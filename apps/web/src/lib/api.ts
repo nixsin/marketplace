@@ -272,7 +272,7 @@ const CREATE_INQUIRY_MUTATION = minifyGql(`
   }
 `);
 
-export interface InquiryInput {
+interface InquiryInput {
   /**
    * Stable per-SUBMISSION key. Generated once when the buyer submits and
    * REUSED on every retry -- a fresh one per attempt would defeat the whole
@@ -300,7 +300,7 @@ export type InquiryFailure =
   | "conflict"
   | "unknown";
 
-export type InquiryResult =
+type InquiryResult =
   | { ok: true }
   | { ok: false; reason: InquiryFailure };
 
