@@ -34,7 +34,7 @@
  * defence in depth for that `--force` path, not as the primary control.
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -154,6 +154,31 @@ export function stripProbe(text, probe) {
   );
 }
 
+/**
+ * Replaces a file's contents atomically: write a sibling temp file, then
+ * rename over the target.
+ *
+ * `writeFileSync` truncates first, so an interrupted write leaves a file that
+ * is neither the original nor the probe — a state `restore` correctly refuses
+ * to touch and `stripProbe` correctly refuses to clean, which together mean a
+ * damaged source file and no automatic way back. A rename within the same
+ * directory is atomic, so the file is only ever the old contents or the new.
+ */
+function writeAtomic(full, text) {
+  const tmp = `${full}.knip-selftest.tmp`;
+  try {
+    writeFileSync(tmp, text);
+    renameSync(tmp, full);
+  } catch (error) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // Nothing useful to do; the real error is the one being rethrown.
+    }
+    throw error;
+  }
+}
+
 function main({ force = false, env = process.env } = {}) {
   if (!env.CI && !force) {
     console.error(
@@ -182,6 +207,8 @@ function main({ force = false, env = process.env } = {}) {
    * exact-match, because overwriting a concurrent save to tidy up after a lint
    * is a worse outcome than leaving a probe behind and saying so.
    */
+  const unrestored = [];
+
   const restore = () => {
     for (const [file, text] of originals) {
       const full = join(REPO, file);
@@ -191,18 +218,23 @@ function main({ force = false, env = process.env } = {}) {
             `knip-selftest: ${file} changed while the check was running; ` +
               `leaving it alone. Remove the "${MARKER}" block by hand.`,
           );
+          unrestored.push(file);
           continue;
         }
-        writeFileSync(full, text);
+        writeAtomic(full, text);
       } catch (error) {
         console.error(`knip-selftest: could not restore ${file}: ${error.message}`);
+        unrestored.push(file);
       }
     }
   };
 
   const write = (file, text) => {
+    // Recorded BEFORE the write, so a write that fails still leaves this file
+    // in `originals` for restore to attempt. Recorded content the file may not
+    // hold is safe: restore compares before writing.
     planted.set(file, text);
-    writeFileSync(join(REPO, file), text);
+    writeAtomic(join(REPO, file), text);
   };
 
   let output = "";
@@ -246,6 +278,19 @@ function main({ force = false, env = process.env } = {}) {
     }
   } finally {
     restore();
+  }
+
+  // BEFORE the findings are judged. A probe left in a source file is a worse
+  // outcome than any verdict about knip's config, and reporting "passed" while
+  // the tree still holds planted code would be the script's own silent-failure
+  // mode -- the exact thing it exists to prevent one level down.
+  if (unrestored.length > 0) {
+    console.error(
+      `\nknip self-test FAILED — these files still hold planted probes:\n` +
+        unrestored.map((f) => `  ${f}`).join("\n") +
+        `\n\nRemove the "${MARKER}" block from each by hand. Do not commit them.\n`,
+    );
+    return 1;
   }
 
   if (failure) {

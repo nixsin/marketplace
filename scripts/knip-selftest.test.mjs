@@ -79,6 +79,56 @@ describe("probe placement", () => {
   });
 });
 
+describe("failure reporting", () => {
+  test("an unrestored file fails the run, ahead of any verdict about knip", () => {
+    // Read from the source rather than executed: forcing a restore failure
+    // needs a real filesystem fault mid-run, and the property worth pinning is
+    // the ORDERING -- the unrestored check must come before the findings are
+    // judged, or a run that left planted code in the tree could still print
+    // "passed". That is this script's own version of the silent failure it
+    // exists to catch one level down.
+    const source = readFileSync(new URL("./knip-selftest.mjs", import.meta.url), "utf8");
+
+    const unrestoredAt = source.indexOf("if (unrestored.length > 0)");
+    const failureAt = source.indexOf("if (failure)");
+    const missedAt = source.indexOf("if (missed.length > 0)");
+    const passAt = source.indexOf("knip self-test passed");
+
+    assert.ok(unrestoredAt > 0, "the unrestored-files check is gone");
+    assert.ok(
+      unrestoredAt < failureAt && unrestoredAt < missedAt && unrestoredAt < passAt,
+      "cleanup failure must be reported before any verdict, including success",
+    );
+
+    // And every path that gives up on a file must record it, or the check
+    // above has nothing to fire on.
+    const restoreBody = source.slice(
+      source.indexOf("const restore = () =>"),
+      source.indexOf("const write = (file, text)"),
+    );
+    const gaveUp = (restoreBody.match(/continue;|catch \(error\)/g) ?? []).length;
+    const recorded = (restoreBody.match(/unrestored\.push\(/g) ?? []).length;
+    assert.equal(
+      recorded,
+      gaveUp,
+      "every branch that leaves a file unrestored must push to `unrestored`",
+    );
+  });
+
+  test("writes go through the atomic helper, never writeFileSync directly", () => {
+    // writeFileSync truncates first, so an interrupted write leaves a file
+    // that is neither the original nor the probe -- which restore refuses to
+    // touch and stripProbe refuses to clean, i.e. a damaged file with no way
+    // back. Only writeAtomic may touch a tracked source file.
+    const source = readFileSync(new URL("./knip-selftest.mjs", import.meta.url), "utf8");
+    const body = source.slice(source.indexOf("function main("));
+    assert.ok(
+      !/writeFileSync\(/.test(body),
+      "main() must write through writeAtomic, not writeFileSync",
+    );
+  });
+});
+
 describe("main", () => {
   test("refuses to touch a working tree outside CI", () => {
     // The control that makes every data-loss path above unreachable in normal
