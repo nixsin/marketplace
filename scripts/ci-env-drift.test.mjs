@@ -13,6 +13,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   envBlock,
+  functionBody,
   jobSource,
   jobsAssigningDatabaseUrl,
   stripComments,
@@ -482,23 +483,36 @@ test("bootstrapTestApp really is a guard, not just a name on the list", () => {
     "utf8",
   );
 
-  // Comments stripped first. Reading raw text would accept a commented-out
-  // call -- the same mistake this whole check exists to catch one level down.
-  const code = stripComments(helper);
+  // Comments AND strings stripped. Comments alone would accept a commented-out
+  // call; leaving strings in would accept a call-shaped string literal. Both
+  // are the same mistake this check exists to catch one level down.
+  const code = stripCommentsAndStrings(helper);
 
-  // And the call has to be INSIDE the exported helper, not merely somewhere
-  // in the file: moved into an unexported function, or below the export, it
-  // guards nothing while the file still contains the words.
-  const at = code.indexOf("export async function bootstrapTestApp");
-  assert.notEqual(at, -1, "helpers/bootstrap.ts must export bootstrapTestApp");
+  // Bounded to the helper's own body, not "somewhere after it". Slicing to end
+  // of file also accepts a call sitting below the closing brace, which guards
+  // nothing while the file still contains the words.
+  const body = functionBody(code, "export async function bootstrapTestApp");
+  assert.ok(body, "helpers/bootstrap.ts must export bootstrapTestApp");
 
   assert.match(
-    code.slice(at),
+    body,
     /await[ \t]+assertConnectedToTestDatabase\s*\(/,
     "bootstrapTestApp must await assertConnectedToTestDatabase — the e2e " +
       "suites TRUNCATE, and unguardedTruncates treats bootstrapTestApp as a " +
       "guard on the strength of that call",
   );
+});
+
+test("functionBody stops at the closing brace", () => {
+  // The bound above is only worth having if it actually bounds. Written as a
+  // real test rather than trusted, because its failure mode is silent: a body
+  // that runs to end-of-file passes the assertion above for the wrong reason.
+  const src = "export async function f() {\n  const x = { a: 1 };\n  inside();\n}\noutside();\n";
+  const body = functionBody(src, "export async function f");
+
+  assert.match(body, /inside\(\)/);
+  assert.doesNotMatch(body, /outside\(\)/, "the body must end at its own brace");
+  assert.equal(functionBody(src, "export async function missing"), null);
 });
 
 test("the inline-map and explicit-key rules handle quoting and boundaries", () => {
@@ -795,6 +809,32 @@ test("bootstrapTestApp counts only when it is the imported helper", () => {
     unguardedTruncates(withExtension),
     [],
     "./helpers/bootstrap.js is the same helper",
+  );
+
+  // SHADOWED: a correct import AND a local definition of the same name. Which
+  // one a call reaches is a scoping question this file cannot answer, so it
+  // answers "not guarded" rather than guessing in the permissive direction.
+  const shadowed = `${importLine}describe('s',()=>{const bootstrapTestApp=async()=>({});beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(shadowed).length,
+    1,
+    "a local definition alongside the import is ambiguous, so not a guard",
+  );
+
+  const shadowedByFunction = `${importLine}describe('s',()=>{async function bootstrapTestApp(){return {};}beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(shadowedByFunction).length,
+    1,
+    "a function declaration shadows just as effectively",
+  );
+
+  // Import-shaped text inside a template literal is not an import. The
+  // line-start anchor is what rejects it.
+  const inLiteral = `describe('s',()=>{const doc=\`  import { bootstrapTestApp } from './helpers/bootstrap';\`;beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(inLiteral).length,
+    1,
+    "an import inside a string is not an import",
   );
 });
 

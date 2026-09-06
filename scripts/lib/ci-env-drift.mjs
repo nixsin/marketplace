@@ -330,10 +330,15 @@ const GUARD =
  *      defining its own `bootstrapTestApp`, guarding nothing, would be read as
  *      protected. No member call (`x.bootstrapTestApp()`) either; only the
  *      imported binding.
- *   2. that helper must really await the guard — pinned by a test in
+ *   2. the spec must not also DEFINE that name. If both an import and a local
+ *      definition are present, which one a given call resolves to is a
+ *      scoping question this file cannot answer without parsing — so it
+ *      answers "not guarded" and says why, rather than guessing in the
+ *      permissive direction. See HELPER_SHADOW.
+ *   3. that helper must really await the guard — pinned by a test in
  *      `ci-env-drift.test.mjs`, which reads the file.
  *
- * Both exist because the failure mode here is truncating a real database,
+ * All three exist because the failure mode here is truncating a real database,
  * which this repo has already done to itself once.
  */
 const GUARD_VIA_HELPER = /(?<![\w$.])(?:await|return)[ \t]+bootstrapTestApp\s*\(/g;
@@ -353,11 +358,61 @@ const GUARD_VIA_HELPER = /(?<![\w$.])(?:await|return)[ \t]+bootstrapTestApp\s*\(
  *   - `import type { ... }` cannot match, since `import` is followed directly
  *     by the brace here. A type has no runtime call to guard anything.
  *
+ * ANCHORED TO THE START OF A LINE. An import is a top-level statement, so it
+ * always begins one; import-shaped text inside a template literal generally
+ * does not, and this is the cheap half of not reading strings as code.
+ *
  * Callers must test this against comment-stripped text, or a commented-out
  * import counts.
  */
 export const HELPER_IMPORT =
-  /import\s*\{[^}]*(?<![\w$])bootstrapTestApp\s*[,}][^}]*\}?\s*from\s*["']\.\/helpers\/bootstrap(?:\.js)?["']/;
+  /^import\s*\{[^}]*(?<![\w$])bootstrapTestApp\s*[,}][^}]*\}?\s*from\s*["']\.\/helpers\/bootstrap(?:\.js)?["']/m;
+
+/**
+ * A spec defining `bootstrapTestApp` itself, whatever else it imports.
+ *
+ * Resolving which binding a call reaches is a scoping question, and answering
+ * it textually is guessing. When both exist this file declines to treat the
+ * call as a guard — the same "declare what you cannot read and fail loudly"
+ * rule the rest of this repo follows, pointed in the safe direction: the cost
+ * of being wrong here is a truncated production database, and the cost of
+ * being conservative is one comment explaining why a spec must not shadow the
+ * helper's name.
+ */
+export const HELPER_SHADOW =
+  /(?:^|[;{}])\s*(?:(?:async\s+)?function\s+bootstrapTestApp\b|(?:const|let|var)\s+bootstrapTestApp\b)/m;
+
+/**
+ * The body of the function whose declaration starts with `signature`, or null.
+ *
+ * Brace counting, not parsing — and it is only sound because callers pass text
+ * that has already been through `stripCommentsAndStrings`, so every brace left
+ * is a real one. A brace in a comment or a string would desynchronise the
+ * count; there are none left to find.
+ *
+ * Exists because "the text appears after the declaration" is not the same
+ * claim as "the text is in the function": a call below the closing brace
+ * satisfies the first and guards nothing.
+ */
+export function functionBody(code, signature) {
+  const at = code.indexOf(signature);
+  if (at === -1) return null;
+
+  const open = code.indexOf("{", at);
+  if (open === -1) return null;
+
+  let depth = 0;
+  for (let i = open; i < code.length; i += 1) {
+    if (code[i] === "{") depth += 1;
+    else if (code[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return code.slice(open + 1, i);
+    }
+  }
+  // Unbalanced. Null rather than the rest of the file, so a caller cannot
+  // read a truncated file as a body containing everything.
+  return null;
+}
 
 const SETUP_HOOK = /(?<![\w$.])before(?:All|Each)\s*\(/g;
 
@@ -398,7 +453,7 @@ export function unguardedTruncates(spec) {
   // a string, which `executable` has stripped — and against `code` rather than
   // the raw spec so a commented-out import does not count.
   const candidates = [...executable.matchAll(GUARD)];
-  if (HELPER_IMPORT.test(code)) {
+  if (HELPER_IMPORT.test(code) && !HELPER_SHADOW.test(executable)) {
     candidates.push(...executable.matchAll(GUARD_VIA_HELPER));
   }
 
