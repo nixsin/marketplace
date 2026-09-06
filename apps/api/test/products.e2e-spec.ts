@@ -4,6 +4,7 @@ import { App } from 'supertest/types';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { bootstrapTestApp } from './helpers/bootstrap';
 import { graphqlCacheControl } from '../src/graphql-cache';
+import { GRAPHQL_ERROR_CODES } from '@medinstru/config';
 
 function gql(app: INestApplication<App>) {
   return (query: string, variables?: Record<string, unknown>) =>
@@ -191,6 +192,12 @@ describe('Product by id (e2e)', () => {
     expect(res.body.data).toBeNull();
     expect(res.body.errors).toBeDefined();
     expect(res.body.errors[0].message).toMatch(/not found/i);
+    // The CODE, on the wire. apps/web currently decides 404-vs-error for a
+    // product page with /not found/i against this message -- so the wording is
+    // load-bearing until it switches to this.
+    expect(res.body.errors[0].extensions?.code).toBe(
+      GRAPHQL_ERROR_CODES.notFound,
+    );
   });
 });
 

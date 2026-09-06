@@ -548,6 +548,46 @@ export const INQUIRY_IP_HASH_SECRET_ENV = "INQUIRY_IP_HASH_SECRET";
 // receive. Deliberately generous enough that real demand never reaches it.
 export const INQUIRY_RATE_LIMIT_PER_SELLER = 60;
 
+// ---------------------------------------------------------------------
+// GraphQL error codes
+// ---------------------------------------------------------------------
+
+/**
+ * The STANDARD codes this API puts on `errors[].extensions.code`.
+ *
+ * Nothing here is invented. GraphQL's spec makes `extensions` the extension
+ * point; Apollo's ApolloServerErrorCode supplies BAD_USER_INPUT and the other
+ * protocol-level names, and the rest are the conventional HTTP-derived codes
+ * the GraphQL ecosystem has used since Apollo Server 3 shipped UNAUTHENTICATED
+ * and FORBIDDEN as built-ins.
+ *
+ * They exist here rather than only in apps/api because apps/web switches on
+ * them, which makes them a wire contract between two independently deployed
+ * services -- the same reason CORRELATION_HEADERS lives here.
+ *
+ * WHAT THEY REPLACE. apps/web used to pick the buyer's error copy by matching
+ * SUBSTRINGS of the server's message, which made the wording a load-bearing
+ * API. It broke once: the conflict message read "already sent with different
+ * details", the rate-limit branch matched "already sent", and a buyer whose
+ * submission id collided was told they had sent too many inquiries recently --
+ * pointing them at a wait that could not help.
+ *
+ * TOO_MANY_REQUESTS COVERS ALL FOUR RATE LIMITS, and the standard code is what
+ * makes that natural rather than a special case. The messages are already
+ * deliberately vague, because naming the per-seller cap hands an attacker a
+ * progress indicator for the one limit they cannot rotate around (#152). A
+ * code per limit would publish exactly what the wording withholds, through a
+ * channel easier to read than prose.
+ */
+export const GRAPHQL_ERROR_CODES = {
+  badUserInput: "BAD_USER_INPUT",
+  unauthenticated: "UNAUTHENTICATED",
+  forbidden: "FORBIDDEN",
+  notFound: "NOT_FOUND",
+  conflict: "CONFLICT",
+  tooManyRequests: "TOO_MANY_REQUESTS",
+};
+
 // ---------------------------------------------------------------------------
 // Product inquiries over WhatsApp (#91, delivery)
 // ---------------------------------------------------------------------------

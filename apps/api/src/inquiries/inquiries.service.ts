@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { TooManyRequestsException } from '../too-many-requests.exception';
 import { createHmac } from 'node:crypto';
 import {
   INQUIRY_IP_HASH_SECRET_ENV,
@@ -125,7 +127,7 @@ export function assertSameSubmission<T extends SubmissionIdentity>(
     // conflict was told they had sent too many inquiries recently, which is
     // both wrong and unactionable. The client keys off these strings, so the
     // wording is a wire contract, not prose.
-    throw new BadRequestException(
+    throw new ConflictException(
       'This submission id was already used for different details. Reload the page and try again.',
     );
   }
@@ -1101,22 +1103,22 @@ export class InquiriesService {
       // Deliberately vague to the caller. Naming the seller cap hands an
       // attacker a progress indicator for the one limit they cannot rotate
       // around.
-      throw new BadRequestException(
+      throw new TooManyRequestsException(
         'Too many inquiries right now. Please try again later.',
       );
     }
     if (fromIp >= INQUIRY_RATE_LIMIT_PER_IP) {
-      throw new BadRequestException(
+      throw new TooManyRequestsException(
         'Too many inquiries from this network recently. Please try again later.',
       );
     }
     if (fromPhone >= INQUIRY_RATE_LIMIT_PER_PHONE) {
-      throw new BadRequestException(
+      throw new TooManyRequestsException(
         'Too many inquiries from this number recently. Please try again later.',
       );
     }
     if (forThisProduct >= INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT) {
-      throw new BadRequestException(
+      throw new TooManyRequestsException(
         'You have already sent inquiries about this product recently.',
       );
     }

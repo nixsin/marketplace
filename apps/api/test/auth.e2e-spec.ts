@@ -4,6 +4,7 @@ import { App } from 'supertest/types';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { SmsService } from '../src/auth/sms.service';
 import { bootstrapTestApp } from './helpers/bootstrap';
+import { GRAPHQL_ERROR_CODES } from '@medinstru/config';
 
 class FakeSmsService {
   sentCodes = new Map<string, string>();
@@ -134,6 +135,12 @@ describe('Auth + onboarding (e2e)', () => {
 
     expect(res.body.errors).toBeDefined();
     expect(res.body.errors[0].message).toMatch(/invalid or expired code/i);
+    // Deliberately one code for both invalid AND expired -- telling an
+    // attacker which one they hit is the same class of leak as naming which
+    // rate limit was reached.
+    expect(res.body.errors[0].extensions?.code).toBe(
+      GRAPHQL_ERROR_CODES.unauthenticated,
+    );
   });
 
   it('rejects onboarding with a garbage token', async () => {

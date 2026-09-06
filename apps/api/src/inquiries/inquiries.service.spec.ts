@@ -1,7 +1,12 @@
 // `jest` is not a global under ESM -- Jest injects describe/it/expect but
 // not the jest object itself, so it has to be imported explicitly.
 import { jest } from '@jest/globals';
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
+import { TooManyRequestsException } from '../too-many-requests.exception';
 import {
   INQUIRY_RATE_LIMIT_PER_IP,
   INQUIRY_RATE_LIMIT_PER_SELLER,
@@ -725,7 +730,7 @@ describe('InquiriesService', () => {
 
       await expect(
         service.create({ ...ARGS, message: 'an EDITED question' }),
-      ).rejects.toBeInstanceOf(BadRequestException);
+      ).rejects.toBeInstanceOf(ConflictException);
       expect(prisma.inquiry.create).not.toHaveBeenCalled();
     });
 
@@ -1148,7 +1153,7 @@ describe('InquiriesService', () => {
         .mockResolvedValueOnce(0);
 
       await expect(service.create(ARGS)).rejects.toBeInstanceOf(
-        BadRequestException,
+        TooManyRequestsException,
       );
       expect(prisma.inquiry.create).not.toHaveBeenCalled();
     });
@@ -1161,7 +1166,7 @@ describe('InquiriesService', () => {
         .mockResolvedValueOnce(INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT);
 
       await expect(service.create(ARGS)).rejects.toBeInstanceOf(
-        BadRequestException,
+        TooManyRequestsException,
       );
       expect(prisma.inquiry.create).not.toHaveBeenCalled();
     });
@@ -1259,7 +1264,7 @@ describe('InquiriesService', () => {
       );
 
       await expect(service.create(ARGS)).rejects.toBeInstanceOf(
-        BadRequestException,
+        TooManyRequestsException,
       );
     });
 
@@ -1306,7 +1311,7 @@ describe('InquiriesService', () => {
       prisma.inquiry.count.mockResolvedValue(INQUIRY_RATE_LIMIT_PER_PHONE);
 
       await expect(service.create(ARGS)).rejects.toBeInstanceOf(
-        BadRequestException,
+        TooManyRequestsException,
       );
       expect(attempts).toBe(1);
     });
@@ -1338,7 +1343,7 @@ describe('InquiriesService', () => {
     it('checks the limit before writing anything', async () => {
       prisma.inquiry.count.mockResolvedValue(INQUIRY_RATE_LIMIT_PER_PHONE);
       await expect(service.create(ARGS)).rejects.toBeInstanceOf(
-        BadRequestException,
+        TooManyRequestsException,
       );
       expect(prisma.inquiry.create).not.toHaveBeenCalled();
     });
@@ -1369,7 +1374,7 @@ describe('assertSameSubmission', () => {
           ...identity,
           [field]: 'something else',
         }),
-      ).toThrow(BadRequestException);
+      ).toThrow(ConflictException);
     },
   );
 
