@@ -1383,6 +1383,26 @@ passes every unit test and then surfaces over GraphQL as
 asserting the code **on the wire**, which is the only place this class of
 mistake is visible.
 
+**apps/web now reads `extensions.code`, and matches no prose at all.** Both
+sites are gone: `categorizeInquiryError` switches on the code, and
+`fetchProduct` decides 404-vs-error on `NOT_FOUND` rather than `/not found/i`
+— that second one governs the status crawlers index, so an editorial change to
+the API's wording used to be able to turn a real 404 into a thrown error.
+
+**The prose fallback was deliberately NOT kept.** It was planned, then dropped
+once the API deploy was verified live (`{"code":"NOT_FOUND","status":404}` from
+production). Keeping it would have meant keeping the string matching this whole
+change exists to delete. An API rolled back to before codes degrades every
+buyer to the generic "unknown" copy — worse than today, better than wrong copy,
+and visible rather than silent.
+
+**The rate-limit copy states the wait**: "Try again in about 12 minutes", from
+`extensions.retryAfterMs`, rounded UP to whole minutes because the server
+already coarsened it and finer precision would imply an accuracy the API
+withholds (#152). When the server dated nothing the old vague copy is used
+rather than an invented number — a hint the API never promised is the UI
+lying on its behalf.
+
 **A DTO rejection names the field it failed on.** NestJS 12 discarded
 class-validator's text and sent a bare `Bad Request Exception`; this file used
 to *pin* that limitation. The buyer's copy is chosen from that message, so a

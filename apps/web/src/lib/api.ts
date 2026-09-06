@@ -1,6 +1,7 @@
 import type { Product } from "@/components/product-card";
 import type { ProductDetail } from "@/components/product-detail";
 import { API_URL } from "@medinstru/config/web";
+import { GRAPHQL_ERROR_CODES } from "@medinstru/config";
 import { correlationHeaders, newClientRequestId } from "./correlation";
 import { reportApiFailure } from "./report-api-failure";
 
@@ -97,7 +98,7 @@ interface ProductResponse {
       };
     } | null;
   };
-  errors?: { message: string }[];
+  errors?: { message: string; extensions?: { code?: unknown } }[];
 }
 
 // Distinct from fetchProductsPaged's Product return type -- the list stays
@@ -154,7 +155,15 @@ export async function fetchProduct(id: string): Promise<ProductDetail | null> {
   const json = (await res.json()) as ProductResponse;
 
   if (json.errors) {
-    if (json.errors.some((e) => /not found/i.test(e.message))) return null;
+    // The CODE decides 404-vs-error, not the wording. This matched
+    // /not found/i against the message, which made an editorial change to the
+    // API's text silently turn a real "this product is gone" 404 into a
+    // thrown error -- and that page's status is what crawlers index.
+    if (
+      json.errors.some((e) => e.extensions?.code === GRAPHQL_ERROR_CODES.notFound)
+    ) {
+      return null;
+    }
     throw new Error(json.errors[0]?.message ?? "GraphQL error");
   }
 
@@ -302,33 +311,60 @@ export type InquiryFailure =
 
 type InquiryResult =
   | { ok: true }
-  | { ok: false; reason: InquiryFailure };
+  | { ok: false; reason: InquiryFailure; retryAfterMs?: number };
+
+/**
+ * The shape of a GraphQL error this client cares about.
+ *
+ * `extensions` is the GraphQL spec's own extension point, and `code` carries
+ * one of the standard codes the API emits. Both are optional here because they
+ * come off the wire: a broken intermediary, or an API rolled back to before
+ * codes existed, must degrade rather than throw.
+ */
+interface GraphqlError {
+  message?: unknown;
+  extensions?: { code?: unknown; retryAfterMs?: unknown };
+}
+
+/** How long the server says to wait, when it says anything at all. */
+export function retryAfterFrom(error: GraphqlError | undefined): number | null {
+  const ms = error?.extensions?.retryAfterMs;
+  // A hint is only usable if it is a real, positive number. Absent is
+  // meaningfully different from zero: it means the server could not date the
+  // wait, which is guidance to give none rather than to retry immediately.
+  return typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? ms : null;
+}
 
 /**
  * Maps a server error to a category the UI can act on.
  *
- * Matched against the messages the API actually produces, defaulting to
- * "unknown" rather than guessing -- a wrong category is worse than a generic
- * one, because it tells the buyer to do something that cannot help.
+ * READS THE CODE, NOT THE PROSE. This used to match substrings of the server's
+ * message, which made the wording a load-bearing API -- and it broke: the
+ * conflict message once read "already sent with different details", the
+ * rate-limit branch matched "already sent", and a buyer whose submission id
+ * collided was told they had sent too many inquiries recently, pointing them
+ * at a wait that could not help.
+ *
+ * The codes are the standard ones (GraphQL's `extensions.code`, with Apollo's
+ * vocabulary), so an editorial change to any message is now free.
+ *
+ * An unrecognised or absent code yields "unknown" rather than a guess. That is
+ * also the rollback path: an API deployed from before codes existed sends
+ * none, and every buyer sees the generic copy instead of wrong copy.
  */
-export function categorizeInquiryError(message: string): InquiryFailure {
-  const text = message.toLowerCase();
-  // "already used", checked BEFORE the rate-limit branch and matched on its
-  // own phrase. The idempotency-conflict message once read "already sent
-  // with different details", which the rate-limit branch below swallowed --
-  // telling a buyer with a key conflict that they had sent too many
-  // inquiries recently. Wrong, and it points them at a wait that cannot
-  // help.
-  if (text.includes("already used")) return "conflict";
-  // Matched on "already sent inquiries", not a bare "already sent", so a
-  // future message merely containing those two words does not land here.
-  if (text.includes("too many") || text.includes("already sent inquiries")) {
-    return "rate-limited";
+export function categorizeInquiryError(
+  error: GraphqlError | undefined,
+): InquiryFailure {
+  switch (error?.extensions?.code) {
+    case GRAPHQL_ERROR_CODES.conflict:
+      return "conflict";
+    case GRAPHQL_ERROR_CODES.tooManyRequests:
+      return "rate-limited";
+    case GRAPHQL_ERROR_CODES.badUserInput:
+      return "invalid";
+    default:
+      return "unknown";
   }
-  if (text.includes("phone number") || text.includes("enter your name")) {
-    return "invalid";
-  }
-  return "unknown";
 }
 
 /**
@@ -407,11 +443,14 @@ export async function submitInquiry(
     // .toLowerCase() on it, which throws past this function's discriminated
     // return into a caller that has no way to distinguish that from a
     // rejection it expected.
-    const first = payload.errors[0]?.message;
-    return {
-      ok: false,
-      reason: categorizeInquiryError(typeof first === "string" ? first : ""),
-    };
+    const first = payload.errors[0];
+    const reason = categorizeInquiryError(first);
+    const retryAfterMs = retryAfterFrom(first);
+    // Carried only for a throttle, and only when the server dated it. Anything
+    // else would be the UI inventing a wait the API never promised.
+    return retryAfterMs !== null && reason === "rate-limited"
+      ? { ok: false, reason, retryAfterMs }
+      : { ok: false, reason };
   }
 
   // The ID is checked, not merely the object's presence.
