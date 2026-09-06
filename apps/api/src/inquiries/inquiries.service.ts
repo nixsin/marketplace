@@ -20,7 +20,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { normalizeE164 } from './phone';
 import { WhatsappService, truncateByCodePoint } from './whatsapp.service';
 
-export interface CreateInquiryArgs {
+interface CreateInquiryArgs {
   /** Stable per-submission key; the same value on every retry. */
   idempotencyKey: string;
   productId: string;
@@ -61,7 +61,7 @@ export function hashIp(
 }
 
 /** The fields that make one submission distinct from another. */
-export interface SubmissionIdentity {
+interface SubmissionIdentity {
   productId: string;
   buyerName: string;
   buyerPhone: string;
@@ -142,7 +142,7 @@ export function assertSameSubmission<T extends SubmissionIdentity>(
  * would deliver a buyer's name and phone number to an organisation with
  * nothing to do with the listing.
  */
-export type InsertedInquiry =
+type InsertedInquiry =
   /**
    * This call wrote the row, and carries the product snapshot the
    * transaction read. Delivery happens only on this shape.

@@ -11,7 +11,6 @@ import {
 } from "react";
 import { NextIntlClientProvider } from "next-intl";
 import type { Locale } from "@/i18n/routing";
-import { routing } from "@/i18n/routing";
 
 type Messages = Record<string, unknown>;
 
@@ -113,5 +112,3 @@ export function LocaleProvider({
     </LocaleContext.Provider>
   );
 }
-
-export const locales = routing.locales;

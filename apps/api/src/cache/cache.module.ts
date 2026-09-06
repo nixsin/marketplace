@@ -33,5 +33,3 @@ export function createCacheStore(): CacheStore {
   exports: [CACHE_STORE, CacheVersionService],
 })
 export class CacheModule {}
-
-export { CACHE_STORE, type CacheStore } from './cache-store';

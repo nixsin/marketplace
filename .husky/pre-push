@@ -1,1 +1,20 @@
+# Unused exports. Measured at 1.4s, offline, deterministic -- so it runs
+# FIRST, ahead of the ~30s model round trip below. Learning about a dead
+# export should not cost the slower check's latency to find out.
+#
+# This one BLOCKS, and the asymmetry with the AI precheck is deliberate: that
+# check depends on a network and an API key, so any failure to reach it is
+# environmental and it fails open. knip cannot fail for an environmental
+# reason, so a non-zero exit is always a real finding -- and it is the same
+# check the required Lint job runs, so catching it here saves a full CI
+# round trip rather than duplicating one.
+if ! pnpm knip:check; then
+  echo ""
+  echo "Unused exports found. The Lint job will fail on these too."
+  echo "  - remove the export, or"
+  echo "  - keep it deliberately with a /** @public */ JSDoc tag above it"
+  echo "Override with: git push --no-verify"
+  exit 1
+fi
+
 node scripts/ai-code-review-precheck.mjs

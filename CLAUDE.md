@@ -1034,6 +1034,107 @@ compare them instead — the same mechanism as the Cloudflare locale list:
 | `scripts/ci-env-drift.test.mjs` | `ci.yml`'s values match |
 | `scripts/generate-env-example.test.mjs` | the generated `.env` files are current |
 
+### Unused exports are checked by knip, not by ESLint
+
+**No ESLint rule in this repo can see them, and `no-unused-vars` never will:**
+to that rule an `export` *is* a use, so a symbol nothing imports is invisible
+to it. The one ESLint answer is `import/no-unused-modules` with
+`unusedExports: true`, and it was rejected here for a specific reason —
+`eslint-plugin-import` is currently transitive-only, and it is one of the three
+plugins capping `eslint` at `^9` and blocking the ESLint 10 bump. Making it a
+direct dependency would deepen a blocker this file already tracks.
+
+`pnpm knip:check` runs in **two places**, the same split the AI review uses:
+the **Lint** job (fails closed — same install, no new runner, ~5% on a ~50s
+job, and Lint is already required so a finding blocks a merge with no new check
+to configure), previewed by **`.husky/pre-push`** at 1.4s, ahead of the ~30s AI
+precheck so a dead export does not cost a model round trip to discover.
+
+**It is ENFORCED, not merely tracked, and the distinction is determinism.**
+`perf-budget`'s LCP was de-enforced because the same commit scored 70, 85 and
+98 on shared runners — `main` could not reliably pass its own required check.
+knip has no network and no runner contention: same code, same answer. A red is
+always real, which is the property that keeps a required check meaningful
+rather than something bypassed by habit.
+
+**Local-only was considered and rejected**, for the reason this file already
+documents about silent skips: a pre-push hook does not run for Dependabot, does
+not run under `--no-verify`, and never runs on `main`. Local checks here are
+"convenience in front of it, not a replacement".
+
+**The escape hatch is per-export, not per-file**: a `/** @public */` JSDoc tag
+above a deliberately-unused export suppresses it — verified, while a plain
+export beside it is still reported. Same reasoning as the secret scanner's
+`// scan-ignore:` markers: an exclusion hides the exemption and silently covers
+future additions too.
+
+**The config was wrong FOUR times before it caught anything, every time in the
+silent direction** — a misconfigured knip exits 0 and is indistinguishable from
+a clean repo:
+
+- `entry` for `packages/config` was `src/*.js`, making every file an entry
+  point, and an entry's exports are never reported.
+- the root workspace declared `scripts/**/*.{mjs,js}` as entry, so every
+  `scripts/lib/*.mjs` was an entry too — exactly where the findings live.
+- **`ignoreExportsUsedInFile: true` suppressed every export used only inside
+  its own file**, which is most of the eighteen #200 removed by hand. The check
+  would not have caught the class it was built for.
+- `apps/web`'s entry glob covered the whole of `src/app/**`, not just the
+  Next.js convention filenames.
+
+The first two were found by a manual "plant a dead export and look" step, which
+was then documented — **and the documented procedure did not prevent the second
+two**, because a procedure only runs when someone remembers it. So the property
+is asserted instead: `pnpm knip:selftest` appends an unused export to one
+project file per workspace, runs the real check, and requires every one to be
+reported. It runs in the Lint job beside `knip:check`, and each of the four
+mistakes above was reintroduced to confirm it fails.
+
+**The self-test is CI-only**, and that is the fix for a class rather than a
+preference. It proves the property by temporarily rewriting real source files,
+and three review rounds each found a different way for that to destroy work: a
+prepended probe made recovery blank a file, a concurrent editor save could be
+overwritten by the restore, and content appended after a stranded probe could
+be truncated by the next run. Each was fixable, but patching them one at a time
+was the wrong shape — the hazard is the working tree. It now requires `CI`, or
+an explicit `pnpm knip:selftest -- --force` for someone deliberately changing
+`knip.json` locally, and refuses with exit 0 otherwise. Recovery only removes
+text that exactly matches what it wrote, and throws rather than guessing.
+
+Two traps inside the self-test itself, both of which made it pass for the wrong
+reason before being fixed:
+
+- **A probe in a NEW file is never reported.** A file nothing imports is an
+  *unused file*, a different finding that `--include exports,types` filters
+  out. Probes must append to a file that is already in the graph.
+- **Substring matching hid the third mistake.** Each probe declares `SYMBOL`
+  (used in its own file) and `SYMBOL_USER` (not), so with
+  `ignoreExportsUsedInFile` wrongly on, only the second is reported — and
+  `"SYMBOL_USER".includes("SYMBOL")` is true. The check needs `\bSYMBOL\b`,
+  which does not match inside `SYMBOL_USER` because `_` is a word character.
+
+**`packages/config` cannot be checked at all, and that is correct.** Every file
+in its `src/` is named in the package's `exports` map, so all of them are entry
+points. A published package's contract *is* its exports map. The consequence is
+real though: an unused export added to that package is caught by nothing.
+
+Two paths are exempt, with reasons: `apps/web/src/components/ui/**` is
+shadcn-vendored, so its exports are that library's public API and trimming them
+creates diff noise on the next `shadcn add`; `apps/web/src/i18n/navigation.ts`
+is a next-intl adapter whose `redirect`/`usePathname`/`useRouter` are the
+canonical surface, deliberately kept whole.
+
+**They are exempted as `entry`, not `ignore`, and the distinction is about what
+happens to code they IMPORT.** An entry is analysed and its imports still count
+as uses; only its own exports go unreported. `ignore` says the file is not
+there, which raises the question of whether a helper used *only* from a
+vendored component then reads as unused — a required check failing on genuinely
+used code is the failure that gets a check deleted. Measured, and worth stating
+because a review asserted the opposite: `ignore` does in fact still count those
+imports today, so this is about not depending on undocumented behaviour rather
+than fixing a live bug. `knip:selftest` pins it either way, with a probe that
+must NOT be reported.
+
 **An exported constant that nothing imports is evidence, not just clutter.**
 `ISSUE_TITLE` in `scripts/lib/production-audit.mjs` was declared as the stable
 title the nightly audit reuses so it edits one issue instead of filing a new

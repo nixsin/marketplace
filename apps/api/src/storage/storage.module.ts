@@ -70,6 +70,3 @@ export function createBlobStore(): BlobStore {
   exports: [BLOB_STORE],
 })
 export class StorageModule {}
-
-// Re-exported so callers have one import site for the token and the port.
-export { BLOB_STORE, type BlobStore } from './blob-store';

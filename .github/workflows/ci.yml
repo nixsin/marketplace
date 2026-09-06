@@ -278,6 +278,25 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint:check
+      # Unused exports, which ESLint structurally cannot see: to no-unused-vars
+      # an `export` IS a use, so a symbol nothing imports is invisible to it.
+      #
+      # In this job rather than its own: it needs the same install and nothing
+      # else, so it adds ~5% to a ~50s job and no new runner. Lint is already
+      # required, so a finding blocks a merge with no new check to configure.
+      #
+      # Enforced rather than merely tracked, unlike perf-budget's LCP. That was
+      # de-enforced for NON-DETERMINISM -- the same commit scoring 70, 85 and 98
+      # on shared runners. This is deterministic: same code, same answer, no
+      # network. A red here is always real, which is the property that keeps a
+      # required check meaningful. Previewed locally by .husky/pre-push.
+      - run: pnpm knip:check
+      # And a check that the check still works. A misconfigured knip exits 0
+      # and looks exactly like a clean repo -- this config was wrong four
+      # times before it caught anything, every time in that silent direction.
+      # Plants a deliberately unused export in each workspace and requires
+      # every one to be reported. See scripts/knip-selftest.mjs.
+      - run: pnpm knip:selftest
 
   # A live review caught that scripts/lib/pr-reconciliation.mjs's tests
   # only ever ran inside pr-reconciliation.yml's own steps — a workflow
@@ -369,6 +388,11 @@ jobs:
       # package wiring. Each is a rule this repo has already been bitten by.
       - run: node --test scripts/lib/repo-invariants.test.mjs
       - run: node --test scripts/lib/repo-invariants.detectors.test.mjs
+      # knip-selftest rewrites four real source files and restores them, so a
+      # bug in its recovery deletes work rather than failing a check. One
+      # already did: a prepended probe made recovery return "" and blank a
+      # component. Pure Node, so it belongs in this job rather than Lint.
+      - run: node --test scripts/knip-selftest.test.mjs
       - run: bash scripts/publish-badge.test.sh
       - run: bash scripts/check-outdated.test.sh
 

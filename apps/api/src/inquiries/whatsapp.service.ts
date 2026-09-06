@@ -18,7 +18,7 @@ import {
 // what part 2 consolidated away after two of them drifted.
 import { normalizeE164 } from './phone';
 
-export type WhatsappSendResult =
+type WhatsappSendResult =
   | { ok: true; providerMessageId: string | null }
   /**
    * AMBIGUOUS: the request may or may not have reached Meta. A timeout or a
