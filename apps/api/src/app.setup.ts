@@ -1,6 +1,7 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import { CORRELATION_HEADERS } from './observability/correlation';
+import { validationException } from './validation-error';
 import {
   graphqlCacheControl,
   isCacheableGraphqlResponse,
@@ -13,7 +14,16 @@ import { CorrelationExceptionFilter } from './observability/correlation-exceptio
 // bootstrap() entirely) — so behavior under test actually matches what
 // runs in production, instead of two copies drifting apart.
 export function configureApp(app: INestApplication): void {
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      // Without this every DTO rejection is the bare string "Bad Request
+      // Exception", naming neither the field nor the constraint -- see
+      // validation-error.ts for what that cost.
+      exceptionFactory: validationException,
+    }),
+  );
 
   // Before anything else, so every later handler and log line can attribute
   // itself to a request.
