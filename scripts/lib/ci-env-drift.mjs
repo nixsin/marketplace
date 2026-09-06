@@ -314,9 +314,17 @@ const TRUNCATE_SQL = /(?<![\w$])truncate\s+(?:table\b|only\b|["a-z_])/gi;
  * `return\n  assertConnectedToTestDatabase(p)` returns undefined —
  * automatic semicolon insertion ends the statement at the line break, so the
  * hook does not wait for the guard at all.
+ *
+ * TWO SPELLINGS, and the second is an indirection. Specs now boot through
+ * `bootstrapTestApp`, which calls the guard itself, so the direct call no
+ * longer appears in the spec text. Accepting a wrapper by NAME is only safe
+ * while the wrapper really guards — so `ci-env-drift.test.mjs` reads
+ * `helpers/bootstrap.ts` and asserts it awaits the guard. Without that second
+ * test this list is a promise nothing keeps, on a check whose failure mode is
+ * truncating a real database.
  */
 const GUARD =
-  /(?<![\w$])(?:await|return)[ \t]+(?:[\w$.]+\.)?assertConnectedToTestDatabase\s*\(/g;
+  /(?<![\w$])(?:await|return)[ \t]+(?:[\w$.]+\.)?(?:assertConnectedToTestDatabase|bootstrapTestApp)\s*\(/g;
 
 const SETUP_HOOK = /(?<![\w$.])before(?:All|Each)\s*\(/g;
 

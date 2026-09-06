@@ -468,6 +468,29 @@ test("no e2e spec has an unguarded TRUNCATE", () => {
   }
 });
 
+test("bootstrapTestApp really is a guard, not just a name on the list", () => {
+  // unguardedTruncates accepts `await bootstrapTestApp(` as a guard because
+  // that helper calls assertConnectedToTestDatabase itself. That is an
+  // indirection, and an indirection nothing checks is how a destructive
+  // operation ends up unguarded while every test stays green: delete the call
+  // inside the helper and the specs still read as protected.
+  //
+  // So the accepted spelling is verified rather than trusted. Anyone removing
+  // that call fails here, next to the reason.
+  const helper = readFileSync(
+    fileURLToPath(new URL("../apps/api/test/helpers/bootstrap.ts", import.meta.url)),
+    "utf8",
+  );
+
+  assert.match(
+    helper,
+    /await[ \t]+assertConnectedToTestDatabase\s*\(/,
+    "helpers/bootstrap.ts must await assertConnectedToTestDatabase — the e2e " +
+      "suites TRUNCATE, and unguardedTruncates treats bootstrapTestApp as a " +
+      "guard on the strength of that call",
+  );
+});
+
 test("the inline-map and explicit-key rules handle quoting and boundaries", () => {
   // A quoted key inside an inline map evaded both the line-anchored quoted
   // check and the inline-map check, which looked for `NAME:` with no quote
