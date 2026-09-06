@@ -151,11 +151,29 @@ describe("e2e suites boot the app the way production does", () => {
   for (const spec of specs) {
     test(`${spec} uses bootstrapTestApp`, () => {
       const source = readFileSync(join(REPO, spec), "utf8");
+
+      // Absence is half the check. On its own it passes for a suite that
+      // stopped booting an app at all, or reaches one through some third
+      // route -- so the positive half asserts the helper is really imported
+      // and really called. Both halves, or the test's name is a claim its
+      // body does not make.
       assert.ok(
         !source.includes("createNestApplication"),
         `${spec} builds its own Nest app. Use bootstrapTestApp from ` +
           `apps/api/test/helpers/bootstrap.ts so the suite runs the same ` +
           `configuration production does.`,
+      );
+
+      assert.match(
+        source,
+        /import\s*\{[^}]*\bbootstrapTestApp\b[^}]*\}\s*from\s*["'][^"']*helpers\/bootstrap["']/,
+        `${spec} must import bootstrapTestApp from helpers/bootstrap`,
+      );
+
+      assert.match(
+        source,
+        /(?<![\w$.])await[ \t]+bootstrapTestApp\s*\(/,
+        `${spec} must await bootstrapTestApp -- importing it is not calling it`,
       );
     });
   }

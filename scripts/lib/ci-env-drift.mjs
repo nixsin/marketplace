@@ -315,16 +315,32 @@ const TRUNCATE_SQL = /(?<![\w$])truncate\s+(?:table\b|only\b|["a-z_])/gi;
  * automatic semicolon insertion ends the statement at the line break, so the
  * hook does not wait for the guard at all.
  *
- * TWO SPELLINGS, and the second is an indirection. Specs now boot through
- * `bootstrapTestApp`, which calls the guard itself, so the direct call no
- * longer appears in the spec text. Accepting a wrapper by NAME is only safe
- * while the wrapper really guards — so `ci-env-drift.test.mjs` reads
- * `helpers/bootstrap.ts` and asserts it awaits the guard. Without that second
- * test this list is a promise nothing keeps, on a check whose failure mode is
- * truncating a real database.
  */
 const GUARD =
-  /(?<![\w$])(?:await|return)[ \t]+(?:[\w$.]+\.)?(?:assertConnectedToTestDatabase|bootstrapTestApp)\s*\(/g;
+  /(?<![\w$])(?:await|return)[ \t]+(?:[\w$.]+\.)?assertConnectedToTestDatabase\s*\(/g;
+
+/**
+ * The same guard reached through the shared bootstrap helper.
+ *
+ * Specs boot through `bootstrapTestApp`, which calls the guard itself, so the
+ * direct call no longer appears in their text. Accepting a wrapper costs two
+ * checks that a direct call does not need, because a bare name proves nothing:
+ *
+ *   1. the spec must IMPORT it from `helpers/bootstrap` — otherwise a spec
+ *      defining its own `bootstrapTestApp`, guarding nothing, would be read as
+ *      protected. No member call (`x.bootstrapTestApp()`) either; only the
+ *      imported binding.
+ *   2. that helper must really await the guard — pinned by a test in
+ *      `ci-env-drift.test.mjs`, which reads the file.
+ *
+ * Both exist because the failure mode here is truncating a real database,
+ * which this repo has already done to itself once.
+ */
+const GUARD_VIA_HELPER = /(?<![\w$.])(?:await|return)[ \t]+bootstrapTestApp\s*\(/g;
+
+/** An import of the real helper — not merely something with the same name. */
+const HELPER_IMPORT =
+  /import\s*\{[^}]*\bbootstrapTestApp\b[^}]*\}\s*from\s*["'][^"']*helpers\/bootstrap["']/;
 
 const SETUP_HOOK = /(?<![\w$.])before(?:All|Each)\s*\(/g;
 
@@ -359,7 +375,17 @@ export function unguardedTruncates(spec) {
   // EVERY candidate, not the first. One guard-shaped expression outside a
   // hook — in a helper, say — otherwise made the function report every
   // truncate as unguarded while a real guard sat in the hook below it.
-  const usable = [...executable.matchAll(GUARD)]
+  //
+  // The helper spelling is only in play when the spec actually imports it;
+  // tested against `code` rather than `executable` because the import path is
+  // a string, which `executable` has stripped — and against `code` rather than
+  // the raw spec so a commented-out import does not count.
+  const candidates = [...executable.matchAll(GUARD)];
+  if (HELPER_IMPORT.test(code)) {
+    candidates.push(...executable.matchAll(GUARD_VIA_HELPER));
+  }
+
+  const usable = candidates
     .map((m) => m.index)
     .filter((i) => inSetupHook(executable, i));
   if (usable.length === 0) return truncates;

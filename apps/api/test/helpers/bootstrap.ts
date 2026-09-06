@@ -45,8 +45,20 @@ export async function bootstrapTestApp(
 
   // Never the dev database. The suites TRUNCATE between tests, and pointing
   // that at a real catalogue has destroyed local data before -- see CLAUDE.md.
+  //
+  // Closed before rethrowing, because the app is already initialised by this
+  // point and the caller never receives it: their `beforeAll` fails, `app`
+  // stays undefined, and their `afterAll` cannot close what it was never
+  // given. Jest then hangs on the open Nest and Prisma handles, and reports
+  // that instead of the reason -- burying "you are pointed at the wrong
+  // database", which is the single most important message this file emits.
   const prisma = moduleFixture.get(PrismaService);
-  await assertConnectedToTestDatabase(prisma);
+  try {
+    await assertConnectedToTestDatabase(prisma);
+  } catch (error) {
+    await app.close();
+    throw error;
+  }
 
   return { app, prisma, moduleFixture };
 }

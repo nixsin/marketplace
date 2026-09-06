@@ -714,6 +714,47 @@ test("every way the guard goes missing by accident is caught", () => {
   }
 });
 
+test("bootstrapTestApp counts only when it is the imported helper", () => {
+  // The wrapper is accepted by name, so the name alone must not be enough:
+  // a spec defining its own bootstrapTestApp -- guarding nothing -- would
+  // otherwise read as protected while it truncated a live database.
+  const trunc = "await p.$executeRawUnsafe('TRUNCATE TABLE t');";
+  const call = "({app,prisma}=await bootstrapTestApp());";
+  const importLine =
+    "import { bootstrapTestApp } from './helpers/bootstrap';\n";
+
+  const imported = `${importLine}describe('s',()=>{beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.deepEqual(unguardedTruncates(imported), [], "the real helper is a guard");
+
+  const homegrown = `describe('s',()=>{const bootstrapTestApp=async()=>({});beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(homegrown).length,
+    1,
+    "a same-named local function is not the helper",
+  );
+
+  const wrongModule = `import { bootstrapTestApp } from './elsewhere';\ndescribe('s',()=>{beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(wrongModule).length,
+    1,
+    "imported from somewhere else is not the helper",
+  );
+
+  const commentedImport = `// ${importLine}describe('s',()=>{beforeAll(async()=>{${call}});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(commentedImport).length,
+    1,
+    "a commented-out import is not an import",
+  );
+
+  const memberCall = `${importLine}describe('s',()=>{beforeAll(async()=>{await x.bootstrapTestApp();});beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(memberCall).length,
+    1,
+    "a member call is not the imported binding",
+  );
+});
+
 test("a return broken by a newline does not count", () => {
   // `return\n  assertConnectedToTestDatabase(p)` returns undefined:
   // automatic semicolon insertion ends the statement at the line break, so
