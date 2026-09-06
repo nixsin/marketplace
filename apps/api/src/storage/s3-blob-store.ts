@@ -7,7 +7,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { assertValidKey, type BlobStore } from './blob-store';
 
-export interface S3BlobStoreOptions {
+interface S3BlobStoreOptions {
   bucket: string;
   /** Empty for AWS S3, which derives its own endpoint from the region. */
   endpoint?: string;

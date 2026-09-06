@@ -291,6 +291,12 @@ jobs:
       # network. A red here is always real, which is the property that keeps a
       # required check meaningful. Previewed locally by .husky/pre-push.
       - run: pnpm knip:check
+      # And a check that the check still works. A misconfigured knip exits 0
+      # and looks exactly like a clean repo -- this config was wrong four
+      # times before it caught anything, every time in that silent direction.
+      # Plants a deliberately unused export in each workspace and requires
+      # every one to be reported. See scripts/knip-selftest.mjs.
+      - run: pnpm knip:selftest
 
   # A live review caught that scripts/lib/pr-reconciliation.mjs's tests
   # only ever ran inside pr-reconciliation.yml's own steps — a workflow

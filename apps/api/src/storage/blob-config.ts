@@ -23,7 +23,7 @@
  * there is deliberately no per-provider branching anywhere in the code.
  */
 
-export interface BlobProviderSpec {
+interface BlobProviderSpec {
   /** Whether it speaks S3, and so needs no new adapter. */
   s3Compatible: boolean;
   /** Endpoint template; `{account}` and `{region}` are substituted. */

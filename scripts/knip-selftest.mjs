@@ -1,0 +1,124 @@
+#!/usr/bin/env node
+/**
+ * Proves `pnpm knip:check` can still SEE each workspace it is supposed to.
+ *
+ * A misconfigured knip exits 0 and is indistinguishable from a clean repo.
+ * That is not hypothetical: this config was wrong four times before it could
+ * catch anything, every time in the silent direction.
+ *
+ *   1. `packages/config` declared `src/*.js` as entry — an entry's exports are
+ *      never reported, so the whole package read as clean.
+ *   2. the root workspace declared `scripts/**` as entry, which covers
+ *      `scripts/lib/**` — exactly where the findings live.
+ *   3. `ignoreExportsUsedInFile: true` suppressed every export used only
+ *      inside its own file, which is most of the eighteen #200 removed by
+ *      hand. The check would not have caught the thing it was built for.
+ *   4. `apps/web`'s entry glob covered the whole of `src/app/**`.
+ *
+ * A manual "add a dead export and look" step was documented after (1) and (2),
+ * and did not prevent (3) and (4) — a procedure only runs when someone
+ * remembers it. So this asserts the property instead.
+ *
+ * WHY IT APPENDS TO REAL FILES rather than creating probe files: a file
+ * nothing imports is an UNUSED FILE, which is a different finding that
+ * `--include exports,types` deliberately filters out. A probe in a new file is
+ * therefore never reported, and a self-test built that way fails for a reason
+ * unrelated to the thing it is checking. Found by writing it that way first.
+ */
+import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const REPO = join(import.meta.dirname, "..");
+
+/**
+ * One probe per workspace knip can actually check, each appended to a file
+ * that is PROJECT code rather than an entry point — an entry's exports are
+ * legitimately public, so a probe there would prove nothing.
+ *
+ * `packages/config` is deliberately absent. Every file in its `src/` is named
+ * in the package's `exports` map, so all of them are entry points and knip
+ * cannot report unused exports there at all. That is correct rather than a
+ * gap: a published package's contract IS its exports map. It does mean an
+ * unused export added to that package is not caught here.
+ */
+const PROBES = [
+  { workspace: "root scripts", file: "scripts/lib/diff-ordering.mjs", symbol: "KNIP_PROBE_SCRIPTS" },
+  { workspace: "apps/api", file: "apps/api/src/graphql-cache.ts", symbol: "KNIP_PROBE_API" },
+  { workspace: "apps/web", file: "apps/web/src/lib/sitemap-xml.ts", symbol: "KNIP_PROBE_WEB" },
+];
+
+/**
+ * Used inside its own file on purpose. That is the shape `ignoreExportsUsedInFile`
+ * hides — mistake (3) above — so a probe that is merely declared would still
+ * pass with that setting wrong.
+ */
+const probeSource = (symbol) => `
+// Temporary, written by scripts/knip-selftest.mjs. Safe to delete.
+export function ${symbol}() {
+  return 1;
+}
+const ${symbol}_LOCAL = ${symbol}();
+export function ${symbol}_USER() {
+  return ${symbol}_LOCAL;
+}
+`;
+
+const originals = new Map();
+for (const { file } of PROBES) {
+  originals.set(file, readFileSync(join(REPO, file), "utf8"));
+}
+
+const restore = () => {
+  for (const [file, text] of originals) writeFileSync(join(REPO, file), text);
+};
+
+let output = "";
+try {
+  for (const { file, symbol } of PROBES) {
+    writeFileSync(join(REPO, file), originals.get(file) + probeSource(symbol));
+  }
+
+  try {
+    execFileSync("pnpm", ["knip:check"], {
+      cwd: REPO,
+      encoding: "utf8",
+      // Explicit, because the default leaves stderr inherited — the findings
+      // then print to the terminal and arrive here as null, which reads as
+      // "nothing was reported" and fails every probe for the wrong reason.
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    output = "";
+  } catch (error) {
+    // Non-zero is EXPECTED: the probes are unused by construction.
+    output = `${error.stdout ?? ""}${error.stderr ?? ""}`;
+  }
+} finally {
+  restore();
+}
+
+// WORD BOUNDARY, not `includes`. Each probe declares `SYMBOL` (used in its own
+// file) and `SYMBOL_USER` (not used). With `ignoreExportsUsedInFile: true` only
+// the second is reported — and `"KNIP_PROBE_API_USER".includes("KNIP_PROBE_API")`
+// is true, so a substring test passed while the setting that hides mistake (3)
+// was switched back on. The `_` is a word character, so `\bSYMBOL\b` does not
+// match inside `SYMBOL_USER`, which is exactly the distinction needed.
+const missed = PROBES.filter(
+  ({ symbol }) => !new RegExp(`\\b${symbol}\\b`).test(output),
+);
+
+if (missed.length > 0) {
+  console.error("knip self-test FAILED — the config cannot see these areas:\n");
+  for (const { workspace, file } of missed) {
+    console.error(`  ${workspace.padEnd(16)} ${file}`);
+  }
+  console.error(
+    "\nAn unused export planted there was not reported, so real ones are " +
+      "invisible to `pnpm knip:check` too. The usual causes are an `entry` " +
+      "pattern in knip.json broad enough to cover that workspace's own " +
+      "project files, or `ignoreExportsUsedInFile` being true.\n",
+  );
+  process.exit(1);
+}
+
+console.log(`knip self-test passed — ${PROBES.length} workspaces covered.`);

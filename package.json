@@ -15,7 +15,8 @@
     "prepare": "husky",
     "env:check": "sh scripts/check-local-env.sh",
     "lint:scripts": "eslint scripts packages",
-    "knip:check": "knip --include exports,types"
+    "knip:check": "knip --include exports,types",
+    "knip:selftest": "node scripts/knip-selftest.mjs"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
