@@ -1060,6 +1060,17 @@ project file per workspace, runs the real check, and requires every one to be
 reported. It runs in the Lint job beside `knip:check`, and each of the four
 mistakes above was reintroduced to confirm it fails.
 
+**The self-test is CI-only**, and that is the fix for a class rather than a
+preference. It proves the property by temporarily rewriting real source files,
+and three review rounds each found a different way for that to destroy work: a
+prepended probe made recovery blank a file, a concurrent editor save could be
+overwritten by the restore, and content appended after a stranded probe could
+be truncated by the next run. Each was fixable, but patching them one at a time
+was the wrong shape — the hazard is the working tree. It now requires `CI`, or
+an explicit `pnpm knip:selftest -- --force` for someone deliberately changing
+`knip.json` locally, and refuses with exit 0 otherwise. Recovery only removes
+text that exactly matches what it wrote, and throws rather than guessing.
+
 Two traps inside the self-test itself, both of which made it pass for the wrong
 reason before being fixed:
 

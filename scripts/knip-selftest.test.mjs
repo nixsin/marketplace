@@ -1,75 +1,92 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { withoutLeftoverProbe } from "./knip-selftest.mjs";
+import { MARKER, main, plan, stripProbe } from "./knip-selftest.mjs";
 
-const MARKER = "// Temporary, written by scripts/knip-selftest.mjs. Safe to delete.";
+// The probe text for one real file, taken from the script rather than retyped
+// -- a copy here would drift and start testing something the script no longer
+// writes.
+const CONSUMER = plan().find((p) => p.file.endsWith("card.tsx"));
+const CARD = 'import * as React from "react";\nexport function Card() {}\n';
 
-describe("withoutLeftoverProbe", () => {
-  // This is the destructive half of the self-test: whatever it returns is
-  // recorded as a real source file's "original" and later written back over
-  // that file. A bug here does not fail a check, it deletes work.
-  test("leaves a file with no probe untouched", () => {
-    const clean = "export const a = 1;\n";
-    assert.equal(withoutLeftoverProbe(clean), clean);
+describe("stripProbe", () => {
+  // The destructive half: whatever this returns is recorded as a real source
+  // file's "original" and later written back over it. A bug here does not fail
+  // a check, it deletes work.
+
+  test("a file with no probe is returned unchanged", () => {
+    assert.equal(stripProbe(CARD, CONSUMER.probe), CARD);
   });
 
-  test("strips an appended probe back to the original", () => {
-    const original = "export const a = 1;\n";
-    assert.equal(
-      withoutLeftoverProbe(`${original}\n${MARKER}\nexport const probe = 2;\n`),
-      original,
+  test("an exact leftover probe is removed", () => {
+    assert.equal(stripProbe(CARD + CONSUMER.probe, CONSUMER.probe), CARD);
+  });
+
+  test("REFUSES when content follows the probe", () => {
+    // The regression that matters most. "Drop everything from the marker
+    // onward" silently truncated work a developer appended after a stranded
+    // probe. Throwing loses nothing and says what to do.
+    assert.throws(
+      () => stripProbe(`${CARD}${CONSUMER.probe}export const mine = 1;\n`, CONSUMER.probe),
+      /by hand/,
     );
   });
 
-  test("NEVER returns empty for a file that had content", () => {
-    // The regression that matters. The negative probe's import used to be
-    // PREPENDED, putting the marker at offset 0 -- so this returned "", that
-    // was recorded as the original, and the restore blanked a real component.
-    //
-    // Asserted as a property over every probe shape rather than against the
-    // one prepended string, because the guarantee wanted is "recovery cannot
-    // erase a file", not "that one bug is gone".
-    const original = 'import * as React from "react";\nexport function Card() {}\n';
-    for (const leftover of [
-      `${original}\n${MARKER}\nimport { x } from "@/lib/utils";\n`,
-      `${original}${MARKER}\n`,
-      `${original}\n${MARKER}`,
+  test("REFUSES a probe that has been edited", () => {
+    const edited = CONSUMER.probe.replace("void", "/* void */");
+    assert.throws(() => stripProbe(CARD + edited, CONSUMER.probe), /by hand/);
+  });
+
+  test("never returns empty for a file that had content", () => {
+    // The original bug: the consumer probe was PREPENDED, so the marker sat at
+    // offset 0, recovery returned "", and the restore blanked a component.
+    // Asserted as a property over several shapes rather than against the one
+    // string that broke.
+    for (const text of [
+      CARD + CONSUMER.probe,
+      CARD,
+      `${CARD}\n`,
     ]) {
-      const recovered = withoutLeftoverProbe(leftover);
-      assert.notEqual(recovered, "", `erased the file: ${JSON.stringify(leftover)}`);
+      const recovered = stripProbe(text, CONSUMER.probe);
+      assert.notEqual(recovered, "", `erased: ${JSON.stringify(text)}`);
+      assert.ok(recovered.includes("export function Card()"), "lost real content");
+    }
+  });
+});
+
+describe("probe placement", () => {
+  test("every probe is appended, never prepended", () => {
+    // The premise stripProbe rests on. A probe placed before real content puts
+    // the marker at offset 0 again; `endsWith` would then never match and
+    // every run would throw -- loud, but only once someone is interrupted.
+    // Checked against the real planned text, not the source's shape.
+    for (const { file, probe } of plan()) {
+      assert.ok(probe.startsWith("\n" + MARKER), `${file}'s probe must open with the marker`);
       assert.ok(
-        recovered.includes("export function Card()"),
-        `lost real content: ${JSON.stringify(recovered)}`,
+        !probe.trimStart().startsWith("import * as"),
+        `${file}'s probe must not carry file content`,
       );
     }
   });
 
-  test("a marker at offset 0 still erases everything -- so probes must append", () => {
-    // Documents the sharp edge rather than pretending it is gone. Recovery is
-    // "everything from the marker onward is ours", which is only correct while
-    // every probe appends. The test below enforces that premise.
-    assert.equal(withoutLeftoverProbe(`${MARKER}\nanything\n`), "");
-  });
-
-  test("every probe in knip-selftest.mjs is appended, never prepended", () => {
-    // The premise the recovery logic rests on, checked against the real file.
-    // A future probe written as `MARKER + original` would reintroduce the
-    // file-erasing bug, and would do it silently -- the self-test would keep
-    // passing until a run was interrupted.
-    const source = readFileSync(
-      new URL("./knip-selftest.mjs", import.meta.url),
-      "utf8",
+  test("the script appends the probe to the original, in that order", () => {
+    const source = readFileSync(new URL("./knip-selftest.mjs", import.meta.url), "utf8");
+    assert.match(
+      source,
+      /write\(file,\s*originals\.get\(file\)\s*\+\s*probe\)/,
+      "probes must be written as original + probe; the reverse erases files",
     );
-    const writes = [...source.matchAll(/\bwrite\(\s*([A-Za-z]+)\s*,\s*([\s\S]*?)\n\s*\);/g)];
-    assert.ok(writes.length >= 2, `expected several write() calls, found ${writes.length}`);
+  });
+});
 
-    for (const [, target, value] of writes) {
-      assert.ok(
-        /^\s*(?:`\$\{originals\.get\(|originals\.get\()/.test(value),
-        `write(${target}, ...) does not start from the original — a probe must ` +
-          `be appended to it, never placed before it`,
-      );
-    }
+describe("main", () => {
+  test("refuses to touch a working tree outside CI", () => {
+    // The control that makes every data-loss path above unreachable in normal
+    // use. Returns 0 rather than failing: not running is not an error, and a
+    // developer's push must not break because they are not CI.
+    const before = readFileSync(new URL("../apps/web/src/lib/utils.ts", import.meta.url), "utf8");
+    assert.equal(main({ force: false, env: {} }), 0);
+    const after = readFileSync(new URL("../apps/web/src/lib/utils.ts", import.meta.url), "utf8");
+    assert.equal(after, before, "it must not have written anything");
   });
 });
