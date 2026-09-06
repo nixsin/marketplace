@@ -365,7 +365,7 @@ const GUARD_VIA_HELPER = /(?<![\w$.])(?:await|return)[ \t]+bootstrapTestApp\s*\(
  * Callers must test this against comment-stripped text, or a commented-out
  * import counts.
  */
-export const HELPER_IMPORT =
+const HELPER_IMPORT =
   /^import\s*\{[^}]*(?<![\w$])bootstrapTestApp\s*[,}][^}]*\}?\s*from\s*["']\.\/helpers\/bootstrap(?:\.js)?["']/m;
 
 /**
