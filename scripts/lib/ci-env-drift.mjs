@@ -47,7 +47,7 @@
  */
 
 /** Variables whose value or placement can break a job destructively. */
-export const WATCHED = [
+const WATCHED = [
   "DATABASE_URL",
   "NEXT_PUBLIC_API_URL",
   "POSTGRES_USER",
