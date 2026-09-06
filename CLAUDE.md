@@ -883,6 +883,39 @@ calls in the apps are two inside a React `useEffect` — where the callback
 cannot be async — and one spec. Extending there means type-aware linting for
 a Next app and converting effect code with cancellation logic, which is its
 own change.
+## The nightly audit checks configuration, not just liveness
+
+`scripts/production-audit.mjs` asks whether production WORKS. A
+**Configuration** section now asks whether it matches what the repository
+declares, which is a different question and the one nothing was answering.
+
+Three real problems sat unnoticed until someone probed by hand on
+2026-09-05: seven variables set directly on the Render services overriding
+the Terraform env groups, no way to tell whether each service actually
+receives every contract variable, and a deploy that had silently stopped
+firing. The first two are now checked every night against
+`packages/config/src/env-contract.js`.
+
+**Two rows per service, and the split is deliberate.** *Missing* a contract
+variable is a **fail** — under the startup contract that service refuses to
+boot. *Shadowing* is a **warn** — it boots, but `terraform apply` reports
+success while production keeps the old value. One row would either page
+someone about hygiene or bury a boot-blocker in a warning.
+
+**A service's environment is the UNION of its own variables and every linked
+group**, because that is what the container sees. Reading either alone
+answers a different question: a variable absent from the service list may be
+supplied by a group or by nobody, and those are opposite conclusions.
+
+**Linkage is read from the GROUP, never the service.** There is no
+`/services/{id}/env-groups` — asking for one returns 404, which the first
+version of this check treated as "no groups linked" and turned into thirteen
+false positives on a service that had every variable.
+
+**No `RENDER_API_KEY` is a SKIP, not a failure.** The key lets CI read the
+services, and putting a long-lived Render credential in repo secrets is a
+decision worth making deliberately. A red nightly report would force it for a
+reason unrelated to production.
 
 ## Startup environment contract (`packages/config/src/env-contract.js`)
 

@@ -51,6 +51,13 @@ jobs:
         # Caught by CodeQL, which analyses workflow files too.
         env:
           AUDIT_EXPECTED_COMMIT: ${{ github.sha }}
+          # Absent until the secret exists, which the audit treats as a SKIP
+          # rather than a failure -- adding a long-lived Render credential to
+          # repo secrets is a deliberate decision, and the nightly report
+          # should not go red to force it. With the secret present, the
+          # Configuration section compares each service's real environment
+          # against packages/config/src/env-contract.js.
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
           AUDIT_SITE: ${{ inputs.site || 'https://laxair.shop' }}
         # Never let a red audit abort the job — the report is the whole
         # point, and a failed step would skip every step after it.
