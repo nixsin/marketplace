@@ -109,3 +109,86 @@ export function configurationRows({ service, missing, shadowing, linked, require
 
   return rows;
 }
+
+/**
+ * Every page of a cursor-paginated Render collection.
+ *
+ * `?limit=100` with no pagination silently truncates at 100, which breaks
+ * BOTH directions of this audit: linked groups past the first page look
+ * absent, so their variables read as missing, and service overrides past it
+ * read as "nothing shadows the group". A fail-closed check that quietly
+ * reads half the data is not fail-closed.
+ *
+ * A REPEATED CURSOR IS A STALL, not completion — the same rule
+ * render-shadowed-env.mjs applies, for the same reason: treating it as done
+ * reports on a partial list, and a cycle runs forever.
+ *
+ * @param {(cursor?: string) => Promise<unknown>} getPage
+ * @returns {Promise<any[]>}
+ */
+export async function fetchAllPages(getPage) {
+  const items = [];
+  const seen = new Set();
+  let cursor;
+
+  for (;;) {
+    const page = await getPage(cursor);
+    if (!Array.isArray(page)) {
+      throw new Error(
+        `Render returned ${typeof page}, not a list. Refusing to report on a ` +
+          `response this code cannot read.`,
+      );
+    }
+    items.push(...page);
+
+    const next = page[page.length - 1]?.cursor;
+    if (page.length === 0 || !next) return items;
+    if (seen.has(next)) {
+      throw new Error(
+        `Pagination looped: Render returned cursor ${next} again for a ` +
+          `non-empty page. Refusing to report on a partial list.`,
+      );
+    }
+    seen.add(next);
+    cursor = next;
+  }
+}
+
+/**
+ * Every env group, with its variables, and every group that could not be read.
+ *
+ * UNREADABLE IS NOT EMPTY. Swallowing a failed detail lookup and carrying on
+ * with an empty list makes that group's variables read as missing from every
+ * service linked to it — a boot-failure finding drawn from data nobody has.
+ * The two are reported separately so the message says which happened.
+ *
+ * @param {object} args
+ * @param {(cursor?: string) => Promise<unknown>} args.listPage
+ * @param {(id: string) => Promise<any>} args.detail
+ */
+export async function loadEnvGroups({ listPage, detail }) {
+  const groups = [];
+  const unreadable = [];
+
+  for (const row of await fetchAllPages(listPage)) {
+    const raw = row.envGroup ?? row;
+    const name = raw.name ?? raw.id;
+    const serviceIds = (raw.serviceLinks ?? []).map((l) => l.id ?? l.serviceId);
+    let names = (raw.envVars ?? []).map((v) => v.key).filter(Boolean);
+
+    // The list endpoint omits envVars on some plans, so an empty list is not
+    // evidence the group is empty — it has to be asked directly.
+    if (names.length === 0) {
+      try {
+        const full = await detail(raw.id);
+        names = (full.envVars ?? []).map((v) => v.key).filter(Boolean);
+      } catch (error) {
+        unreadable.push({ name, error: error.message });
+        continue;
+      }
+    }
+    groups.push({ name, names, serviceIds });
+  }
+
+  return { groups, unreadable };
+}

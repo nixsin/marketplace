@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   configurationRows,
   environmentSeenBy,
+  fetchAllPages,
+  loadEnvGroups,
   missingFromContract,
 } from "./render-config-audit.mjs";
 
@@ -96,4 +98,81 @@ test("a service with no groups still reports where its values came from", () => 
   });
 
   assert.match(coverage.detail, /via service variables/);
+});
+
+test("every page is read, not just the first hundred", async () => {
+  // `?limit=100` with no pagination truncates silently, and that breaks BOTH
+  // directions: linked groups past page one look absent, so their variables
+  // read as missing; service overrides past it read as "nothing shadows".
+  const pages = {
+    undefined: [{ key: "A" }, { key: "B", cursor: "c1" }],
+    c1: [{ key: "C" }, { key: "D", cursor: "c2" }],
+    c2: [{ key: "E" }],
+  };
+  const items = await fetchAllPages((cursor) => Promise.resolve(pages[String(cursor)]));
+
+  assert.deepEqual(items.map((i) => i.key), ["A", "B", "C", "D", "E"]);
+});
+
+test("a repeated cursor is a stall, not completion", async () => {
+  // Treating it as done reports on a partial list; treating it as a normal
+  // page runs forever.
+  await assert.rejects(
+    fetchAllPages(() => Promise.resolve([{ key: "A", cursor: "same" }])),
+    /Pagination looped/,
+  );
+});
+
+test("a response that is not a list is refused, not read as empty", async () => {
+  await assert.rejects(
+    fetchAllPages(() => Promise.resolve({ envVars: [] })),
+    /not a list/,
+  );
+});
+
+test("an unreadable group is reported as unreadable, never as empty", async () => {
+  // Swallowing the failure makes that group's variables read as missing from
+  // every service linked to it — a boot-failure finding drawn from data
+  // nobody has.
+  const { groups, unreadable } = await loadEnvGroups({
+    listPage: () =>
+      Promise.resolve([
+        { id: "g1", name: "api-env", envVars: [{ key: "APP_ENV" }], serviceLinks: [{ id: "srv-api" }] },
+        { id: "g2", name: "cache-env", serviceLinks: [{ id: "srv-api" }] },
+      ]),
+    detail: (id) => {
+      if (id === "g2") return Promise.reject(new Error("403 forbidden"));
+      return Promise.resolve({ envVars: [] });
+    },
+  });
+
+  assert.deepEqual(groups.map((g) => g.name), ["api-env"]);
+  assert.deepEqual(unreadable, [{ name: "cache-env", error: "403 forbidden" }]);
+});
+
+test("a group whose list entry omits envVars is fetched in detail", async () => {
+  // Some plans omit envVars from the list endpoint, so an empty list there is
+  // not evidence the group is empty.
+  const { groups, unreadable } = await loadEnvGroups({
+    listPage: () =>
+      Promise.resolve([{ id: "g1", name: "api-env", serviceLinks: [{ id: "srv-api" }] }]),
+    detail: () => Promise.resolve({ envVars: [{ key: "REDIS_URL" }, { key: "APP_ENV" }] }),
+  });
+
+  assert.deepEqual(groups[0].names, ["REDIS_URL", "APP_ENV"]);
+  assert.deepEqual(groups[0].serviceIds, ["srv-api"]);
+  assert.deepEqual(unreadable, []);
+});
+
+test("groups are read across pages too", async () => {
+  const pages = {
+    undefined: [{ id: "g1", name: "one", envVars: [{ key: "A" }], serviceLinks: [], cursor: "c1" }],
+    c1: [{ id: "g2", name: "two", envVars: [{ key: "B" }], serviceLinks: [] }],
+  };
+  const { groups } = await loadEnvGroups({
+    listPage: (cursor) => Promise.resolve(pages[String(cursor)]),
+    detail: () => Promise.reject(new Error("should not be called")),
+  });
+
+  assert.deepEqual(groups.map((g) => g.name), ["one", "two"]);
 });

@@ -21,6 +21,8 @@ import { shadowedVariables } from "./lib/render-shadowed-env.mjs";
 import {
   configurationRows,
   environmentSeenBy,
+  fetchAllPages,
+  loadEnvGroups,
   missingFromContract,
 } from "./lib/render-config-audit.mjs";
 import {
@@ -418,32 +420,24 @@ async function checkConfiguration() {
   // Fetched once and shared: listing every group per service would multiply
   // the calls for an answer that cannot differ between them.
   let allGroups;
+  let unreadableGroups;
   try {
-    allGroups = (await render("/env-groups?limit=100")).map((row) => {
-      const g = row.envGroup ?? row;
-      return {
-        name: g.name ?? g.id,
-        names: (g.envVars ?? []).map((v) => v.key).filter(Boolean),
-        serviceIds: (g.serviceLinks ?? []).map((l) => l.id ?? l.serviceId),
-        id: g.id,
-      };
-    });
+    ({ groups: allGroups, unreadable: unreadableGroups } = await loadEnvGroups({
+      listPage: (cursor) =>
+        render(`/env-groups?limit=100${cursor ? `&cursor=${cursor}` : ""}`),
+      detail: (id) => render(`/env-groups/${id}`),
+    }));
   } catch (error) {
     add("Configuration", "Render env groups readable", "fail", error.message);
     return;
   }
 
-  // The list endpoint omits envVars on some plans; fill them in per group
-  // rather than reporting an empty group as "supplies nothing".
-  for (const group of allGroups) {
-    if (group.names.length > 0) continue;
-    try {
-      const full = await render(`/env-groups/${group.id}`);
-      group.names = (full.envVars ?? []).map((v) => v.key).filter(Boolean);
-    } catch {
-      // Left empty deliberately: a group we cannot read shows up as missing
-      // contract variables below, which is the loud direction.
-    }
+  // A group nobody could read is its own finding. Left silent, its variables
+  // would surface as missing from every service linked to it -- a
+  // boot-failure conclusion drawn from data we do not have.
+  for (const group of unreadableGroups) {
+    add("Configuration", `env group ${group.name} readable`, "fail",
+      `${group.error} — its variables cannot be confirmed present`);
   }
 
   const services = [
@@ -451,7 +445,6 @@ async function checkConfiguration() {
     { service: "medinstru-web", app: "web", id: serviceId("web_service_id") },
   ];
 
-  const forShadowCheck = [];
   for (const { service, app, id } of services) {
     if (!id) {
       add("Configuration", `${service} service id`, "fail",
@@ -460,7 +453,13 @@ async function checkConfiguration() {
     }
 
     try {
-      const direct = (await render(`/services/${id}/env-vars?limit=100`))
+      const direct = (
+        await fetchAllPages((cursor) =>
+          render(
+            `/services/${id}/env-vars?limit=100${cursor ? `&cursor=${cursor}` : ""}`,
+          ),
+        )
+      )
         .map((row) => row.envVar?.key ?? row.key)
         .filter(Boolean);
 
@@ -469,8 +468,6 @@ async function checkConfiguration() {
         directNames: async () => direct,
         groups: async () => allGroups,
       });
-
-      forShadowCheck.push({ service, app, names: direct });
 
       const shadowed =
         shadowedVariables([{ service, app, names: direct }], CONTRACTS)[0]
