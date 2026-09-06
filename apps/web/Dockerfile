@@ -122,6 +122,21 @@ ENV NEXT_PUBLIC_BLOB_BASE_URL=$NEXT_PUBLIC_BLOB_BASE_URL
 # "not configured" rather than a misleading placeholder value.
 ARG RENDER_GIT_COMMIT=""
 ENV RENDER_GIT_COMMIT=$RENDER_GIT_COMMIT
+# The last two variables the contract requires. Without them `next build`
+# refuses: every environment declares every variable, and an image carries
+# no .env file to fall back on.
+#
+# APP_ENV=unknown is honest rather than a placeholder -- an image really can
+# be run anywhere. A real platform marker beats it (see detectEnvironment),
+# so a Render deploy is still detected as `render` without passing this.
+#
+# SOURCEMAP_SIGNING_KEY is ENV with no ARG, deliberately: a build argument is
+# baked into the image and readable from its history, and this one signs
+# source-map access tokens. Empty means the /sourcemaps route fails closed,
+# which is the safe state rather than a broken one.
+ARG APP_ENV=unknown
+ENV APP_ENV=$APP_ENV
+ENV SOURCEMAP_SIGNING_KEY=""
 # NEXT_PUBLIC_* so the values reach client and server alike, and so they
 # are inlined at build time -- a runtime env var would be too late, exactly
 # as documented for NEXT_PUBLIC_API_URL above.
@@ -178,6 +193,31 @@ RUN echo "alpine patch layer for ${RENDER_GIT_COMMIT:-local}" \
     && apk upgrade --no-cache
 WORKDIR /app
 ENV NODE_ENV=production
+# The whole contract again, because `prod` is a separate FROM and inherits
+# nothing from `build` -- not even the NEXT_PUBLIC_* values declared there.
+#
+# Those three were build-stage only, which was already a latent gap rather
+# than just a check failure: next.config.ts is re-executed at every container
+# start and derives the CSP's connect-src from NEXT_PUBLIC_API_URL, so a
+# container started without it computes that header from a fallback. It never
+# bit because Render injects the same values at runtime, where they override
+# these defaults -- but nothing in the image said so.
+#
+# The defaults match the build stage exactly: a bare `docker run` behaves
+# like a laptop, which is what those values already mean everywhere else.
+ARG APP_ENV=unknown
+ENV APP_ENV=$APP_ENV
+ARG NEXT_PUBLIC_API_URL=http://localhost:4000/graphql
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_SITE_URL=http://localhost:3000
+ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
+ARG NEXT_PUBLIC_BLOB_BASE_URL=""
+ENV NEXT_PUBLIC_BLOB_BASE_URL=$NEXT_PUBLIC_BLOB_BASE_URL
+# ENV with no ARG, deliberately: a build argument is baked into the image and
+# readable from its history, and this one signs source-map access tokens.
+# Empty means the /sourcemaps route fails closed, which is the safe state.
+# Render's env group supplies the real value at runtime.
+ENV SOURCEMAP_SIGNING_KEY=""
 # See apps/api/Dockerfile for why: node:22-alpine's bundled npm is never
 # invoked here (CMD below runs the `next` binary directly) but still
 # shows up as real CVEs in a vulnerability scan of the final image.

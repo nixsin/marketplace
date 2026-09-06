@@ -88,6 +88,7 @@ export {
 
 import {
   APP_ENV_OVERRIDE,
+  DEPLOY_ENVIRONMENT,
   DEPLOY_ENVIRONMENTS,
   unknownEnvironmentHint,
   detectEnvironment,
@@ -1311,7 +1312,7 @@ export function displaySafe(value) {
  * @param {CheckResult} result
  * @returns {string}
  */
-export function formatReport(result) {
+export function formatReport(result, { enforced = true } = {}) {
   const lines = [
     `Environment check — app: ${result.app}, environment: ${result.environment}`,
   ];
@@ -1327,8 +1328,14 @@ export function formatReport(result) {
     );
   } else {
     lines.push("");
+    // The closing line must match what actually happens next. It read
+    // "Refusing to start" everywhere, including where the process then
+    // carried on booting -- a diagnostic that contradicts the next line of
+    // the log teaches people to skim past it.
     lines.push(
-      `  Refusing to start: ${result.errors.length} problem(s) must be fixed.`,
+      enforced
+        ? `  Refusing to start: ${result.errors.length} problem(s) must be fixed.`
+        : `  ${result.errors.length} problem(s). Not enforced in ${result.environment}, so startup continues — on a deployment this refuses to boot.`,
     );
   }
 
@@ -1350,6 +1357,7 @@ export function assertEnvOrExit({
   env = process.env,
   exit = process.exit,
   log = console.error,
+  enforce = true,
 }) {
   const result = checkEnv({ app, env });
 
@@ -1374,10 +1382,77 @@ export function assertEnvOrExit({
   // Everything goes to stderr, warnings included. Render and GitHub Actions
   // both interleave the streams, and a startup diagnostic on stdout can be
   // swallowed by a process that pipes stdout somewhere.
-  if (!result.ok || result.warnings.length > 0) log(formatReport(result));
+  // `enforce: false` still prints everything -- it withholds only the exit.
+  // A silent pass would make the check worthless everywhere it does not stop
+  // the process, which is most of the places it runs.
+  if (!result.ok || result.warnings.length > 0) {
+    log(formatReport(result, { enforced: enforce }));
+  }
 
-  if (!result.ok) exit(1);
+  if (!result.ok && enforce) exit(1);
   return result;
+}
+
+/**
+ * Environments where a failed check does NOT stop the process.
+ *
+ *   render    enforce   production; this is the whole point
+ *   unknown   enforce   a production-mode process that cannot name itself
+ *   localhost  skip     dev-defaults.js exists so a laptop needs no config
+ *   test       skip     suites supply their own fixtures
+ *   github-ci  skip     a build is not a deployment
+ *   ci-local   skip     same, on a laptop running CI
+ *
+ * `unknown` enforcing is the deliberate half. The production image boots
+ * that way, so docker-web-prod-boot runs this path on every PR touching
+ * Docker -- otherwise enforcement would execute for the first time in
+ * production, which is the shape of failure this repo has already had once.
+ *
+ * Anything not listed enforces. A future environment added to
+ * DEPLOY_ENVIRONMENTS therefore fails loudly rather than deploying
+ * unguarded, and enforcesAtBoot.test pins that direction.
+ */
+const BOOT_ENFORCEMENT_SKIPPED = new Set([
+  DEPLOY_ENVIRONMENT.LOCALHOST,
+  DEPLOY_ENVIRONMENT.TEST,
+  DEPLOY_ENVIRONMENT.GITHUB_CI,
+  DEPLOY_ENVIRONMENT.CI_LOCAL,
+]);
+
+/**
+ * Does a failed check stop this process from booting?
+ *
+ * @param {DeployEnvironment} environment
+ */
+export function enforcesAtBoot(environment) {
+  return !BOOT_ENFORCEMENT_SKIPPED.has(environment);
+}
+
+/**
+ * The call both applications make as their first act.
+ *
+ * Always prints the banner and any problems; exits only where
+ * enforcesAtBoot says a failure must stop the process. assertEnvOrExit
+ * stays strict-by-default and is the right call for a CLI, which should
+ * fail wherever it runs.
+ *
+ * @param {{ app: "api" | "web", env?: Record<string, string | undefined>,
+ *           exit?: (code: number) => never | void,
+ *           log?: (message: string) => void }} options
+ */
+export function assertBootEnv({
+  app,
+  env = process.env,
+  exit = process.exit,
+  log = console.error,
+}) {
+  return assertEnvOrExit({
+    app,
+    env,
+    exit,
+    log,
+    enforce: enforcesAtBoot(detectEnvironment(env)),
+  });
 }
 
 // ---------------------------------------------------------------------

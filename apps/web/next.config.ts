@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
+import { assertBootEnv } from "@medinstru/config/env-contract";
 import { buildCspHeader, hstsHeaderEntries } from "./src/lib/security-headers";
 import { siteUrlErrorMessage, siteUrlProblem } from "./src/lib/site-url";
 import {
@@ -13,6 +14,23 @@ import {
   REFERRER_POLICY,
   PERMISSIONS_POLICY,
 } from "@medinstru/config";
+
+// Before anything below reads an environment variable.
+//
+// Next transpiles and loads this file at container BOOT, not only at build
+// time (CLAUDE.md records the 40-minute outage that taught us), so this is
+// the earliest point the web app can refuse a bad configuration -- and the
+// only one that runs on every start.
+//
+// Skipped on a laptop and in CI, where dev-defaults.js deliberately makes
+// configuration optional; enforced on Render and in any production-mode
+// process that cannot name its environment. assertBootEnv owns that policy
+// so the two applications cannot drift apart on it.
+//
+// Not a replacement for the NEXT_PUBLIC_SITE_URL guard further down: that
+// one fails the BUILD, which is the only moment a NEXT_PUBLIC_* value can
+// still be corrected, since it is inlined into the bundle.
+assertBootEnv({ app: "web" });
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
 

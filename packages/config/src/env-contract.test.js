@@ -15,6 +15,8 @@ import {
   formatMatrix,
   formatReport,
   formatStartupBanner,
+  assertBootEnv,
+  enforcesAtBoot,
   isDeployedEnvironment,
   isRenderDeploy,
   unknownEnvironmentHint,
@@ -1621,4 +1623,85 @@ test("credential detection is linear, and catches userinfo without a scheme", ()
   });
   assert.equal(ordinary.ok, false);
   assert.match(messages(ordinary.errors), /not-a-url/);
+});
+
+// ---------------------------------------------------------------------
+// Boot enforcement: where a failed check actually stops the process
+// ---------------------------------------------------------------------
+
+test("enforcesAtBoot stops a deployment and leaves development alone", () => {
+  assert.equal(enforcesAtBoot(DEPLOY_ENVIRONMENT.RENDER), true);
+  // A production-mode process that cannot name itself. The prod image boots
+  // this way, which is what gives docker-web-prod-boot real coverage of the
+  // enforcing path instead of it first running in production.
+  assert.equal(enforcesAtBoot(DEPLOY_ENVIRONMENT.UNKNOWN), true);
+
+  // dev-defaults.js exists so a laptop needs no configuration, and CI builds
+  // run with none by design. Enforcing in either would undo that.
+  assert.equal(enforcesAtBoot(DEPLOY_ENVIRONMENT.LOCALHOST), false);
+  assert.equal(enforcesAtBoot(DEPLOY_ENVIRONMENT.TEST), false);
+  assert.equal(enforcesAtBoot(DEPLOY_ENVIRONMENT.GITHUB_CI), false);
+  assert.equal(enforcesAtBoot(DEPLOY_ENVIRONMENT.CI_LOCAL), false);
+});
+
+test("an environment nobody has classified enforces", () => {
+  // The direction matters more than the value. A new entry in
+  // DEPLOY_ENVIRONMENTS that nobody thought about must fail loudly rather
+  // than deploy unguarded, so the default is strict and the exemptions are
+  // the list that has to be edited deliberately.
+  assert.equal(enforcesAtBoot(/** @type {any} */ ("staging")), true);
+});
+
+test("every known environment is still covered by the policy", () => {
+  // Guards the enum against growing past the exemption list unnoticed. It
+  // does not assert WHICH way a new one goes -- the test above pins that --
+  // only that asking the question returns an answer for every member.
+  for (const environment of DEPLOY_ENVIRONMENTS) {
+    assert.equal(
+      typeof enforcesAtBoot(environment),
+      "boolean",
+      `enforcesAtBoot has no answer for ${environment}`,
+    );
+  }
+});
+
+test("assertBootEnv exits on a deployment and continues on a laptop", () => {
+  const bare = { NODE_ENV: "production" };
+  const exits = [];
+  assertBootEnv({
+    app: "web",
+    env: bare,
+    exit: (code) => exits.push(code),
+    log: () => {},
+  });
+  assert.deepEqual(exits, [1], "an unconfigured production process must exit");
+
+  const laptop = { NODE_ENV: "development" };
+  const devExits = [];
+  assertBootEnv({
+    app: "web",
+    env: laptop,
+    exit: (code) => devExits.push(code),
+    log: () => {},
+  });
+  assert.deepEqual(devExits, [], "a laptop must not be stopped by the check");
+});
+
+test("the report never claims to refuse a start it does not refuse", () => {
+  // These two lines used to contradict each other: the report said
+  // "Refusing to start" while the next line of the log showed the process
+  // carrying on. A diagnostic that disagrees with what happens next is one
+  // people learn to skim.
+  const result = checkEnv({ app: "web", env: { NODE_ENV: "development" } });
+  assert.equal(result.ok, false, "fixture must actually fail for this to test anything");
+
+  const enforced = formatReport(result, { enforced: true });
+  const reported = formatReport(result, { enforced: false });
+
+  assert.match(enforced, /Refusing to start/);
+  assert.doesNotMatch(reported, /Refusing to start/);
+  assert.match(reported, /Not enforced in localhost/);
+  // Still says how many problems there are. Withholding the exit must not
+  // turn the check into a silent pass.
+  assert.match(reported, new RegExp(`${result.errors.length} problem\\(s\\)`));
 });
