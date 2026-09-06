@@ -1014,9 +1014,29 @@ to it. The one ESLint answer is `import/no-unused-modules` with
 plugins capping `eslint` at `^9` and blocking the ESLint 10 bump. Making it a
 direct dependency would deepen a blocker this file already tracks.
 
-`pnpm knip:check` runs in the **Lint** job — same install, no new runner, and
-Lint is already required, so a finding blocks a merge without configuring a new
-required check.
+`pnpm knip:check` runs in **two places**, the same split the AI review uses:
+the **Lint** job (fails closed — same install, no new runner, ~5% on a ~50s
+job, and Lint is already required so a finding blocks a merge with no new check
+to configure), previewed by **`.husky/pre-push`** at 1.4s, ahead of the ~30s AI
+precheck so a dead export does not cost a model round trip to discover.
+
+**It is ENFORCED, not merely tracked, and the distinction is determinism.**
+`perf-budget`'s LCP was de-enforced because the same commit scored 70, 85 and
+98 on shared runners — `main` could not reliably pass its own required check.
+knip has no network and no runner contention: same code, same answer. A red is
+always real, which is the property that keeps a required check meaningful
+rather than something bypassed by habit.
+
+**Local-only was considered and rejected**, for the reason this file already
+documents about silent skips: a pre-push hook does not run for Dependabot, does
+not run under `--no-verify`, and never runs on `main`. Local checks here are
+"convenience in front of it, not a replacement".
+
+**The escape hatch is per-export, not per-file**: a `/** @public */` JSDoc tag
+above a deliberately-unused export suppresses it — verified, while a plain
+export beside it is still reported. Same reasoning as the secret scanner's
+`// scan-ignore:` markers: an exclusion hides the exemption and silently covers
+future additions too.
 
 **The config was wrong twice before it could catch anything, both times in the
 silent direction**, which is the part worth keeping:

@@ -278,11 +278,18 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint:check
-      # Unused exports, which ESLint cannot see: an `export` counts as a use,
-      # so no-unused-vars is silent on a symbol nothing imports. Runs in this
-      # job rather than its own -- it needs the same install and nothing else,
-      # and Lint is already required, so a finding blocks a merge without a
-      # new required check to configure.
+      # Unused exports, which ESLint structurally cannot see: to no-unused-vars
+      # an `export` IS a use, so a symbol nothing imports is invisible to it.
+      #
+      # In this job rather than its own: it needs the same install and nothing
+      # else, so it adds ~5% to a ~50s job and no new runner. Lint is already
+      # required, so a finding blocks a merge with no new check to configure.
+      #
+      # Enforced rather than merely tracked, unlike perf-budget's LCP. That was
+      # de-enforced for NON-DETERMINISM -- the same commit scoring 70, 85 and 98
+      # on shared runners. This is deterministic: same code, same answer, no
+      # network. A red here is always real, which is the property that keeps a
+      # required check meaningful. Previewed locally by .husky/pre-push.
       - run: pnpm knip:check
 
   # A live review caught that scripts/lib/pr-reconciliation.mjs's tests
