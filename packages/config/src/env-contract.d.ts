@@ -104,12 +104,31 @@ export declare function checkEnv(options: {
   environment?: DeployEnvironment;
 }): CheckResult;
 
-export declare function formatReport(result: CheckResult): string;
+export declare function formatReport(
+  result: CheckResult,
+  options?: { enforced?: boolean },
+): string;
 
 export declare function assertEnvOrExit(options: {
   app: "api" | "web";
   env?: Record<string, string | undefined>;
-  exit?: (code: number) => never;
+  exit?: (code: number) => void;
+  log?: (message: string) => void;
+  /** Exit on failure. Default true; false reports without stopping. */
+  enforce?: boolean;
+}): CheckResult;
+
+/** Does a failed check stop a process booting in this environment? */
+export declare function enforcesAtBoot(environment: DeployEnvironment): boolean;
+
+/**
+ * What both applications call first: report always, exit where a failure
+ * must stop the process.
+ */
+export declare function assertBootEnv(options: {
+  app: "api" | "web";
+  env?: Record<string, string | undefined>;
+  exit?: (code: number) => void;
   log?: (message: string) => void;
 }): CheckResult;
 
