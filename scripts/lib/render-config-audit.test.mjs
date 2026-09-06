@@ -8,11 +8,11 @@ import {
 
 const group = (name, names, serviceIds) => ({ name, names, serviceIds });
 
-test("a service sees its own variables plus every linked group", () => {
+test("a service sees its own variables plus every linked group", async () => {
   // Reading one source answers a different question than the one asked: a
   // variable absent from the service list may be supplied by a group, or by
   // nobody, and those are opposite conclusions.
-  const seen = environmentSeenBy({
+  const { names, linked } = await environmentSeenBy({
     serviceId: "srv-api",
     directNames: async () => ["PORT", "JWT_SECRET"],
     groups: async () => [
@@ -21,15 +21,13 @@ test("a service sees its own variables plus every linked group", () => {
     ],
   });
 
-  return seen.then(({ names, linked }) => {
-    assert.deepEqual([...names].sort(), [
-      "APP_ENV",
-      "JWT_SECRET",
-      "PORT",
-      "REDIS_URL",
-    ]);
-    assert.deepEqual(linked, ["api-env"], "a group linked elsewhere is not ours");
-  });
+  assert.deepEqual([...names].sort(), [
+    "APP_ENV",
+    "JWT_SECRET",
+    "PORT",
+    "REDIS_URL",
+  ]);
+  assert.deepEqual(linked, ["api-env"], "a group linked elsewhere is not ours");
 });
 
 test("a group linked to no service contributes nothing", async () => {
