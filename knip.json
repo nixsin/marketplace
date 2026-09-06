@@ -25,7 +25,9 @@
         "src/app/**/{page,layout,route,template,default,error,not-found,loading,sitemap,robots,opengraph-image,twitter-image,icon,apple-icon}.{ts,tsx}",
         "scripts/**/*.mjs",
         "e2e/**/*.ts",
-        "test/**/*.ts"
+        "test/**/*.ts",
+        "src/components/ui/**/*.{ts,tsx}",
+        "src/i18n/navigation.ts"
       ],
       "project": [
         "src/**/*.{ts,tsx}"
@@ -37,9 +39,5 @@
       ]
     }
   },
-  "ignore": [
-    "apps/web/src/components/ui/**",
-    "apps/web/src/i18n/navigation.ts"
-  ],
   "ignoreExportsUsedInFile": false
 }

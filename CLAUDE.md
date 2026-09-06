@@ -1077,11 +1077,22 @@ in its `src/` is named in the package's `exports` map, so all of them are entry
 points. A published package's contract *is* its exports map. The consequence is
 real though: an unused export added to that package is caught by nothing.
 
-Two paths are ignored, with reasons: `apps/web/src/components/ui/**` is
+Two paths are exempt, with reasons: `apps/web/src/components/ui/**` is
 shadcn-vendored, so its exports are that library's public API and trimming them
 creates diff noise on the next `shadcn add`; `apps/web/src/i18n/navigation.ts`
 is a next-intl adapter whose `redirect`/`usePathname`/`useRouter` are the
 canonical surface, deliberately kept whole.
+
+**They are exempted as `entry`, not `ignore`, and the distinction is about what
+happens to code they IMPORT.** An entry is analysed and its imports still count
+as uses; only its own exports go unreported. `ignore` says the file is not
+there, which raises the question of whether a helper used *only* from a
+vendored component then reads as unused — a required check failing on genuinely
+used code is the failure that gets a check deleted. Measured, and worth stating
+because a review asserted the opposite: `ignore` does in fact still count those
+imports today, so this is about not depending on undocumented behaviour rather
+than fixing a live bug. `knip:selftest` pins it either way, with a probe that
+must NOT be reported.
 
 **An exported constant that nothing imports is evidence, not just clutter.**
 `ISSUE_TITLE` in `scripts/lib/production-audit.mjs` was declared as the stable

@@ -49,6 +49,29 @@ const PROBES = [
 ];
 
 /**
+ * The other direction: an export that MUST NOT be reported.
+ *
+ * `components/ui/**` is shadcn-vendored and listed as `entry` so its own
+ * exports are not reported. The question that leaves open is whether an
+ * ordinary helper imported ONLY from there still counts as used — if it did
+ * not, the required check would fail on a false positive.
+ *
+ * `entry` is the right mechanism for that (an entry is analysed, its imports
+ * followed, only its exports exempted) where `ignore` would be a bet on knip
+ * treating excluded files' imports as uses anyway. Measured: `ignore` happens
+ * to behave correctly here too, so this is about not depending on it.
+ *
+ * A false-positive probe rather than a false-negative one, because a check
+ * that blocks merges on work that is genuinely used is the failure that gets
+ * the check deleted.
+ */
+const NEGATIVE_PROBE = {
+  definition: "apps/web/src/lib/utils.ts",
+  consumer: "apps/web/src/components/ui/card.tsx",
+  symbol: "KNIP_PROBE_VENDORED_ONLY",
+};
+
+/**
  * Used inside its own file on purpose. That is the shape `ignoreExportsUsedInFile`
  * hides — mistake (3) above — so a probe that is merely declared would still
  * pass with that setting wrong.
@@ -64,20 +87,82 @@ export function ${symbol}_USER() {
 }
 `;
 
-const originals = new Map();
-for (const { file } of PROBES) {
-  originals.set(file, readFileSync(join(REPO, file), "utf8"));
+
+const MARKER = "// Temporary, written by scripts/knip-selftest.mjs. Safe to delete.";
+
+const TOUCHED = [
+  ...PROBES.map((p) => p.file),
+  NEGATIVE_PROBE.definition,
+  NEGATIVE_PROBE.consumer,
+];
+
+/**
+ * Recover from a run that was killed before its `finally` could run — a signal
+ * or a SIGKILL leaves probes in the tree, and a later run that read those as
+ * "the original" would bake them in permanently.
+ *
+ * The marker is what makes this safe to do automatically: everything from it
+ * onward was written by this script and nothing else.
+ */
+function withoutLeftoverProbe(text) {
+  const at = text.indexOf(MARKER);
+  return at === -1 ? text : text.slice(0, at).replace(/\n+$/, "\n");
 }
 
+const originals = new Map();
+for (const file of TOUCHED) {
+  originals.set(file, withoutLeftoverProbe(readFileSync(join(REPO, file), "utf8")));
+}
+
+/** What this script expects each file to contain while knip runs. */
+const planted = new Map();
+
+/**
+ * Restores only files still holding exactly what was planted.
+ *
+ * knip takes seconds, and an editor saving one of these files in that window
+ * would otherwise have its work silently overwritten by the snapshot. A file
+ * that changed underneath is left alone and reported instead — noisy, but the
+ * alternative is destroying someone's edit to tidy up after a lint.
+ */
 const restore = () => {
-  for (const [file, text] of originals) writeFileSync(join(REPO, file), text);
+  for (const [file, text] of originals) {
+    const full = join(REPO, file);
+    if (readFileSync(full, "utf8") !== planted.get(file)) {
+      console.error(
+        `knip-selftest: ${file} changed while the check was running; leaving ` +
+          `it as it is. Remove the block marked "${MARKER}" by hand.`,
+      );
+      continue;
+    }
+    writeFileSync(full, text);
+  }
+};
+
+const write = (file, text) => {
+  planted.set(file, text);
+  writeFileSync(join(REPO, file), text);
 };
 
 let output = "";
 try {
   for (const { file, symbol } of PROBES) {
-    writeFileSync(join(REPO, file), originals.get(file) + probeSource(symbol));
+    write(file, originals.get(file) + probeSource(symbol));
   }
+
+  // The negative probe: exported from ordinary project code, imported only
+  // from an exempt vendored file. The import goes at the top, so this one is
+  // prepended rather than appended.
+  const { definition, consumer, symbol } = NEGATIVE_PROBE;
+  write(
+    definition,
+    `${originals.get(definition)}\n${MARKER}\nexport function ${symbol}(v) {\n  return v;\n}\n`,
+  );
+  write(
+    consumer,
+    `${MARKER}\nimport { ${symbol} } from "@/lib/utils";\nvoid ${symbol};\n` +
+      originals.get(consumer),
+  );
 
   try {
     execFileSync("pnpm", ["knip:check"], {
@@ -106,6 +191,21 @@ try {
 const missed = PROBES.filter(
   ({ symbol }) => !new RegExp(`\\b${symbol}\\b`).test(output),
 );
+
+// The false-positive direction. Reported here means an export used only by an
+// exempt file reads as unused, which would fail the required check on code
+// that is genuinely used.
+if (new RegExp(`\\b${NEGATIVE_PROBE.symbol}\\b`).test(output)) {
+  console.error(
+    `knip self-test FAILED — ${NEGATIVE_PROBE.symbol} was reported as unused, ` +
+      `but ${NEGATIVE_PROBE.consumer} imports it.\n\n` +
+      `Exempt files must be listed as \`entry\` in knip.json, not \`ignore\`: ` +
+      `an entry is still analysed and its imports still count as uses, where ` +
+      `an ignored file's may not. A required check that fails on used code is ` +
+      `the failure that gets the check deleted.\n`,
+  );
+  process.exit(1);
+}
 
 if (missed.length > 0) {
   console.error("knip self-test FAILED — the config cannot see these areas:\n");
