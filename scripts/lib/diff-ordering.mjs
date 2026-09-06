@@ -30,8 +30,8 @@
  * being worth nothing to review, and schema.gql is emitted from resolvers
  * that are already present in the same diff.
  */
-export const CATEGORIES = ["source", "tests", "infra", "docs", "generated"];
-export const NEVER_LEADS = new Set(["generated", "docs"]);
+const CATEGORIES = ["source", "tests", "infra", "docs", "generated"];
+const NEVER_LEADS = new Set(["generated", "docs"]);
 
 /**
  * Classify one path. Order matters -- the first match wins, so the

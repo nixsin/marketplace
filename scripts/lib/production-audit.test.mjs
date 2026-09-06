@@ -1,5 +1,6 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   cspAllowsImageHost,
   extractOgContent,
@@ -8,6 +9,7 @@ import {
   classifyDeadline,
   daysUntil,
   formatReport,
+  ISSUE_TITLE,
   overallStatus,
   summarize,
 } from "./production-audit.mjs";
@@ -240,5 +242,37 @@ describe("decodeHtmlEntities", () => {
     // this module's actual job of reading page titles.
     assert.equal(decodeHtmlEntities("Tom &amp; Jerry"), "Tom & Jerry");
     assert.equal(decodeHtmlEntities("&lt;b&gt;bold&lt;/b&gt;"), "<b>bold</b>");
+  });
+});
+
+describe("ISSUE_TITLE", () => {
+  // The workflow finds the existing issue by exact title and edits it. Three
+  // copies of that string exist and YAML cannot import one of them, so a test
+  // compares them instead -- the same mechanism this repo already uses for the
+  // Terraform, Dockerfile and ci.yml environment contracts.
+  //
+  // Drift is silent in the worst direction: the lookup matches nothing, the
+  // "no existing issue" branch runs, and a fresh issue opens every night. The
+  // job keeps reporting success while the thing it exists to do stops working.
+  const workflow = readFileSync(
+    new URL("../../.github/workflows/nightly-audit.yml", import.meta.url),
+    "utf8",
+  );
+
+  test("the workflow searches for the title this module declares", () => {
+    assert.ok(
+      workflow.includes(`TITLE="${ISSUE_TITLE}"`),
+      `nightly-audit.yml must set TITLE="${ISSUE_TITLE}" to find the issue it opened`,
+    );
+  });
+
+  test("the workflow's own name matches too", () => {
+    // Not cosmetic. The run summary and the issue are read side by side, and
+    // a job named one thing filing an issue called another reads as two
+    // separate mechanisms.
+    assert.ok(
+      workflow.startsWith(`name: ${ISSUE_TITLE}\n`),
+      `nightly-audit.yml's name: must be "${ISSUE_TITLE}"`,
+    );
   });
 });

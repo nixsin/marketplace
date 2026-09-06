@@ -1004,6 +1004,18 @@ compare them instead — the same mechanism as the Cloudflare locale list:
 | `scripts/ci-env-drift.test.mjs` | `ci.yml`'s values match |
 | `scripts/generate-env-example.test.mjs` | the generated `.env` files are current |
 
+**An exported constant that nothing imports is evidence, not just clutter.**
+`ISSUE_TITLE` in `scripts/lib/production-audit.mjs` was declared as the stable
+title the nightly audit reuses so it edits one issue instead of filing a new
+one nightly — and it was imported nowhere, because `nightly-audit.yml` had
+re-declared the same string in bash and again as its own `name:`. Three copies,
+none checked against the others, with a silent failure mode: drift makes the
+title lookup match nothing, the "no existing issue" branch runs, and the job
+opens a fresh issue every night while still reporting success. Pinned now by
+`production-audit.test.mjs`, in the same shape as the table above. Worth
+generalising when auditing dead code: check whether the thing nothing imports
+was *supposed* to be a single source of truth before deleting it.
+
 **Render service-level variables override a linked env group**, and linking
 removes nothing. Until the shadowing variables are deleted by hand, the
 groups are not the source of truth they look like —

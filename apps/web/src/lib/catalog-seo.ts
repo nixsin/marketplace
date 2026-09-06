@@ -24,7 +24,7 @@ export async function loadInitialProducts(
   }
 }
 
-export interface SitemapProduct {
+interface SitemapProduct {
   id: string;
   updatedAt?: string;
 }
