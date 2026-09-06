@@ -491,7 +491,7 @@ test("bootstrapTestApp really is a guard, not just a name on the list", () => {
   // Bounded to the helper's own body, not "somewhere after it". Slicing to end
   // of file also accepts a call sitting below the closing brace, which guards
   // nothing while the file still contains the words.
-  const body = functionBody(code, "export async function bootstrapTestApp");
+  const body = functionBody(code, "bootstrapTestApp");
   assert.ok(body, "helpers/bootstrap.ts must export bootstrapTestApp");
 
   assert.match(
@@ -508,11 +508,20 @@ test("functionBody stops at the closing brace", () => {
   // real test rather than trusted, because its failure mode is silent: a body
   // that runs to end-of-file passes the assertion above for the wrong reason.
   const src = "export async function f() {\n  const x = { a: 1 };\n  inside();\n}\noutside();\n";
-  const body = functionBody(src, "export async function f");
+  const body = functionBody(src, "f");
 
   assert.match(body, /inside\(\)/);
   assert.doesNotMatch(body, /outside\(\)/, "the body must end at its own brace");
-  assert.equal(functionBody(src, "export async function missing"), null);
+  assert.equal(functionBody(src, "missing"), null);
+
+  // A LONGER NAME IS A DIFFERENT FUNCTION. indexOf on the signature text also
+  // found `bootstrapTestApplication`, so a prefixed sibling holding the guard
+  // call would have satisfied the safeguard while the real helper had none.
+  const prefixed =
+    "export async function fooBarExtra() {\n  wrong();\n}\nexport async function fooBar() {\n  right();\n}\n";
+  const exact = functionBody(prefixed, "fooBar");
+  assert.match(exact, /right\(\)/);
+  assert.doesNotMatch(exact, /wrong\(\)/, "must not match a longer name");
 });
 
 test("the inline-map and explicit-key rules handle quoting and boundaries", () => {
@@ -859,6 +868,16 @@ test("bootstrapTestApp counts only when it is the imported helper", () => {
     unguardedTruncates(importedNotCalled).length,
     1,
     "importing is not calling",
+  );
+
+  // A CALL-SHAPED STRING is not a call. This was fail-OPEN: the mention scan
+  // kept strings, so the literal below read as a real invocation and a suite
+  // that never booted the helper counted as guarded.
+  const callInString = `${importLine}describe('s',()=>{const doc="await bootstrapTestApp(";beforeEach(async()=>{${trunc}});});`;
+  assert.equal(
+    unguardedTruncates(callInString).length,
+    1,
+    "a call-shaped string literal is not a call",
   );
 
   // Import-shaped text inside a template literal is not an import. The

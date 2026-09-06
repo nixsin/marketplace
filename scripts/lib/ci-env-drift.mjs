@@ -368,9 +368,14 @@ const GUARD_VIA_HELPER = /(?<![\w$.])(?:await|return)[ \t]+bootstrapTestApp\s*\(
 export const HELPER_IMPORT =
   /^import\s*\{[^}]*(?<![\w$])bootstrapTestApp\s*[,}][^}]*\}?\s*from\s*["']\.\/helpers\/bootstrap(?:\.js)?["']/m;
 
-/** The whole import statement, so it can be removed before counting mentions. */
-const HELPER_IMPORT_STATEMENT =
-  /^import\s*\{[^}]*\}\s*from\s*["']\.\/helpers\/bootstrap(?:\.js)?["'];?/gm;
+/**
+ * Any import statement, removed before counting mentions.
+ *
+ * All of them rather than the helper's alone: this runs over string-stripped
+ * text, where the module specifier no longer exists to match a path against —
+ * and an import line is never a call site regardless of what it names.
+ */
+const ANY_IMPORT_STATEMENT = /^import\b[^;\n]*;?/gm;
 
 /** The bare identifier, never a property access. */
 const HELPER_NAME = /(?<![\w$.])bootstrapTestApp(?![\w$])/g;
@@ -398,10 +403,23 @@ const HELPER_NAME = /(?<![\w$.])bootstrapTestApp(?![\w$])/g;
  * two cannot drift into disagreeing about what counts.
  */
 export function usesBootstrapHelper(source) {
+  // TWO VIEWS OF THE SAME FILE, because the two questions need different ones.
+  //
+  // The import is found in comment-stripped text, which still has strings --
+  // the module specifier IS a string, so stripping strings would erase the
+  // thing being matched.
+  //
+  // The calls are counted in comment- AND string-stripped text. Keeping
+  // strings there was a real hole: a spec containing the literal
+  // `"await bootstrapTestApp("` satisfied the rule with no call anywhere,
+  // which is fail-OPEN on a check whose whole job is to fail closed.
   const code = stripComments(source);
   if (!HELPER_IMPORT.test(code)) return false;
 
-  const rest = code.replace(HELPER_IMPORT_STATEMENT, "");
+  // Every import line goes, not only the helper's -- in string-stripped text
+  // the specifier is gone, so there is nothing left to match a path against,
+  // and an import line is never a call site anyway.
+  const rest = stripCommentsAndStrings(source).replace(ANY_IMPORT_STATEMENT, "");
   const mentions = [...rest.matchAll(HELPER_NAME)];
 
   // Imported and never called is not a use. It is also how a suite looks
@@ -429,11 +447,18 @@ export function usesBootstrapHelper(source) {
  * claim as "the text is in the function": a call below the closing brace
  * satisfies the first and guards nothing.
  */
-export function functionBody(code, signature) {
-  const at = code.indexOf(signature);
-  if (at === -1) return null;
+export function functionBody(code, name) {
+  // NAME BOUNDARY, not indexOf. `indexOf("...function bootstrapTestApp")` also
+  // finds `bootstrapTestApplication`, so a sibling with a longer name could
+  // supply the guard call while the real helper had none -- the safeguard
+  // passing on the strength of the wrong function.
+  const declaration = new RegExp(
+    `(?:export\\s+)?(?:async\\s+)?function\\s+${name}\\s*[(<]`,
+  );
+  const found = declaration.exec(code);
+  if (!found) return null;
 
-  const open = code.indexOf("{", at);
+  const open = code.indexOf("{", found.index);
   if (open === -1) return null;
 
   let depth = 0;
