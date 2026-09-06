@@ -508,6 +508,53 @@ export const INQUIRY_MESSAGE_MAX_LENGTH = 1000;
 // throttling of any kind today -- not even on OTP -- so the limit lives in
 // the inquiry path itself rather than assuming a global one exists.
 export const INQUIRY_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * How long to tell a throttled caller to wait, in ms.
+ *
+ * The standard is `Retry-After` (RFC 9110 §10.2.3): for a 429 the SERVER says
+ * when, because it knows the window. Exponential backoff with jitter is the
+ * client-side algorithm for when nobody knows -- the transport-failure path --
+ * and using it here would make a buyer wait longer than necessary or retry
+ * into a rejection the server could have dated exactly.
+ *
+ * JITTER IS ADDED UPWARD, NEVER DOWNWARD, and that is the one thing to keep if
+ * this is ever rewritten. AWS's full-jitter formula is
+ * `random(0, min(cap, base * 2^attempt))`, which can return ZERO -- correct
+ * for backoff, wrong here: a retry before the window elapses is a GUARANTEED
+ * second rejection, so any downward jitter converts a helpful hint into a
+ * promise the server will break. `coarse` is already >= the true wait, and
+ * jitter only ever adds.
+ *
+ * It still does jitter's real job. Everyone locked out by the same seller cap
+ * would otherwise be told the same instant and retry together.
+ *
+ * COARSENED TO THE MINUTE because the precision is what leaks. All four limits
+ * share one window and one code, so a caller cannot tell which they hit from
+ * the code -- but an exact countdown would distinguish a 2-per-hour product
+ * limit from the 60-per-hour seller cap, and hand an attacker the progress
+ * indicator #152 deliberately withholds. Rounding plus jitter leaves an
+ * estimate they could already approximate from the window constant.
+ *
+ * @param {number} oldestInWindowMs when the oldest counted row was created
+ * @param {number} nowMs
+ * @param {number} windowMs the rolling window the limit is counted over
+ * @param {() => number} [random] injected for tests
+ */
+export function retryAfterHintMs(
+  oldestInWindowMs,
+  nowMs,
+  windowMs,
+  random = Math.random,
+) {
+  const MINUTE = 60 * 1000;
+  // When the oldest counted row ages out, freeing a slot.
+  const actual = Math.max(0, oldestInWindowMs + windowMs - nowMs);
+  const coarse = Math.ceil(actual / MINUTE) * MINUTE;
+  const jittered = coarse + Math.floor(random() * MINUTE);
+  // At least a minute, so the copy never reads "try again in 0 minutes".
+  return Math.max(MINUTE, jittered);
+}
 export const INQUIRY_RATE_LIMIT_PER_PHONE = 5;
 export const INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT = 2;
 

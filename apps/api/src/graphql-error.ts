@@ -60,6 +60,13 @@ export function formatGraphqlError(
   // a status actually maps -- an unrecognised status leaves Apollo's own code
   // rather than inventing one, so a new exception type degrades to the generic
   // answer instead of a wrong one.
+  // Read BEFORE originalError is dropped: a 429 carries its retry hint in the
+  // body, which is where the status lives too.
+  const retryAfterMs =
+    original && typeof original === 'object'
+      ? (original as { retryAfterMs?: unknown }).retryAfterMs
+      : undefined;
+
   const rest = { ...(extensions as Record<string, unknown>) };
   delete rest.originalError;
 
@@ -67,6 +74,13 @@ export function formatGraphqlError(
 
   return {
     ...formatted,
-    extensions: code ? { ...rest, code } : rest,
+    extensions: {
+      ...rest,
+      ...(code ? { code } : {}),
+      // Surfaced only when the server actually computed one. An absent hint is
+      // meaningfully different from a zero: it says "we cannot date this",
+      // which a client should treat as "no guidance", not "retry now".
+      ...(typeof retryAfterMs === 'number' ? { retryAfterMs } : {}),
+    },
   };
 }

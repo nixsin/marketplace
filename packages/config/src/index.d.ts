@@ -71,6 +71,12 @@ export declare const PRODUCTS_MAX_OFFSET: number;
 export declare const INQUIRY_NAME_MAX_LENGTH: number;
 export declare const INQUIRY_MESSAGE_MAX_LENGTH: number;
 export declare const INQUIRY_RATE_LIMIT_WINDOW_MS: number;
+export declare function retryAfterHintMs(
+  oldestInWindowMs: number,
+  nowMs: number,
+  windowMs: number,
+  random?: () => number,
+): number;
 export declare const INQUIRY_RATE_LIMIT_PER_PHONE: number;
 export declare const INQUIRY_RATE_LIMIT_PER_PHONE_PRODUCT: number;
 export declare const INQUIRY_RATE_LIMIT_PER_IP: number;
