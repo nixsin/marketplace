@@ -1353,7 +1353,22 @@ mistake is visible.
 
 **An unrecognised status keeps Apollo's own code rather than getting a new
 one.** A future exception type degrades to the generic answer instead of a
-confidently wrong one.
+confidently wrong one — which is safe, and silent, which is why the contract
+test below exists.
+
+**The format covers every exception in `apps/api/src`, and a test proves it.**
+`graphql-error.contract.spec.ts` scans the source for `throw new *Exception`,
+builds each class, and requires its status to map. A new exception type fails
+there — loudly, at the class — rather than degrading in production. It also
+asserts each one's body is the `{ message, error, statusCode }` object the
+GraphQL layer reads; reintroducing the bare-string bug fails it.
+
+**The eight plain `throw new Error` sites are deliberate and stay.** Seven are
+blob-key and storage-config invariant violations and one is internal control
+flow in `auth.service`; all are *our* bugs rather than the caller's, so
+`INTERNAL_SERVER_ERROR` is the honest answer. Converting them to HTTP
+exceptions would tell a client it did something wrong when it did not — and
+would hide a real server fault behind a 4xx.
 
 ## Buyer inquiry delivery (#91, part 3)
 
