@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   SHARED_MAX_AGE_SECONDS,
   STALE_WHILE_REVALIDATE_SECONDS,
@@ -77,12 +77,29 @@ describe("product detail route is prerenderable", () => {
     // prerender-manifest.json is Next's own record of the decision. A
     // dynamic route is absent from `dynamicRoutes` entirely -- verified by
     // building this route both ways, not assumed.
-    const manifest = JSON.parse(
-      readFileSync(
-        new URL("../../../../../.next/prerender-manifest.json", import.meta.url),
-        "utf8",
-      ),
-    ) as { dynamicRoutes?: Record<string, unknown> };
+    // Two things this test depends on, and only one of them is its own job.
+    //
+    // CURRENCY is already enforced, not merely requested in a comment:
+    // apps/web/test/build-freshness.spec.ts fails the suite when
+    // build-manifest.json is older than anything under src/, next.config.ts
+    // or package.json. So a stale .next cannot quietly answer this question.
+    //
+    // PRESENCE is this test's job, because a clean checkout has no .next at
+    // all and a bare readFileSync would throw ENOENT -- a stack trace about
+    // a missing file, for a test whose actual subject is route
+    // classification. Asserted explicitly so the message says what to do.
+    const manifestPath = new URL(
+      "../../../../../.next/prerender-manifest.json",
+      import.meta.url,
+    );
+    expect(
+      existsSync(manifestPath),
+      "No production build found. Run `pnpm --filter web build` -- this test reads Next's own prerender manifest to check how it classified this route.",
+    ).toBe(true);
+
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+      dynamicRoutes?: Record<string, unknown>;
+    };
 
     expect(
       Object.keys(manifest.dynamicRoutes ?? {}),
