@@ -28,7 +28,7 @@
   "dependencies": {
     "@apollo/server": "^5.5.1",
     "@as-integrations/express5": "^1.1.2",
-    "@aws-sdk/client-s3": "^3.1121.0",
+    "@aws-sdk/client-s3": "^3.1127.0",
     "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.8.1",
     "@medinstru/config": "workspace:*",
@@ -53,14 +53,14 @@
     "rxjs": "^7.8.2"
   },
   "devDependencies": {
-    "@eslint/eslintrc": "^3.3.6",
+    "@eslint/eslintrc": "^3.3.7",
     "@eslint/js": "^9.39.5",
-    "@jest/globals": "^30.4.2",
+    "@jest/globals": "^30.5.1",
     "@nestjs/cli": "^12.0.0",
     "@nestjs/testing": "^12.0.1",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.4.1",
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.2.1",
     "autocannon": "^8.0.0",
@@ -69,8 +69,8 @@
     "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.6",
-    "globals": "^17.11.0",
-    "jest": "^30.5.0",
+    "globals": "^17.12.0",
+    "jest": "^30.5.1",
     "prettier": "^3.9.6",
     "prisma": "^7.10.0",
     "supertest": "^7.2.2",
@@ -78,9 +78,9 @@
     "ts-loader": "^9.6.2",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
-    "tsx": "^4.23.12",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.68.0"
+    "typescript-eslint": "^8.69.0"
   },
   "jest": {
     "moduleFileExtensions": [
