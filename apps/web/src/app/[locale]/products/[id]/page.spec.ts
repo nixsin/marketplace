@@ -65,6 +65,31 @@ describe("product detail route is prerenderable", () => {
     expect(revalidate).toBe(SHARED_MAX_AGE_SECONDS);
   });
 
+  it("is classified as prerenderable by NEXT ITSELF, not just by its exports", () => {
+    // The exports below are necessary and not sufficient, and this is the
+    // assertion that closes that gap. A `headers()` or `cookies()` call
+    // appearing anywhere in this route's tree -- in a dependency, in a
+    // boundary file, in something next-intl reaches for -- silently reverts
+    // the route to Dynamic while every other test here still passes. That
+    // is not hypothetical: `not-found.tsx` did exactly this, via a
+    // getTranslations() call with no locale.
+    //
+    // prerender-manifest.json is Next's own record of the decision. A
+    // dynamic route is absent from `dynamicRoutes` entirely -- verified by
+    // building this route both ways, not assumed.
+    const manifest = JSON.parse(
+      readFileSync(
+        new URL("../../../../../.next/prerender-manifest.json", import.meta.url),
+        "utf8",
+      ),
+    ) as { dynamicRoutes?: Record<string, unknown> };
+
+    expect(
+      Object.keys(manifest.dynamicRoutes ?? {}),
+      "Route is missing from prerender-manifest.dynamicRoutes, which means Next classified it as Dynamic. It will ship `no-store` and the CDN will decline it. Run `pnpm --filter web build` first; if that is current, something in this route's tree is using a request-time API.",
+    ).toContain("/[locale]/products/[id]");
+  });
+
   it("exports generateStaticParams, which is what makes the route ISR", () => {
     // Its RETURN value is deliberately empty; its EXISTENCE is the load-
     // bearing part. Without the export Next never treats the route as

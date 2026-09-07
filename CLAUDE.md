@@ -2579,6 +2579,32 @@ And when bisecting rendering modes with a throwaway probe route, **a folder
 whose name starts with `_` is a Next private folder** and never becomes a
 route at all — `__probe` silently produced no route and no error.
 
+### A bogus id creates a cache entry, and an id check does not stop it
+
+Raised as a review finding and **measured rather than argued**: 200 requests
+for unique nonexistent ids produced **200 cache entries, ~4 KB each**. The
+route serves any id (`dynamicParams` defaults to true), and the 404 is cached
+like any other render -- verified directly, `404 MISS` then `404 HIT`.
+
+**The obvious mitigation does not work, for two independent reasons.**
+"Validate the id before caching" fails first because product ids have **no
+enforceable shape**: production uses cuid (`cmsu6dpnm000abnshhcsc7a5x`) and
+the seed uses `seed-product-01`, so any regex tight enough to matter rejects
+real data. It fails again even granting a perfect check, because the cache
+write happens on the `notFound()` render -- an id check that rejects early
+still reaches it, so the entry is written anyway. And no shape check bounds
+*cardinality*: an attacker generates valid-shaped ids indefinitely.
+
+What actually bounds it is a request-level control at the edge, which is the
+same conclusion [#152](https://github.com/nixsin/marketplace/issues/152)
+already reached for the inquiry endpoint, for the same reason. Tracked there
+rather than half-solved here.
+
+Worth stating plainly: this change did not create the surface. The route was
+always publicly reachable with arbitrary ids -- before, each request cost an
+API call instead of a cache entry, which is worse for the API and better for
+disk.
+
 ### What ISR does not buy
 
 `revalidateTag`/`revalidatePath` invalidate Next's own cache and **not** the

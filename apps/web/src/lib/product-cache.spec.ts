@@ -16,16 +16,25 @@ const cacheCalls: Array<{
 const fetchProduct = vi.fn();
 
 vi.mock("next/cache", () => ({
-  // Records how the cache was configured and otherwise passes through, so
-  // the assertions below are about this module's own choices rather than
-  // about Next's caching implementation.
+  // A MEMOIZING fake, not a passthrough. A passthrough records how the cache
+  // was configured and proves nothing about what it is keyed on -- and what
+  // it is keyed on is the entire reason this module exists rather than a
+  // `next: { revalidate }` option on the fetch. This stands in for Next's
+  // Data Cache closely enough to answer the one question that matters: does
+  // a repeat call for the same id reach fetchProduct again, and does a
+  // different id stay distinct.
   unstable_cache: (
     fn: (...args: unknown[]) => unknown,
     keyParts: string[],
     options: { revalidate?: number; tags?: string[] },
   ) => {
     cacheCalls.push({ keyParts, options });
-    return fn;
+    const store = new Map<string, unknown>();
+    return (...args: unknown[]) => {
+      const key = JSON.stringify([keyParts, args]);
+      if (!store.has(key)) store.set(key, fn(...args));
+      return store.get(key);
+    };
   },
 }));
 
@@ -64,6 +73,36 @@ describe("loadProduct", () => {
     expect(fetchProduct).toHaveBeenCalledWith("p1");
   });
 
+  it("serves a repeat request for the same id WITHOUT calling the API again", async () => {
+    // The behaviour the whole change is for. Measured against a real build
+    // too (three page requests, one API call), but pinned here so a change
+    // to the key -- adding a request-scoped argument, say -- fails loudly
+    // instead of silently reverting to a 100% miss rate, which looks
+    // identical to a cold cache.
+    // Distinct ids per test on purpose: getCachedProduct is created once at
+    // module load, so its store outlives any beforeEach -- which is exactly
+    // how the real cache behaves, and reusing an id from another test would
+    // read as a miss-count bug rather than a warm cache.
+    fetchProduct.mockResolvedValue({ id: "repeat-1" });
+    await loadProduct("repeat-1");
+    await loadProduct("repeat-1");
+    await loadProduct("repeat-1");
+    expect(fetchProduct).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps DIFFERENT ids distinct", async () => {
+    // The other half: a cache that dedupes everything would serve one
+    // product's page for every id.
+    fetchProduct.mockImplementation((id: string) => Promise.resolve({ id }));
+    await expect(loadProduct("distinct-a")).resolves.toMatchObject({
+      id: "distinct-a",
+    });
+    await expect(loadProduct("distinct-b")).resolves.toMatchObject({
+      id: "distinct-b",
+    });
+    expect(fetchProduct).toHaveBeenCalledTimes(2);
+  });
+
   it("returns null for a product the API says is gone", async () => {
     fetchProduct.mockResolvedValue(null);
     await expect(loadProduct("gone")).resolves.toBeNull();
@@ -76,6 +115,6 @@ describe("loadProduct", () => {
     // to the edge and served to everyone -- crawlers included -- for the
     // rest of the window. A throw renders error.tsx and caches nothing.
     fetchProduct.mockRejectedValue(new Error("API is down"));
-    await expect(loadProduct("p1")).rejects.toThrow(/API is down/);
+    await expect(loadProduct("outage-1")).rejects.toThrow(/API is down/);
   });
 });
