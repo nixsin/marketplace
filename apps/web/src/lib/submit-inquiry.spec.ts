@@ -241,7 +241,7 @@ describe("submitInquiry", () => {
           ok: false,
           reason: "unknown",
         });
-        expect(text()).toContain("neither an error nor an inquiry id");
+        expect(text()).toContain("no usable inquiry id");
       } finally {
         spy.mockRestore();
       }
@@ -261,6 +261,139 @@ describe("submitInquiry", () => {
       } finally {
         spy.mockRestore();
       }
+    });
+  });
+
+  describe("every state this can reach", () => {
+    // Enumerated from the decision points rather than the cases anyone
+    // happened to think of. Two were being silently collapsed before this
+    // existed: `errors: []` fell through and was reported as a missing id,
+    // and a literal null body was reported as a wrong SHAPE.
+    //
+    // Named as what the BUYER is doing, so a row can be checked against
+    // reality by someone who does not read this file.
+    const caught = () => {
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      return { spy, text: () => JSON.stringify(spy.mock.calls) };
+    };
+
+    it("4: something answered literal null — says so, not 'wrong shape'", async () => {
+      // `null` is valid JSON, so res.json() resolves and every optional chain
+      // yields undefined. Reported as a shape problem, it would send whoever
+      // reads it after our own schema instead of the intermediary.
+      const { spy, text } = caught();
+      try {
+        respond(null);
+        await expect(submitInquiry(INPUT)).resolves.toEqual({
+          ok: false,
+          reason: "unknown",
+        });
+        expect(text()).toContain("response body was null");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("13: server sent `errors: []`, which cannot happen — named separately", async () => {
+      // GraphQL says `errors` is present only when non-empty. The guard is
+      // `.length`, so this used to fall through to the id check and be
+      // reported as a missing id -- the wrong diagnosis for a server that
+      // believed it was reporting a failure.
+      const { spy, text } = caught();
+      try {
+        respond({ errors: [], data: { createInquiry: null } });
+        await expect(submitInquiry(INPUT)).resolves.toEqual({
+          ok: false,
+          reason: "unknown",
+        });
+        expect(text()).toContain("empty errors array");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("12: id present but the wrong type — reports which", async () => {
+      // "absent" and "present but wrong" point at different culprits, so the
+      // report names the type rather than just saying it was unusable.
+      const { spy, text } = caught();
+      try {
+        respond({ data: { createInquiry: { id: 42 } } });
+        await expect(submitInquiry(INPUT)).resolves.toEqual({
+          ok: false,
+          reason: "unknown",
+        });
+        expect(text()).toContain("number");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("12: id is an empty string — not a success", async () => {
+      // Truthiness would have accepted `{ id: "" }` as recorded.
+      const { spy } = caught();
+      try {
+        respond({ data: { createInquiry: { id: "" } } });
+        await expect(submitInquiry(INPUT)).resolves.toEqual({
+          ok: false,
+          reason: "unknown",
+        });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("14: BOTH an error and data — the error wins", async () => {
+      // GraphQL permits partial success. Telling a buyer their inquiry was
+      // recorded when the server also reported a failure is the exact defect
+      // this feature was built to avoid.
+      respond({
+        errors: [{ message: "x", extensions: { code: "CONFLICT" } }],
+        data: { createInquiry: { id: "inq_real" } },
+      });
+      await expect(submitInquiry(INPUT)).resolves.toEqual({
+        ok: false,
+        reason: "conflict",
+      });
+    });
+
+    it("7: over a limit the server could not date — no invented number", async () => {
+      // A hint the API never promised would be the UI lying on its behalf.
+      respond({
+        errors: [{ message: "x", extensions: { code: "TOO_MANY_REQUESTS" } }],
+      });
+      await expect(submitInquiry(INPUT)).resolves.toEqual({
+        ok: false,
+        reason: "rate-limited",
+      });
+    });
+
+    it("6/7: an unusable hint is treated as no hint", async () => {
+      // Zero, negative and non-numeric all mean "the server could not date
+      // this", not "retry immediately".
+      for (const retryAfterMs of [0, -1, "soon", null, NaN]) {
+        respond({
+          errors: [
+            { message: "x", extensions: { code: "TOO_MANY_REQUESTS", retryAfterMs } },
+          ],
+        });
+        await expect(submitInquiry(INPUT)).resolves.toEqual({
+          ok: false,
+          reason: "rate-limited",
+        });
+      }
+    });
+
+    it("does not attach a hint to a NON-throttle error", async () => {
+      // A conflict does not become valid with time, so a wait is meaningless.
+      respond({
+        errors: [
+          { message: "x", extensions: { code: "CONFLICT", retryAfterMs: 60_000 } },
+        ],
+      });
+      await expect(submitInquiry(INPUT)).resolves.toEqual({
+        ok: false,
+        reason: "conflict",
+      });
     });
   });
 });
