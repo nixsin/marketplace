@@ -1,5 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { categorizeInquiryError, submitInquiry } from "./api";
+import {
+  categorizeInquiryError,
+  retryAfterFrom,
+  submitInquiry,
+} from "./api";
 
 /**
  * Direct tests for submitInquiry's own failure handling.
@@ -67,10 +71,20 @@ describe("submitInquiry", () => {
   it("treats a GraphQL error as a failure despite the HTTP 200", async () => {
     // GraphQL reports resolver failures as 200 with an errors array, so
     // res.ok proves nothing about whether this worked.
-    respond({ errors: [{ message: "Too many inquiries" }] });
+    respond({
+      errors: [
+        {
+          message: "Too many inquiries",
+          extensions: { code: "TOO_MANY_REQUESTS", retryAfterMs: 720_000 },
+        },
+      ],
+    });
     await expect(submitInquiry(INPUT)).resolves.toEqual({
       ok: false,
       reason: "rate-limited",
+      // Passed through so the UI can say WHEN to try again rather than
+      // "later". Only ever present on a throttle the server dated.
+      retryAfterMs: 720_000,
     });
   });
 
@@ -138,10 +152,11 @@ describe("submitInquiry", () => {
     ["no message at all", undefined],
   ])("does not throw on an error entry with %s", async (_label, message) => {
     // `errors` comes off the wire, so a broken intermediary can put anything
-    // in it -- and categorizeInquiryError calls .toLowerCase(), which throws
-    // past this function's discriminated return. The form now catches that
-    // too, but a thrown rejection here would be indistinguishable from a
-    // failure it actually understood.
+    // in it. This mattered more when the message was READ -- categorize
+    // called .toLowerCase() on it, which threw past this function's
+    // discriminated return. It now reads only extensions.code, so a strange
+    // message is inert; these cases stay because the guarantee callers rely
+    // on is the discriminated result, not the reason it holds today.
     respond({ errors: [{ message }] });
     await expect(submitInquiry(INPUT)).resolves.toEqual({
       ok: false,
@@ -156,46 +171,171 @@ describe("submitInquiry", () => {
       reason: "network",
     });
   });
+  describe("an unknown failure is debuggable", () => {
+    // Raised in review: "unknown" is the one category the buyer cannot act on
+    // AND the operator cannot diagnose. Several unrelated situations collapse
+    // into it and, from a support ticket, are indistinguishable.
+    //
+    // Each is reported through reportApiFailure, so it carries the same two
+    // correlation ids every other failure here does -- which is what turns a
+    // browser error into something findable in the server log.
+    const report = () => {
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      return {
+        spy,
+        text: () => spy.mock.calls.map((c) => JSON.stringify(c)).join(" "),
+      };
+    };
+
+    it("names an UNHANDLED code, with the ids to trace it", async () => {
+      const { spy, text } = report();
+      try {
+        respond({
+          errors: [
+            {
+              message: "Seller is on holiday",
+              extensions: { code: "SELLER_UNAVAILABLE" },
+            },
+          ],
+        });
+        await expect(submitInquiry(INPUT)).resolves.toEqual({
+          ok: false,
+          reason: "unknown",
+        });
+
+        const logged = text();
+        // The code, so the gap in this client is identifiable...
+        expect(logged).toContain("SELLER_UNAVAILABLE");
+        // ...the server's own words, so it can be matched to a throw site...
+        expect(logged).toContain("Seller is on holiday");
+        // ...and the id that finds the server log for THIS request.
+        expect(logged).toContain("client_request_id");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("distinguishes a MISSING code, which means a rollback", async () => {
+      // Degrading is correct; not knowing the API went backwards is not.
+      const { spy, text } = report();
+      try {
+        respond({ errors: [{ message: "Bad Request Exception" }] });
+        await expect(submitInquiry(INPUT)).resolves.toEqual({
+          ok: false,
+          reason: "unknown",
+        });
+        expect(text()).toContain("none");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("names a response carrying neither an error nor an id", async () => {
+      // Nothing should be shaped this way, which is why it is worth naming
+      // distinctly: reaching it means schema drift or an intermediary
+      // rewriting the body, not an error the API chose to send.
+      const { spy, text } = report();
+      try {
+        respond({ data: { createInquiry: {} } });
+        await expect(submitInquiry(INPUT)).resolves.toEqual({
+          ok: false,
+          reason: "unknown",
+        });
+        expect(text()).toContain("neither an error nor an inquiry id");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("stays SILENT for a category it handles", async () => {
+      // A report on every ordinary rate limit would bury the ones that matter.
+      const { spy } = report();
+      try {
+        respond({
+          errors: [
+            { message: "x", extensions: { code: "TOO_MANY_REQUESTS" } },
+          ],
+        });
+        await submitInquiry(INPUT);
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
 });
 
 describe("categorizeInquiryError", () => {
   // The form used to render one fixed "check your phone number" for every
   // failure — wrong for a network error, actively misleading for a rate
   // limit, where retrying immediately cannot succeed and only adds traffic.
+  const err = (code: string) => ({ message: "irrelevant", extensions: { code } });
+
   it.each<[string, string]>([
-    ["Too many inquiries from this number recently.", "rate-limited"],
-    ["Too many inquiries right now. Please try again later.", "rate-limited"],
-    ["You have already sent inquiries about this product recently.", "rate-limited"],
-    [
-      "This submission id was already used for different details. Reload the page and try again.",
-      "conflict",
-    ],
-    ["Enter a valid phone number including the country code.", "invalid"],
-    ["Enter your name and a question.", "invalid"],
-  ])("maps %s to %s", (message, expected) => {
-    expect(categorizeInquiryError(message)).toBe(expected);
+    ["TOO_MANY_REQUESTS", "rate-limited"],
+    ["CONFLICT", "conflict"],
+    ["BAD_USER_INPUT", "invalid"],
+  ])("maps the %s code to %s", (code, expected) => {
+    expect(categorizeInquiryError(err(code))).toBe(expected);
   });
 
-  it("does not mistake an idempotency conflict for a rate limit", () => {
-    // The conflict message once read "already sent with different details",
-    // which the rate-limit branch swallowed on a bare "already sent" -- so a
-    // buyer with a key conflict was told they had sent too many inquiries
-    // recently, pointing them at a wait that cannot help. Both sides were
-    // tightened: the message says "already used", and the rate-limit branch
-    // matches "already sent inquiries" rather than two loose words.
+  it("IGNORES the message entirely, whatever it says", () => {
+    // The whole point of the change. This used to match substrings of the
+    // server's prose, which made the wording a load-bearing API -- and it
+    // broke: the conflict message once read "already sent with different
+    // details", the rate-limit branch matched "already sent", and a buyer
+    // whose submission id collided was told they had sent too many inquiries
+    // recently, pointing them at a wait that could not help.
+    //
+    // Each of these carries text that would have matched the WRONG branch
+    // under the old prose matching.
     expect(
-      categorizeInquiryError("This submission id was already used for X."),
+      categorizeInquiryError({
+        message: "Too many inquiries right now.",
+        extensions: { code: "CONFLICT" },
+      }),
     ).toBe("conflict");
     expect(
-      categorizeInquiryError("You have already sent inquiries about this."),
+      categorizeInquiryError({
+        message: "This submission id was already used.",
+        extensions: { code: "TOO_MANY_REQUESTS" },
+      }),
     ).toBe("rate-limited");
   });
 
   it("falls back to unknown rather than guessing", () => {
     // A wrong category is worse than a generic one: it tells the buyer to do
-    // something that cannot help.
-    expect(categorizeInquiryError("Internal server error")).toBe("unknown");
-    expect(categorizeInquiryError("")).toBe("unknown");
+    // something that cannot help. This is also the ROLLBACK path -- an API
+    // deployed from before codes existed sends none, and every buyer sees
+    // generic copy rather than wrong copy.
+    expect(categorizeInquiryError(undefined)).toBe("unknown");
+    expect(categorizeInquiryError({ message: "Internal server error" })).toBe(
+      "unknown",
+    );
+    expect(categorizeInquiryError({ extensions: { code: "SOMETHING_NEW" } })).toBe(
+      "unknown",
+    );
+    // Not a string, because it came off the wire.
+    expect(categorizeInquiryError({ extensions: { code: 42 } })).toBe("unknown");
+  });
+
+  describe("retryAfterFrom", () => {
+    it("reads a usable hint", () => {
+      expect(retryAfterFrom({ extensions: { retryAfterMs: 720_000 } })).toBe(
+        720_000,
+      );
+    });
+
+    it("returns null when the server dated nothing", () => {
+      // Absent is meaningfully different from zero: it means the server could
+      // not date the wait, which is guidance to give none -- not to retry now.
+      expect(retryAfterFrom(undefined)).toBeNull();
+      expect(retryAfterFrom({ extensions: {} })).toBeNull();
+      expect(retryAfterFrom({ extensions: { retryAfterMs: 0 } })).toBeNull();
+      expect(retryAfterFrom({ extensions: { retryAfterMs: -5 } })).toBeNull();
+      expect(retryAfterFrom({ extensions: { retryAfterMs: "soon" } })).toBeNull();
+      expect(retryAfterFrom({ extensions: { retryAfterMs: NaN } })).toBeNull();
+    });
   });
 
   it("never returns raw server text to the caller", async () => {

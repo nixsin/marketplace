@@ -63,12 +63,17 @@ export function InquiryForm({
   const submissionKey = useRef<string>(crypto.randomUUID());
   const lastSubmitted = useRef<string | null>(null);
   const [error, setError] = useState<InquiryFailure | null>(null);
+  // Minutes, not milliseconds: the server already coarsened its hint to
+  // whole minutes, so showing anything finer would imply a precision the
+  // API deliberately does not offer.
+  const [retryMinutes, setRetryMinutes] = useState<number | null>(null);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     setStatus("sending");
     setError(null);
+    setRetryMinutes(null);
 
     const submission = {
       productId,
@@ -145,6 +150,9 @@ export function InquiryForm({
     }
     setStatus("error");
     setError(result.reason);
+    setRetryMinutes(
+      result.retryAfterMs ? Math.ceil(result.retryAfterMs / 60_000) : null,
+    );
   }
 
   if (status === "sent") {
@@ -268,7 +276,12 @@ export function InquiryForm({
           {/* Specific to what actually went wrong. One fixed "check your
               phone number" was wrong for a network error and actively
               misleading for a rate limit, where retrying cannot succeed. */}
-          {t(`inquiryError.${error ?? "unknown"}`)}
+          {/* When the server dated the wait, say it. "Please wait a little
+              while" is not a recommendation -- it gives the buyer nothing to
+              act on, and they cannot tell a two-minute wait from an hour. */}
+          {error === "rate-limited" && retryMinutes !== null
+            ? t("inquiryError.rate-limited-retry", { minutes: retryMinutes })
+            : t(`inquiryError.${error ?? "unknown"}`)}
         </p>
       )}
 
