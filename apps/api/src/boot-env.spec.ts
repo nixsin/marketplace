@@ -44,6 +44,30 @@ describe('loadEnvFileIfPresent', () => {
     ).not.toThrow();
   });
 
+  it('swallows a missing .env through the REAL loader, not just an injected one', async () => {
+    // Every other test here injects a fake `load`, so the default argument --
+    // the one main.ts actually runs in production -- was never executed. A
+    // module whose whole job is "do not fail when there is no .env" should
+    // prove that against Node's own loader, not only against a stub that
+    // throws a hand-made ENOENT.
+    //
+    // Run from a directory known to have no .env, so this exercises the
+    // missing-file path rather than quietly loading the repo's own file and
+    // mutating process.env for every test after it.
+    const { mkdtemp } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+
+    const empty = await mkdtemp(join(tmpdir(), 'no-env-'));
+    const cwd = process.cwd();
+    try {
+      process.chdir(empty);
+      expect(() => loadEnvFileIfPresent()).not.toThrow();
+    } finally {
+      process.chdir(cwd);
+    }
+  });
+
   it('rethrows any other failure instead of reporting it as missing config', () => {
     // An unreadable or malformed .env swallowed here would surface as
     // "not declared" errors naming the variables that file actually sets,

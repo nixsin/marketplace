@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import { RedisCacheStore } from './redis-cache.store';
 
 /**
@@ -27,6 +28,65 @@ describe('RedisCacheStore against an unreachable server', () => {
 
   afterEach(async () => {
     await store.onModuleDestroy();
+  });
+
+  it('reports recovery ONCE, not on every operation after it', async () => {
+    // The mirror of the unhealthy path, and it matters for the same reason:
+    // a cache that has been down for three weeks looks identical to a cold
+    // one from the outside, so the transition is the only signal an operator
+    // gets. Logging it per-operation would bury it exactly as thoroughly as
+    // not logging it at all.
+    //
+    // The 'ready' event is emitted on the client rather than waited for --
+    // this suite deliberately has no reachable Redis, and the behaviour under
+    // test is the transition, not the driver's connection handling.
+    const client = (
+      store as unknown as { client: { emit: (e: string) => void } }
+    ).client;
+
+    // Driven unhealthy first, since recovery from a healthy state is a no-op
+    // by design and would pass without the branch ever running.
+    await store.get('v1:anything');
+    expect(store.isHealthy()).toBe(false);
+
+    const logged: string[] = [];
+    const logger = (
+      store as unknown as { logger: { log: (m: string) => void } }
+    ).logger;
+    jest.spyOn(logger, 'log').mockImplementation((m: string) => {
+      logged.push(m);
+    });
+
+    client.emit('ready');
+    client.emit('ready');
+
+    expect(store.isHealthy()).toBe(true);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain('cache recovered');
+  });
+
+  it('caps the reconnect backoff, so a long outage still recovers in seconds', () => {
+    // The policy, not just that one exists. Unbounded exponential backoff
+    // means a Redis that comes back after an hour is not picked up until the
+    // next step -- which for a cache that fails open is a silent, indefinite
+    // fallback to the database rather than a recovery.
+    //
+    // Read off the constructed client, so this asserts the value the driver
+    // will actually use rather than a copy of the expression.
+    const strategy = (
+      store as unknown as {
+        client: {
+          options?: { socket?: { reconnectStrategy?: (n: number) => number } };
+        };
+      }
+    ).client.options?.socket?.reconnectStrategy;
+
+    expect(typeof strategy).toBe('function');
+    expect(strategy!(1)).toBe(100);
+    expect(strategy!(10)).toBe(1_000);
+    // Capped, however long the outage runs.
+    expect(strategy!(50)).toBe(3_000);
+    expect(strategy!(10_000)).toBe(3_000);
   });
 
   it('MISSES rather than hanging', async () => {

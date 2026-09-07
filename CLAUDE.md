@@ -760,6 +760,23 @@ nothing else, `main.ts` and the module shells included: an exclusion is a
 place things hide, and the cost of counting a few decorator statements is
 lower than the cost of another `createBlobStore`.
 
+**`local-blob-store.ts` had no spec at all**, and sat at 92% purely from being
+driven incidentally by other suites. What that hid was the two branches where
+being wrong is expensive: the path-traversal refusal, and `exists()` rethrowing
+a real failure instead of answering "not there" — a permission error reported
+as absence makes a caller re-upload or render a gap rather than surface a
+broken disk. A high percentage from incidental exercise is not the same as the
+risky paths being covered.
+
+**Its resolved-path check is unreachable today, and stays.** `assertValidKey`
+rejects every `..` segment, leading `/` and backslash first, so `pathFor`'s own
+comparison never fires — measured, not assumed. It is deliberate defence in
+depth: the regex should not be the only thing between a caller and a write
+outside the storage root, and loosening one segment of the first guard would
+put the second back in play. The tests assert the property callers depend on
+(refused, and nothing written) rather than which guard produced it; reaching
+the backstop would mean bypassing the first check, which tests the test.
+
 **Chasing resolvers and models to 100% is theatre, and the numbers say so.**
 `products.resolver.ts` reads 59% with every method tested. The "uncovered"
 lines are decorator type-thunks — `@Query(() => Product)`,
