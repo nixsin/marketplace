@@ -141,10 +141,25 @@ export const BUILD_TIME = process.env.NEXT_PUBLIC_BUILD_TIME || "unknown";
 // through Render in Oregon while the R2 edge cache went unused. Trading
 // 220 bytes of JS for that is not close.
 //
+// Raised 196 -> 198 (2026-09-06). apps/web switching from matching the
+// server's error PROSE to reading extensions.code adds ~641 gzipped bytes,
+// MEASURED by building both branches and summing gzipped chunk sizes:
+// 236,096 -> 236,737. Lighthouse saw the route-level share of that as
+// 196.0 -> 196.1KB, which is what tipped it.
+//
+// The bytes are: GRAPHQL_ERROR_CODES now reaching the client bundle,
+// retryAfterFrom and reportUnknown, and the retry copy in both locales.
+//
+// Worth the trade. It removes the last place a buyer's error copy depended
+// on the wording of a server message -- a coupling that had already shipped
+// one real bug, telling a buyer whose submission id collided that they had
+// sent too many inquiries recently. It also buys the copy that says WHEN to
+// retry instead of "wait a little while".
+//
 // Raised by 2KB, not to exactly fit: landing a budget one byte above
 // current usage means the next honest change fails for no reason, and a
 // gate that fails constantly stops being read.
-export const JS_BUDGET_BYTES = 196 * 1024;
+export const JS_BUDGET_BYTES = 198 * 1024;
 
 // §12A targets from TECHNICAL_PLAN.md.
 export const LCP_BUDGET_MS = 2500;

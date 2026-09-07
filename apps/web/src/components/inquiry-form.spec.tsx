@@ -151,6 +151,40 @@ describe("InquiryForm", () => {
     );
   });
 
+  it("tells the buyer WHEN to retry, when the server dated it", async () => {
+    // The point of the whole chain. "Please wait a little while" gives a buyer
+    // nothing to act on -- they cannot tell a two-minute wait from an hour, so
+    // they either retry immediately into another rejection or give up.
+    //
+    // 720000ms is twelve minutes. Rounded up to whole minutes on purpose: the
+    // server already coarsened its hint, and showing seconds would imply a
+    // precision the API deliberately withholds.
+    submitInquiryMock.mockResolvedValue({
+      ok: false,
+      reason: "rate-limited" as const,
+      retryAfterMs: 720_000,
+    });
+    renderForm();
+    await fillAndSubmit();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/12 minutes/);
+  });
+
+  it("falls back to the vague copy when the server dated nothing", async () => {
+    // A hint is absent when the server could not date the wait. Inventing one
+    // would be the UI promising something the API never said.
+    submitInquiryMock.mockResolvedValue({
+      ok: false,
+      reason: "rate-limited" as const,
+    });
+    renderForm();
+    await fillAndSubmit();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toBeInTheDocument();
+    expect(alert).not.toHaveTextContent(/minutes/);
+  });
+
   it("never surfaces the raw server error to the buyer", async () => {
     // Server messages can name internal state -- a database error, a limit
     // the buyer cannot see -- so the buyer gets a category they can act on.
