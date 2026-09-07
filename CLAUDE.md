@@ -1524,16 +1524,25 @@ no `constraints` of its own — reading the top level alone yields an empty
 message, which is a validator that looks like it works until someone uses a
 nested input.
 
-**Edge validation is NOT finished, and the ordering is the reason.** Trimming
-in the DTO and an E.164 constraint matching `normalizeE164` both belong there,
-so malformed input never reaches the transaction — CLAUDE.md's own note that a
-rejected inquiry still opens one and runs up to four counts is the argument for
-it. They are blocked on `apps/web` switching to `extensions.code`: while prose
-matching is still live, a `@Length` failure reads "buyerName must be longer
-than or equal to 2 characters", which matches none of the web's substrings and
-would regress a whitespace name from "invalid" copy to "unknown". Writing DTO
-messages to satisfy a prose matcher that is about to be deleted is the wrong
-fix.
+**Edge validation is now done, and the ordering was the reason it waited.**
+The DTO trims before validating and uses `@IsE164`, so malformed input is
+refused before the transaction opens and before the four rate-limit counts run
+— a reduction in the request-level work #152 flags, though not a fix for it,
+since only an edge control bounds requests.
+
+Two details worth keeping:
+
+- **`@Length(2)` was lying.** class-validator checks the RAW value, so `"  "`
+  is two characters and passed, then failed in the service. `@Transform` runs
+  first under `transform: true`, so the constraint now enforces what it says.
+- **`@IsPhoneNumber()` and `normalizeE164` disagreed in both directions** —
+  measured, including `+999000000123`, the ITU-reserved range this repo's own
+  seed writes for seller numbers. `@IsE164` delegates to the shared function
+  rather than reimplementing it, so the edge accepts exactly what the service
+  will.
+
+The service keeps its own checks as defence in depth: `create` is reachable
+without the pipe from a sweeper, a script, or the #151 retry path.
 
 **An unrecognised status keeps Apollo's own code rather than getting a new
 one.** A future exception type degrades to the generic answer instead of a

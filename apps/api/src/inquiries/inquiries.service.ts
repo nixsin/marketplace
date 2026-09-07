@@ -519,10 +519,15 @@ export class InquiriesService {
       );
     }
 
-    // Trimmed server-side, not merely in the form. The mutation is public, so
-    // a direct caller can submit "  " for a name and a single space for a
-    // message -- @Length(2) accepts the former and @MinLength(1) the latter --
-    // and the seller receives an inquiry with no discernible sender.
+    // DEFENCE IN DEPTH, not the primary check any more. The DTO now trims
+    // before validating, so a request arriving through GraphQL has already
+    // been refused at the edge -- before this transaction opens and before the
+    // four rate-limit counts run.
+    //
+    // These stay because `create` is reachable without that pipe: a sweeper,
+    // a script, or the #151 retry path calls the service directly, and none of
+    // them run a ValidationPipe. The cost is two comparisons; the cost of
+    // being wrong is a seller receiving an inquiry with no discernible sender.
     const buyerName = args.buyerName.trim();
     const message = args.message.trim();
     if (buyerName.length < 2 || !message) {
