@@ -25,22 +25,45 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       reporter: ["text", "json-summary"],
-      // Scoped to src/components/** deliberately, not the whole app —
-      // that's the surface this session's testing push actually covers.
-      // ui/** is shadcn's vendored primitives, not code we own; excluding
-      // it is a real scope decision, not papering over a gap the way
-      // excluding our own untested files would be.
-      include: ["src/components/**"],
-      exclude: ["src/components/ui/**"],
-      // Real numbers, not aspirational ones — every file in scope sits at
-      // or near 100% today (verified locally); branches is 90 rather than
-      // higher because product-listing.tsx's unmount-cleanup branch
-      // (cancelled = true) isn't exercised yet, at 75%.
+      // WIDENED from src/components/** to include src/lib and src/app.
+      //
+      // The old scope was honest when it was written -- components were the
+      // only tested surface. It stopped being honest once the scenario audit
+      // took api.ts and catalog-seo.ts to 100%: those numbers were produced by
+      // passing --coverage.include BY HAND, so nothing kept them there, and a
+      // regression in the code this repo most recently hardened would not have
+      // shown up in any run.
+      //
+      // It also left src/app entirely unmeasured, which meant "are the pages
+      // tested?" could only be answered by listing files and guessing. The
+      // point of measuring is to stop guessing.
+      //
+      // ui/** stays excluded: shadcn's vendored primitives are not code we
+      // own, which is a scope decision rather than a gap being papered over.
+      include: ["src/components/**", "src/lib/**", "src/app/**"],
+      exclude: ["src/components/ui/**", "src/**/*.spec.*"],
+      // Real numbers, not aspirational ones, and a RATCHET rather than a
+      // target: set just under what the suite actually achieves, so a
+      // regression fails while ordinary work does not.
+      //
+      // They came DOWN from 95 when the scope widened, and that is not a drop
+      // in quality -- it is the cost of measuring more. Two files report 0%
+      // while being genuinely well tested, because their tests spawn a real
+      // server and exercise them IN ANOTHER PROCESS, which v8 cannot attribute
+      // back here:
+      //
+      //   sourcemaps/[file]/route.ts   13 tests in test/sourcemap-access.spec
+      //   [locale]/layout.tsx          rendered during SSR by the same suites
+      //
+      // They stay in scope anyway. Excluding them would make the number
+      // prettier and hide the one thing worth knowing: that a 0% here means
+      // "not measured in this process", not "not tested" -- a distinction the
+      // next person needs, and one an exclusion would erase.
       thresholds: {
-        statements: 95,
-        lines: 95,
-        functions: 95,
-        branches: 70,
+        statements: 90,
+        lines: 92,
+        functions: 91,
+        branches: 90,
       },
     },
   },
