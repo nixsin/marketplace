@@ -16,7 +16,22 @@ export async function loadInitialProducts(
 ): Promise<ProductsPaged | undefined> {
   try {
     return await getCachedInitialProducts(page);
-  } catch {
+  } catch (error) {
+    // REPORTED, not just swallowed. Returning undefined is correct -- an API
+    // outage must not remove the page shell -- but it degrades the thing this
+    // whole path exists for: real product names and links in the initial HTML
+    // for crawlers. Silently, and for as long as the outage lasts. The catch
+    // stays; what changes is that it says so.
+    //
+    // console.error rather than reportApiFailure: this runs on the server with
+    // no Response and no client id, so the correlation pair does not apply.
+    console.error(
+      JSON.stringify({
+        msg: "initial catalogue unavailable — home page will render without product links",
+        page,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
     // ProductListing retains its existing client-side fetch path. A temporary
     // API outage must not turn a web build into an outage or remove the page
     // shell; the next request can repopulate the revalidated snapshot.
@@ -46,12 +61,25 @@ export async function loadSitemapProducts(
   sitemapId = 0,
 ): Promise<SitemapProduct[]> {
   const products: SitemapProduct[] = [];
+
+  // Every entry must have a real id, because the caller turns it straight into
+  // a URL. An item without one yields `/products/undefined` -- a link to a
+  // page that 404s, published to crawlers as though it were a product. Failing
+  // is the right answer: this repo already refuses to publish a sitemap it
+  // cannot complete rather than publishing a wrong one.
+  const usable = (result: ProductsPaged, page: number): SitemapProduct[] =>
+    result.items.map(({ id, updatedAt }) => {
+      if (typeof id !== "string" || id.length === 0) {
+        throw new Error(
+          `loadSitemapProducts: product on page ${page} has no usable id`,
+        );
+      }
+      return { id, updatedAt };
+    });
   const firstPage = sitemapId * API_PAGES_PER_SITEMAP + 1;
   const lastPage = firstPage + API_PAGES_PER_SITEMAP - 1;
   const firstResult = await fetchProductsPaged(firstPage, SITEMAP_API_PAGE_SIZE);
-  products.push(
-    ...firstResult.items.map(({ id, updatedAt }) => ({ id, updatedAt })),
-  );
+  products.push(...usable(firstResult, firstPage));
 
   const finalPage = Math.min(firstResult.totalPages, lastPage);
   for (
@@ -68,11 +96,9 @@ export async function loadSitemapProducts(
         fetchProductsPaged(batchStart + offset, SITEMAP_API_PAGE_SIZE),
       ),
     );
-    for (const result of results) {
-      products.push(
-        ...result.items.map(({ id, updatedAt }) => ({ id, updatedAt })),
-      );
-    }
+    results.forEach((result, offset) => {
+      products.push(...usable(result, batchStart + offset));
+    });
   }
 
   return products;

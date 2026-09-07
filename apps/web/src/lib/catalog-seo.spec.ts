@@ -116,3 +116,73 @@ describe("sitemap page size vs. the API's ceiling", () => {
     expect(SITEMAP_API_PAGE_SIZE).toBeLessThanOrEqual(PRODUCTS_MAX_PAGE_SIZE);
   });
 });
+
+describe("states the sitemap can reach", () => {
+  beforeEach(() => fetchProductsPaged.mockReset());
+
+  const page = (items: unknown[], totalPages = 1) => ({
+    items,
+    page: 1,
+    pageSize: 100,
+    totalCount: items.length,
+    totalPages,
+  });
+
+  it("REFUSES a product with no usable id", async () => {
+    // The caller turns each id straight into a URL, so an item without one
+    // publishes `/products/undefined` to crawlers -- a link to a page that
+    // 404s, presented as a product. Failing is the right answer: this repo
+    // already refuses to publish a sitemap it cannot complete rather than
+    // publishing a wrong one.
+    fetchProductsPaged.mockResolvedValue(page([{ id: undefined }]));
+    await expect(loadSitemapProducts(0)).rejects.toThrow(/no usable id/);
+  });
+
+  it("REFUSES an empty-string id, which a truthiness check would accept", async () => {
+    fetchProductsPaged.mockResolvedValue(page([{ id: "" }]));
+    await expect(loadSitemapProducts(0)).rejects.toThrow(/no usable id/);
+  });
+
+  it("names the page a bad product was on", async () => {
+    // A sitemap shard spans up to 240 API pages; "somewhere in there" is not
+    // an actionable report.
+    fetchProductsPaged.mockResolvedValue(page([{ id: "ok" }, { id: null }]));
+    await expect(loadSitemapProducts(1)).rejects.toThrow(/page 241/);
+  });
+
+  it("an empty catalogue is a valid sitemap, not a failure", async () => {
+    // Distinct from an outage. Zero products is a true answer.
+    fetchProductsPaged.mockResolvedValue(page([]));
+    await expect(loadSitemapProducts(0)).resolves.toEqual([]);
+  });
+
+  it("reports rather than silently dropping the home-page snapshot", async () => {
+    // Returning undefined is correct -- an outage must not remove the page
+    // shell -- but it degrades the thing this path exists for: real product
+    // links in the initial HTML for crawlers. Silently, for as long as the
+    // outage lasts.
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      // ...Once, not mockRejectedValue: the persistent form leaves a rejected
+      // promise for every later call, and the unconsumed ones surface as
+      // unhandled rejections that fail the test for the wrong reason.
+      fetchProductsPaged.mockRejectedValueOnce(new Error("api is down"));
+      await expect(loadInitialProducts(1)).resolves.toBeUndefined();
+
+      const logged = JSON.stringify(spy.mock.calls);
+      expect(logged).toContain("api is down");
+      expect(logged).toContain("without product links");
+
+      // A thrown non-Error still has to say something. `unstable_cache` sits
+      // between us and the fetch, so what surfaces here is not guaranteed to
+      // be an Error instance.
+      spy.mockClear();
+      fetchProductsPaged.mockRejectedValueOnce("just a string");
+      await expect(loadInitialProducts(1)).resolves.toBeUndefined();
+      expect(JSON.stringify(spy.mock.calls)).toContain("just a string");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+});
