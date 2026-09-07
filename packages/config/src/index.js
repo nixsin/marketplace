@@ -259,6 +259,31 @@ export function publicCacheControl(
 export const FAVICON_MAX_AGE_SECONDS = 86_400;
 
 /**
+ * Browser and edge cache window for the self-authored catalogue artwork
+ * under `public/products/` (and the home OpenGraph image beside it).
+ *
+ * These were served with Next's `public/` default of `max-age=0`, so every
+ * page load spent a full round trip per image revalidating art that had not
+ * changed -- 304s, so nothing re-transferred, but the catalogue renders
+ * several at once and the connections this app targets are high-latency.
+ *
+ * NOT `immutable`, and that is the whole reason this is a separate value
+ * from the `/_next/static/*` treatment rather than a reuse of it. Those
+ * filenames carry a content hash, so a changed file is a changed URL and
+ * "cache forever" is safe. These filenames are stable and hand-authored --
+ * `lab-equipment.svg` stays `lab-equipment.svg` when its contents are
+ * corrected -- so `immutable` would strand a wrong image in browser caches
+ * with no way to bust it short of renaming the file everywhere.
+ *
+ * A day is the same bet as FAVICON_MAX_AGE_SECONDS, made for the same
+ * reason: long enough that a returning visitor pays nothing, short enough
+ * that a correction reaches everyone by tomorrow without a purge. Kept as
+ * its own constant rather than shared with the favicon because they are two
+ * independent decisions that happen to agree today.
+ */
+export const CATALOGUE_IMAGE_MAX_AGE_SECONDS = 86_400;
+
+/**
  * How long a browser may reuse a CORS preflight result.
  *
  * apps/web sends a custom header on every API call (apollo-require-

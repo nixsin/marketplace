@@ -6,6 +6,7 @@ import { siteUrlErrorMessage, siteUrlProblem } from "./src/lib/site-url";
 import {
   CROSS_ORIGIN_OPENER_POLICY,
   FAVICON_MAX_AGE_SECONDS,
+  CATALOGUE_IMAGE_MAX_AGE_SECONDS,
   FRAME_OPTIONS,
   LOCALES,
   publicCacheControl,
@@ -220,6 +221,56 @@ const nextConfig: NextConfig = {
           {
             key: "Cache-Control",
             value: `public, max-age=${FAVICON_MAX_AGE_SECONDS}`,
+          },
+        ],
+      },
+      {
+        // The self-authored catalogue artwork, previously served with
+        // Next's `public/` default of `max-age=0` -- so every page load
+        // spent a round trip per image revalidating art that had not
+        // changed. Measured against production before this: `public,
+        // max-age=0` on every /products/*.svg, and the catalogue renders
+        // several at once.
+        //
+        // `(.*)` for consistency with the entries around it -- NOT because
+        // `:path*` is broken here. The X-Build-Commit entry above records
+        // that a `:path*` source lands in routes-manifest.json and is then
+        // not applied to real responses, so this pattern was re-tested
+        // rather than inherited: on Next 16.3.3, `source:
+        // "/products/:path*"` DOES apply its header to
+        // /products/lab-equipment.svg, verified by building it both ways
+        // and curling a real server. That older note was written against an
+        // earlier version and about a root-level `/:path*`; it was not
+        // re-confirmed for this case and should not be trusted as a general
+        // rule without re-testing it the same way.
+        //
+        // Either form is asserted over real HTTP in
+        // test/static-caching.spec.ts rather than by reading the manifest,
+        // which is the part that actually matters: the manifest showed the
+        // entry as present in both the working and the non-working case.
+        //
+        // Deliberately NOT immutable -- see CATALOGUE_IMAGE_MAX_AGE_SECONDS
+        // for why these filenames cannot carry that promise.
+        source: "/products/(.*)",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: `public, max-age=${CATALOGUE_IMAGE_MAX_AGE_SECONDS}`,
+          },
+        ],
+      },
+      {
+        // The home page's OpenGraph card. Same class as the artwork above
+        // -- hand-authored, fixed URL, changes rarely -- but it sits at the
+        // root of public/ rather than under /products/, so it needs its own
+        // entry. Fetched by link scrapers rather than by page loads, which
+        // makes this a smaller win than the catalogue art and free to keep
+        // consistent.
+        source: "/home-og.png",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: `public, max-age=${CATALOGUE_IMAGE_MAX_AGE_SECONDS}`,
           },
         ],
       },

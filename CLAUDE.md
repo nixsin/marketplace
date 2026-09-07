@@ -2465,6 +2465,53 @@ authenticated response must never be edge-cached — that needs `private,
 no-store` keyed off the request carrying credentials, and it must land
 before the first authenticated query, not after.
 
+## Catalogue images had no cache window at all
+
+Everything under `public/` gets Next's default `Cache-Control: public,
+max-age=0`, so every page load spent a round trip per image revalidating art
+that had not changed. Measured against live production first: `public,
+max-age=0` on every `/products/*.svg`, and the catalogue renders several at
+once, on connections this app explicitly targets as high-latency. The 304s
+were correct and transferred nothing -- the cost was entirely in round trips.
+
+Now `public, max-age=86400` for `/products/(.*)` and `/home-og.png`.
+
+**Not `immutable`, and that is the whole reason this is a separate constant
+from the `/_next/static/*` treatment.** Those filenames carry a content hash,
+so a changed file is a changed URL and "forever" is safe. These are
+hand-authored and stable -- `lab-equipment.svg` stays `lab-equipment.svg`
+when its contents are corrected -- so `immutable` would strand a wrong image
+in browser caches with no way to bust it short of renaming the file
+everywhere it is referenced. A day is the same bet `FAVICON_MAX_AGE_SECONDS`
+makes, for the same reason, and is kept as its own constant because the two
+are independent decisions that happen to agree today.
+
+**`public/products/*.png` are the OpenGraph twins** referenced by
+`lib/og-image.ts` (Facebook's scraper, which WhatsApp shares, cannot render
+SVG). They are covered by the same rule and must not be deleted -- that was
+nearly done once.
+
+### The `:path*` note above is stale, and was re-tested rather than inherited
+
+`next.config.ts`'s X-Build-Commit entry records that a `:path*` source lands
+in `routes-manifest.json` and is then **not applied to real responses**, and
+that is why this file uses the `(.*)` form throughout. Re-tested directly
+while adding the image rule: on **Next 16.3.3, `source: "/products/:path*"`
+DOES apply its header** -- built both ways, curled a real server, header
+present either way.
+
+So the old note is not a general rule any more. It was written against an
+earlier version and about a **root-level** `/:path*`, which was not
+re-confirmed here. The `(.*)` form is kept for consistency with its
+neighbours, not because the alternative is broken.
+
+What survives from that note, and is the part worth keeping: **the manifest
+is not evidence.** The entry appeared in `routes-manifest.json` in both the
+working and the non-working case, so a header rule is only ever verified by
+curling a real response. `test/static-caching.spec.ts` does exactly that, and
+also asserts the two things a broad `source` pattern would quietly break --
+hashed chunks keeping `immutable`, and page HTML still able to go stale.
+
 ## Three measured performance trade-offs, priced
 
 Audited against live production at `e076f51` (2026-08-30). Each of these is a
