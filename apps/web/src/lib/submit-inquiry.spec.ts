@@ -396,6 +396,105 @@ describe("submitInquiry", () => {
       });
     });
   });
+
+  describe("no input can break it (property)", () => {
+    // THE ANSWER TO "how do we know every case is listed". The table above is
+    // an enumeration someone wrote, so it is only as complete as their
+    // imagination. This is the complement: generate bodies nobody enumerated
+    // and assert the two properties that must hold for ALL of them.
+    //
+    //   1. it never rejects   the form has no catch; a rejection leaves the
+    //                         button disabled in "sending" forever
+    //   2. the result is a valid discriminated union, so every caller branch
+    //                         is reachable and none receives a shape it
+    //                         cannot handle
+    //
+    // Deterministic rather than random: a property test that fails only on
+    // some runs is a flake, and this repo has already documented what a
+    // frequently-red check does to a team's willingness to read it.
+    const VALUES: unknown[] = [
+      null,
+      undefined,
+      0,
+      -1,
+      NaN,
+      "",
+      "CONFLICT",
+      true,
+      [],
+      {},
+      { id: null },
+      { id: "" },
+      { id: 42 },
+      { id: {} },
+      [1, 2, 3],
+      { __proto__: { polluted: true } },
+      { constructor: { prototype: {} } },
+      { extensions: null },
+      { extensions: { code: {} } },
+      { extensions: { code: "__proto__" } },
+      { extensions: { code: "constructor" } },
+      { extensions: { code: "toString" } },
+      { extensions: { retryAfterMs: Infinity } },
+    ];
+
+    const bodies: unknown[] = [];
+    for (const v of VALUES) {
+      bodies.push(v);
+      bodies.push({ data: v });
+      bodies.push({ errors: v });
+      bodies.push({ errors: [v] });
+      bodies.push({ data: { createInquiry: v } });
+      bodies.push({ errors: [v], data: { createInquiry: { id: "x" } } });
+    }
+
+    const REASONS = ["network", "rate-limited", "invalid", "conflict", "unknown"];
+
+    it(`survives ${String(bodies.length)} adversarial bodies`, async () => {
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        for (const body of bodies) {
+          respond(body);
+          const result = await submitInquiry(INPUT);
+
+          // Never a thrown value, and never a shape the form cannot switch on.
+          expect(typeof result.ok).toBe("boolean");
+          if (result.ok) {
+            expect(Object.keys(result)).toEqual(["ok"]);
+          } else {
+            expect(REASONS).toContain(result.reason);
+            // A hint, when present, is always a usable positive number --
+            // never NaN or Infinity leaking through to a "try again in
+            // Infinity minutes".
+            if ("retryAfterMs" in result && result.retryAfterMs !== undefined) {
+              expect(Number.isFinite(result.retryAfterMs)).toBe(true);
+              expect(result.retryAfterMs).toBeGreaterThan(0);
+            }
+          }
+        }
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("a prototype key in the code position is not a category", async () => {
+      // Indexing a lookup with wire data reads inherited keys on a bad day:
+      // BUYER_SEES["toString"] is a function, which is truthy. hasOwnProperty
+      // is what keeps that from becoming a category.
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        for (const code of ["__proto__", "constructor", "toString", "valueOf"]) {
+          respond({ errors: [{ message: "x", extensions: { code } }] });
+          await expect(submitInquiry(INPUT)).resolves.toEqual({
+            ok: false,
+            reason: "unknown",
+          });
+        }
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
 });
 
 describe("categorizeInquiryError", () => {
