@@ -363,8 +363,38 @@ export function categorizeInquiryError(
     case GRAPHQL_ERROR_CODES.badUserInput:
       return "invalid";
     default:
+      // Deliberately NOT logged here. This function has no correlation ids
+      // and no response, so anything it logged would be untraceable -- see
+      // reportUnknown, which the caller uses instead.
       return "unknown";
   }
+}
+
+/**
+ * Makes an "unknown" failure DEBUGGABLE, which it otherwise is not.
+ *
+ * "Something went wrong" is the one category the buyer cannot act on and the
+ * one an operator cannot diagnose -- several unrelated situations collapse
+ * into it, and from a support ticket they are indistinguishable:
+ *
+ *   an unhandled code   the API grew a rejection this client has no copy for
+ *   no code at all      an API rolled back to before codes existed
+ *   a shapeless success  200 with no id, i.e. schema drift or an intermediary
+ *                        rewriting the body
+ *
+ * Routed through reportApiFailure so each carries the SAME two correlation
+ * ids every other failure here does: clientRequestId, which is present even
+ * when nothing arrived, and the server's requestId read back off the
+ * response. That pairing is the whole point of the correlation feature --
+ * take a browser error, find the server log that explains it -- and until
+ * now "unknown" was the one failure that did not participate in it.
+ */
+function reportUnknown(
+  clientRequestId: string,
+  cause: string,
+  res?: Response,
+): void {
+  reportApiFailure("submitInquiry", clientRequestId, new Error(cause), res);
 }
 
 /**
@@ -421,7 +451,7 @@ export async function submitInquiry(
   // sit disabled in "sending" forever on an unhandled rejection.
   let payload: {
     data?: { createInquiry?: { id?: unknown } | null };
-    errors?: { message?: string }[];
+    errors?: GraphqlError[];
   } | null;
   try {
     payload = (await res.json()) as typeof payload;
@@ -445,6 +475,20 @@ export async function submitInquiry(
     // rejection it expected.
     const first = payload.errors[0];
     const reason = categorizeInquiryError(first);
+    if (reason === "unknown") {
+      // The code is named even when absent, because "none" and "one we do not
+      // handle" are different problems: a rollback versus a gap in this
+      // client. The message is the server's own and never echoes the buyer's
+      // input, so it is safe to carry.
+      const code = first?.extensions?.code;
+      reportUnknown(
+        clientRequestId,
+        `unhandled GraphQL error code: ${
+          typeof code === "string" ? code : "none"
+        } — ${typeof first?.message === "string" ? first.message : "no message"}`,
+        res,
+      );
+    }
     const retryAfterMs = retryAfterFrom(first);
     // Carried only for a throttle, and only when the server dated it. Anything
     // else would be the UI inventing a wait the API never promised.
@@ -462,7 +506,16 @@ export async function submitInquiry(
   // checking: a schema drift or an intermediary rewriting the body is exactly
   // the case where the buyer must not be told it worked.
   const id = payload?.data?.createInquiry?.id;
-  return typeof id === "string" && id.length > 0
-    ? { ok: true }
-    : { ok: false, reason: "unknown" };
+  if (typeof id === "string" && id.length > 0) return { ok: true };
+
+  // A 200 with no errors and no id. Nothing should be shaped this way, which
+  // is exactly why it is worth naming distinctly -- reaching here means schema
+  // drift or an intermediary rewriting the body, and it would otherwise be
+  // indistinguishable from an unhandled error code in a support ticket.
+  reportUnknown(
+    clientRequestId,
+    "response carried neither an error nor an inquiry id",
+    res,
+  );
+  return { ok: false, reason: "unknown" };
 }

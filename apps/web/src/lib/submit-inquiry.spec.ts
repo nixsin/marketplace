@@ -171,6 +171,98 @@ describe("submitInquiry", () => {
       reason: "network",
     });
   });
+  describe("an unknown failure is debuggable", () => {
+    // Raised in review: "unknown" is the one category the buyer cannot act on
+    // AND the operator cannot diagnose. Several unrelated situations collapse
+    // into it and, from a support ticket, are indistinguishable.
+    //
+    // Each is reported through reportApiFailure, so it carries the same two
+    // correlation ids every other failure here does -- which is what turns a
+    // browser error into something findable in the server log.
+    const report = () => {
+      const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+      return {
+        spy,
+        text: () => spy.mock.calls.map((c) => JSON.stringify(c)).join(" "),
+      };
+    };
+
+    it("names an UNHANDLED code, with the ids to trace it", async () => {
+      const { spy, text } = report();
+      try {
+        respond({
+          errors: [
+            {
+              message: "Seller is on holiday",
+              extensions: { code: "SELLER_UNAVAILABLE" },
+            },
+          ],
+        });
+        await expect(submitInquiry(INPUT)).resolves.toEqual({
+          ok: false,
+          reason: "unknown",
+        });
+
+        const logged = text();
+        // The code, so the gap in this client is identifiable...
+        expect(logged).toContain("SELLER_UNAVAILABLE");
+        // ...the server's own words, so it can be matched to a throw site...
+        expect(logged).toContain("Seller is on holiday");
+        // ...and the id that finds the server log for THIS request.
+        expect(logged).toContain("client_request_id");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("distinguishes a MISSING code, which means a rollback", async () => {
+      // Degrading is correct; not knowing the API went backwards is not.
+      const { spy, text } = report();
+      try {
+        respond({ errors: [{ message: "Bad Request Exception" }] });
+        await expect(submitInquiry(INPUT)).resolves.toEqual({
+          ok: false,
+          reason: "unknown",
+        });
+        expect(text()).toContain("none");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("names a response carrying neither an error nor an id", async () => {
+      // Nothing should be shaped this way, which is why it is worth naming
+      // distinctly: reaching it means schema drift or an intermediary
+      // rewriting the body, not an error the API chose to send.
+      const { spy, text } = report();
+      try {
+        respond({ data: { createInquiry: {} } });
+        await expect(submitInquiry(INPUT)).resolves.toEqual({
+          ok: false,
+          reason: "unknown",
+        });
+        expect(text()).toContain("neither an error nor an inquiry id");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("stays SILENT for a category it handles", async () => {
+      // A report on every ordinary rate limit would bury the ones that matter.
+      const { spy } = report();
+      try {
+        respond({
+          errors: [
+            { message: "x", extensions: { code: "TOO_MANY_REQUESTS" } },
+          ],
+        });
+        await submitInquiry(INPUT);
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
 });
 
 describe("categorizeInquiryError", () => {
