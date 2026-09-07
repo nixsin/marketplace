@@ -232,26 +232,35 @@ const nextConfig: NextConfig = {
         // max-age=0` on every /products/*.svg, and the catalogue renders
         // several at once.
         //
-        // `(.*)` for consistency with the entries around it -- NOT because
-        // `:path*` is broken here. The X-Build-Commit entry above records
-        // that a `:path*` source lands in routes-manifest.json and is then
-        // not applied to real responses, so this pattern was re-tested
-        // rather than inherited: on Next 16.3.3, `source:
-        // "/products/:path*"` DOES apply its header to
-        // /products/lab-equipment.svg, verified by building it both ways
-        // and curling a real server. That older note was written against an
-        // earlier version and about a root-level `/:path*`; it was not
-        // re-confirmed for this case and should not be trusted as a general
-        // rule without re-testing it the same way.
+        // MATCHED ON THE EXTENSION, not on the prefix, and the difference
+        // is not cosmetic. A `/products/(.*)` source also matches
+        // `/products/anything` -- which contains no dot, so proxy.ts's
+        // matcher hands it to next-intl, which answers with a 307 to
+        // `/en/products/anything`. That redirect was picking up
+        // `max-age=86400`. The locale in it is chosen from Accept-Language,
+        // which is in no cache key, so a shared cache could pin one
+        // visitor's language for everyone for a day -- exactly what the
+        // CDN's negotiated-path bypass exists to prevent, reintroduced at
+        // the origin. Caught in review, reproduced, and now covered by a
+        // test that fails against the prefix form.
         //
-        // Either form is asserted over real HTTP in
-        // test/static-caching.spec.ts rather than by reading the manifest,
-        // which is the part that actually matters: the manifest showed the
-        // entry as present in both the working and the non-working case.
+        // On the `:path*` question: the X-Build-Commit entry above records
+        // that such a source lands in routes-manifest.json and is then not
+        // applied to real responses. Re-tested rather than inherited -- on
+        // Next 16.3.3 a `:path*` source DOES apply its header, verified by
+        // building both ways and curling a real server. That note was
+        // written against an earlier version and about a root-level
+        // `/:path*`; it was not re-confirmed for this case.
+        //
+        // What survives from it is the part that matters, and it is why
+        // test/static-caching.spec.ts curls a real server rather than
+        // reading the manifest: the entry appeared in routes-manifest.json
+        // in BOTH the working and the non-working case, so the manifest is
+        // not evidence that a header is actually served.
         //
         // Deliberately NOT immutable -- see CATALOGUE_IMAGE_MAX_AGE_SECONDS
         // for why these filenames cannot carry that promise.
-        source: "/products/(.*)",
+        source: "/products/:file(.+\\.(?:svg|png))",
         headers: [
           {
             key: "Cache-Control",

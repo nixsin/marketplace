@@ -2474,7 +2474,18 @@ max-age=0` on every `/products/*.svg`, and the catalogue renders several at
 once, on connections this app explicitly targets as high-latency. The 304s
 were correct and transferred nothing -- the cost was entirely in round trips.
 
-Now `public, max-age=86400` for `/products/(.*)` and `/home-og.png`.
+Now `public, max-age=86400`, matched on the **extension**
+(`/products/:file(.+\.(?:svg|png))`) and `/home-og.png`.
+
+**Matching the prefix instead was a real bug, caught in review and
+reproduced.** `/products/(.*)` also matches `/products/anything`, which
+contains no dot -- so `proxy.ts`'s matcher hands it to next-intl, which
+answers with a `307` to `/en/products/anything`, and that redirect picked up
+`max-age=86400`. The locale in it is chosen from `Accept-Language`, which is
+in no cache key, so a shared cache could pin one visitor's language for
+everyone for a day: exactly what the CDN's negotiated-path bypass exists to
+prevent, reintroduced at the origin. A test now fails against the prefix
+form.
 
 **Not `immutable`, and that is the whole reason this is a separate constant
 from the `/_next/static/*` treatment.** Those filenames carry a content hash,
@@ -2491,7 +2502,7 @@ are independent decisions that happen to agree today.
 SVG). They are covered by the same rule and must not be deleted -- that was
 nearly done once.
 
-### The `:path*` note above is stale, and was re-tested rather than inherited
+### Two notes on header `source` patterns, both re-tested rather than inherited
 
 `next.config.ts`'s X-Build-Commit entry records that a `:path*` source lands
 in `routes-manifest.json` and is then **not applied to real responses**, and

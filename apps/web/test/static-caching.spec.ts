@@ -1,6 +1,19 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startProdServer, type StartedServer } from "./helpers/server";
 
+/**
+ * `max-age` as its own directive, never the tail of `s-maxage`.
+ *
+ * A bare /max-age=(\d+)/ matches inside "s-maxage=60", so a response that
+ * gave a TTL to shared caches only and nothing to the browser would satisfy
+ * an assertion meant to prove the opposite. Requires a start-or-comma
+ * boundary instead.
+ */
+function maxAge(cacheControl: string): number | undefined {
+  const m = cacheControl.match(/(?:^|,)\s*max-age=(\d+)/i);
+  return m ? Number(m[1]) : undefined;
+}
+
 // Automates the manual `curl -I` check from the earlier performance session:
 // hashed static assets must be cached forever, the favicon must be cached
 // for a real but finite window, and HTML must NOT be immutable-cached
@@ -60,10 +73,10 @@ describe("static asset caching (production build)", () => {
       expect(res.status, `${image} should exist`).toBe(200);
 
       const cacheControl = res.headers.get("cache-control") ?? "";
-      const maxAge = Number(cacheControl.match(/max-age=(\d+)/)?.[1] ?? 0);
+      const age = maxAge(cacheControl);
 
       expect(
-        maxAge,
+        age ?? 0,
         `expected a real max-age on ${image}, got "${cacheControl}"`,
       ).toBeGreaterThan(3600);
       // These filenames are NOT content-hashed, so a corrected image has to
@@ -77,8 +90,28 @@ describe("static asset caching (production build)", () => {
     expect(res.status).toBe(200);
     const cacheControl = res.headers.get("cache-control") ?? "";
 
-    expect(Number(cacheControl.match(/max-age=(\d+)/)?.[1] ?? 0)).toBeGreaterThan(3600);
+    expect(maxAge(cacheControl) ?? 0).toBeGreaterThan(3600);
     expect(cacheControl).not.toContain("immutable");
+  });
+
+  it("does NOT cache a non-image response under the same /products/ prefix", async () => {
+    // The bug this rule shipped with before it was scoped, and it was worse
+    // than "an over-broad pattern": /products/anything has no dot, so the
+    // locale middleware answers it with a 307 to /en/products/anything --
+    // and that redirect was picking up `public, max-age=86400`. The locale
+    // is chosen from Accept-Language, which is not in any cache key, so a
+    // shared cache could pin one visitor's language for everyone for a day.
+    // That is precisely what the CDN's negotiated-path bypass exists to
+    // prevent, reintroduced at the origin.
+    const res = await fetch(`${server.baseUrl}/products/anything`, {
+      redirect: "manual",
+    });
+    const cacheControl = res.headers.get("cache-control") ?? "";
+
+    expect(
+      maxAge(cacheControl) ?? 0,
+      `a non-image path under /products/ must not carry the image TTL, got "${cacheControl}"`,
+    ).toBeLessThanOrEqual(0);
   });
 
   it("does not let the image rule swallow the hashed chunks or the HTML", async () => {
