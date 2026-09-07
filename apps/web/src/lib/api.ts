@@ -414,6 +414,44 @@ function reportUnknown(
  * here is something the buyer must be shown in the form they are looking at.
  * None of them should reach an error boundary and blank the page they were
  * filling in.
+ *
+ * ── EVERY STATE THIS CAN REACH ─────────────────────────────────────────────
+ *
+ * Enumerated from the decision points rather than from the cases anyone
+ * happened to think of, because two were being silently collapsed: an empty
+ * `errors` array fell through and was reported as a missing id, and a literal
+ * `null` body was reported as a wrong SHAPE. Each row is a situation a real
+ * buyer can be in, and what they see.
+ *
+ * | # | The buyer is...                              | They see            |
+ * |---|----------------------------------------------|---------------------|
+ * | 1 | on a train; the connection drops mid-send    | network             |
+ * | 2 | fine, but the edge answers 502               | network             |
+ * | 3 | behind a proxy serving HTML with a 200       | network             |
+ * | 4 | behind something that answered literal null  | unknown (reported)  |
+ * | 5 | retrying after editing their details         | conflict            |
+ * | 6 | over a limit, and the server dated the wait  | "about N minutes"   |
+ * | 7 | over a limit the server could not date       | vague wait copy     |
+ * | 8 | typing a phone number the API rejects        | invalid             |
+ * | 9 | hitting a rejection this client cannot map   | unknown (reported)  |
+ * |10 | talking to an API rolled back before codes   | unknown (reported)  |
+ * |11 | successful                                   | recorded            |
+ * |12 | served a body with no error and no id        | unknown (reported)  |
+ * |13 | served `errors: []`, which cannot happen     | unknown (reported)  |
+ * |14 | served BOTH an error and data                | the error wins      |
+ *
+ * WHY 1-3 SHARE ONE CATEGORY while 4, 12 and 13 do not. The category is what
+ * the BUYER can act on, and for all three of the first group the action is the
+ * same: try again. They are still distinguishable to an operator, because each
+ * reports its own cause and status through reportApiFailure. The unknown rows
+ * are the opposite case -- identical to the buyer, and pointing at three
+ * different culprits (an intermediary, our schema, the server's own idea of
+ * what it sent), so each names itself.
+ *
+ * ROW 14 IS THE ONE THAT MUST NOT DRIFT. GraphQL permits partial success, so a
+ * mutation can answer with both. The error wins: telling a buyer their inquiry
+ * was recorded when the server also reported a failure is the exact defect
+ * this whole feature was built to avoid.
  */
 export async function submitInquiry(
   input: InquiryInput,
@@ -505,16 +543,38 @@ export async function submitInquiry(
   // here should be shaped that way, but "should" is what makes it worth
   // checking: a schema drift or an intermediary rewriting the body is exactly
   // the case where the buyer must not be told it worked.
-  const id = payload?.data?.createInquiry?.id;
+  // BODY WAS LITERALLY null. `null` is valid JSON, so res.json() resolves
+  // happily and every optional chain below yields undefined -- meaning this
+  // would otherwise be reported as "wrong shape" when the truth is "no body
+  // at all". Different causes, so different messages: one points at an
+  // intermediary returning nothing, the other at our own schema.
+  if (payload === null || payload === undefined) {
+    reportUnknown(clientRequestId, "response body was null", res);
+    return { ok: false, reason: "unknown" };
+  }
+
+  // An EMPTY errors array. GraphQL says `errors` is present only when
+  // non-empty, so this is malformed rather than a success -- and the check
+  // above is `.length`, which would otherwise let it fall through and be
+  // reported as a missing id. Named separately because it says something
+  // different: the server thought it was reporting a failure.
+  if (payload.errors && payload.errors.length === 0) {
+    reportUnknown(clientRequestId, "response carried an empty errors array", res);
+    return { ok: false, reason: "unknown" };
+  }
+
+  const id = payload.data?.createInquiry?.id;
   if (typeof id === "string" && id.length > 0) return { ok: true };
 
-  // A 200 with no errors and no id. Nothing should be shaped this way, which
-  // is exactly why it is worth naming distinctly -- reaching here means schema
-  // drift or an intermediary rewriting the body, and it would otherwise be
-  // indistinguishable from an unhandled error code in a support ticket.
+  // A 200, no errors, and no usable id. Nothing should be shaped this way,
+  // which is exactly why it is worth naming: reaching here means schema drift
+  // or an intermediary rewriting the body. The id's actual type is included
+  // because "missing" and "present but wrong" point at different culprits.
   reportUnknown(
     clientRequestId,
-    "response carried neither an error nor an inquiry id",
+    `response carried no error and no usable inquiry id (id was ${
+      id === undefined ? "absent" : `${typeof id}`
+    })`,
     res,
   );
   return { ok: false, reason: "unknown" };
