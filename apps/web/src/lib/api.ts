@@ -1,7 +1,10 @@
 import type { Product } from "@/components/product-card";
 import type { ProductDetail } from "@/components/product-detail";
 import { API_URL } from "@medinstru/config/web";
-import { GRAPHQL_ERROR_CODES } from "@medinstru/config";
+import {
+  GRAPHQL_ERROR_CODES,
+  type GraphqlErrorCode,
+} from "@medinstru/config";
 import { correlationHeaders, newClientRequestId } from "./correlation";
 import { reportApiFailure } from "./report-api-failure";
 
@@ -352,22 +355,50 @@ export function retryAfterFrom(error: GraphqlError | undefined): number | null {
  * also the rollback path: an API deployed from before codes existed sends
  * none, and every buyer sees the generic copy instead of wrong copy.
  */
+/**
+ * Every code the API can send, mapped to what the buyer is told.
+ *
+ * A `Record` keyed on the union, NOT a switch with a default, and that is the
+ * whole point: the compiler REQUIRES an entry for every member, so adding a
+ * code to the shared contract breaks this build until someone decides what a
+ * buyer should see. A switch would have accepted the new code silently and
+ * shown "something went wrong" to every buyer who hit it.
+ *
+ * That makes exhaustiveness a property the compiler enforces rather than one
+ * a reviewer has to notice. The three codes that map to "unknown" are
+ * DECISIONS, not omissions -- none can reach this mutation, and if one ever
+ * does, the generic copy is the honest answer:
+ *
+ *   NOT_FOUND        the product vanished between page load and submit; the
+ *                    page itself handles a missing product, so reaching it
+ *                    here means the catalogue changed under the buyer
+ *   UNAUTHENTICATED  the mutation is deliberately anonymous (#91 story 3), so
+ *                    this can only mean the API grew auth without telling us
+ *   FORBIDDEN        same, one layer further in
+ */
+const BUYER_SEES: Record<GraphqlErrorCode, InquiryFailure> = {
+  CONFLICT: "conflict",
+  TOO_MANY_REQUESTS: "rate-limited",
+  BAD_USER_INPUT: "invalid",
+  NOT_FOUND: "unknown",
+  UNAUTHENTICATED: "unknown",
+  FORBIDDEN: "unknown",
+};
+
 export function categorizeInquiryError(
   error: GraphqlError | undefined,
 ): InquiryFailure {
-  switch (error?.extensions?.code) {
-    case GRAPHQL_ERROR_CODES.conflict:
-      return "conflict";
-    case GRAPHQL_ERROR_CODES.tooManyRequests:
-      return "rate-limited";
-    case GRAPHQL_ERROR_CODES.badUserInput:
-      return "invalid";
-    default:
-      // Deliberately NOT logged here. This function has no correlation ids
-      // and no response, so anything it logged would be untraceable -- see
-      // reportUnknown, which the caller uses instead.
-      return "unknown";
-  }
+  const code = error?.extensions?.code;
+  // Narrowed before the lookup, because `code` came off the wire and can be
+  // any JSON value -- a number, an object, absent entirely. Indexing the map
+  // with an arbitrary value would read a prototype key on a bad day.
+  if (typeof code !== "string") return "unknown";
+  return Object.prototype.hasOwnProperty.call(BUYER_SEES, code)
+    ? BUYER_SEES[code as GraphqlErrorCode]
+    : // Deliberately NOT logged here: this function has no correlation ids and
+      // no response, so anything it logged would be untraceable. reportUnknown
+      // in the caller does it with the ids attached.
+      "unknown";
 }
 
 /**
