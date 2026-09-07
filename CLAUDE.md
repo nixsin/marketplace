@@ -1400,6 +1400,40 @@ passes every unit test and then surfaces over GraphQL as
 asserting the code **on the wire**, which is the only place this class of
 mistake is visible.
 
+### Ensuring every case is listed, rather than hoping
+
+An enumeration written by hand is only as complete as whoever wrote it, so the
+question "did we list every condition?" cannot be answered by re-reading the
+list. Three mechanisms answer it instead, and all three are in place for
+`submitInquiry`:
+
+| Mechanism | What it catches | Enforced by |
+|---|---|---|
+| `Record<Union, Outcome>` | a code added to the contract with no decision | the compiler |
+| property test over adversarial bodies | shapes nobody enumerated | CI |
+| branch coverage | a branch no test reaches | measurement |
+
+**The `Record` is the strongest and the cheapest.** `BUYER_SEES` is keyed on
+`GraphqlErrorCode`, so TypeScript *requires* an entry per member — adding a
+code to `@medinstru/config` fails the web build until someone decides what a
+buyer sees. Verified by adding one: `Property 'SELLER_UNAVAILABLE' is missing
+in type ...`. A `switch` with a `default` would have accepted it silently and
+shown "something went wrong" to every buyer who hit it, which is the whole
+failure mode being designed out.
+
+**The property test is the complement**, covering what the table's author did
+not imagine: 138 generated bodies asserting the function never rejects and
+always returns a valid discriminated result. It earns its place — it caught a
+prototype-lookup bug (`BUYER_SEES["toString"]` is a truthy function) that no
+hand-written case had considered. Deterministic, not random: a property test
+that fails only on some runs is a flake, and this file already records what a
+frequently-red check does to a team's willingness to read it.
+
+**Coverage is the oracle for what is left.** `api.ts` sits at 76% branch
+coverage, and the uncovered lines are precisely the read paths not yet audited
+— so the number points at the next surface rather than merely grading the last
+one.
+
 **apps/web now reads `extensions.code`, and matches no prose at all.** Both
 sites are gone: `categorizeInquiryError` switches on the code, and
 `fetchProduct` decides 404-vs-error on `NOT_FOUND` rather than `/not found/i`
