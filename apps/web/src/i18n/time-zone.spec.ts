@@ -24,13 +24,18 @@ describe("time zone", () => {
     ).not.toThrow();
   });
 
-  it("is fixed, not the runtime's zone", () => {
-    // The whole point. Anything resolved from the environment differs
-    // between the server render and the browser's hydration.
-    expect(TIME_ZONE).not.toBe(
-      Intl.DateTimeFormat().resolvedOptions().timeZone,
-    );
+  it("is a fixed literal, never resolved from the environment", () => {
+    // The whole point: a zone read from the runtime differs between the
+    // server render and the browser's hydration, which is the mismatch this
+    // constant exists to remove.
+    //
+    // Asserted as "the source does not derive it" rather than "it differs
+    // from this machine's zone". The latter is what this test said first,
+    // and it was itself an environment-dependent test -- green on a laptop
+    // in PDT, red on a CI runner that is already UTC. CI caught it, which
+    // is a fair demonstration of the bug class this file is about.
     expect(TIME_ZONE).toBe("UTC");
+    expect(read("./routing.ts")).not.toMatch(/resolvedOptions|process\.env/);
   });
 
   it("produces the same date string on both sides of a day boundary", () => {
