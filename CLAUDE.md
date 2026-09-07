@@ -226,6 +226,41 @@ Load-bearing points: it is **a required check**; it is path-filtered on
 rather than committing local macOS PNGs.
 
 
+## The sitemap's numbers are validated, because NaN fails silently twice
+
+`fetchProductsPaged` now refuses a `totalCount`, `totalPages`, `page` or
+`pageSize` that is not a finite non-negative number. Both of the failures that
+motivates are silent, and both produce a wrong sitemap that looks like a
+working one:
+
+- **`totalCount`** — the sharded route computes
+  `sitemapCount = Math.max(1, Math.ceil(totalCount / PRODUCTS_PER_SITEMAP))`.
+  A non-numeric value makes that `NaN`, and `sitemapId >= NaN` is **false for
+  every id** — so the 404 guard stops guarding and any shard number is served.
+- **`totalPages`** — `loadSitemapProducts` takes
+  `Math.min(totalPages, lastPage)` as its loop bound, so `NaN` ends the loop
+  before it starts and publishes a sitemap containing only the first 100
+  products.
+
+Checked in `fetchProductsPaged` rather than at each caller, so there is one
+place to be right.
+
+**A sitemap entry with no usable id is refused, not skipped.** The caller turns
+each id straight into a URL, so an item without one publishes
+`/products/undefined` — a link to a page that 404s, presented to crawlers as a
+product. The error names the API page it was on, because a shard spans up to
+240 pages and "somewhere in there" is not actionable. Failing matches what this
+repo already does one level up: refuse to publish a sitemap it cannot complete
+rather than publish a wrong one.
+
+**`loadInitialProducts` still swallows, and now says so.** Returning `undefined`
+is correct — an API outage must not remove the page shell — but it silently
+degrades the thing that path exists for: real product names and links in the
+initial HTML for crawlers, for as long as the outage lasts. The catch stays;
+what changed is that it reports. `console.error` rather than
+`reportApiFailure`, because this runs server-side with no `Response` and no
+client id, so the correlation pair does not apply.
+
 ## Test servers get an allocated port, never a fixed one
 
 `startProdServer` binds port 0 and reads back what the OS assigned. It used to

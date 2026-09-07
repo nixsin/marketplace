@@ -232,6 +232,59 @@ describe("fetchProductsPaged", () => {
     await expect(fetchProductsPaged()).rejects.toThrow(/expected productsPaged/);
   });
 
+  it("REFUSES a non-numeric totalCount, which disarms the sitemap's 404 guard", async () => {
+    // The sharded sitemap route derives sitemapCount from this. NaN makes
+    // `sitemapId >= sitemapCount` false for EVERY id, so the 404 guard stops
+    // guarding and any shard number is served -- silently.
+    respond({
+      data: {
+        productsPaged: {
+          items: [],
+          page: 1,
+          pageSize: 4,
+          totalCount: "many",
+          totalPages: 1,
+        },
+      },
+    });
+    await expect(fetchProductsPaged()).rejects.toThrow(/totalCount was many/);
+  });
+
+  it("REFUSES a non-numeric totalPages, which truncates the sitemap", async () => {
+    // loadSitemapProducts takes Math.min(totalPages, lastPage) as its loop
+    // bound, so NaN ends the loop before it starts and publishes a sitemap
+    // containing only the first page -- a wrong sitemap that looks complete.
+    respond({
+      data: {
+        productsPaged: {
+          items: [],
+          page: 1,
+          pageSize: 4,
+          totalCount: 0,
+          totalPages: null,
+        },
+      },
+    });
+    await expect(fetchProductsPaged()).rejects.toThrow(/totalPages was null/);
+  });
+
+  it("REFUSES a negative or infinite count", async () => {
+    for (const totalCount of [-1, Infinity, NaN]) {
+      respond({
+        data: {
+          productsPaged: {
+            items: [],
+            page: 1,
+            pageSize: 4,
+            totalCount,
+            totalPages: 1,
+          },
+        },
+      });
+      await expect(fetchProductsPaged()).rejects.toThrow(/not a count/);
+    }
+  });
+
   it("items is not an array", async () => {
     // `.map` on a non-array is a TypeError; the shape is checked first.
     respond(paged("nope" as unknown as unknown[]));

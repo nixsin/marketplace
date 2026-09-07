@@ -408,6 +408,33 @@ export async function fetchProductsPaged(
     throw error;
   }
 
+  // THE COUNTS ARE LOAD-BEARING, and a non-numeric one fails silently in two
+  // different places rather than throwing:
+  //
+  //   totalCount   the sharded sitemap route derives sitemapCount from it, so
+  //                NaN makes `sitemapId >= sitemapCount` false for EVERY id --
+  //                the 404 guard stops guarding and any id is served
+  //   totalPages   loadSitemapProducts takes Math.min(totalPages, lastPage) as
+  //                its loop bound, so NaN ends the loop before it starts and
+  //                publishes a sitemap containing only the first page
+  //
+  // Both produce a wrong sitemap that looks like a working one. Checked here
+  // rather than at each caller, so there is one place to be right.
+  for (const [name, value] of [
+    ["totalCount", paged.totalCount],
+    ["totalPages", paged.totalPages],
+    ["page", paged.page],
+    ["pageSize", paged.pageSize],
+  ] as const) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      const error = new Error(
+        `fetchProductsPaged: ${name} was ${String(value)}, not a count`,
+      );
+      reportApiFailure("fetchProductsPaged", clientRequestId, error, res);
+      throw error;
+    }
+  }
+
   const { items, ...meta } = paged;
 
   return {
