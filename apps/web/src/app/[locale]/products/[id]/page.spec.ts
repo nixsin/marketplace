@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import {
   SHARED_MAX_AGE_SECONDS,
   STALE_WHILE_REVALIDATE_SECONDS,
@@ -55,6 +55,12 @@ const { generateMetadata, productStructuredData, revalidate, generateStaticParam
  * full origin round trip -- with no failing test, no build error, and
  * nothing visibly different in development, where pages are always rendered
  * on demand anyway.
+ *
+ * These are export-level checks and are deliberately NOT sufficient on
+ * their own -- a request-time API elsewhere in the route's tree reverts
+ * the classification while they all still pass. Next's own verdict is
+ * asserted in test/route-classification.spec.ts, which belongs there
+ * because it needs a real build.
  */
 describe("product detail route is prerenderable", () => {
   it("revalidates on the same clock as the API tier", () => {
@@ -63,48 +69,6 @@ describe("product detail route is prerenderable", () => {
     // here instead, the same way SITEMAP_API_PAGE_SIZE is pinned against
     // PRODUCTS_MAX_PAGE_SIZE.
     expect(revalidate).toBe(SHARED_MAX_AGE_SECONDS);
-  });
-
-  it("is classified as prerenderable by NEXT ITSELF, not just by its exports", () => {
-    // The exports below are necessary and not sufficient, and this is the
-    // assertion that closes that gap. A `headers()` or `cookies()` call
-    // appearing anywhere in this route's tree -- in a dependency, in a
-    // boundary file, in something next-intl reaches for -- silently reverts
-    // the route to Dynamic while every other test here still passes. That
-    // is not hypothetical: `not-found.tsx` did exactly this, via a
-    // getTranslations() call with no locale.
-    //
-    // prerender-manifest.json is Next's own record of the decision. A
-    // dynamic route is absent from `dynamicRoutes` entirely -- verified by
-    // building this route both ways, not assumed.
-    // Two things this test depends on, and only one of them is its own job.
-    //
-    // CURRENCY is already enforced, not merely requested in a comment:
-    // apps/web/test/build-freshness.spec.ts fails the suite when
-    // build-manifest.json is older than anything under src/, next.config.ts
-    // or package.json. So a stale .next cannot quietly answer this question.
-    //
-    // PRESENCE is this test's job, because a clean checkout has no .next at
-    // all and a bare readFileSync would throw ENOENT -- a stack trace about
-    // a missing file, for a test whose actual subject is route
-    // classification. Asserted explicitly so the message says what to do.
-    const manifestPath = new URL(
-      "../../../../../.next/prerender-manifest.json",
-      import.meta.url,
-    );
-    expect(
-      existsSync(manifestPath),
-      "No production build found. Run `pnpm --filter web build` -- this test reads Next's own prerender manifest to check how it classified this route.",
-    ).toBe(true);
-
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-      dynamicRoutes?: Record<string, unknown>;
-    };
-
-    expect(
-      Object.keys(manifest.dynamicRoutes ?? {}),
-      "Route is missing from prerender-manifest.dynamicRoutes, which means Next classified it as Dynamic. It will ship `no-store` and the CDN will decline it. Run `pnpm --filter web build` first; if that is current, something in this route's tree is using a request-time API.",
-    ).toContain("/[locale]/products/[id]");
   });
 
   it("exports generateStaticParams, which is what makes the route ISR", () => {
