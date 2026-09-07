@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { ProductCard, type Product } from "@/components/product-card";
 import { Pagination } from "@/components/pagination";
 import { Skeleton } from "@/components/skeleton";
@@ -18,12 +19,17 @@ export function ProductListing({
   page: number;
   initialData?: ProductsPaged;
 }) {
+  const t = useTranslations("catalogue");
   const initialPage = initialData?.page === page ? initialData : undefined;
 
   const [state, setState] = useState<{
     items: Product[];
     totalPages: number;
     loading: boolean;
+    // Set when the fetch REJECTS. Without it the catch below could only
+    // leave `loading` true, which renders the skeleton forever -- see the
+    // catch for why that was the previous behaviour.
+    failed?: boolean;
     // Which page `items`/`totalPages` actually belong to -- distinct from
     // the `page` variable above, which is the *requested* page from the
     // URL right now. The two go out of sync for exactly one render on
@@ -84,16 +90,34 @@ export function ProductListing({
     // (`state.page` still lags `page` for this one render either way --
     // see the prefetch effect below for why that's load-bearing, not
     // just an unused-looking field.)
-    fetchProductsPaged(page).then((result) => {
-      if (cancelled) return;
-      pageCache.current.set(page, result);
-      setState({
-        items: result.items,
-        totalPages: result.totalPages,
-        loading: false,
-        page,
+    fetchProductsPaged(page)
+      .then((result) => {
+        if (cancelled) return;
+        pageCache.current.set(page, result);
+        setState({
+          items: result.items,
+          totalPages: result.totalPages,
+          loading: false,
+          page,
+        });
+      })
+      .catch(() => {
+        // THE MAIN LOAD HAD NO CATCH. A rejection here -- an API error, a
+        // dropped connection, a malformed body -- became an unhandled
+        // rejection, `loading` stayed true, and the catalogue rendered its
+        // skeleton FOREVER. Nothing told the visitor anything, and nothing
+        // let them retry; the page simply never finished.
+        //
+        // The prefetch effect below has always had one, deliberately silent,
+        // because a speculative failure must not disturb the page. This one
+        // is the opposite: it is the page.
+        //
+        // Not reported here -- fetchProductsPaged already called
+        // reportApiFailure with the correlation ids, which this scope does
+        // not have. See api.ts.
+        if (cancelled) return;
+        setState((prev) => ({ ...prev, loading: false, failed: true }));
       });
-    });
 
     return () => {
       cancelled = true;
@@ -151,6 +175,17 @@ export function ProductListing({
       cancelled = true;
     };
   }, [page, state.page, state.loading, state.totalPages]);
+
+  // Checked BEFORE the skeleton: a failed load has `loading: false`, but
+  // showing an empty catalogue would tell the visitor there are no products
+  // when the truth is that we could not find out.
+  if (state.failed && state.items.length === 0) {
+    return (
+      <div role="alert" className="py-8 text-center text-muted-foreground">
+        {t("loadFailed")}
+      </div>
+    );
+  }
 
   if (state.loading && state.items.length === 0) {
     return (

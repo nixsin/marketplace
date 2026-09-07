@@ -71,5 +71,8 @@
   },
   "languageSwitcher": {
     "label": "Language"
+  },
+  "catalogue": {
+    "loadFailed": "We couldn't load the catalogue. Please refresh to try again."
   }
 }

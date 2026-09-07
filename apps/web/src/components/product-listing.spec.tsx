@@ -154,6 +154,29 @@ describe("ProductListing", () => {
     expect(skeletons).toHaveLength(4);
   });
 
+  it("tells the visitor when the catalogue cannot be loaded", async () => {
+    // THE BUG THIS REPLACES: the main load had no .catch, so a rejection --
+    // an API error, a dropped connection, a malformed body -- became an
+    // unhandled rejection, `loading` stayed true, and the catalogue rendered
+    // its skeleton FOREVER. Nothing told the visitor anything and nothing let
+    // them retry; the page simply never finished.
+    mockedFetchProductsPaged.mockRejectedValue(new Error("database is down"));
+    renderListing();
+
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+  });
+
+  it("shows the failure INSTEAD of an empty catalogue", async () => {
+    // A failed load has loading: false and no items, which would otherwise
+    // render the empty state -- telling the visitor there are no products
+    // when the truth is that we could not find out.
+    mockedFetchProductsPaged.mockRejectedValue(new Error("boom"));
+    const { container } = renderListing();
+
+    await screen.findByRole("alert");
+    expect(container.querySelectorAll(".animate-pulse")).toHaveLength(0);
+  });
+
   it("renders both products once the fetch resolves, and clears the skeletons", async () => {
     mockedFetchProductsPaged.mockResolvedValue({
       items: [product1, product2],

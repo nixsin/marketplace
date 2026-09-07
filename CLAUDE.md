@@ -226,6 +226,28 @@ Load-bearing points: it is **a required check**; it is path-filtered on
 rather than committing local macOS PNGs.
 
 
+## Test servers get an allocated port, never a fixed one
+
+`startProdServer` binds port 0 and reads back what the OS assigned. It used to
+default to **3999**, and two suites took it — `bundle-budget` and
+`static-caching`. Vitest runs files in parallel, so whenever scheduling put
+those two together the second could not bind, `waitForReady` polled a server
+that was never coming, and seven tests died on a 30-second timeout apiece: 240
+seconds of a CI job spent proving nothing.
+
+**It was latent for as long as those two happened not to overlap, and surfaced
+when an unrelated spec file was ADDED.** That is the tell worth keeping: a
+failure that appears when you add a test *elsewhere* is about shared state, not
+about the test you added. It reproduced in CI and not locally, because a
+different file count schedules differently.
+
+`locale-cookie-caching` had already been passing `3998` explicitly to dodge it
+— evidence someone hit this before and fixed the instance rather than the
+cause. That pin is gone now.
+
+Two tests keep it that way: one asserts two servers get different ports, and
+one greps every spec for a pinned port, so the workaround cannot reappear.
+
 ## Security headers (`apps/web/next.config.ts`)
 
 **Full reference: [docs/security-headers.md](./docs/security-headers.md)** —

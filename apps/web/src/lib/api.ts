@@ -104,6 +104,92 @@ interface ProductResponse {
   errors?: { message: string; extensions?: { code?: unknown } }[];
 }
 
+/**
+ * Reads a GraphQL response body, refusing every shape that is not one.
+ *
+ * Both read paths trusted `res.json()` and the shape of what came back. The
+ * enumeration found four states neither handled, each producing a worse
+ * failure than the one it was hiding:
+ *
+ * | The visitor gets...                    | Before                        |
+ * |----------------------------------------|-------------------------------|
+ * | a proxy's HTML error page with a 200   | unreported SyntaxError        |
+ * | a literal `null` body                  | TypeError reading a property  |
+ * | `{}` -- neither data nor errors        | TypeError reading a property  |
+ * | `errors: []`, which cannot happen      | fell through as if successful |
+ *
+ * A TypeError is the worst of these. It names a property rather than a cause,
+ * carries no correlation id, and reaches the error boundary looking like a bug
+ * in our rendering rather than a bad response from the API.
+ *
+ * Every refusal is REPORTED with the correlation ids and then thrown, so a
+ * page-level failure can still be traced to the server log that explains it.
+ * Throwing rather than returning empty is load-bearing for the sitemap: an
+ * outage must not be cacheable as a successful empty catalogue.
+ */
+async function readGraphqlBody(
+  operation: string,
+  clientRequestId: string,
+  res: Response,
+): Promise<{ data?: unknown; errors?: GraphqlError[] }> {
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch (error) {
+    // A 200 whose body is not JSON: a proxy error page, or a connection cut
+    // mid-body. Nothing downstream can read it, and it is not our schema.
+    reportApiFailure(operation, clientRequestId, error, res);
+    throw new Error(`${operation}: response body was not JSON`);
+  }
+
+  // `null` is valid JSON, so res.json() resolves happily and every property
+  // access below would throw a TypeError naming a field instead of the cause.
+  if (body === null || typeof body !== "object") {
+    const error = new Error(
+      `${operation}: response body was ${
+        body === null ? "null" : typeof body
+      }, not an object`,
+    );
+    reportApiFailure(operation, clientRequestId, error, res);
+    throw error;
+  }
+
+  const { data, errors } = body as { data?: unknown; errors?: unknown };
+
+  // GraphQL requires `errors` to be absent when empty, so an empty array is
+  // malformed. Left alone it reads as success, which is the worst reading:
+  // the server believed it was reporting a failure.
+  if (Array.isArray(errors) && errors.length === 0) {
+    const error = new Error(
+      `${operation}: response carried an empty errors array`,
+    );
+    reportApiFailure(operation, clientRequestId, error, res);
+    throw error;
+  }
+
+  if (errors !== undefined && !Array.isArray(errors)) {
+    const error = new Error(
+      `${operation}: errors was ${typeof errors}, not an array`,
+    );
+    reportApiFailure(operation, clientRequestId, error, res);
+    throw error;
+  }
+
+  // Neither key. Not a GraphQL response at all -- most likely an intermediary
+  // rewrote the body, which is worth saying rather than discovering as a
+  // TypeError three lines later.
+  if (data === undefined && errors === undefined) {
+    const error = new Error(
+      `${operation}: response carried neither data nor errors`,
+    );
+    reportApiFailure(operation, clientRequestId, error, res);
+    throw error;
+  }
+
+  return { data, errors: errors as GraphqlError[] | undefined };
+}
+
+
 // Distinct from fetchProductsPaged's Product return type -- the list stays
 // lean (see product-card.tsx's Product interface); this fetches the
 // heavier detail shape only when a single product view is actually
@@ -155,22 +241,45 @@ export async function fetchProduct(id: string): Promise<ProductDetail | null> {
     throw error;
   }
 
-  const json = (await res.json()) as ProductResponse;
+  const { data, errors } = await readGraphqlBody(
+    "fetchProduct",
+    clientRequestId,
+    res,
+  );
 
-  if (json.errors) {
+  if (errors) {
     // The CODE decides 404-vs-error, not the wording. This matched
     // /not found/i against the message, which made an editorial change to the
     // API's text silently turn a real "this product is gone" 404 into a
     // thrown error -- and that page's status is what crawlers index.
     if (
-      json.errors.some((e) => e.extensions?.code === GRAPHQL_ERROR_CODES.notFound)
+      errors.some((e) => e?.extensions?.code === GRAPHQL_ERROR_CODES.notFound)
     ) {
       return null;
     }
-    throw new Error(json.errors[0]?.message ?? "GraphQL error");
+    // Every OTHER error was previously thrown without being reported, so a
+    // failing product page carried no correlation trace -- the one situation
+    // those ids exist for.
+    const first = errors[0];
+    const error = new Error(
+      typeof first?.message === "string"
+        ? first.message
+        : "fetchProduct: GraphQL error with no message",
+    );
+    reportApiFailure("fetchProduct", clientRequestId, error, res);
+    throw error;
   }
 
-  const p = json.data.product;
+  // `data.product` being null is the API saying "no such product" -- a 404,
+  // not a failure. `data` itself being absent or the wrong type is a broken
+  // response, and was previously a TypeError naming a property.
+  if (data === null || typeof data !== "object") {
+    const error = new Error(`fetchProduct: data was ${String(data)}`);
+    reportApiFailure("fetchProduct", clientRequestId, error, res);
+    throw error;
+  }
+
+  const p = (data as ProductResponse["data"]).product;
   if (!p) return null;
 
   return {
@@ -224,7 +333,9 @@ export async function fetchProductsPaged(
   // arrived at all.
   const clientRequestId = newClientRequestId();
 
-  const res = await fetch(url, {
+  let res: Response;
+  try {
+    res = await fetch(url, {
     method: "GET",
     headers: {
       // Apollo Server's CSRF protection requires this on GET requests —
@@ -245,7 +356,14 @@ export async function fetchProductsPaged(
     // safety by checking for the absence of specific credential headers
     // after the fact.
     credentials: "omit",
-  });
+    });
+  } catch (error) {
+    // Previously UNGUARDED: a dropped connection on the catalogue threw an
+    // unreported error, so the one failure most likely to be seen by a
+    // visitor was the one carrying no correlation trace at all.
+    reportApiFailure("fetchProductsPaged", clientRequestId, error);
+    throw error;
+  }
 
   if (!res.ok) {
     const error = new Error(`Failed to fetch products (${res.status})`);
@@ -253,8 +371,44 @@ export async function fetchProductsPaged(
     throw error;
   }
 
-  const json = (await res.json()) as ProductsPagedResponse;
-  const { items, ...meta } = json.data.productsPaged;
+  const { data, errors } = await readGraphqlBody(
+    "fetchProductsPaged",
+    clientRequestId,
+    res,
+  );
+
+  // `errors` WAS NEVER CHECKED HERE. A GraphQL error on the catalogue -- the
+  // home page -- reached `json.data.productsPaged` with `data` undefined and
+  // produced "Cannot read properties of undefined", which names a property
+  // rather than the outage that caused it and carries no correlation id.
+  if (errors) {
+    const first = errors[0];
+    const error = new Error(
+      typeof first?.message === "string"
+        ? first.message
+        : "fetchProductsPaged: GraphQL error with no message",
+    );
+    reportApiFailure("fetchProductsPaged", clientRequestId, error, res);
+    throw error;
+  }
+
+  const paged = (data as ProductsPagedResponse["data"] | undefined)
+    ?.productsPaged;
+
+  // Throwing rather than returning an empty page is load-bearing: the sitemap
+  // reads this, and an outage rendered as a successful empty catalogue is
+  // exactly what must not become cacheable.
+  if (!paged || !Array.isArray(paged.items)) {
+    const error = new Error(
+      `fetchProductsPaged: expected productsPaged with an items array, got ${
+        paged === undefined ? "nothing" : typeof paged
+      }`,
+    );
+    reportApiFailure("fetchProductsPaged", clientRequestId, error, res);
+    throw error;
+  }
+
+  const { items, ...meta } = paged;
 
   return {
     ...meta,
