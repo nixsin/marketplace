@@ -338,21 +338,44 @@ describe('Inquiries (e2e)', () => {
     expect(await prisma.inquiry.count()).toBe(0);
   });
 
-  it('keeps the exact substrings the web client routes error copy on', async () => {
-    // apps/web's categorizeInquiryError matches SUBSTRINGS of this message to
-    // decide which error the buyer is shown -- CLAUDE.md calls it a wire
-    // contract, and rewording one side silently re-categorises the other.
-    // Asserted here because a NestJS major is exactly the kind of change that
-    // can alter how an exception's message reaches the client without anyone
-    // editing the string.
+  it('rejects whitespace-only input AT THE EDGE, before any database work', async () => {
+    // This test used to assert the opposite, and its own comment explained
+    // why: "  " passed the DTO's @Length(2) -- which validates the RAW value
+    // -- and was caught later by the service's trim. So a malformed request
+    // opened a Serializable transaction and ran four rate-limit counts before
+    // being refused, which #152 flags as request-level work an attacker gets
+    // for free.
     //
-    // "  " is deliberate: it passes the DTO's @Length(2) and is rejected by
-    // the service's own trim, so this reaches the service's
-    // BadRequestException rather than class-validator.
-    const blankName = await submit({ input: { ...input(), buyerName: '  ' } });
-    expect(blankName.body.errors?.[0]?.message.toLowerCase()).toContain(
-      'enter your name',
-    );
+    // It also pinned the server's PROSE, because apps/web used to route the
+    // buyer's copy by matching substrings of it. That stopped being true when
+    // the web switched to extensions.code, so the wording is now free and only
+    // the code and the row count are worth asserting.
+    for (const input_ of [
+      { ...input(), buyerName: '  ' },
+      { ...input(), message: ' ' },
+    ]) {
+      const res = await submit({ input: input_ });
+      expect(res.body.errors?.[0]?.extensions?.code).toBe(
+        GRAPHQL_ERROR_CODES.badUserInput,
+      );
+    }
+
+    // Nothing reached the database, which is the actual point.
+    expect(await prisma.inquiry.count()).toBe(0);
+  });
+
+  it('accepts a number the SERVICE would accept, not a narrower set', async () => {
+    // The DTO used @IsPhoneNumber() while the service used normalizeE164, and
+    // they disagreed in both directions. +999 is the ITU-reserved range this
+    // repo's own seed writes for seller numbers, so the edge was rejecting
+    // values the rest of the system treats as valid -- an edge check that
+    // tells you nothing about whether the service will accept the input.
+    const res = await submit({
+      input: { ...input(), buyerPhone: '+999000000123' },
+    });
+
+    expect(res.body.errors).toBeUndefined();
+    expect(await prisma.inquiry.count()).toBe(1);
   });
 
   it('names the field a DTO-level rejection failed on', async () => {

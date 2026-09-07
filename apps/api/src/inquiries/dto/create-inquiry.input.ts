@@ -1,5 +1,7 @@
 import { Field, ID, InputType } from '@nestjs/graphql';
-import { IsPhoneNumber, IsString, Length, MinLength } from 'class-validator';
+import { IsString, Length } from 'class-validator';
+import { Transform } from 'class-transformer';
+import { IsE164 } from './is-e164.validator';
 import {
   INQUIRY_MESSAGE_MAX_LENGTH,
   INQUIRY_NAME_MAX_LENGTH,
@@ -21,10 +23,18 @@ export class CreateInquiryInput {
   @IsString()
   productId: string;
 
-  // Length is re-checked against the TRIMMED value in the service: @Length(2)
-  // runs against what was submitted, so " A " passes here and would be stored
-  // as "A".
   @Field()
+  // TRIMMED BEFORE VALIDATION, and that changes what @Length(2) means.
+  // class-validator checks the RAW value, so "  " is two characters and was
+  // accepted here -- then rejected by the service, after a Serializable
+  // transaction had opened and four rate-limit counts had run. The constraint
+  // now enforces what it appears to say.
+  //
+  // The trimmed value is what flows onward, so the service receives canonical
+  // input rather than trimming it a second time.
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
   @Length(2, INQUIRY_NAME_MAX_LENGTH)
   buyerName: string;
@@ -32,15 +42,24 @@ export class CreateInquiryInput {
   // IsPhoneNumber with no region accepts formatted international numbers; the
   // service canonicalises to E.164 before anything is stored or counted.
   @Field()
-  @IsPhoneNumber()
+  // Asks the SAME function the service does. @IsPhoneNumber() disagreed with
+  // normalizeE164 in both directions -- see is-e164.validator.ts for the
+  // measured cases, including the +999 range this repo's own seed uses.
+  @IsE164()
   buyerPhone: string;
 
   // The upper bound is not cosmetic: this is an unauthenticated endpoint, and
   // an unbounded text field is an amplification vector regardless of what is
   // eventually done with the value.
   @Field()
+  // Same trim, same reason: " " passed @MinLength(1) and reached the service.
+  // @MinLength(1) is dropped as redundant -- @Length(1, N) already carries the
+  // lower bound, and two constraints saying the same thing invite one of them
+  // to be edited alone.
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() : value,
+  )
   @IsString()
-  @MinLength(1)
   @Length(1, INQUIRY_MESSAGE_MAX_LENGTH)
   message: string;
 }
