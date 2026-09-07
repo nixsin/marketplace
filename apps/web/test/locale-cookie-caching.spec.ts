@@ -80,7 +80,10 @@ describe("locale cookie vs. shared caching", () => {
       otherLocale,
       "this suite needs at least two configured locales",
     ).toBeDefined();
-    server = await startProdServer(3998);
+    // No explicit port: startProdServer allocates a free one, so suites
+    // running in parallel cannot collide. 3998 was a workaround for the
+    // fixed default that has since been removed.
+    server = await startProdServer();
   });
 
   afterAll(async () => {
