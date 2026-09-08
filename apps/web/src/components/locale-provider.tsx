@@ -10,7 +10,7 @@ import {
   useTransition,
 } from "react";
 import { NextIntlClientProvider } from "next-intl";
-import type { Locale } from "@/i18n/routing";
+import { TIME_ZONE, type Locale } from "@/i18n/routing";
 
 type Messages = Record<string, unknown>;
 
@@ -106,7 +106,19 @@ export function LocaleProvider({
 
   return (
     <LocaleContext.Provider value={value}>
-      <NextIntlClientProvider locale={locale} messages={messages}>
+      {/*
+        timeZone is passed explicitly, and forgetting it is what produced
+        use-intl's ENVIRONMENT_FALLBACK on every build. This provider is
+        constructed by hand rather than inherited from the server's config,
+        so anything the server resolves and this does not name is simply
+        dropped -- silently, with the client falling back to the *browser's*
+        zone while the server used its own. See TIME_ZONE in i18n/routing.ts.
+      */}
+      <NextIntlClientProvider
+        locale={locale}
+        messages={messages}
+        timeZone={TIME_ZONE}
+      >
         {children}
       </NextIntlClientProvider>
     </LocaleContext.Provider>
