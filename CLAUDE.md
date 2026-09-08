@@ -2465,6 +2465,155 @@ authenticated response must never be edge-cached — that needs `private,
 no-store` keyed off the request carrying credentials, and it must land
 before the first authenticated query, not after.
 
+## The product page is edge-cacheable, and one missing export was why it wasn't
+
+Measured against live production on 2026-09-07, before any change:
+
+| Layer | `cache-control` from the origin | `cf-cache-status` |
+|---|---|---|
+| product page HTML | `private, no-cache, no-store, max-age=0, must-revalidate` | BYPASS, every request |
+| GraphQL GET for that same product | `public, max-age=0, s-maxage=60, stale-while-revalidate=300` | MISS → HIT → HIT |
+| `/_next/static` chunk | `public, max-age=31536000, immutable` | HIT |
+
+**The CDN was never the problem, and the rules did not need touching.**
+`cache-public-html` does match `/en/products/<id>` — the negotiated-path
+bypass excludes locale-prefixed paths, so it does not catch this one — and it
+is set to `respect_origin`. Cloudflare was correctly declining a response the
+origin had marked `no-store`. Next emits precisely that header for a route it
+classifies as Dynamic, so the whole fix is on the Next side.
+
+**`generateStaticParams` is what makes the route ISR, and its RETURN VALUE is
+irrelevant.** Without the export Next never treats a dynamic segment as
+prerenderable at all, whatever `revalidate` says; exporting it and returning
+`[]` flips `ƒ (Dynamic)` to `● (SSG)`. Returning nothing is deliberate:
+prerendering the catalogue needs the API reachable from CI, which it is not,
+and would bake a snapshot of a database-backed catalogue into an image that
+outlives it. `dynamicParams` defaults to true, so every id is still served —
+rendered once on demand, then cached.
+
+**`export const revalidate` cannot import its value.** Next parses it out of
+the module and its docs are explicit that it must be "statically
+analyzable" — `60 * 10` is called out as invalid, so
+`SHARED_MAX_AGE_SECONDS` is too. This is the one place in this repo where a
+shared constant genuinely cannot be imported; `page.spec.ts` pins the literal
+against the constant, the same shape as `SITEMAP_API_PAGE_SIZE` vs
+`PRODUCTS_MAX_PAGE_SIZE`.
+
+**next-intl inside `not-found.tsx` was the real blocker, and it is the part
+worth remembering.** That file called `await getTranslations("productDetails")`
+with no locale, because `not-found.js` takes no props and so cannot receive
+`params` or call `setRequestLocale`. next-intl silently falls back to reading
+`headers()` for the locale — harmless while the route was already dynamic,
+and the reason it could never become anything else. Once the route became
+prerenderable the same call turned into a hard `DYNAMIC_SERVER_USAGE`
+("couldn't be rendered statically because it used `headers`") and **every**
+product page returned 500, including ones that were never missing. Fixed by
+making the boundary a Client Component using `useTranslations`, which reads
+from the `NextIntlClientProvider` the layout already resolves statically —
+`error.tsx` beside it had always worked that way. `generateMetadata` needed
+`setRequestLocale` too: it is its own render pass with its own request scope.
+
+The general form: **a next-intl server API with no explicit locale is a
+latent `headers()` call.** It does not announce itself, and it costs nothing
+until something else tries to make the route static.
+
+**`expireTime` bounds the stale window, and the default is a YEAR.** Next
+derives the header as `s-maxage={revalidate},
+stale-while-revalidate={expireTime - revalidate}`; measured before it was set,
+the page shipped `stale-while-revalidate=31535940`. Cloudflare respects the
+origin and leaves `disable_stale_while_updating` false, so a prolonged origin
+outage could have had the edge serving a year-old page for a product that had
+since been withdrawn. `expireTime` is set from
+`SHARED_MAX_AGE_SECONDS + STALE_WHILE_REVALIDATE_SECONDS`, producing
+`s-maxage=60, stale-while-revalidate=300` — byte-identical to what
+`graphql-cache.ts` sends for the API tier, because both describe the same
+catalogue and letting them go stale on different clocks is how a listing ends
+up advertising a product its own detail page has stopped serving. It is
+**global**, so a future ISR route with a longer `revalidate` would get a
+negative stale window and has to raise it.
+
+**The data cache is keyed on the product id, not on the fetch, and it had to
+be.** `fetch(..., { next: { revalidate } })` is the smaller-looking change and
+does not work: Next's Data Cache matches "on its URL, method, headers, and
+body", and `fetchProduct` mints a fresh correlation id header per call, so
+every request would write a new entry and read none back — a 100% miss rate,
+which is indistinguishable from a cold cache and therefore silent.
+`lib/product-cache.ts` wraps it in `unstable_cache` keyed on the id, the same
+pattern `catalog-seo.ts` already uses.
+
+That also fixed a second thing nobody had noticed: `page.tsx` calls the
+loader twice (page body and `generateMetadata`), and a comment claimed
+fetch's per-render memoization deduped them. It never did — memoization
+matches on URL *and* options, and the correlation header differs — so every
+product render made **two** API calls. Measured after: three page requests
+now cost one API call.
+
+**`loadProduct` deliberately does NOT catch, unlike `loadInitialProducts`.**
+`fetchProduct` returns `null` for NOT_FOUND and throws for everything else.
+Collapsing those used to cost one visitor a wrong page; under caching a
+swallowed outage returns null, the page calls `notFound()`, and a **404 for a
+product that exists** is what gets written to the edge and served to
+everyone — crawlers included — for the rest of the window. A throw renders
+`error.tsx` and caches nothing, which is the right answer for "we do not
+know".
+
+### Measuring this without fooling yourself
+
+Four traps, each of which produced a confidently wrong reading first:
+
+- **`HEAD` does not traverse `graphql-cache.ts`'s `res.send` patch.** A HEAD
+  probe of `/graphql` reports no cache headers at all, which reads as "the
+  API tier is not cached". It is. Use GET.
+- **The API's GET needs `apollo-require-preflight: true`**, which the browser
+  sends and curl does not. Without it the response is not cacheable and
+  reports BYPASS — again reading as a broken cache tier.
+- **A bare curl sends no `Accept-Language`**, which no browser does, so it
+  hits the one next-intl path that writes `NEXT_LOCALE` and produces a
+  `Set-Cookie` that suppresses edge caching. Verified both ways on the
+  product page: realistic headers give no `Set-Cookie`, bare curl gives one.
+- **Production redacts the render error.** `next build --debug-prerender`
+  builds in development mode and unredacts `DYNAMIC_SERVER_USAGE` into the
+  actual cause; without it the log says only that a digest exists.
+
+And when bisecting rendering modes with a throwaway probe route, **a folder
+whose name starts with `_` is a Next private folder** and never becomes a
+route at all — `__probe` silently produced no route and no error.
+
+### A bogus id creates a cache entry, and an id check does not stop it
+
+Raised as a review finding and **measured rather than argued**: 200 requests
+for unique nonexistent ids produced **200 cache entries, ~4 KB each**. The
+route serves any id (`dynamicParams` defaults to true), and the 404 is cached
+like any other render -- verified directly, `404 MISS` then `404 HIT`.
+
+**The obvious mitigation does not work, for two independent reasons.**
+"Validate the id before caching" fails first because product ids have **no
+enforceable shape**: production uses cuid (`cmsu6dpnm000abnshhcsc7a5x`) and
+the seed uses `seed-product-01`, so any regex tight enough to matter rejects
+real data. It fails again even granting a perfect check, because the cache
+write happens on the `notFound()` render -- an id check that rejects early
+still reaches it, so the entry is written anyway. And no shape check bounds
+*cardinality*: an attacker generates valid-shaped ids indefinitely.
+
+What actually bounds it is a request-level control at the edge, which is the
+same conclusion [#152](https://github.com/nixsin/marketplace/issues/152)
+already reached for the inquiry endpoint, for the same reason. Tracked there
+rather than half-solved here.
+
+Worth stating plainly: this change did not create the surface. The route was
+always publicly reachable with arbitrary ids -- before, each request cost an
+API call instead of a cache entry, which is worse for the API and better for
+disk.
+
+### What ISR does not buy
+
+`revalidateTag`/`revalidatePath` invalidate Next's own cache and **not** the
+CDN — Next's docs are explicit, and the edge keeps serving its copy until
+`s-maxage` expires. So a seller edit is visible after at most 60 s plus the
+stale window, and closing that needs a CDN purge call alongside the
+revalidation. Not built, because there is no seller-editing UI yet; it
+belongs with that work rather than ahead of it.
+
 ## Three measured performance trade-offs, priced
 
 Audited against live production at `e076f51` (2026-08-30). Each of these is a
