@@ -29,6 +29,7 @@ export declare function publicCacheControl(
   staleWhileRevalidate?: number,
 ): string;
 export declare const FAVICON_MAX_AGE_SECONDS: number;
+export declare const CATALOGUE_IMAGE_MAX_AGE_SECONDS: number;
 export declare const CORS_PREFLIGHT_MAX_AGE_SECONDS: number;
 export declare const SERVICE_WORKER_CACHE_CONTROL: string;
 export declare const HSTS_MAX_AGE_SECONDS: number;

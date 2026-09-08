@@ -14,6 +14,7 @@ import {
   MAX_OUTPUT_TOKENS,
   OPENAI_REVIEW_MODEL,
   SERVICE_WORKER_CACHE_CONTROL,
+  CATALOGUE_IMAGE_MAX_AGE_SECONDS,
   SHARED_MAX_AGE_SECONDS,
   STALE_WHILE_REVALIDATE_SECONDS,
   publicCacheControl,
@@ -357,6 +358,21 @@ test("staleness stays bounded while no purge hook exists", () => {
   // s-maxage doubles as the worst-case staleness a seller sees after
   // editing a listing, because nothing invalidates the edge on write.
   assert.ok(SHARED_MAX_AGE_SECONDS <= 300);
+});
+
+test("catalogue artwork is cached long enough to matter, briefly enough to fix", () => {
+  // Two failure modes, one on each side.
+  //
+  // Too short and the value does nothing: these were served at max-age=0,
+  // which cost a round trip per image per page load on a page that renders
+  // several at once.
+  //
+  // Too long -- or immutable -- and a corrected image is stranded in
+  // browser caches, because unlike /_next/static/* these filenames carry no
+  // content hash. lab-equipment.svg stays lab-equipment.svg when its
+  // contents change, so the URL cannot signal the update.
+  assert.ok(CATALOGUE_IMAGE_MAX_AGE_SECONDS > 3600);
+  assert.ok(CATALOGUE_IMAGE_MAX_AGE_SECONDS <= 7 * 86_400);
 });
 
 test("the service worker script is never storable", () => {

@@ -6,6 +6,7 @@ import { siteUrlErrorMessage, siteUrlProblem } from "./src/lib/site-url";
 import {
   CROSS_ORIGIN_OPENER_POLICY,
   FAVICON_MAX_AGE_SECONDS,
+  CATALOGUE_IMAGE_MAX_AGE_SECONDS,
   FRAME_OPTIONS,
   LOCALES,
   publicCacheControl,
@@ -243,6 +244,65 @@ const nextConfig: NextConfig = {
           {
             key: "Cache-Control",
             value: `public, max-age=${FAVICON_MAX_AGE_SECONDS}`,
+          },
+        ],
+      },
+      {
+        // The self-authored catalogue artwork, previously served with
+        // Next's `public/` default of `max-age=0` -- so every page load
+        // spent a round trip per image revalidating art that had not
+        // changed. Measured against production before this: `public,
+        // max-age=0` on every /products/*.svg, and the catalogue renders
+        // several at once.
+        //
+        // MATCHED ON THE EXTENSION, not on the prefix, and the difference
+        // is not cosmetic. A `/products/(.*)` source also matches
+        // `/products/anything` -- which contains no dot, so proxy.ts's
+        // matcher hands it to next-intl, which answers with a 307 to
+        // `/en/products/anything`. That redirect was picking up
+        // `max-age=86400`. The locale in it is chosen from Accept-Language,
+        // which is in no cache key, so a shared cache could pin one
+        // visitor's language for everyone for a day -- exactly what the
+        // CDN's negotiated-path bypass exists to prevent, reintroduced at
+        // the origin. Caught in review, reproduced, and now covered by a
+        // test that fails against the prefix form.
+        //
+        // On the `:path*` question: the X-Build-Commit entry above records
+        // that such a source lands in routes-manifest.json and is then not
+        // applied to real responses. Re-tested rather than inherited -- on
+        // Next 16.3.3 a `:path*` source DOES apply its header, verified by
+        // building both ways and curling a real server. That note was
+        // written against an earlier version and about a root-level
+        // `/:path*`; it was not re-confirmed for this case.
+        //
+        // What survives from it is the part that matters, and it is why
+        // test/static-caching.spec.ts curls a real server rather than
+        // reading the manifest: the entry appeared in routes-manifest.json
+        // in BOTH the working and the non-working case, so the manifest is
+        // not evidence that a header is actually served.
+        //
+        // Deliberately NOT immutable -- see CATALOGUE_IMAGE_MAX_AGE_SECONDS
+        // for why these filenames cannot carry that promise.
+        source: "/products/:file(.+\\.(?:svg|png))",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: `public, max-age=${CATALOGUE_IMAGE_MAX_AGE_SECONDS}`,
+          },
+        ],
+      },
+      {
+        // The home page's OpenGraph card. Same class as the artwork above
+        // -- hand-authored, fixed URL, changes rarely -- but it sits at the
+        // root of public/ rather than under /products/, so it needs its own
+        // entry. Fetched by link scrapers rather than by page loads, which
+        // makes this a smaller win than the catalogue art and free to keep
+        // consistent.
+        source: "/home-og.png",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: `public, max-age=${CATALOGUE_IMAGE_MAX_AGE_SECONDS}`,
           },
         ],
       },
