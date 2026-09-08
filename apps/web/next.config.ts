@@ -13,6 +13,8 @@ import {
   CONTENT_TYPE_OPTIONS,
   REFERRER_POLICY,
   PERMISSIONS_POLICY,
+  SHARED_MAX_AGE_SECONDS,
+  STALE_WHILE_REVALIDATE_SECONDS,
 } from "@medinstru/config";
 
 // Before anything below reads an environment variable.
@@ -128,6 +130,27 @@ const nextConfig: NextConfig = {
   // deliberate choice for now, not an oversight — revisit once there's
   // real business logic worth keeping out of a public source map.
   productionBrowserSourceMaps: true,
+
+  // Bounds the stale window on every ISR page. Next derives the header as
+  // `s-maxage={revalidate}, stale-while-revalidate={expireTime - revalidate}`
+  // and expireTime defaults to ONE YEAR, so the product page shipped
+  // `stale-while-revalidate=31535940` -- measured, not inferred. Cloudflare's
+  // cache rules set edge_ttl to respect_origin and leave
+  // disable_stale_while_updating false, so it would honour that: a prolonged
+  // origin outage could have the edge serving a year-old product page,
+  // including for a product that has since been withdrawn.
+  //
+  // 360 makes the emitted header `s-maxage=60, stale-while-revalidate=300`,
+  // identical to what graphql-cache.ts already sends for the API tier. The
+  // two layers describe the same catalogue, and letting them go stale on
+  // different clocks is how a listing ends up advertising a product its own
+  // detail page has stopped serving.
+  //
+  // GLOBAL, not per-route: any future ISR route with a revalidate longer than
+  // this would get a negative stale window, so a route wanting a longer TTL
+  // has to raise this too. Pinned by a test rather than a comment.
+  expireTime: SHARED_MAX_AGE_SECONDS + STALE_WHILE_REVALIDATE_SECONDS,
+
   experimental: {
     // Lighthouse's render-blocking-insight audit flagged the compiled
     // Tailwind stylesheet (a single <link>, ~9KB) as render-blocking with
