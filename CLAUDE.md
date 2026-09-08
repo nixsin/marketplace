@@ -156,6 +156,51 @@ be cached as a successful empty catalogue. Product JSON-LD contains only
 known descriptive fields; do not add offers, availability, ratings, GTIN, or
 condition until the product model contains truthful values for them.
 
+## The locale middleware must skip `sitemaps/`, and the index hid that it didn't
+
+`proxy.ts`'s matcher excludes `api`, `_next`, `_vercel` and anything
+containing a dot. `/sitemaps/<id>` contains no dot, so next-intl treated it as
+a locale-negotiable page and answered it with a **307 to `/en/sitemaps/0`** —
+a route that does not exist, because the handler lives at
+`app/sitemaps/[id]/route.ts`, **outside** `[locale]`. Every shard 404'd, so no
+product URL had ever reached a crawler.
+
+**`/sitemap.xml` was fine the entire time, and that is what hid it.** It
+contains a dot, so the existing `.*\..*` clause already excluded it. The index
+returned `200` with well-formed XML while every link inside it was dead — the
+entry point looked healthy, which is the shape of failure worth remembering
+here. Confirmed against live production before the fix: index `200`,
+`/sitemaps/0` → `307` → `404`.
+
+**A unit test on the route handler cannot catch this, by construction.**
+`app/sitemaps/[id]/route.spec.ts` calls `GET` directly and passes — the
+handler was never wrong. What was wrong is that the request never arrived.
+Anything that decides whether a request *reaches* a handler has to be tested
+against the matcher itself, which is what `src/proxy.spec.ts` now does,
+asserting the real exported `config.matcher` rather than a copy.
+
+**Written `sitemaps/` with the slash.** The lookahead is a prefix test, so a
+bare `sitemaps` would also stop localising a future `/sitemapsomething`. A
+test pins both directions — the shard excluded, an ordinary page still
+negotiating.
+
+**Importing `proxy.ts` in a test needs `next-intl/middleware` stubbed**, since
+it reaches for `next/server`, which does not resolve under vitest. Stub only
+the factory; `config` must stay the real exported object or the test is
+asserting a copy of the thing it is supposed to protect.
+
+**Known, deliberate inconsistency with Terraform.** CLAUDE.md's Cloudflare
+section says the negotiated-path bypass covers "whatever `proxy.ts`'s matcher
+admits". After this fix `/sitemaps/<id>` is no longer in that set, but
+`web_negotiated_bypass_expression` still matches it (dotless, not
+locale-prefixed). Harmless **today** because the route renders dynamically and
+ships `no-store`, so nothing would cache it either way. It stops being
+harmless the moment that route becomes ISR — the bypass would silently
+prevent the caching without any error — so fix them together if
+`/sitemaps/[id]` ever gains `generateStaticParams`. Note also that its
+`revalidate` is 3600, which exceeds the global `expireTime` of 360; both have
+to move together.
+
 ## Docker prod-image boot test (`docker-web-prod-boot` job)
 
 Exists because of a real production outage: `apps/web` crashed on every boot
