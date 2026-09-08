@@ -1,6 +1,19 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startProdServer, type StartedServer } from "./helpers/server";
 
+/**
+ * `max-age` as its own directive, never the tail of `s-maxage`.
+ *
+ * A bare /max-age=(\d+)/ matches inside "s-maxage=60", so a response that
+ * gave a TTL to shared caches only and nothing to the browser would satisfy
+ * an assertion meant to prove the opposite. Requires a start-or-comma
+ * boundary instead.
+ */
+function maxAge(cacheControl: string): number | undefined {
+  const m = cacheControl.match(/(?:^|,)\s*max-age=(\d+)/i);
+  return m ? Number(m[1]) : undefined;
+}
+
 // Automates the manual `curl -I` check from the earlier performance session:
 // hashed static assets must be cached forever, the favicon must be cached
 // for a real but finite window, and HTML must NOT be immutable-cached
@@ -40,6 +53,81 @@ describe("static asset caching (production build)", () => {
 
     expect(maxAge).toBeGreaterThan(3600); // real caching, not effectively none
     expect(cacheControl).not.toContain("immutable"); // must go stale eventually
+  });
+
+  it("caches the catalogue artwork for a real but finite window", async () => {
+    // Previously `public, max-age=0` -- Next's default for everything under
+    // public/ -- so every page load spent a round trip per image
+    // revalidating art that had not changed, and the catalogue renders
+    // several at once.
+    //
+    // Asserted over real HTTP rather than by reading routes-manifest.json,
+    // deliberately: a headers entry can be present in the manifest and not
+    // applied to responses, which is exactly how the `:path*` vs `(.*)`
+    // trap presents (see next.config.ts's X-Build-Commit comment).
+    for (const image of [
+      "/products/lab-equipment.svg",
+      "/products/diagnostic-imaging.png",
+    ]) {
+      const res = await fetch(`${server.baseUrl}${image}`);
+      expect(res.status, `${image} should exist`).toBe(200);
+
+      const cacheControl = res.headers.get("cache-control") ?? "";
+      const age = maxAge(cacheControl);
+
+      expect(
+        age ?? 0,
+        `expected a real max-age on ${image}, got "${cacheControl}"`,
+      ).toBeGreaterThan(3600);
+      // These filenames are NOT content-hashed, so a corrected image has to
+      // be able to reach browsers that already hold the old one.
+      expect(cacheControl).not.toContain("immutable");
+    }
+  });
+
+  it("caches the home OpenGraph image the same way", async () => {
+    const res = await fetch(`${server.baseUrl}/home-og.png`);
+    expect(res.status).toBe(200);
+    const cacheControl = res.headers.get("cache-control") ?? "";
+
+    expect(maxAge(cacheControl) ?? 0).toBeGreaterThan(3600);
+    expect(cacheControl).not.toContain("immutable");
+  });
+
+  it("does NOT cache a non-image response under the same /products/ prefix", async () => {
+    // The bug this rule shipped with before it was scoped, and it was worse
+    // than "an over-broad pattern": /products/anything has no dot, so the
+    // locale middleware answers it with a 307 to /en/products/anything --
+    // and that redirect was picking up `public, max-age=86400`. The locale
+    // is chosen from Accept-Language, which is not in any cache key, so a
+    // shared cache could pin one visitor's language for everyone for a day.
+    // That is precisely what the CDN's negotiated-path bypass exists to
+    // prevent, reintroduced at the origin.
+    const res = await fetch(`${server.baseUrl}/products/anything`, {
+      redirect: "manual",
+    });
+    const cacheControl = res.headers.get("cache-control") ?? "";
+
+    expect(
+      maxAge(cacheControl) ?? 0,
+      `a non-image path under /products/ must not carry the image TTL, got "${cacheControl}"`,
+    ).toBeLessThanOrEqual(0);
+  });
+
+  it("does not let the image rule swallow the hashed chunks or the HTML", async () => {
+    // The failure mode of a broad `source` pattern: /_next/static must keep
+    // `immutable`, and the page HTML must keep going stale. Both are
+    // asserted elsewhere in this file for their own sake; this checks them
+    // together against the rule added beside them, so a future widening of
+    // /products/(.*) fails here rather than silently downgrading either.
+    const html = await fetch(`${server.baseUrl}/en`);
+    expect(html.headers.get("cache-control") ?? "").not.toContain("immutable");
+
+    const body = await html.text();
+    const chunk = body.match(/<script[^>]+src="(\/_next\/static\/[^"]+\.js)"/)?.[1];
+    expect(chunk).toBeDefined();
+    const chunkRes = await fetch(`${server.baseUrl}${chunk}`);
+    expect(chunkRes.headers.get("cache-control") ?? "").toContain("immutable");
   });
 
   it("does NOT immutably cache the HTML document (content must be able to go stale)", async () => {
