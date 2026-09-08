@@ -1,4 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import {
+  SHARED_MAX_AGE_SECONDS,
+  STALE_WHILE_REVALIDATE_SECONDS,
+} from "@medinstru/config";
 import en from "../../../../../messages/en.json";
 import hi from "../../../../../messages/hi.json";
 
@@ -11,10 +16,13 @@ import hi from "../../../../../messages/hi.json";
 // <title> generateMetadata produces.
 const messages: Record<string, typeof en> = { en, hi };
 
+// Mocks the CACHED loader the page actually calls, not fetchProduct beneath
+// it: unstable_cache needs Next's request runtime, which does not exist here,
+// so wrapping the mock in it would test the framework rather than the page.
 const fetchProduct = vi.fn();
 
-vi.mock("@/lib/api", () => ({
-  fetchProduct: (id: string) => fetchProduct(id),
+vi.mock("@/lib/product-cache", () => ({
+  loadProduct: (id: string) => fetchProduct(id),
 }));
 
 // Resolves against the real message catalogs rather than returning the key
@@ -34,7 +42,72 @@ vi.mock("next-intl/server", () => ({
   },
 }));
 
-const { generateMetadata, productStructuredData } = await import("./page");
+const { generateMetadata, productStructuredData, revalidate, generateStaticParams } =
+  await import("./page");
+
+/**
+ * The two exports that make this route edge-cacheable at all.
+ *
+ * Neither is read by any code in this file, which is exactly why they need a
+ * test: deleting either one is a silent change. The route reverts to
+ * Dynamic, Next emits `private, no-cache, no-store`, Cloudflare's
+ * respect_origin rule declines it, and every product page goes back to a
+ * full origin round trip -- with no failing test, no build error, and
+ * nothing visibly different in development, where pages are always rendered
+ * on demand anyway.
+ *
+ * These are export-level checks and are deliberately NOT sufficient on
+ * their own -- a request-time API elsewhere in the route's tree reverts
+ * the classification while they all still pass. Next's own verdict is
+ * asserted in test/route-classification.spec.ts, which belongs there
+ * because it needs a real build.
+ */
+describe("product detail route is prerenderable", () => {
+  it("revalidates on the same clock as the API tier", () => {
+    // Cannot be `revalidate = SHARED_MAX_AGE_SECONDS` in page.tsx -- Next
+    // requires a statically analyzable literal -- so the coupling is pinned
+    // here instead, the same way SITEMAP_API_PAGE_SIZE is pinned against
+    // PRODUCTS_MAX_PAGE_SIZE.
+    expect(revalidate).toBe(SHARED_MAX_AGE_SECONDS);
+  });
+
+  it("exports generateStaticParams, which is what makes the route ISR", () => {
+    // Its RETURN value is deliberately empty; its EXISTENCE is the load-
+    // bearing part. Without the export Next never treats the route as
+    // prerenderable, whatever `revalidate` says.
+    expect(typeof generateStaticParams).toBe("function");
+    expect(generateStaticParams()).toEqual([]);
+  });
+
+  it("keeps the stale window bounded to the API tier's", () => {
+    // Next derives stale-while-revalidate as `expireTime - revalidate`, and
+    // expireTime defaults to a YEAR -- measured before this was set, the page
+    // shipped `stale-while-revalidate=31535940`.
+    //
+    // Asserted against next.config.ts's SOURCE rather than by importing it.
+    // That file calls assertBootEnv at module load and is the file Next
+    // loads to boot, so an ordinary test cannot import it -- the same
+    // constraint that put security-headers.ts and site-url.ts in their own
+    // modules. Reading the text is the idiom this repo already uses for
+    // config it cannot import (see the Terraform and Dockerfile drift tests).
+    const config = readFileSync(
+      new URL("../../../../../next.config.ts", import.meta.url),
+      "utf8",
+    );
+    expect(config).toMatch(
+      /expireTime:\s*SHARED_MAX_AGE_SECONDS\s*\+\s*STALE_WHILE_REVALIDATE_SECONDS/,
+    );
+    // And that the value those two constants produce still leaves this
+    // route's stale window where the API tier's is.
+    const expireTime = SHARED_MAX_AGE_SECONDS + STALE_WHILE_REVALIDATE_SECONDS;
+    expect(expireTime - (revalidate as number)).toBe(
+      STALE_WHILE_REVALIDATE_SECONDS,
+    );
+    // expireTime is GLOBAL. A route whose revalidate exceeded it would get a
+    // negative stale window, so the ceiling has to move with it.
+    expect(revalidate as number).toBeLessThanOrEqual(expireTime);
+  });
+});
 
 describe("product detail generateMetadata", () => {
   beforeEach(() => {
