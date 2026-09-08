@@ -200,6 +200,38 @@ prevent the caching without any error — so fix them together if
 `/sitemaps/[id]` ever gains `generateStaticParams`. Note also that its
 `revalidate` is 3600, which exceeds the global `expireTime` of 360; both have
 to move together.
+## One time zone, or the two halves of next-intl disagree
+
+`LocaleProvider` builds `NextIntlClientProvider` by hand with `locale` and
+`messages`, so anything the server's config resolves and that call does not
+name is **dropped**. `timeZone` was dropped, and `i18n/request.ts` never set
+one either, so use-intl raised `ENVIRONMENT_FALLBACK` on every single build:
+*"The `timeZone` parameter wasn't provided and there is no global default
+configured. Consider adding a global default to avoid markup mismatches caused
+by environment differences."*
+
+**The fallback is the runtime's own zone, which is exactly the value that
+differs between the two renders** — the server's (UTC on Render) during SSR,
+the viewer's during hydration. They agree for most of the day. A timestamp
+near a day boundary — 23:37 UTC is already the next date in IST — is when
+React reports a hydration mismatch instead.
+
+**`product-detail.tsx` had already solved this for itself, and that is what
+hid it.** It pinned `timeZone: "UTC"` in a hand-rolled `Intl.DateTimeFormat`,
+with a correct and well-argued comment. So the one place that actually
+rendered a date was consistent, while next-intl underneath it had no default
+at all. A call site fixing the instance is not the same as the class being
+fixed, and it silences the symptom you would have noticed.
+
+`TIME_ZONE` now lives in `i18n/routing.ts` and is read by all three: the
+server config, the client provider, and that call site. UTC is a **choice**,
+not a placeholder — it trades "the viewer's local date" for "a stable,
+correct date", which is right for a last-updated indicator and would be wrong
+for a delivery slot or an appointment. Revisit per-value if such a thing is
+added, rather than changing the default.
+
+Pinned by `i18n/time-zone.spec.ts`, including a test that no call site
+hardcodes a zone literal — the class, not the instance.
 
 ## Docker prod-image boot test (`docker-web-prod-boot` job)
 
