@@ -67,6 +67,11 @@ export function ProductCard({
              who reach the image itself. */
           <Link
             href={`/products/${product.id}`}
+            // See the title link below for why prefetch is off. Both links
+            // point at the same product and Next dedupes them into one
+            // prefetch, so this has to be set in both places or the dedupe
+            // simply keeps whichever one still asks for it.
+            prefetch={false}
             aria-hidden="true"
             tabIndex={-1}
             className="relative h-48 w-full shrink-0 bg-muted transition-opacity hover:opacity-90 sm:h-auto sm:w-48"
@@ -107,14 +112,32 @@ export function ProductCard({
             {/* Link wraps only the heading text, not the whole Card --
                 wrapping the whole card would nest the "Send Inquiry"
                 button below inside an <a>, invalid HTML and a real a11y
-                problem. No prefetch={false}: this is a genuinely distinct
-                destination, and the route's own lack of a loading.tsx
-                (see product-details/page.tsx's comment) already keeps
-                Next's default scroll-into-view prefetch from triggering
-                eager per-card GraphQL fetches on its own. */}
+                problem.
+
+                prefetch={false} because the prefetch was measured and it
+                buys nothing. This comment previously claimed the opposite
+                -- that the route's lack of a loading.tsx kept Next from
+                prefetching -- which was true only while that route was
+                Dynamic. #215 made it ISR, and Next prefetches a static
+                route IN FULL, so three prefetches began firing on every
+                listing load with nothing in the code saying so.
+
+                They are not reused. `next-router-prefetch` participates in
+                the `_rsc` hash, so a prefetch and the navigation that
+                follows address different entries: measured in a real
+                browser, the prefetch fetched 663 bytes under one hash and
+                the click then fetched 62,914 bytes under another. Three
+                requests per listing load, 307-1377ms TTFB each, discarded.
+
+                Navigation itself is unaffected and already fast -- the RSC
+                payload is edge-cached and served in ~236ms. Turning this
+                off removes cost, not capability. Audited in #223, which
+                also records what would have to be true to turn it back on. */}
             <CardTitle asChild className="text-lg leading-7">
               <h2>
-                <Link href={`/products/${product.id}`}>{product.name}</Link>
+                <Link href={`/products/${product.id}`} prefetch={false}>
+                  {product.name}
+                </Link>
               </h2>
             </CardTitle>
             <CardDescription>
