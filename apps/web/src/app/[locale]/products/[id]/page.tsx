@@ -70,11 +70,17 @@ export function generateStaticParams() {
 // interaction. A conscious trade-off, not an oversight: this route also
 // forgoes a route-level loading skeleton as a result.
 //
-// This also means the default <Link> prefetch behavior stays cheap here
-// for free: per Next's docs, a dynamic route without a loading.js
-// boundary is skipped from eager prefetch-on-scroll, so ProductCard's new
-// link to this route won't trigger per-card GraphQL fetches just from
-// scrolling past a card.
+// That reasoning USED to extend to prefetching and no longer does, which
+// is worth stating here because this is where the claim originated: a
+// dynamic route without a loading.js boundary is skipped from
+// prefetch-on-scroll, so while this route was Dynamic, ProductCard's links
+// cost nothing on the listing. `generateStaticParams` above ended that --
+// Next prefetches a STATIC route in full, and three prefetches per listing
+// load began firing silently.
+//
+// ProductCard now sets prefetch={false} explicitly rather than relying on
+// this route's rendering mode, so the two are no longer coupled. Measured
+// and recorded in #223.
 export default async function ProductDetailPage({ params }: ProductDetailPageProps) {
   const { locale, id } = await params;
   setRequestLocale(locale);

@@ -15,13 +15,23 @@ vi.mock("@/i18n/navigation", () => ({
     href,
     className,
     children,
+    prefetch,
     ...props
   }: {
     href: string;
     className?: string;
     children?: React.ReactNode;
+    prefetch?: boolean;
   }) => (
-    <a href={href} className={className} {...props}>
+    // prefetch is surfaced as a data attribute rather than spread onto the
+    // <a>: React drops an unknown boolean DOM prop, so spreading it would
+    // make the assertion below silently unfalsifiable.
+    <a
+      href={href}
+      className={className}
+      data-prefetch={String(prefetch)}
+      {...props}
+    >
       {children}
     </a>
   ),
@@ -142,6 +152,33 @@ describe("ProductCard", () => {
         name: "Send inquiry about Surgical Forceps Set",
       }),
     ).toBeInTheDocument();
+  });
+
+  it("does NOT prefetch the product route from either link", () => {
+    // Both links point at the same product and Next dedupes them into one
+    // prefetch, so leaving either one on would keep the behaviour alive --
+    // which is why this asserts every product link, not just the title.
+    //
+    // What it guards: /[locale]/products/[id] became ISR in #215, and Next
+    // prefetches a static route IN FULL. Three prefetches then fired on
+    // every listing load and were never reused -- `next-router-prefetch`
+    // participates in the `_rsc` hash, so the click that follows addresses
+    // a different entry (measured: 663 bytes prefetched, 62,914 fetched on
+    // navigation). Audited in #223.
+    //
+    // The failure this prevents is silent in both directions: turning the
+    // route back to Dynamic would make prefetch stop on its own and hide a
+    // regression here, and re-enabling prefetch costs nothing visible.
+    renderCard(fullProduct);
+
+    const productLinks = screen
+      .getAllByRole("link", { hidden: true })
+      .filter((a) => a.getAttribute("href")?.includes("/products/"));
+
+    expect(productLinks.length).toBeGreaterThanOrEqual(2);
+    for (const link of productLinks) {
+      expect(link.getAttribute("data-prefetch")).toBe("false");
+    }
   });
 
   it("renders the product name as a real heading, not just styled text", () => {
