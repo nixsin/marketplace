@@ -2690,6 +2690,36 @@ CDN — Next's docs are explicit, and the edge keeps serving its copy until
 stale window, and closing that needs a CDN purge call alongside the
 revalidation. Not built, because there is no seller-editing UI yet; it
 belongs with that work rather than ahead of it.
+## `<Link>` prefetch is off for product cards, and #215 is why
+
+Next prefetches a **static** route in full and skips a **dynamic** one that has
+no `loading.js` boundary. `products/[id]` was dynamic, so ProductCard's links
+cost nothing on the listing, and both that component and the route's own page
+carried comments saying so.
+
+`generateStaticParams` ended that. The route became ISR, three prefetches
+began firing on every listing load, and nothing in the code said so — the two
+comments now asserted the opposite of what happened.
+
+**They were never reused.** `next-router-prefetch` participates in the `_rsc`
+hash, so a prefetch and the navigation that follows address different entries.
+Measured in a real browser: the prefetch fetched **663 bytes** under one hash
+and the click then fetched **62,914 bytes** under another. Three requests per
+listing load, **307–1377 ms TTFB each**, discarded.
+
+So `prefetch={false}` removes cost, not capability — navigation is unchanged
+and already fast, with the RSC payload edge-cached at ~236 ms.
+
+**Set on BOTH links.** Each card links to the same product twice (image and
+title) and Next dedupes them into one prefetch, so leaving either one on keeps
+the behaviour alive. The test asserts every product link rather than the title.
+
+**The regression is silent in both directions**, which is why it is pinned by a
+test rather than a comment: turning the route back to Dynamic would stop
+prefetching on its own and mask a revert, and re-enabling prefetch costs
+nothing visible. Full audit of every `<Link>` and RSC path in
+[#223](https://github.com/nixsin/marketplace/issues/223).
+
 ## Catalogue images had no cache window at all
 
 Everything under `public/` gets Next's default `Cache-Control: public,
