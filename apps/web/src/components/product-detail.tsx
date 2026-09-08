@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useLocale, useTranslations } from "next-intl";
 import { ShieldCheck } from "lucide-react";
 import { useSyncExternalStore } from "react";
+import { TIME_ZONE } from "@/i18n/routing";
 import { WhatsAppIcon } from "@/components/icons/whatsapp-icon";
 import { InquiryForm } from "@/components/inquiry-form";
 import { Badge } from "@/components/ui/badge";
@@ -255,20 +256,16 @@ export function ProductDetailView({ product }: { product: ProductDetail }) {
 
       <p className="text-xs text-muted-foreground">
         {t("lastUpdated", {
-          // timeZone is pinned to UTC deliberately: this is a "use client"
-          // component, so the date string computed during SSR (server's
-          // timezone) must exactly match what the browser recomputes during
-          // hydration (viewer's local timezone), or React throws a
-          // hydration mismatch. A timestamp near a day boundary (e.g.
-          // 23:37 UTC) genuinely renders a different calendar date in IST
-          // (UTC+5:30) than in UTC -- pinning both renders to the same
-          // fixed zone removes the mismatch entirely. Trades "shows the
-          // viewer's local date" for "shows a stable, correct date" --
-          // acceptable for a last-updated indicator, which doesn't need
-          // viewer-local precision.
+          // The shared constant, not a second "UTC" literal. The reasoning
+          // lives with it in i18n/routing.ts; what matters here is that this
+          // component, next-intl's server config and the client provider all
+          // format dates in the SAME zone. They did not, which is why
+          // use-intl raised ENVIRONMENT_FALLBACK on every build: this call
+          // site pinned UTC by hand while next-intl had no default at all
+          // and fell back to whatever zone the runtime happened to be in.
           date: new Intl.DateTimeFormat(locale, {
             dateStyle: "medium",
-            timeZone: "UTC",
+            timeZone: TIME_ZONE,
           }).format(new Date(product.updatedAt)),
         })}
       </p>

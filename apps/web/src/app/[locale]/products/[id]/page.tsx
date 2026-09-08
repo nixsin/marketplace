@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
-import { fetchProduct } from "@/lib/api";
+import { loadProduct } from "@/lib/product-cache";
 import { ProductDetailView } from "@/components/product-detail";
 import type { ProductDetail } from "@/components/product-detail";
 import { OG_IMAGE_HEIGHT, OG_IMAGE_WIDTH, ogImageUrl } from "@/lib/og-image";
@@ -27,6 +27,41 @@ export function productStructuredData(product: ProductDetail, locale: string) {
   };
 }
 
+// A LITERAL, and it cannot be an import. Next parses this value out of the
+// module at build time and its own docs are explicit that it "needs to be
+// statically analyzable" -- `revalidate = 60 * 10` is called out as invalid,
+// so `revalidate = SHARED_MAX_AGE_SECONDS` is too. That is the one place in
+// this repo where a shared constant genuinely cannot be imported, so the
+// coupling is pinned by a test instead (page.spec.ts), in the same shape as
+// SITEMAP_API_PAGE_SIZE vs PRODUCTS_MAX_PAGE_SIZE.
+//
+// What it buys: the route stops being server-rendered on demand. Next emits
+// `private, no-cache, no-store` for a dynamic route, which made Cloudflare's
+// cache-public-html rule -- correctly set to respect_origin -- decline every
+// product page. Measured against live production before this change:
+// cf-cache-status BYPASS on every request, and a full origin round trip to
+// Oregon for a catalogue whose buyers are in India. The CDN rule was never
+// the problem; the origin was telling it not to cache.
+export const revalidate = 60;
+
+// EMPTY, and it is not a placeholder -- its presence is the whole point.
+//
+// Without this export Next classifies the route as Dynamic and renders it on
+// demand for every request, emitting `private, no-cache, no-store`. That is
+// what made Cloudflare report BYPASS on every product page in production: the
+// CDN rule was right, the origin was refusing. Adding it -- even returning
+// nothing -- moves the route to ISR, so an unknown id is rendered once and
+// then served from the cache until `revalidate` expires.
+//
+// Returning [] rather than real ids is deliberate. Prerendering the catalogue
+// at build would need the API reachable from CI, which it is not (the same
+// constraint that keeps this route out of perf-budget.mjs), and would bake a
+// snapshot of a database-backed catalogue into an image that outlives it.
+// dynamicParams defaults to true, so every id is still served.
+export function generateStaticParams() {
+  return [];
+}
+
 // Deliberately no loading.tsx for this route. Adding one would auto-wrap
 // this page in a Suspense boundary, which silently downgrades a real
 // "product not found" from an actual 404 HTTP status to a 200 (Next only
@@ -44,7 +79,7 @@ export default async function ProductDetailPage({ params }: ProductDetailPagePro
   const { locale, id } = await params;
   setRequestLocale(locale);
 
-  const product = await fetchProduct(id);
+  const product = await loadProduct(id);
   if (!product) notFound();
 
   return (
@@ -68,18 +103,27 @@ export async function generateMetadata({
   params,
 }: ProductDetailPageProps): Promise<Metadata> {
   const { locale, id } = await params;
-  // Deduped with the fetchProduct() call in the page body above via
-  // fetch()'s own request memoization (same URL/options within one
-  // request lifecycle costs one network round trip, not two) -- verified
-  // directly against Next's docs before relying on it.
-  const product = await fetchProduct(id);
+  // Required here as well as in the page body, and leaving it out is what
+  // kept this route dynamic. generateMetadata is its own server render pass
+  // with its own request scope, so without this next-intl has no locale to
+  // work from and reaches for headers() -- which, once the route is
+  // prerenderable, is not a silent downgrade to dynamic any more but a hard
+  // DYNAMIC_SERVER_USAGE failure.
+  setRequestLocale(locale);
+  // Deduped with the page body's call above, but no longer by fetch()'s
+  // per-render memoization -- that keys on URL AND headers, and
+  // fetchProduct mints a fresh correlation id per call, so it never
+  // actually deduped these two. What dedupes them now is loadProduct's
+  // cache key, which is the product id (see lib/product-cache.ts).
+  const product = await loadProduct(id);
   if (!product) {
     // page.tsx's own notFound() call drives the real 404 status/UI; this
     // is just a safe, non-throwing fallback for generateMetadata's own
-    // parallel resolution pass. Localized rather than a hardcoded English
-    // string: generateMetadata runs outside the request-locale context the
-    // page body's setRequestLocale establishes, so the locale has to be
-    // passed explicitly here.
+    // parallel resolution pass. The locale is passed explicitly even though
+    // setRequestLocale ran above: this call has one to hand, and a
+    // next-intl API given an explicit locale cannot fall back to headers()
+    // no matter what the surrounding request scope looks like -- which is
+    // the failure mode that kept this route dynamic (see not-found.tsx).
     const t = await getTranslations({ locale, namespace: "productDetails" });
     return { title: t("notFoundTitle") };
   }
