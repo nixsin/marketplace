@@ -110,14 +110,20 @@ function loadInputs() {
     return null;
   }
 
-  // THE invariant, stated once: status 1 means pnpm found outdated packages,
-  // so an empty result contradicts it — and that combination is also what a
-  // failure mid-run looks like. Checked here rather than on the raw text
-  // because "" and "{}" are the same claim, and checking only the first left
-  // the second accepted.
-  if (pnpmStatus === "1" && Object.keys(parsed).length === 0) {
+  // THE invariant, and it is a BICONDITIONAL: pnpm exits 1 exactly when it
+  // found outdated packages, so status and result must agree in both
+  // directions. Only the first half was checked at first, which is how each
+  // round of review kept finding another way through — the whole point of
+  // stating it as one equivalence is that there is no "other half" left.
+  //
+  // Checked against the PARSED map rather than the raw text, because "" and
+  // "{}" are the same claim.
+  const foundSome = Object.keys(parsed).length > 0;
+  if ((pnpmStatus === "1") !== foundSome) {
     inputError(
-      'pnpm outdated exited 1 ("found outdated packages") but reported none — refusing to treat that as clean.',
+      pnpmStatus === "1"
+        ? 'pnpm outdated exited 1 ("found outdated packages") but reported none — refusing to treat that as clean.'
+        : "pnpm outdated exited 0 (\"nothing outdated\") but reported packages — refusing to classify a result its own status contradicts.",
     );
     return null;
   }

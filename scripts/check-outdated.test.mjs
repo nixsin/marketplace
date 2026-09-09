@@ -161,6 +161,19 @@ test("REFUSES an empty RESULT when pnpm said it found something", () => {
   }
 });
 
+test("REFUSES a non-empty result when pnpm said nothing was outdated", () => {
+  // The reciprocal direction. The invariant is a biconditional -- pnpm exits
+  // 1 exactly when it found something -- so status 0 with packages is just
+  // as contradictory as status 1 with none, and accepting it would classify
+  // a result its own status disowns.
+  const { status, output } = run(
+    JSON.stringify({ "lint-staged": { current: "17.4.1", latest: "17.5.0" } }),
+    { pnpmStatus: "0" },
+  );
+  assert.equal(status, 2);
+  assert.match(output, /exited 0/);
+});
+
 test("the pnpm status is REQUIRED, not optional", () => {
   // Optional would be the same hole with extra steps: a caller that forgot
   // it would silently get the unvouched behaviour back.
