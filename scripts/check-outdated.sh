@@ -63,9 +63,9 @@ while IFS= read -r a; do
   [ -n "$a" ] && allowed+=("$a")
 done < <(grep -v '^[[:space:]]*#' "$ALLOWLIST" | grep -v '^[[:space:]]*$')
 
-# The leading numeric component, with any range prefix and build/prerelease
-# tail removed. "8.0.0-rc.13" -> 8, "^1.62.1" -> 1. A value with no leading
-# digit yields the empty string, which the caller treats as unknown.
+# The major component of a WELL-FORMED version, or the empty string, which
+# the caller reads as unknown. "8.0.0-rc.13" -> 8, "^1.62.1" -> 1,
+# "build1.alpha" -> "" (not 1).
 #
 # A 0.x minor therefore reads as SAME-major, and that is a judgment call
 # rather than an oversight. By strict semver 0.x's minor slot is where
@@ -74,7 +74,18 @@ done < <(grep -v '^[[:space:]]*#' "$ALLOWLIST" | grep -v '^[[:space:]]*$')
 # without changing how the bump is actually reviewed. Pinned by a test so
 # the decision is visible if anyone disagrees with it later.
 major_of() {
-  printf '%s' "$1" | sed -E 's/^[^0-9]*//; s/[.-].*$//'
+  local v
+  # Only a leading range/prefix marker is removed. Everything after it must
+  # be a whole, well-formed version -- an earlier version of this stripped
+  # any leading text and kept the first number it found, so "build1.alpha"
+  # and "release1-beta" both reduced to 1 and compared EQUAL, quietly taking
+  # the same-major path. Validating the whole string is what makes the
+  # fail-open claim below actually true.
+  v=$(printf '%s' "$1" | sed -E 's/^[[:space:]]*[~^v=><[:space:]]*//')
+  if printf '%s' "$v" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?([-+][0-9A-Za-z.-]+)?$'; then
+    printf '%s' "${v%%.*}"
+  fi
+  # Anything else prints nothing, which the caller reads as unknown.
 }
 
 unaccounted=()

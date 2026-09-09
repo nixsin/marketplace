@@ -113,6 +113,31 @@ if ./scripts/check-outdated.sh "$TMPDIR/unparseable.json" "$TMPDIR/allowlist.txt
   fail "an unparseable version must fail open, not be skipped"
 fi
 
+# --- Malformed versions with MATCHING embedded digits must still fail. ---
+#
+# The case the no-digits fixture above does not reach, and the one an
+# earlier major_of() got wrong: it stripped any leading text and kept the
+# first number it found, so "build1.alpha" and "release1-beta" both reduced
+# to 1, compared EQUAL, and took the same-major path -- silently waving
+# through exactly the input the fail-open rule exists for.
+cat > "$TMPDIR/embedded-digits.json" <<'EOF'
+{"weird2": {"current": "build1.alpha", "latest": "release1-beta"}}
+EOF
+if ./scripts/check-outdated.sh "$TMPDIR/embedded-digits.json" "$TMPDIR/allowlist.txt" > "$TMPDIR/out.txt" 2>&1; then
+  fail "malformed versions sharing an embedded digit must not read as same-major"
+fi
+
+# --- A well-formed version with a range prefix still parses. ---
+#
+# The other direction: hardening the parser must not start rejecting real
+# input. A caret-prefixed same-major pair must still pass.
+cat > "$TMPDIR/prefixed.json" <<'EOF'
+{"ranged": {"current": "^1.62.1", "latest": "^1.63.0"}}
+EOF
+if ! ./scripts/check-outdated.sh "$TMPDIR/prefixed.json" "$TMPDIR/allowlist.txt" > "$TMPDIR/out.txt" 2>&1; then
+  fail "a range-prefixed same-major pair must still be recognised as same-major"
+fi
+
 
 # --- An entry carrying an inline reason must still match. ---
 #
