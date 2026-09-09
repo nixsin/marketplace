@@ -43,29 +43,74 @@ if ! ./scripts/check-outdated.sh "$TMPDIR/allowlisted-only.json" "$TMPDIR/allowl
 fi
 grep -q "nothing actionable right now" "$TMPDIR/out.txt" || fail "expected the allowlist-pass message"
 
-# --- A non-allowlisted package outdated: must fail. ---
+# --- A non-allowlisted MAJOR gap: must fail. ---
 cat > "$TMPDIR/unaccounted.json" <<'EOF'
 {
   "eslint": {"current": "9.39.5", "latest": "10.8.1"},
-  "shadcn": {"current": "4.17.0", "latest": "4.18.0"}
+  "shadcn": {"current": "4.17.0", "latest": "5.0.0"}
 }
 EOF
 if ./scripts/check-outdated.sh "$TMPDIR/unaccounted.json" "$TMPDIR/allowlist.txt" > "$TMPDIR/out.txt" 2>&1; then
-  fail "expected failure when a non-allowlisted package is outdated"
+  fail "expected failure when a non-allowlisted MAJOR update exists"
 fi
 grep -q "shadcn" "$TMPDIR/out.txt" || fail "expected the unaccounted package to be named in the output"
 actionable_section=$(sed -n '/NOT on the allowlist/,$p' "$TMPDIR/out.txt")
 echo "$actionable_section" | grep -q "eslint" && fail "allowlisted package should not appear in the actionable section"
 echo "$actionable_section" | grep -q "shadcn" || fail "unaccounted package must appear in the actionable section"
 
-# --- Only non-allowlisted packages outdated: must fail. ---
-cat > "$TMPDIR/all-unaccounted.json" <<'EOF'
+# --- Non-allowlisted SAME-MAJOR gaps: must pass, and must still be shown. ---
+#
+# The rule this file exists to pin. Dependabot's weekly grouped PR already
+# carries every minor and patch, so failing here reports nothing the PR
+# queue does not, while making the check red on essentially every publish.
+# Measured on 2026-09-08: a CI run flagged three packages, and bumping all
+# three flagged three DIFFERENT ones an hour later.
+cat > "$TMPDIR/same-major.json" <<'EOF'
 {
+  "shadcn": {"current": "4.17.0", "latest": "4.18.0"},
   "libphonenumber-js": {"current": "1.13.10", "latest": "1.13.11"}
 }
 EOF
-if ./scripts/check-outdated.sh "$TMPDIR/all-unaccounted.json" "$TMPDIR/allowlist.txt" > "$TMPDIR/out.txt" 2>&1; then
-  fail "expected failure when no outdated packages are allowlisted"
+if ! ./scripts/check-outdated.sh "$TMPDIR/same-major.json" "$TMPDIR/allowlist.txt" > "$TMPDIR/out.txt" 2>&1; then
+  fail "a same-major gap must not fail the check"
+fi
+# Not failing must never mean not shown.
+grep -q "shadcn" "$TMPDIR/out.txt" || fail "same-major packages must still be listed"
+grep -q "libphonenumber-js" "$TMPDIR/out.txt" || fail "same-major packages must still be listed"
+
+# --- A 0.x minor is treated as same-major, deliberately. ---
+#
+# By strict semver a 0.x minor is the breaking-change slot, so this is a
+# judgment call rather than an oversight: Dependabot groups 0.x minors into
+# the same weekly minor-and-patch PR, so failing here would add noise
+# without changing how the bump is actually handled.
+cat > "$TMPDIR/zerover.json" <<'EOF'
+{"@anthropic-ai/sdk": {"current": "0.123.0", "latest": "0.124.0"}}
+EOF
+if ! ./scripts/check-outdated.sh "$TMPDIR/zerover.json" "$TMPDIR/allowlist.txt" > "$TMPDIR/out.txt" 2>&1; then
+  fail "a 0.x minor should be treated as same-major"
+fi
+
+# --- A prerelease MAJOR still counts as a major gap. ---
+#
+# prisma's `latest` is an RC a whole major ahead; the tail must not confuse
+# the comparison into reading it as same-major.
+cat > "$TMPDIR/prerelease.json" <<'EOF'
+{"someprisma": {"current": "7.10.0", "latest": "8.0.0-rc.13"}}
+EOF
+if ./scripts/check-outdated.sh "$TMPDIR/prerelease.json" "$TMPDIR/allowlist.txt" > "$TMPDIR/out.txt" 2>&1; then
+  fail "a prerelease one major ahead must still fail"
+fi
+
+# --- An unparseable version fails OPEN (treated as a major gap). ---
+#
+# The cost of a needless red is one look; the cost of waving it through is
+# that the check stops covering the only case it still fails on.
+cat > "$TMPDIR/unparseable.json" <<'EOF'
+{"weird": {"current": "not-a-version", "latest": "also-not"}}
+EOF
+if ./scripts/check-outdated.sh "$TMPDIR/unparseable.json" "$TMPDIR/allowlist.txt" > "$TMPDIR/out.txt" 2>&1; then
+  fail "an unparseable version must fail open, not be skipped"
 fi
 
 

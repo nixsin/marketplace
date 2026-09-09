@@ -573,6 +573,42 @@ copies that could drift. The override-log fetch is best-effort: no PR yet
 means empty context, the same fail-open default the CI jobs use.
 
 
+## The freshness check fails on MAJORS only, because any-staleness was always red
+
+`check-outdated.sh` used to fail on any outdated package not on the
+allowlist. That is not the same as "the repo is behind" — it goes red on
+essentially every publish, by anyone, anywhere in the tree.
+
+Measured on 2026-09-08 rather than assumed: a CI run flagged
+`@anthropic-ai/sdk`, `@playwright/test` and `lint-staged`. Bumping all three
+and re-running an hour later flagged `@types/node`, `lucide-react` and
+`typescript-eslint` instead. Six packages in one morning, not one of them a
+real problem. A check that is red by default stops being read — the same
+failure this file already records for `perf-budget`'s LCP, where a 70%
+failure rate on a required check inverted its meaning.
+
+**Minor and patch gaps are already covered elsewhere.** Dependabot opens a
+grouped minor-and-patch PR every Monday, so a red badge adds no information
+the PR queue does not already carry. **Majors are ungrouped**, filed
+individually, and are the ones that need a decision — those still fail.
+
+Everything is still **printed** either way, under a "same-major updates"
+heading. Not failing never means not shown.
+
+**Two edge cases, both deliberate and both pinned by tests:**
+
+- **A 0.x minor reads as same-major.** By strict semver that is the
+  breaking-change slot, so it is a judgment call — but Dependabot groups 0.x
+  minors into the same weekly PR regardless, so failing would add a red
+  without changing how the bump is reviewed.
+- **An unparseable version fails OPEN**, treated as a major. The cost of a
+  needless red is one look; the cost of waving it through is that the check
+  stops covering the only case it still fails on.
+
+The allowlist keeps its original meaning and is unchanged — it exempts
+majors blocked outside our code. What changed is only which gaps are
+considered at all.
+
 ## Dependabot
 
 `.github/dependabot.yml`: weekly (Monday), grouped minor/patch for npm and
