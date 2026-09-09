@@ -35,7 +35,7 @@ function inputError(message) {
  * shown."
  *
  * Usage:
- *   scripts/check-outdated.mjs <outdated-json-file> <allowlist-file> [pnpm-status]
+ *   scripts/check-outdated.mjs <outdated-json-file> <allowlist-file> <pnpm-status>
  *
  * `pnpm-status` is `pnpm outdated`'s own exit code and is REQUIRED, because
  * it is the only thing that makes an empty file trustworthy. pnpm exits 0

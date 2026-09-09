@@ -41,15 +41,17 @@ jobs:
       # scripts/check-outdated.mjs (decisions in lib/check-outdated.mjs,
       # tested by lib/check-outdated.test.mjs, run in
       # ci.yml's test-ci-scripts job) does the actual pass/fail decision;
-      # this step only gathers pnpm's own output for it. `|| true` because
-      # pnpm outdated itself still exits 1 even with --format json, and
-      # the JSON on stdout is exactly what's needed either way.
+      # this step only gathers pnpm's own stdout AND exit status for it --
+      # both, because the status is what makes an empty file trustworthy
+      # (see the inline comment on the run step below).
       - run: |
-          # `|| true` because pnpm outdated exits 1 whenever anything IS
-          # outdated. That also swallows a real failure (registry, auth,
-          # config), which produces no stdout -- so the status is captured
-          # and handed to the checker, which refuses to read an empty file
-          # as "nothing outdated" unless pnpm actually said so.
+          # `set +e` rather than `|| true`: pnpm outdated exits 1 whenever
+          # anything IS outdated, so its status has to be tolerated -- but
+          # `|| true` DISCARDS it, and a real failure (registry, auth,
+          # config) produces no stdout, so an empty file would then be
+          # indistinguishable from "nothing outdated". The status is
+          # captured and passed as a required argument; the checker refuses
+          # to call an empty file clean unless pnpm actually said so.
           set +e
           pnpm outdated --recursive --format json > /tmp/outdated.json
           pnpm_status=$?
