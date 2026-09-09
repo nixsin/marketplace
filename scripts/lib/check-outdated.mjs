@@ -27,12 +27,19 @@ import semver from "semver";
  * Major version of a well-formed version string, or `null` for anything
  * else — including a range like ">=1.2.3", which is not a version.
  *
- * `semver.coerce` is deliberately NOT used: it turns "build1.alpha" into
- * 1.0.0, which is exactly the guess this function exists to refuse.
+ * STRICT parsing, and `loose` is deliberately off. Loose mode accepts
+ * `=1.2.3` and `01.2.3`, which would contradict the fail-open rule below by
+ * letting two non-standard values compare equal — and it buys nothing here:
+ * the strict parser already accepts the `v1.2.3` form and trimmed
+ * whitespace, which is every shape `pnpm outdated` actually emits. Measured
+ * both ways rather than assumed.
+ *
+ * `semver.coerce` is deliberately NOT used either: it turns "build1.alpha"
+ * into 1.0.0, which is exactly the guess this function exists to refuse.
  */
 export function majorOf(value) {
   if (typeof value !== "string") return null;
-  const parsed = semver.parse(value.trim(), { loose: true });
+  const parsed = semver.parse(value.trim());
   return parsed ? parsed.major : null;
 }
 

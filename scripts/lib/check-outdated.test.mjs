@@ -41,6 +41,8 @@ test("majorOf refuses anything that is not a version", () => {
     "^ v =1.2.3",
     "^^1.2.3",
     ">=1.2.3", // a range is not a version
+    "=1.2.3", // loose-mode only; must not be accepted
+    "01.2.3", // loose-mode only: leading zero
     "",
     null,
     undefined,
