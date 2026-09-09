@@ -146,15 +146,19 @@ test("a missing input file is an input error, not a dependency finding", () => {
   }
 });
 
-test("REFUSES empty output when pnpm said it found something", () => {
-  // status 1 means "found outdated packages", so no output contradicts it --
-  // and that combination is also what a failure mid-run looks like. Reading
-  // it as clean is the same hole the 137 case closes, entered from the one
-  // status that IS otherwise expected.
-  const { status, output } = run("", { pnpmStatus: "1" });
-  assert.equal(status, 2);
-  assert.match(output, /wrote nothing/);
-  assert.doesNotMatch(output, /No outdated packages/);
+test("REFUSES an empty RESULT when pnpm said it found something", () => {
+  // status 1 means "found outdated packages", so an empty result contradicts
+  // it -- and that combination is also what a failure mid-run looks like.
+  //
+  // Both spellings, because they are the same claim and an earlier version
+  // checked only the raw text, which left "{}" accepted: it parsed, reported
+  // "No outdated packages" and exited 0.
+  for (const body of ["", "{}"]) {
+    const { status, output } = run(body, { pnpmStatus: "1" });
+    assert.equal(status, 2, `expected an input error for ${JSON.stringify(body)}`);
+    assert.match(output, /reported none/);
+    assert.doesNotMatch(output, /No outdated packages/);
+  }
 });
 
 test("the pnpm status is REQUIRED, not optional", () => {

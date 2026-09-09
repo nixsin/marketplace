@@ -84,20 +84,17 @@ function loadInputs() {
     return null;
   }
 
-  // Status 1 means pnpm found something, so empty output contradicts it —
-  // and that combination is also what a failure mid-run looks like.
-  if (raw === "" && pnpmStatus === "1") {
-    inputError(
-      'pnpm outdated exited 1 ("found outdated packages") but wrote nothing — refusing to treat that as clean.',
-    );
-    return null;
-  }
-  // Status 0 with no output is the ordinary everything-current case.
-  if (raw === "") return {};
+  // Status 0 with no output is the ordinary everything-current case. The
+  // status-1 contradiction is checked once, below, against the PARSED map --
+  // an empty string and an empty object are the same claim, and checking
+  // only the string left `{}` accepted.
+  if (raw === "" && pnpmStatus === "0") return {};
 
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    // "" is not JSON; treat it as the empty map so the one invariant below
+    // reports it, rather than a parse error that hides the real problem.
+    parsed = raw === "" ? {} : JSON.parse(raw);
   } catch (error) {
     inputError(`could not parse ${outdatedPath}: ${error.message}`);
     return null;
@@ -109,6 +106,18 @@ function loadInputs() {
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     inputError(
       `expected a package map in ${outdatedPath}, got ${Array.isArray(parsed) ? "an array" : String(parsed === null ? "null" : typeof parsed)}.`,
+    );
+    return null;
+  }
+
+  // THE invariant, stated once: status 1 means pnpm found outdated packages,
+  // so an empty result contradicts it — and that combination is also what a
+  // failure mid-run looks like. Checked here rather than on the raw text
+  // because "" and "{}" are the same claim, and checking only the first left
+  // the second accepted.
+  if (pnpmStatus === "1" && Object.keys(parsed).length === 0) {
+    inputError(
+      'pnpm outdated exited 1 ("found outdated packages") but reported none — refusing to treat that as clean.',
     );
     return null;
   }

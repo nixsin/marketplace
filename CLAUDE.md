@@ -629,7 +629,10 @@ and the check would have passed while checking nothing. The workflow now
 captures pnpm's status and passes it, and any status other than 0 or 1 is
 refused.
 
-**The status is REQUIRED, and status 1 with empty output is refused.**
+**The status is REQUIRED, and status 1 with an empty RESULT is refused.**
+Checked against the parsed map, not the raw text — `""` and `"{}"` are the
+same claim, and an earlier version checked only the first, which left `{}`
+parsing cleanly into "No outdated packages" and exit 0.
 Optional would have been the same hole with extra steps — any caller that
 forgot it gets the unvouched behaviour back silently. And `1` means pnpm
 found something, so no output contradicts it; that combination is also what
