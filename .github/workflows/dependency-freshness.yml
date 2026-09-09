@@ -45,5 +45,13 @@ jobs:
       # pnpm outdated itself still exits 1 even with --format json, and
       # the JSON on stdout is exactly what's needed either way.
       - run: |
-          pnpm outdated --recursive --format json > /tmp/outdated.json || true
-          node scripts/check-outdated.mjs /tmp/outdated.json scripts/known-outdated-packages.txt
+          # `|| true` because pnpm outdated exits 1 whenever anything IS
+          # outdated. That also swallows a real failure (registry, auth,
+          # config), which produces no stdout -- so the status is captured
+          # and handed to the checker, which refuses to read an empty file
+          # as "nothing outdated" unless pnpm actually said so.
+          set +e
+          pnpm outdated --recursive --format json > /tmp/outdated.json
+          pnpm_status=$?
+          set -e
+          node scripts/check-outdated.mjs /tmp/outdated.json scripts/known-outdated-packages.txt "$pnpm_status"

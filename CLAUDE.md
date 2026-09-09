@@ -618,6 +618,27 @@ CLI, matching what this file already prescribes for `pr-reconciliation` and
 `ci-progress-comment`: the workflow gathers inputs, the library decides, and
 the tests exercise the real code path rather than a parallel copy.
 
+**An empty input is only trusted when pnpm vouches for it**, and getting
+this wrong was a regression introduced by the move to JS. `pnpm outdated`
+exits 1 whenever anything IS outdated, so the workflow has to swallow that —
+which also swallows a registry, auth or config failure, and those produce no
+stdout. The shell version died on an empty file (`jq` on empty, then a bash
+integer error under `set -e`), so a masked failure was loud; treating empty
+as success made "pnpm could not run" byte-identical to "nothing is outdated",
+and the check would have passed while checking nothing. The workflow now
+captures pnpm's status and passes it, and any status other than 0 or 1 is
+refused.
+
+**Three exit codes, kept distinct**, because CI must be able to tell a
+dependency finding from the script being unable to answer at all: `0`
+nothing actionable, `1` an actionable major, `2` could not run (bad
+arguments, unreadable input, or a pnpm failure). An uncaught `readFileSync`
+would have exited 1 and made a broken checkout look like a real major.
+
+**`process.exitCode`, never `process.exit()`** — the latter can terminate
+before piped stdout has flushed, which would quietly break the one guarantee
+this script makes.
+
 **Two edge cases, both deliberate and both pinned by tests:**
 
 - **A 0.x minor reads as same-major.** By strict semver that is the
