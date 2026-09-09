@@ -28,6 +28,7 @@
     "knip": "^6.34.0",
     "lint-staged": "^17.4.1",
     "openai": "^7.10.0",
+    "semver": "^7.8.5",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.69.0"
   },

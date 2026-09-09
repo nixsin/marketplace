@@ -38,11 +38,12 @@ jobs:
       # matter how long this badge stays red, so counting them as a
       # failure isn't honest signal, it's permanent noise that would mask
       # a real, newly-actionable staleness landing alongside them.
-      # scripts/check-outdated.sh (tested — check-outdated.test.sh, run in
+      # scripts/check-outdated.mjs (decisions in lib/check-outdated.mjs,
+      # tested by lib/check-outdated.test.mjs, run in
       # ci.yml's test-ci-scripts job) does the actual pass/fail decision;
       # this step only gathers pnpm's own output for it. `|| true` because
       # pnpm outdated itself still exits 1 even with --format json, and
       # the JSON on stdout is exactly what's needed either way.
       - run: |
           pnpm outdated --recursive --format json > /tmp/outdated.json || true
-          ./scripts/check-outdated.sh /tmp/outdated.json scripts/known-outdated-packages.txt
+          node scripts/check-outdated.mjs /tmp/outdated.json scripts/known-outdated-packages.txt

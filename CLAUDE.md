@@ -595,6 +595,29 @@ individually, and are the ones that need a decision — those still fail.
 Everything is still **printed** either way, under a "same-major updates"
 heading. Not failing never means not shown.
 
+**Version parsing is `semver`'s job, not ours, and that was the second
+lesson.** Two hand-rolled parsers were wrong in review, both in the same
+direction — quietly treating a malformed value as a real version rather than
+as unknown. The first stripped leading text and kept the first number it
+found, so `build1.alpha` and `release1-beta` both read as major 1 and
+compared **equal**; the replacement regex still accepted `1.2.3-foo..bar`
+and `^ v =1.2.3`. Each was individually fixable and that was the wrong
+response to the second one — versions have a specification and a canonical
+implementation, and matching it with a regex is a rewrite nobody asked for.
+`semver` is now a real devDependency (it was previously present only
+transitively, which is the phantom-dependency trap this file already records
+for `@jest/globals`).
+
+`semver.coerce` is deliberately **not** used: it turns `build1.alpha` into
+`1.0.0`, which is exactly the guess the parser exists to refuse. A range
+like `>=1.2.3` is also refused — it is not a version.
+
+**The decision moved out of bash entirely**, into
+`scripts/lib/check-outdated.mjs` with a thin `scripts/check-outdated.mjs`
+CLI, matching what this file already prescribes for `pr-reconciliation` and
+`ci-progress-comment`: the workflow gathers inputs, the library decides, and
+the tests exercise the real code path rather than a parallel copy.
+
 **Two edge cases, both deliberate and both pinned by tests:**
 
 - **A 0.x minor reads as same-major.** By strict semver that is the
@@ -2189,7 +2212,7 @@ entry tracks an unfixable dependency, not a PR. A closed PR is therefore
 never evidence a blocker cleared — re-check the upstream package.
 
 **Every entry carries its reason inline** (`prisma  # \`latest\` is 8.0.0-rc.12`),
-and `check-outdated.sh` strips it before matching. A bare package name cannot
+and `lib/check-outdated.mjs` strips it before matching. A bare package name cannot
 be reviewed without cross-referencing this file, which is exactly how the two
 drift apart; the reason is what lets a reader decide whether the entry is
 still true without re-deriving it. Note the failure mode if that strip ever
