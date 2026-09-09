@@ -32,7 +32,7 @@ function run(outdatedJson, { allowlist = ALLOWLIST, args, pnpmStatus } = {}) {
     try {
       const stdout = execFileSync(
         process.execPath,
-        args ?? [CLI, outPath, allowPath, ...(pnpmStatus === undefined ? [] : [pnpmStatus])],
+        args ?? [CLI, outPath, allowPath, pnpmStatus ?? "1"],
         { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
       );
       return { status: 0, output: stdout };
@@ -48,7 +48,7 @@ function run(outdatedJson, { allowlist = ALLOWLIST, args, pnpmStatus } = {}) {
 }
 
 test("exits 0 and says so when nothing is outdated", () => {
-  const { status, output } = run("{}");
+  const { status, output } = run("{}", { pnpmStatus: "0" });
   assert.equal(status, 0);
   assert.match(output, /No outdated packages/);
 });
@@ -56,7 +56,7 @@ test("exits 0 and says so when nothing is outdated", () => {
 test("an EMPTY file is the ordinary success case, not a parse error", () => {
   // `pnpm outdated` writes nothing when everything is current, so this path
   // is reached on every green run — a JSON.parse("") would fail there.
-  const { status, output } = run("");
+  const { status, output } = run("", { pnpmStatus: "0" });
   assert.equal(status, 0);
   assert.match(output, /No outdated packages/);
 });
@@ -131,7 +131,7 @@ test("a missing input file is an input error, not a dependency finding", () => {
     let status = 0;
     let output = "";
     try {
-      execFileSync(process.execPath, [CLI, join(dir, "nope.json"), allowPath], {
+      execFileSync(process.execPath, [CLI, join(dir, "nope.json"), allowPath, "1"], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -144,4 +144,45 @@ test("a missing input file is an input error, not a dependency finding", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("REFUSES empty output when pnpm said it found something", () => {
+  // status 1 means "found outdated packages", so no output contradicts it --
+  // and that combination is also what a failure mid-run looks like. Reading
+  // it as clean is the same hole the 137 case closes, entered from the one
+  // status that IS otherwise expected.
+  const { status, output } = run("", { pnpmStatus: "1" });
+  assert.equal(status, 2);
+  assert.match(output, /wrote nothing/);
+  assert.doesNotMatch(output, /No outdated packages/);
+});
+
+test("the pnpm status is REQUIRED, not optional", () => {
+  // Optional would be the same hole with extra steps: a caller that forgot
+  // it would silently get the unvouched behaviour back.
+  const { status, output } = run("{}", { args: [CLI, "a.json", "b.txt"] });
+  assert.equal(status, 2);
+  assert.match(output, /Usage:/);
+});
+
+test("valid JSON of the wrong SHAPE is an input error", () => {
+  // `[]` would report "No outdated packages" and pass; `null` would throw
+  // out of Object.keys and exit 1, which reads as a dependency finding.
+  for (const [body, expected] of [
+    ["[]", /an array/],
+    ["null", /null/],
+    ['"a string"', /string/],
+    ["42", /number/],
+  ]) {
+    const { status, output } = run(body, { pnpmStatus: "1" });
+    assert.equal(status, 2, `expected an input error for ${body}`);
+    assert.match(output, /expected a package map/);
+    assert.match(output, expected);
+  }
+});
+
+test("malformed JSON is an input error, not a dependency finding", () => {
+  const { status, output } = run("{not json", { pnpmStatus: "1" });
+  assert.equal(status, 2);
+  assert.match(output, /could not parse/);
 });

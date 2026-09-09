@@ -37,51 +37,89 @@ function inputError(message) {
  * Usage:
  *   scripts/check-outdated.mjs <outdated-json-file> <allowlist-file> [pnpm-status]
  *
- * `pnpm-status` is `pnpm outdated`'s own exit code, and passing it is what
- * keeps an EMPTY input honest. pnpm exits 0 when nothing is outdated and 1
- * when something is, so the workflow has to swallow that 1 — which also
- * swallows a registry, auth or config failure, and those produce no stdout.
- * Without the status, "pnpm could not run" is byte-identical to "nothing is
- * outdated" and this check passes while checking nothing. That is the silent
- * skip this repo keeps getting bitten by, so an unexpected status is refused
- * rather than reported as clean.
+ * `pnpm-status` is `pnpm outdated`'s own exit code and is REQUIRED, because
+ * it is the only thing that makes an empty file trustworthy. pnpm exits 0
+ * when nothing is outdated and 1 when something is, so the workflow has to
+ * swallow that 1 — which also swallows a registry, auth or config failure,
+ * and those produce no stdout. Without the status, "pnpm could not run" is
+ * byte-identical to "nothing is outdated" and this check passes while
+ * checking nothing.
+ *
+ * Optional would have been the same hole with extra steps: any caller that
+ * forgot it would silently get the unvouched behaviour back.
  */
 const [outdatedPath, allowlistPath, pnpmStatus] = process.argv.slice(2);
-if (!outdatedPath || !allowlistPath) {
-  console.error(
-    "Usage: scripts/check-outdated.mjs <outdated-json-file> <allowlist-file> [pnpm-status]",
-  );
-  process.exitCode = EXIT_INPUT_ERROR;
-}
 
-let outdated;
-let allowlist;
-if (process.exitCode !== EXIT_INPUT_ERROR) {
-  // Only 0 and 1 are `pnpm outdated` reporting a result. Anything else is it
-  // failing, and an empty file then means nothing at all.
-  if (pnpmStatus !== undefined && !["0", "1"].includes(pnpmStatus)) {
+/**
+ * Every way the inputs can be untrustworthy, in one place.
+ *
+ * Returns the outdated map, or null having already reported why. Written as
+ * one function rather than checks scattered down the file because each
+ * round of review found another gap in the same class — a malformed input
+ * being read as "clean" — and the fix for a class is one place to be right.
+ */
+function loadInputs() {
+  if (!outdatedPath || !allowlistPath || pnpmStatus === undefined) {
+    console.error(
+      "Usage: scripts/check-outdated.mjs <outdated-json-file> <allowlist-file> <pnpm-status>",
+    );
+    process.exitCode = EXIT_INPUT_ERROR;
+    return null;
+  }
+
+  // Only 0 and 1 are pnpm reporting a result at all.
+  if (!["0", "1"].includes(pnpmStatus)) {
     inputError(
       `pnpm outdated exited ${pnpmStatus} — refusing to report "no outdated packages" from output it did not produce.`,
     );
-  } else {
-    try {
-      const raw = readFileSync(outdatedPath, "utf8").trim();
-      // pnpm writes nothing when everything is current, so an empty file is
-      // the ordinary success case — but only once the status above vouches
-      // for it.
-      outdated = raw ? JSON.parse(raw) : {};
-      allowlist = readFileSync(allowlistPath, "utf8");
-    } catch (error) {
-      inputError(`could not read its inputs: ${error.message}`);
-    }
+    return null;
   }
+
+  let raw;
+  try {
+    raw = readFileSync(outdatedPath, "utf8").trim();
+    allowlist = readFileSync(allowlistPath, "utf8");
+  } catch (error) {
+    inputError(`could not read its inputs: ${error.message}`);
+    return null;
+  }
+
+  // Status 1 means pnpm found something, so empty output contradicts it —
+  // and that combination is also what a failure mid-run looks like.
+  if (raw === "" && pnpmStatus === "1") {
+    inputError(
+      'pnpm outdated exited 1 ("found outdated packages") but wrote nothing — refusing to treat that as clean.',
+    );
+    return null;
+  }
+  // Status 0 with no output is the ordinary everything-current case.
+  if (raw === "") return {};
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    inputError(`could not parse ${outdatedPath}: ${error.message}`);
+    return null;
+  }
+
+  // Valid JSON is not the same as the shape expected. `[]` would report
+  // "No outdated packages" and pass; `null` would throw out of
+  // Object.keys and exit 1, which reads as a dependency finding.
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    inputError(
+      `expected a package map in ${outdatedPath}, got ${Array.isArray(parsed) ? "an array" : String(parsed === null ? "null" : typeof parsed)}.`,
+    );
+    return null;
+  }
+
+  return parsed;
 }
 
-if (outdated === undefined) {
-  // An input error was already reported and process.exitCode set.
-} else {
-  report(outdated, allowlist);
-}
+let allowlist;
+const outdated = loadInputs();
+
+if (outdated !== null) report(outdated, allowlist);
 
 /**
  * `process.exitCode` throughout, never `process.exit()`. The latter can

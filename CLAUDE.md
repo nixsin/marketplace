@@ -629,6 +629,21 @@ and the check would have passed while checking nothing. The workflow now
 captures pnpm's status and passes it, and any status other than 0 or 1 is
 refused.
 
+**The status is REQUIRED, and status 1 with empty output is refused.**
+Optional would have been the same hole with extra steps — any caller that
+forgot it gets the unvouched behaviour back silently. And `1` means pnpm
+found something, so no output contradicts it; that combination is also what
+a failure mid-run looks like.
+
+**Valid JSON is not the same as the expected shape.** `[]` would have
+reported "No outdated packages" and passed; `null` would have thrown out of
+`Object.keys` and exited 1, which reads as a dependency finding. The
+top-level value must be a non-null, non-array object.
+
+Every one of these arrived as a separate review round finding the same
+class — a malformed input read as "clean" — which is why the validation is
+now one function rather than checks scattered down the file.
+
 **Three exit codes, kept distinct**, because CI must be able to tell a
 dependency finding from the script being unable to answer at all: `0`
 nothing actionable, `1` an actionable major, `2` could not run (bad
