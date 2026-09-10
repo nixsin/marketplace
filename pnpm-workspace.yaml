@@ -36,8 +36,8 @@ overrides:
   # this is a patch-level forcing rather than an API change. Remove once
   # a @nestjs/platform-express release declares 2.3.0 or later.
   multer@<2.3.0: ^2.3.0
-  # GHSA-... (HIGH, maxTotalMergeKeys does not bound CPU use on empty
-  # merge keys), fixed in 3.15.2. Reached only through
+  # GHSA-2883-xcg3-v3hh / CVE-2026-84375 (HIGH, maxTotalMergeKeys does
+  # not limit CPU use for empty merge sources), fixed in 3.15.2. Reached only through
   # @istanbuljs/load-nyc-config, i.e. Jest's coverage machinery.
   #
   # SCOPED TO THE 3.x LINE ON PURPOSE, and a bare `js-yaml: ^3.15.2`
