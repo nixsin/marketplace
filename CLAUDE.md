@@ -677,6 +677,31 @@ The allowlist keeps its original meaning and is unchanged — it exempts
 majors blocked outside our code. What changed is only which gaps are
 considered at all.
 
+## `test-ci-scripts` has no `node_modules` unless it installs
+
+The job checks out, sets up Node and runs `node --test` directly — for most
+of its life with **no install at all**. That worked because every script it
+covers imported only Node built-ins and local files, so nothing ever noticed.
+
+Adding `semver` to `scripts/lib/check-outdated.mjs` broke it:
+`Cannot find package 'semver' imported from .../check-outdated.mjs`. That
+error reads like a missing dependency and is the **opposite** — `semver` is
+correctly declared as a root devDependency and resolves fine locally, where
+`node_modules` exists. The job simply never installed anything.
+
+Worth recognising by shape: a module-resolution failure in CI for a package
+that resolves locally is about **whether that job installs**, not about the
+declaration. Check the job's own steps before touching `package.json`.
+
+`pnpm install --frozen-lockfile` is now in the job, with `timeout-minutes`
+raised from 5 to 10 — the tests run in seconds, a cold pnpm store cache does
+not. The alternative was hand-rolling version parsing again, which this repo
+has already paid for twice (see the freshness section: two parsers, both
+wrong in review, both treating a malformed value as a real version).
+
+**So any new import of a real package into `scripts/` is now free, and was
+not before.** That is the actual change in what this job can support.
+
 ## Dependabot
 
 `.github/dependabot.yml`: weekly (Monday), grouped minor/patch for npm and

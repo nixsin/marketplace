@@ -311,13 +311,31 @@ jobs:
   # those.
   test-ci-scripts:
     name: Test CI/reconciliation scripts
-    timeout-minutes: 5
+    # Raised from 5 alongside the install below: the tests themselves run in
+    # seconds, but a cold pnpm store cache does not.
+    timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
           node-version: 22
+          cache: pnpm
+      # This job deliberately ran with NO node_modules for most of its life,
+      # and every script it tests imported only Node built-ins and local
+      # files, so nothing noticed. `scripts/lib/check-outdated.mjs` now
+      # imports `semver`, and the job failed with
+      # `Cannot find package 'semver'` -- which reads like a missing
+      # dependency and is the opposite: semver is correctly declared, and
+      # this job simply never installed anything.
+      #
+      # The alternative is hand-rolling the version parsing again, and this
+      # repo has already paid for that twice (see CLAUDE.md's freshness
+      # section: two parsers, both wrong in review, both in the direction of
+      # treating a malformed value as a real version). An install is the
+      # cheaper half of that trade.
+      - run: pnpm install --frozen-lockfile
       - run: node --test scripts/lib/pr-reconciliation.test.mjs
       - run: node --test scripts/lib/check-outdated.test.mjs
       - run: node --test scripts/check-outdated.test.mjs
