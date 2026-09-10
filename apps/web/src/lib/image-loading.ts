@@ -44,3 +44,33 @@ export function shouldBypassOptimizer(src: string | null | undefined): boolean {
   // bypassing could serve a full-resolution original to a phone.
   return false;
 }
+
+/**
+ * The origin product images are actually fetched from, or null when blob
+ * storage is not configured (or is configured with an unusable value).
+ *
+ * Exists so the layout can preconnect to it. That hint is only worth
+ * anything BECAUSE of `shouldBypassOptimizer` above: once the browser
+ * stops proxying images through our own origin, the LCP image lives on a
+ * third-party host the document has never spoken to, so the request pays
+ * a fresh DNS + TCP + TLS handshake before a single byte moves. Measured
+ * on production `/hi?page=2`: `resourceLoadDelay` 485 ms against a
+ * `resourceLoadDuration` of 147 ms -- most of the wait was getting to the
+ * host, not transferring from it.
+ *
+ * `new URL()` rather than string handling, and the try/catch is
+ * load-bearing for the same reason it is on `getApiOrigin`: this runs at
+ * module load, which for a layout is during Next's static generation, so
+ * an unset or relative value would fail the whole build rather than one
+ * image. Null means "no separate origin worth a hint", which is the
+ * correct answer for both a missing value and a same-origin one.
+ */
+export function blobOrigin(): string | null {
+  const configured = process.env.NEXT_PUBLIC_BLOB_BASE_URL ?? "";
+  if (!configured) return null;
+  try {
+    return new URL(configured).origin;
+  } catch {
+    return null;
+  }
+}

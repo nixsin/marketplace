@@ -14,6 +14,7 @@ import { BUILD_COMMIT, BUILD_TIME } from "@medinstru/config";
 import { API_URL, SITE_URL } from "@medinstru/config/web";
 import "../globals.css";
 import { OG_IMAGE_HEIGHT, OG_IMAGE_WIDTH } from "@/lib/og-image";
+import { blobOrigin } from "@/lib/image-loading";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -58,6 +59,12 @@ function getApiOrigin(): string | null {
   }
 }
 const API_ORIGIN = getApiOrigin();
+
+// The LCP element on every catalogue page is the first product card's
+// image, and it is served straight from blob storage rather than through
+// our own origin -- see src/lib/image-loading.ts for why. That makes it a
+// cross-origin request the document has otherwise never made.
+const BLOB_ORIGIN = blobOrigin();
 
 // metadataBase is required, not optional, once any route uses a relative
 // OpenGraph image URL (the product-details page does -- seeded imageUrls
@@ -151,6 +158,18 @@ export default async function LocaleLayout({
       <head>
         {API_ORIGIN !== null && (
           <link rel="preconnect" href={API_ORIGIN} crossOrigin="anonymous" />
+        )}
+        {/* Deliberately WITHOUT crossOrigin, unlike the API hint directly
+            above, and copying that attribute across would silently undo
+            this. Browsers keep a separate connection pool per origin per
+            CORS mode, so the hint only helps if it matches the request
+            that follows -- and the request that follows is a plain
+            <img src>, which is no-CORS. `next/image` sets no crossorigin
+            attribute (verified in the served HTML), so an anonymous
+            preconnect here would warm a pool nothing ever reuses: the
+            cost of the handshake, none of the benefit. */}
+        {BLOB_ORIGIN !== null && BLOB_ORIGIN !== API_ORIGIN && (
+          <link rel="preconnect" href={BLOB_ORIGIN} />
         )}
       </head>
       <body className="min-h-full flex flex-col">
