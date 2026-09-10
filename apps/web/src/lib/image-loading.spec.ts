@@ -69,6 +69,30 @@ describe("blobOrigin", () => {
     }
   });
 
+  it("refuses a scheme the browser cannot preconnect to", () => {
+    // None of these throw, so a try/catch does not catch them, and two of
+    // them are actively harmful rather than merely useless: `data:` and
+    // `javascript:` have the STRING "null" as their origin, which is
+    // truthy and renders <link rel="preconnect" href="null"> -- pointing
+    // the browser at a relative path on our own host. Caught in review.
+    for (const bad of [
+      "data:image/svg+xml,<svg/>",
+      "javascript:alert(1)",
+      "ftp://images.laxair.shop",
+    ]) {
+      process.env.NEXT_PUBLIC_BLOB_BASE_URL = bad;
+      expect(blobOrigin()).toBeNull();
+    }
+  });
+
+  it("accepts plain http, not only https", () => {
+    // A local or staging blob host is a real configuration, and rejecting
+    // it would silently drop the hint in exactly the environment where
+    // someone is trying to observe it.
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = "http://localhost:9000/bucket";
+    expect(blobOrigin()).toBe("http://localhost:9000");
+  });
+
   it("returns null rather than THROWING on an unusable value", () => {
     // Load-bearing: this is read at module load, which for the layout is
     // during static generation, so throwing here fails every page's build

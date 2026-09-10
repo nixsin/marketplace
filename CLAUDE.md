@@ -2841,12 +2841,28 @@ plain `<img src>` with no `crossorigin` attribute, so an anonymous preconnect
 would warm a pool nothing ever reuses — the cost of the handshake, none of
 the benefit. Verified in the built HTML, not assumed.
 
+**And it is NOT skipped when the two origins match.** A
+`BLOB_ORIGIN !== API_ORIGIN` guard looks like de-duplication and is the same
+mistake in reverse — two hints to one origin in two CORS modes are two
+different connections, so suppressing this one leaves the LCP element with
+nothing warmed. Written that way first and caught in review, one paragraph
+below a comment explaining why pools are per CORS mode.
+
 `blobOrigin()` returns `null` rather than throwing on an unset or relative
 value, for the same reason `getApiOrigin` does: it is read at module load,
 which for a layout is during static generation, so an invalid value would
-fail every page's build rather than one image. Null is also the *correct*
-answer there, not merely the safe one — a same-origin value has no separate
-origin worth a hint.
+fail every page's build rather than one image.
+
+**A try/catch is not enough, because `new URL` succeeds on things that are
+not fetchable hosts and each fails differently.** `data:` and `javascript:`
+parse fine and have the *string* `"null"` as their origin — truthy, so it
+renders `<link rel="preconnect" href="null">` and sends the browser after a
+relative path called `null` on our own host. `ftp://host` returns a
+real-looking origin that cannot be preconnected at all. Neither throws.
+Verified directly, and the protocol is now checked against `http:`/`https:`.
+Both `http:` and `https:` are accepted deliberately: a local or staging blob
+host is a real configuration, and rejecting it would drop the hint in exactly
+the environment where someone is trying to observe it.
 
 ### What is NOT the fix, having measured it
 

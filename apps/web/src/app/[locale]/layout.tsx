@@ -167,10 +167,15 @@ export default async function LocaleLayout({
             <img src>, which is no-CORS. `next/image` sets no crossorigin
             attribute (verified in the served HTML), so an anonymous
             preconnect here would warm a pool nothing ever reuses: the
-            cost of the handshake, none of the benefit. */}
-        {BLOB_ORIGIN !== null && BLOB_ORIGIN !== API_ORIGIN && (
-          <link rel="preconnect" href={BLOB_ORIGIN} />
-        )}
+            cost of the handshake, none of the benefit.
+
+            Which is also why this is NOT skipped when the two origins
+            match. A `BLOB_ORIGIN !== API_ORIGIN` guard looks like
+            de-duplication and is the same mistake in reverse: two hints
+            to one origin in two CORS modes are two different
+            connections, so suppressing this one would leave the image --
+            the LCP element -- with nothing warmed. Caught in review. */}
+        {BLOB_ORIGIN !== null && <link rel="preconnect" href={BLOB_ORIGIN} />}
       </head>
       <body className="min-h-full flex flex-col">
         <LocaleProvider initialLocale={locale as Locale} initialMessages={messages}>

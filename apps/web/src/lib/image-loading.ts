@@ -62,14 +62,30 @@ export function shouldBypassOptimizer(src: string | null | undefined): boolean {
  * load-bearing for the same reason it is on `getApiOrigin`: this runs at
  * module load, which for a layout is during Next's static generation, so
  * an unset or relative value would fail the whole build rather than one
- * image. Null means "no separate origin worth a hint", which is the
- * correct answer for both a missing value and a same-origin one.
+ * image. A relative value has no origin to preconnect to, so null is the
+ * right answer there and not merely a safe one.
+ *
+ * The protocol check is not defensive noise -- `new URL` succeeds on
+ * plenty of strings that are not fetchable hosts, and each fails in a
+ * DIFFERENT way. `data:` and `javascript:` parse fine and yield the
+ * STRING "null" as their origin, which is truthy and would render
+ * `<link rel="preconnect" href="null">`, sending the browser after a
+ * relative path called "null" on our own host. `ftp://host` returns a
+ * real-looking origin the browser cannot preconnect to at all. Both were
+ * verified rather than reasoned about, and neither is caught by a
+ * try/catch, because neither throws.
+ *
+ * Note this deliberately does NOT compare against our own origin. It has
+ * no site origin to compare with here, and an earlier version's comment
+ * claimed a same-origin check it did not perform -- caught in review.
  */
 export function blobOrigin(): string | null {
   const configured = process.env.NEXT_PUBLIC_BLOB_BASE_URL ?? "";
   if (!configured) return null;
   try {
-    return new URL(configured).origin;
+    const url = new URL(configured);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return url.origin;
   } catch {
     return null;
   }
