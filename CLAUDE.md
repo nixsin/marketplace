@@ -696,16 +696,19 @@ newly published major goes unseen and the check passes. And CI restores the
 pnpm store between runs, so the cache is normally warm — this is the expected
 behaviour during a registry outage, not a corner case.
 
-So the workflow probes `${registry}/-/ping` first and exits **2** if it fails,
-which is what "could not run" already means here. It is an *independent*
-signal because pnpm gives none: stderr is empty and no exit code separates the
-cases. It deliberately does **not** cover a registry that dies mid-run — it
-converts the common case from "passes while checking stale data" into "refuses
-to answer".
+So the workflow runs `scripts/check-registry.mjs` first and exits **2** if it
+fails, which is what "could not run" already means here. It is an
+*independent* signal because pnpm gives none: stderr is empty and no exit code
+separates the cases. It deliberately does **not** cover a registry that dies
+mid-run — it converts the common case from "passes while checking stale data"
+into "refuses to answer".
 
-**The probe fetches package METADATA, not `/-/ping`** — a registry can serve
+**It fetches package METADATA and validates the body** — a registry can serve
 a public ping while refusing metadata, and metadata is the request pnpm
-actually makes.
+actually makes. A 2xx alone is not enough either: a captive portal, proxy
+error page or login screen all answer 200, so the body must parse as that
+package's document. Redirects are followed rather than counted as success,
+which bare `curl` does not do.
 
 **`pnpm view` is the obvious alternative and is strictly worse** — measured,
 because it looks like the more faithful probe: against a dead registry it
@@ -723,13 +726,26 @@ probe and exits 2 — and this repo has no `.npmrc` and no private registry, so
 there is no auth to get wrong today. Give the probe the same credentials the
 day one is introduced.
 
-`scripts/dependency-freshness-workflow.test.mjs` pins the shell itself, which
-nothing else can reach: that the probe runs BEFORE `pnpm outdated` (a probe
-after the fact proves nothing about data already collected), that it exits 2
-and never 1, that the diagnostic carries the sanitised origin, and that
-pnpm's status is still captured and passed. Each assertion was verified by
-re-introducing its regression. It runs in `test-ci-scripts` because this
-workflow only triggers on a schedule.
+**The decision is in `scripts/lib/check-registry.mjs`, not the workflow**, and
+that move is the actual lesson. Three review rounds against the inline shell
+each found a different way through, and every one was untestable where it sat:
+`curl -o /dev/null` accepted any 2xx including an HTML login page; bare `curl`
+treats a 3xx as success *without* fetching the destination; and a failing
+`pnpm config get registry` aborted the step under `bash -e` with pnpm's own
+status — colliding with exit 1's meaning of "an actionable major was found".
+The registry is passed in as an argument rather than read inside the script,
+which is precisely what makes that last case reachable as an ordinary "no
+usable registry" refusal.
+
+The shell that remains is five lines and gathers only. `check-registry.mjs`
+exits 0 or 2, never 1, matching `check-outdated.mjs`'s codes.
+
+`scripts/dependency-freshness-workflow.test.mjs` pins what is still shell —
+that the preflight runs BEFORE `pnpm outdated` (a probe after the fact proves
+nothing about data already collected), that the registry is passed in with
+`|| true`, and that pnpm's status is captured and passed. Each assertion was
+verified by re-introducing its regression. Both suites run in
+`test-ci-scripts`, because this workflow only triggers on a schedule.
 
 Worth generalising: **"a failure produces no output" is an assumption to
 measure, not to state.** The comment in this very workflow asserted it, and

@@ -65,34 +65,30 @@ jobs:
           # does not claim to -- it converts the common case from "passes
           # while checking stale data" into "refuses to answer", which is
           # what exit 2 already means here.
-          #
-          # It fetches real PACKAGE METADATA rather than /-/ping, because
-          # that is the request pnpm actually makes -- a registry can serve
-          # a public ping while refusing metadata. Raised in review.
+          # It probes for REAL PACKAGE METADATA, not a liveness ping: a
+          # registry can serve a public ping while refusing metadata, and
+          # metadata is the request pnpm actually makes. A 2xx alone is
+          # not enough either -- a captive portal or login page answers
+          # 200 -- so the body must parse as that package's document.
           #
           # `pnpm view` was measured as the obvious alternative and is
           # strictly WORSE: against a dead registry it still exits 0 and
-          # still prints the right version, because it answers from the
-          # same cache. Only a raw request leaves the machine.
+          # still prints the right version, from the same cache. Only a
+          # real request leaves the machine.
           #
-          # The limit this does NOT close, stated rather than papered over:
-          # the probe is unauthenticated, so on a private registry it would
-          # check something pnpm's authenticated fetch does not. That is
-          # fail-closed here -- a 401 fails the probe and exits 2 -- and
-          # this repo has no .npmrc and no private registry, so there is no
-          # auth to get wrong today. Give the probe the same credentials
-          # the day one is introduced.
-          registry=$(pnpm config get registry)
-          # Log the ORIGIN, never the configured value: a registry URL can
-          # carry userinfo (https://user:pass@host/), which would put a
-          # credential in a public workflow log. `URL.origin` drops it.
-          # Raised in review. The fallback keeps a malformed value from
-          # turning a diagnostic into a crash.
-          registry_origin=$(node -e 'try{process.stdout.write(new URL(process.argv[1]).origin)}catch{process.stdout.write("<unparseable registry>")}' "$registry")
-          if ! curl -fsS --max-time 15 -o /dev/null "${registry%/}/semver"; then
-            echo "check-outdated: ${registry_origin} did not serve package metadata -- refusing to report freshness from pnpm's local metadata cache." >&2
-            exit 2
-          fi
+          # The decision lives in scripts/lib/check-registry.mjs with its
+          # own tests, not in this shell. Three review rounds on the inline
+          # version each found another way through -- a discarded body, an
+          # unfollowed redirect, a failing `pnpm config get` exiting 1 --
+          # and every one of them was untestable where it sat.
+          #
+          # The registry is passed as an ARGUMENT rather than read inside
+          # the script, which is what makes the `pnpm config get` failure
+          # reachable: `|| true` keeps `bash -e` from aborting the step
+          # with pnpm's own status, and an empty value is then just "no
+          # usable registry" -> exit 2, like any other refusal.
+          registry=$(pnpm config get registry) || true
+          node scripts/check-registry.mjs "$registry"
 
           # `set +e` rather than `|| true`: pnpm outdated exits 1 whenever
           # anything IS outdated, so its status has to be tolerated -- but

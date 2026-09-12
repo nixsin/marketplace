@@ -30,47 +30,31 @@ const code = workflow
   .filter((line) => !/^\s*#/.test(line))
   .join("\n");
 
-test("the registry is probed, and BEFORE pnpm outdated runs", () => {
+test("the registry preflight runs BEFORE pnpm outdated", () => {
   // Order is the whole point and is silent when wrong: a probe after the
-  // fact proves nothing about the data already collected.
-  const probe = code.indexOf("curl -fsS");
+  // fact proves nothing about data already collected. Still asserted here
+  // because ordering is the one thing that stayed in the shell.
+  const preflight = code.indexOf("check-registry.mjs");
   const outdated = code.indexOf("pnpm outdated");
-  assert.ok(probe !== -1, "expected a registry probe");
+  assert.ok(preflight !== -1, "expected the registry preflight");
   assert.ok(outdated !== -1, "expected the pnpm outdated call");
-  assert.ok(probe < outdated, "the probe must run before pnpm outdated");
+  assert.ok(preflight < outdated, "the preflight must run before pnpm outdated");
 });
 
-test("the probe fetches package metadata, not just a liveness ping", () => {
-  // A registry can serve a public ping while refusing metadata, and
-  // metadata is the request pnpm actually makes. Raised in review.
-  assert.match(code, /curl -fsS[^\n]*\$\{registry%\/\}\/semver/);
-  assert.doesNotMatch(code, /curl -fsS[^\n]*\/-\/ping/);
+test("the registry is passed IN, not read inside the script", () => {
+  // What makes a failing `pnpm config get registry` reachable as a clean
+  // exit 2 rather than aborting the step with pnpm's own status under
+  // `bash -e`. Raised in review. `|| true` is the load-bearing half.
+  assert.match(code, /registry=\$\(pnpm config get registry\) \|\| true/);
+  assert.match(code, /check-registry\.mjs "\$registry"/);
 });
 
-test("a failed probe exits 2, never 1", () => {
-  // 1 is "an actionable major was found" -- a dependency finding. 2 is
-  // "could not run". Collapsing them makes a registry outage read as a
-  // real upgrade someone then goes looking for.
-  const block = code.slice(code.indexOf("curl -fsS"));
-  assert.match(block.slice(0, 300), /exit 2/);
-});
-
-test("the failure message logs the ORIGIN, never the configured registry", () => {
-  // A registry URL can carry userinfo (https://user:pass@host/), which
-  // would put a credential in a public workflow log. Raised in review.
-  const echoes = code.match(/echo "check-outdated:[^"]*"/g) ?? [];
-  assert.ok(echoes.length > 0, "expected a diagnostic on probe failure");
-  for (const line of echoes) {
-    assert.ok(
-      line.includes("${registry_origin}"),
-      `expected the sanitised origin in: ${line}`,
-    );
-    assert.doesNotMatch(
-      line,
-      /\$\{registry\}|\$registry\b/,
-      `raw registry value must not be logged: ${line}`,
-    );
-  }
+test("the probe's own decisions are NOT in the shell", () => {
+  // They were, for three review rounds, and each round found another way
+  // through that no test could reach. The shell gathers; the library
+  // decides -- the same split as pr-reconciliation and ci-progress-comment.
+  assert.doesNotMatch(code, /curl /);
+  assert.doesNotMatch(code, /-\/ping/);
 });
 
 test("pnpm's exit status is captured and passed to the checker", () => {
