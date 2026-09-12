@@ -677,6 +677,36 @@ The allowlist keeps its original meaning and is unchanged — it exempts
 majors blocked outside our code. What changed is only which gaps are
 considered at all.
 
+### A registry failure does NOT produce an empty file — it produces a plausible one
+
+The biconditional above is necessary and **not sufficient**, and the gap was
+found by review and then reproduced. Pointing `npm_config_registry` at a dead
+host still exits **1**, still writes **~7.5 KB of well-formed JSON**, and
+writes **nothing to stderr** — pnpm silently answers from its local metadata
+cache. Shape and cardinality are exactly what a healthy run produces, so no
+check on the *output* can tell the two apart; only the `latest` values are
+stale.
+
+Measured both ways on the same tree: with the registry reachable and with it
+dead, the parsed maps were **byte-identical** — same 21 packages, same
+versions — because both were served from that cache.
+
+**The direction is the dangerous one.** A stale `latest` *under*-reports, so a
+newly published major goes unseen and the check passes. And CI restores the
+pnpm store between runs, so the cache is normally warm — this is the expected
+behaviour during a registry outage, not a corner case.
+
+So the workflow probes `${registry}/-/ping` first and exits **2** if it fails,
+which is what "could not run" already means here. It is an *independent*
+signal because pnpm gives none: stderr is empty and no exit code separates the
+cases. It deliberately does **not** cover a registry that dies mid-run — it
+converts the common case from "passes while checking stale data" into "refuses
+to answer".
+
+Worth generalising: **"a failure produces no output" is an assumption to
+measure, not to state.** The comment in this very workflow asserted it, and
+was wrong for the single most likely failure it named.
+
 ## `test-ci-scripts` has no `node_modules` unless it installs
 
 The job checks out, sets up Node and runs `node --test` directly — for most

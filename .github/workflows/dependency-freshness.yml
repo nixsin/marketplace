@@ -45,13 +45,42 @@ jobs:
       # both, because the status is what makes an empty file trustworthy
       # (see the inline comment on the run step below).
       - run: |
+          # STATUS 1 IS NOT ON ITS OWN PROOF THAT PNPM COMPLETED. Raised in
+          # review and reproduced: pointing npm_config_registry at a dead
+          # host still exits 1, still writes ~7.5 KB of well-formed JSON,
+          # and writes NOTHING to stderr -- pnpm silently answers from its
+          # local metadata cache. The biconditional in the checker cannot
+          # see that, because shape and cardinality are exactly what a
+          # healthy run produces; only the `latest` values are stale.
+          #
+          # The failure is therefore silent AND in the dangerous direction:
+          # a stale `latest` UNDER-reports, so a newly published major goes
+          # unseen and this check passes. CI restores the pnpm store
+          # between runs, so that cache is normally warm -- this is the
+          # expected behaviour on a registry outage, not a corner case.
+          #
+          # An independent liveness probe is the signal pnpm does not give
+          # us: stderr is empty (measured) and no exit code separates the
+          # two cases. It does not cover a registry that dies mid-run, and
+          # does not claim to -- it converts the common case from "passes
+          # while checking stale data" into "refuses to answer", which is
+          # what exit 2 already means here.
+          registry=$(pnpm config get registry)
+          if ! curl -fsS --max-time 15 -o /dev/null "${registry%/}/-/ping"; then
+            echo "check-outdated: ${registry} is unreachable -- refusing to report freshness from pnpm's local metadata cache." >&2
+            exit 2
+          fi
+
           # `set +e` rather than `|| true`: pnpm outdated exits 1 whenever
           # anything IS outdated, so its status has to be tolerated -- but
-          # `|| true` DISCARDS it, and a real failure (registry, auth,
-          # config) produces no stdout, so an empty file would then be
+          # `|| true` DISCARDS it, and a failure that produces no stdout
+          # (auth, config, an unreadable store) would then be
           # indistinguishable from "nothing outdated". The status is
           # captured and passed as a required argument; the checker refuses
           # to call an empty file clean unless pnpm actually said so.
+          #
+          # Note what it does NOT cover, per the probe above: a registry
+          # failure never takes the empty-stdout path at all.
           set +e
           pnpm outdated --recursive --format json > /tmp/outdated.json
           pnpm_status=$?
