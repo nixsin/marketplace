@@ -22,22 +22,54 @@
 export const PROBE_PACKAGE = "semver";
 
 /**
- * The registry's origin, or null if it is not a usable http(s) URL.
+ * Splits a configured registry into the two values this module needs, or
+ * null when it is not a usable http(s) URL.
  *
- * Origin specifically, because a registry URL can carry userinfo
- * (`https://user:pass@host/`) and the caller logs this value -- a raw
- * registry string in a public workflow log is a leaked credential.
- * `URL.origin` drops it. Raised in review.
+ *   probeUrl — where to actually ask, PATH PRESERVED
+ *   origin   — what is safe to print, PATH AND USERINFO DROPPED
+ *
+ * They are different values and collapsing them is a real bug in both
+ * directions, which is how this was first written and what review caught:
+ *
+ *  - Probing the origin breaks a registry hosted under a path -- an
+ *    Artifactory or Verdaccio at `https://host/api/npm/npm-remote/`. The
+ *    root can answer perfectly while the configured registry is down, so
+ *    the preflight passes and pnpm still falls back to stale cache.
+ *  - Logging the configured value leaks a credential: a registry URL can
+ *    carry userinfo (`https://user:pass@host/`), and this lands in a
+ *    public workflow log.
+ *
+ * `new URL(pkg, base)` resolves relative to the base's directory, so the
+ * base must end in a slash or the last path segment is replaced --
+ * `https://host/api/npm` + `semver` would ask for `https://host/api/semver`.
  */
-export function registryOrigin(registry) {
+export function resolveRegistry(registry) {
   if (typeof registry !== "string" || registry.trim() === "") return null;
+  let url;
   try {
-    const url = new URL(registry.trim());
-    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-    return url.origin;
+    url = new URL(registry.trim());
   } catch {
     return null;
   }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+
+  // Strip the credential from the value we are about to build a URL from,
+  // so it cannot survive into the probe URL either.
+  url.username = "";
+  url.password = "";
+  if (!url.pathname.endsWith("/")) url.pathname += "/";
+  return { origin: url.origin, base: url };
+}
+
+/**
+ * The registry's origin, or null -- the value that is safe to print.
+ *
+ * Kept as its own export because logging is the only caller that wants the
+ * path dropped, and a helper that returns "the safe one" is harder to
+ * misuse than a property lookup on a bigger object.
+ */
+export function registryOrigin(registry) {
+  return resolveRegistry(registry)?.origin ?? null;
 }
 
 /**
@@ -78,12 +110,16 @@ export async function checkRegistry({
   timeoutMs = 15_000,
   pkg = PROBE_PACKAGE,
 } = {}) {
-  const origin = registryOrigin(registry);
+  const resolved = resolveRegistry(registry);
   // Covers an unset value, an empty one, and a `pnpm config get` that
   // failed -- the workflow cannot distinguish those and does not have to.
-  if (origin === null) {
+  if (resolved === null) {
     return { ok: false, origin: null, reason: "no usable registry URL configured" };
   }
+  const { origin, base } = resolved;
+  // The CONFIGURED path, not the origin: a registry under a path is a real
+  // deployment shape, and its root answering says nothing about it.
+  const probeUrl = new URL(pkg, base).href;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -92,7 +128,7 @@ export async function checkRegistry({
     // inherited: the shell version used bare curl, which treats a 3xx as
     // success WITHOUT fetching the destination, so a redirect to anywhere
     // passed the probe. Raised in review.
-    const response = await fetchImpl(`${origin}/${pkg}`, {
+    const response = await fetchImpl(probeUrl, {
       redirect: "follow",
       signal: controller.signal,
       headers: { accept: "application/json" },

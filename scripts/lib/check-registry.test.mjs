@@ -4,6 +4,7 @@ import {
   checkRegistry,
   isPackageMetadata,
   registryOrigin,
+  resolveRegistry,
   PROBE_PACKAGE,
 } from "./check-registry.mjs";
 
@@ -135,4 +136,52 @@ test("the reason never carries the configured registry, only its origin", async 
   });
   assert.equal(result.origin, "https://registry.example.com");
   assert.doesNotMatch(`${result.origin} ${result.reason}`, /secret/);
+});
+
+test("a registry under a PATH is probed at that path, not at the root", async () => {
+  // Artifactory and Verdaccio are routinely deployed this way. The root
+  // can answer perfectly while the configured registry is down, so
+  // probing the origin passes the preflight and lets pnpm fall back to
+  // stale cache anyway -- the exact failure this module exists to stop.
+  // Raised in review, after the first version did precisely that.
+  const fetchImpl = fakeFetch();
+  const result = await checkRegistry({
+    registry: "https://host.example/api/npm/npm-remote/",
+    fetchImpl,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(
+    fetchImpl.calls[0].url,
+    `https://host.example/api/npm/npm-remote/${PROBE_PACKAGE}`,
+  );
+});
+
+test("a registry path with no trailing slash keeps its last segment", async () => {
+  // `new URL(pkg, base)` resolves against the base's DIRECTORY, so without
+  // this `https://host/api/npm` would be probed at `https://host/api/semver`
+  // -- a different endpoint that may well answer.
+  const fetchImpl = fakeFetch();
+  await checkRegistry({ registry: "https://host.example/api/npm", fetchImpl });
+  assert.equal(fetchImpl.calls[0].url, `https://host.example/api/npm/${PROBE_PACKAGE}`);
+});
+
+test("credentials never reach the PROBE URL either, not just the log", async () => {
+  // Two separate leaks. The log one was found first; a probe URL built
+  // from the raw value would still carry userinfo into any redirect
+  // target and into the fetch layer's own diagnostics.
+  const fetchImpl = fakeFetch();
+  await checkRegistry({ registry: "https://user:secret@host.example/api/", fetchImpl });
+  assert.doesNotMatch(fetchImpl.calls[0].url, /secret|user:/);
+  assert.equal(fetchImpl.calls[0].url, `https://host.example/api/${PROBE_PACKAGE}`);
+});
+
+test("resolveRegistry separates where to ask from what to print", () => {
+  // They are different values and collapsing them is a bug in both
+  // directions -- the probe needs the path, the log must not have it.
+  const resolved = resolveRegistry("https://user:secret@host.example/api/npm/");
+  assert.equal(resolved.origin, "https://host.example");
+  assert.equal(resolved.base.pathname, "/api/npm/");
+  assert.equal(resolved.base.username, "");
+  assert.equal(resolved.base.password, "");
+  assert.equal(resolveRegistry("nope"), null);
 });

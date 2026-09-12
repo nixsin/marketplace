@@ -737,6 +737,18 @@ The registry is passed in as an argument rather than read inside the script,
 which is precisely what makes that last case reachable as an ordinary "no
 usable registry" refusal.
 
+**Where to ask and what to print are two different values**, and collapsing
+them is a bug in both directions — which is how it was first written, twice.
+The probe must keep the configured PATH: an Artifactory or Verdaccio at
+`https://host/api/npm/npm-remote/` has a root that can answer perfectly while
+the configured registry is down, so probing the origin passes the preflight
+and lets pnpm fall back to stale cache anyway. The log must keep only the
+ORIGIN, because a registry URL can carry userinfo. `resolveRegistry` returns
+both and strips the credential from the probe URL too, not just the message.
+Note `new URL(pkg, base)` resolves against the base's *directory*, so a base
+without a trailing slash loses its last segment — `/api/npm` would be probed
+at `/api/semver`.
+
 The shell that remains is five lines and gathers only. `check-registry.mjs`
 exits 0 or 2, never 1, matching `check-outdated.mjs`'s codes.
 
