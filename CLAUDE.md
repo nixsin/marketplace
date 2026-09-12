@@ -573,6 +573,41 @@ copies that could drift. The override-log fetch is best-effort: no PR yet
 means empty context, the same fail-open default the CI jobs use.
 
 
+## Security overrides live in `pnpm-workspace.yaml`, not `package.json`
+
+`pnpm.overrides` in `package.json` is silently ignored by pnpm 11 — it warns
+(`The "pnpm" field in package.json is no longer read by pnpm`) and installs
+cleanly, so the advisory stays unfixed while the diff looks like a fix. The
+setting moved to `overrides:` in `pnpm-workspace.yaml`.
+
+**They exist for advisories with no upstream bump to take**, which is checked
+rather than assumed each time — `@nestjs/platform-express@12.0.1` is the
+current latest and pins `multer` to exactly `2.2.0`, so waiting resolves
+nothing. Every entry carries the advisory id, the fixed version, the path it
+arrives through, and the condition that lets it be removed.
+
+**A version-scoped selector is sometimes load-bearing, not stylistic.** The
+`js-yaml` advisory affects the 3.x line, and this repo also resolves 4.3.2
+for other consumers. A bare `js-yaml: ^3.15.2` overrides *every* resolution
+and drags those consumers onto 3.x, which is a breaking API change (`safeLoad`
+removed, `load`'s signature changed). `js-yaml@3: ^3.15.2` pins only the
+vulnerable line. Reach for the scoped form whenever more than one major of a
+package is installed — check with `ls node_modules/.pnpm | grep '^<pkg>@'`
+before writing a blanket one.
+
+**One override often clears two checks.** Dependency audit and the Trivy
+image scan read different databases and report different identifiers for the
+same defect — the multer entry answered `GHSA-qfvm-cv95-jqjf` /
+`GHSA-535w-7cp7-47q4` from `pnpm audit` and `CVE-2026-77037` /
+`CVE-2026-77078` / `CVE-2026-82333` from Trivy. Do not treat them as separate
+problems on the evidence of the identifier alone.
+
+**Both are time-varying, so a green run yesterday proves nothing today.**
+These four advisories landed between a green `main` run on 2026-09-08 and a
+red PR run the next morning, on branches whose diffs touched no dependency at
+all. Before attributing either check's failure to the PR under review, run
+`pnpm audit --audit-level=high` on `main`.
+
 ## Dependabot
 
 `.github/dependabot.yml`: weekly (Monday), grouped minor/patch for npm and

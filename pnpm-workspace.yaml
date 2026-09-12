@@ -25,6 +25,29 @@ overrides:
   # required check on every Docker-touching PR until it is overridden.
   # Remove once a prisma release bumps its own mysql2 past 3.22.0.
   mysql2: ^3.22.0
+  # GHSA-qfvm-cv95-jqjf and GHSA-535w-7cp7-47q4 (both HIGH, denial of
+  # service via a crafted multipart request and via an oversized array
+  # index in field names), both fixed in 2.3.0. Transitive through
+  # @nestjs/platform-express, which this repo does not depend on directly.
+  #
+  # There is no upstream bump to take, checked rather than assumed:
+  # @nestjs/platform-express@12.0.1 IS the current latest and pins
+  # multer to exactly 2.2.0, so waiting resolves nothing. Same major, so
+  # this is a patch-level forcing rather than an API change. Remove once
+  # a @nestjs/platform-express release declares 2.3.0 or later.
+  multer@<2.3.0: ^2.3.0
+  # GHSA-2883-xcg3-v3hh / CVE-2026-84375 (HIGH, maxTotalMergeKeys does
+  # not limit CPU use for empty merge sources), fixed in 3.15.2. Reached only through
+  # @istanbuljs/load-nyc-config, i.e. Jest's coverage machinery.
+  #
+  # SCOPED TO THE 3.x LINE ON PURPOSE, and a bare `js-yaml: ^3.15.2`
+  # would be a real regression rather than a stylistic difference: this
+  # repo also resolves js-yaml 4.3.2 for other consumers, and 4.x is a
+  # breaking API change from 3.x (safeLoad removed, load's signature
+  # changed). A blanket override would drag every one of those down onto
+  # the 3.x API. The `@3` selector pins only the vulnerable line and
+  # leaves 4.x alone.
+  js-yaml@3: ^3.15.2
 allowBuilds:
   '@apollo/protobufjs': true
   '@parcel/watcher': true
