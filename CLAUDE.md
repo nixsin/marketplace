@@ -573,6 +573,233 @@ copies that could drift. The override-log fetch is best-effort: no PR yet
 means empty context, the same fail-open default the CI jobs use.
 
 
+## The freshness check fails on MAJORS only, because any-staleness was always red
+
+`check-outdated.sh` used to fail on any outdated package not on the
+allowlist. That is not the same as "the repo is behind" — it goes red on
+essentially every publish, by anyone, anywhere in the tree.
+
+Measured on 2026-09-08 rather than assumed: a CI run flagged
+`@anthropic-ai/sdk`, `@playwright/test` and `lint-staged`. Bumping all three
+and re-running an hour later flagged `@types/node`, `lucide-react` and
+`typescript-eslint` instead. Six packages in one morning, not one of them a
+real problem. A check that is red by default stops being read — the same
+failure this file already records for `perf-budget`'s LCP, where a 70%
+failure rate on a required check inverted its meaning.
+
+**Minor and patch gaps are already covered elsewhere.** Dependabot opens a
+grouped minor-and-patch PR every Monday, so a red badge adds no information
+the PR queue does not already carry. **Majors are ungrouped**, filed
+individually, and are the ones that need a decision — those still fail.
+
+Everything is still **printed** either way, under a "same-major updates"
+heading. Not failing never means not shown.
+
+**Version parsing is `semver`'s job, not ours, and that was the second
+lesson.** Two hand-rolled parsers were wrong in review, both in the same
+direction — quietly treating a malformed value as a real version rather than
+as unknown. The first stripped leading text and kept the first number it
+found, so `build1.alpha` and `release1-beta` both read as major 1 and
+compared **equal**; the replacement regex still accepted `1.2.3-foo..bar`
+and `^ v =1.2.3`. Each was individually fixable and that was the wrong
+response to the second one — versions have a specification and a canonical
+implementation, and matching it with a regex is a rewrite nobody asked for.
+`semver` is now a real devDependency (it was previously present only
+transitively, which is the phantom-dependency trap this file already records
+for `@jest/globals`).
+
+`semver.coerce` is deliberately **not** used: it turns `build1.alpha` into
+`1.0.0`, which is exactly the guess the parser exists to refuse. A range
+like `>=1.2.3` is also refused — it is not a version.
+
+**The decision moved out of bash entirely**, into
+`scripts/lib/check-outdated.mjs` with a thin `scripts/check-outdated.mjs`
+CLI, matching what this file already prescribes for `pr-reconciliation` and
+`ci-progress-comment`: the workflow gathers inputs, the library decides, and
+the tests exercise the real code path rather than a parallel copy.
+
+**An empty input is only trusted when pnpm vouches for it**, and getting
+this wrong was a regression introduced by the move to JS. `pnpm outdated`
+exits 1 whenever anything IS outdated, so the workflow has to swallow that —
+which also swallows a registry, auth or config failure, and those produce no
+stdout. The shell version died on an empty file (`jq` on empty, then a bash
+integer error under `set -e`), so a masked failure was loud; treating empty
+as success made "pnpm could not run" byte-identical to "nothing is outdated",
+and the check would have passed while checking nothing. The workflow now
+captures pnpm's status and passes it, and any status other than 0 or 1 is
+refused.
+
+**The status is REQUIRED, and the invariant is a BICONDITIONAL** — pnpm
+exits 1 exactly when it found outdated packages, so status and result must
+agree in both directions. Status 1 with an empty result is refused, and so
+is status 0 with a non-empty one.
+
+Stating it as one equivalence is the point. Every earlier version checked
+some half of it and review found another way through each time: first only
+`""` (leaving `{}` accepted), then only the status-1 direction (leaving
+status 0 with packages accepted). Checked against the parsed map, not the
+raw text, because `""` and `"{}"` are the same claim.
+Optional would have been the same hole with extra steps — any caller that
+forgot it gets the unvouched behaviour back silently. And `1` means pnpm
+found something, so no output contradicts it; that combination is also what
+a failure mid-run looks like.
+
+**Valid JSON is not the same as the expected shape.** `[]` would have
+reported "No outdated packages" and passed; `null` would have thrown out of
+`Object.keys` and exited 1, which reads as a dependency finding. The
+top-level value must be a non-null, non-array object.
+
+Every one of these arrived as a separate review round finding the same
+class — a malformed input read as "clean" — which is why the validation is
+now one function rather than checks scattered down the file.
+
+**Three exit codes, kept distinct**, because CI must be able to tell a
+dependency finding from the script being unable to answer at all: `0`
+nothing actionable, `1` an actionable major, `2` could not run (bad
+arguments, unreadable input, or a pnpm failure). An uncaught `readFileSync`
+would have exited 1 and made a broken checkout look like a real major.
+
+**`process.exitCode`, never `process.exit()`** — the latter can terminate
+before piped stdout has flushed, which would quietly break the one guarantee
+this script makes.
+
+**Two edge cases, both deliberate and both pinned by tests:**
+
+- **A 0.x minor reads as same-major.** By strict semver that is the
+  breaking-change slot, so it is a judgment call — but Dependabot groups 0.x
+  minors into the same weekly PR regardless, so failing would add a red
+  without changing how the bump is reviewed.
+- **An unparseable version fails OPEN**, treated as a major. The cost of a
+  needless red is one look; the cost of waving it through is that the check
+  stops covering the only case it still fails on.
+
+The allowlist keeps its original meaning and is unchanged — it exempts
+majors blocked outside our code. What changed is only which gaps are
+considered at all.
+
+### A registry failure does NOT produce an empty file — it produces a plausible one
+
+The biconditional above is necessary and **not sufficient**, and the gap was
+found by review and then reproduced. Pointing `npm_config_registry` at a dead
+host still exits **1**, still writes **~7.5 KB of well-formed JSON**, and
+writes **nothing to stderr** — pnpm silently answers from its local metadata
+cache. Shape and cardinality are exactly what a healthy run produces, so no
+check on the *output* can tell the two apart; only the `latest` values are
+stale.
+
+Measured both ways on the same tree: with the registry reachable and with it
+dead, the parsed maps were **byte-identical** — same 21 packages, same
+versions — because both were served from that cache.
+
+**The direction is the dangerous one.** A stale `latest` *under*-reports, so a
+newly published major goes unseen and the check passes. And CI restores the
+pnpm store between runs, so the cache is normally warm — this is the expected
+behaviour during a registry outage, not a corner case.
+
+So the workflow runs `scripts/check-registry.mjs` first and exits **2** if it
+fails, which is what "could not run" already means here. It is an
+*independent* signal because pnpm gives none: stderr is empty and no exit code
+separates the cases. It deliberately does **not** cover a registry that dies
+mid-run — it converts the common case from "passes while checking stale data"
+into "refuses to answer".
+
+**It fetches package METADATA and validates the body** — a registry can serve
+a public ping while refusing metadata, and metadata is the request pnpm
+actually makes. A 2xx alone is not enough either: a captive portal, proxy
+error page or login screen all answer 200, so the body must parse as that
+package's document. Redirects are followed rather than counted as success,
+which bare `curl` does not do.
+
+**`pnpm view` is the obvious alternative and is strictly worse** — measured,
+because it looks like the more faithful probe: against a dead registry it
+still exits 0 and still prints the correct version, from the same cache.
+Only a raw request leaves the machine at all.
+
+**It logs the registry's ORIGIN, never the configured value.** A registry URL
+can carry userinfo (`https://user:pass@host/`), which would put a credential
+in a public workflow log; `URL.origin` drops it.
+
+**One limit is stated rather than papered over:** the probe is
+unauthenticated, so on a private registry it would be checking something
+pnpm's authenticated fetch does not. That fails closed here — a 401 fails the
+probe and exits 2 — and this repo has no `.npmrc` and no private registry, so
+there is no auth to get wrong today. Give the probe the same credentials the
+day one is introduced.
+
+**The decision is in `scripts/lib/check-registry.mjs`, not the workflow**, and
+that move is the actual lesson. Three review rounds against the inline shell
+each found a different way through, and every one was untestable where it sat:
+`curl -o /dev/null` accepted any 2xx including an HTML login page; bare `curl`
+treats a 3xx as success *without* fetching the destination; and a failing
+`pnpm config get registry` aborted the step under `bash -e` with pnpm's own
+status — colliding with exit 1's meaning of "an actionable major was found".
+The registry is passed in as an argument rather than read inside the script,
+which is precisely what makes that last case reachable as an ordinary "no
+usable registry" refusal.
+
+**Where to ask and what to print are two different values**, and collapsing
+them is a bug in both directions — which is how it was first written, twice.
+The probe must keep the configured PATH: an Artifactory or Verdaccio at
+`https://host/api/npm/npm-remote/` has a root that can answer perfectly while
+the configured registry is down, so probing the origin passes the preflight
+and lets pnpm fall back to stale cache anyway. The log must keep only the
+ORIGIN, because a registry URL can carry userinfo. `resolveRegistry` returns
+both and strips the credential from the probe URL too, not just the message.
+Note `new URL(pkg, base)` resolves against the base's *directory*, so a base
+without a trailing slash loses its last segment — `/api/npm` would be probed
+at `/api/semver`.
+
+The shell that remains is five lines and gathers only. `check-registry.mjs`
+exits 0 or 2, never 1, matching `check-outdated.mjs`'s codes.
+
+`scripts/check-registry.test.mjs` spawns the CLI for real against a throwaway
+HTTP server, because **the exit status is the only part the workflow actually
+consumes** — a library returning the right object while the CLI exits 0 anyway
+would pass every unit test and still let `pnpm outdated` run against a dead
+registry. Same split, same reason, as `check-outdated.test.mjs` beside it.
+
+**That test must spawn ASYNCHRONOUSLY, and the failure is deeply misleading.**
+The server runs in the test process, so a blocking `execFileSync` holds the
+event loop and the server never accepts the child's connection — every
+server-backed case then fails on the CLI's own 15-second timeout, which reads
+exactly like a broken probe rather than a deadlocked harness. Cost a real
+debugging round; `promisify(execFile)` is the fix.
+
+`scripts/dependency-freshness-workflow.test.mjs` pins what is still shell —
+that the preflight runs BEFORE `pnpm outdated` (a probe after the fact proves
+nothing about data already collected), that the registry is passed in with
+`|| true`, and that pnpm's status is captured and passed. Each assertion was
+verified by re-introducing its regression. Both suites run in
+`test-ci-scripts`, because this workflow only triggers on a schedule.
+
+Worth generalising: **"a failure produces no output" is an assumption to
+measure, not to state.** The comment in this very workflow asserted it, and
+was wrong for the single most likely failure it named.
+
+## `test-ci-scripts` has no `node_modules` unless it installs
+
+The job checks out, sets up Node and runs `node --test` directly — for most
+of its life with **no install at all**. That worked because every script it
+covers imported only Node built-ins and local files, so nothing ever noticed.
+
+Adding `semver` to `scripts/lib/check-outdated.mjs` broke it:
+`Cannot find package 'semver' imported from .../check-outdated.mjs`. That
+error reads like a missing dependency and is the **opposite** — `semver` is
+correctly declared as a root devDependency and resolves fine locally, where
+`node_modules` exists. The job simply never installed anything.
+
+Worth recognising by shape: a module-resolution failure in CI for a package
+that resolves locally is about **whether that job installs**, not about the
+declaration. Check the job's own steps before touching `package.json`.
+
+`pnpm install --frozen-lockfile` is now in the job, with `timeout-minutes`
+raised from 5 to 10 — the tests run in seconds, a cold pnpm store cache does
+not. The alternative was hand-rolling version parsing again, which this repo
+has already paid for twice (see the freshness section: two parsers, both
+wrong in review, both treating a malformed value as a real version).
+
+**So any new import of a real package into `scripts/` is now free, and was
+not before.** That is the actual change in what this job can support.
 ## Security overrides live in `pnpm-workspace.yaml`, not `package.json`
 
 `pnpm.overrides` in `package.json` is silently ignored by pnpm 11 — it warns
@@ -2188,7 +2415,7 @@ entry tracks an unfixable dependency, not a PR. A closed PR is therefore
 never evidence a blocker cleared — re-check the upstream package.
 
 **Every entry carries its reason inline** (`prisma  # \`latest\` is 8.0.0-rc.12`),
-and `check-outdated.sh` strips it before matching. A bare package name cannot
+and `lib/check-outdated.mjs` strips it before matching. A bare package name cannot
 be reviewed without cross-referencing this file, which is exactly how the two
 drift apart; the reason is what lets a reader decide whether the entry is
 still true without re-deriving it. Note the failure mode if that strip ever

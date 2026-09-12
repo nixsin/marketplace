@@ -38,11 +38,70 @@ jobs:
       # matter how long this badge stays red, so counting them as a
       # failure isn't honest signal, it's permanent noise that would mask
       # a real, newly-actionable staleness landing alongside them.
-      # scripts/check-outdated.sh (tested — check-outdated.test.sh, run in
+      # scripts/check-outdated.mjs (decisions in lib/check-outdated.mjs,
+      # tested by lib/check-outdated.test.mjs, run in
       # ci.yml's test-ci-scripts job) does the actual pass/fail decision;
-      # this step only gathers pnpm's own output for it. `|| true` because
-      # pnpm outdated itself still exits 1 even with --format json, and
-      # the JSON on stdout is exactly what's needed either way.
+      # this step only gathers pnpm's own stdout AND exit status for it --
+      # both, because the status is what makes an empty file trustworthy
+      # (see the inline comment on the run step below).
       - run: |
-          pnpm outdated --recursive --format json > /tmp/outdated.json || true
-          ./scripts/check-outdated.sh /tmp/outdated.json scripts/known-outdated-packages.txt
+          # STATUS 1 IS NOT ON ITS OWN PROOF THAT PNPM COMPLETED. Raised in
+          # review and reproduced: pointing npm_config_registry at a dead
+          # host still exits 1, still writes ~7.5 KB of well-formed JSON,
+          # and writes NOTHING to stderr -- pnpm silently answers from its
+          # local metadata cache. The biconditional in the checker cannot
+          # see that, because shape and cardinality are exactly what a
+          # healthy run produces; only the `latest` values are stale.
+          #
+          # The failure is therefore silent AND in the dangerous direction:
+          # a stale `latest` UNDER-reports, so a newly published major goes
+          # unseen and this check passes. CI restores the pnpm store
+          # between runs, so that cache is normally warm -- this is the
+          # expected behaviour on a registry outage, not a corner case.
+          #
+          # An independent liveness probe is the signal pnpm does not give
+          # us: stderr is empty (measured) and no exit code separates the
+          # two cases. It does not cover a registry that dies mid-run, and
+          # does not claim to -- it converts the common case from "passes
+          # while checking stale data" into "refuses to answer", which is
+          # what exit 2 already means here.
+          # It probes for REAL PACKAGE METADATA, not a liveness ping: a
+          # registry can serve a public ping while refusing metadata, and
+          # metadata is the request pnpm actually makes. A 2xx alone is
+          # not enough either -- a captive portal or login page answers
+          # 200 -- so the body must parse as that package's document.
+          #
+          # `pnpm view` was measured as the obvious alternative and is
+          # strictly WORSE: against a dead registry it still exits 0 and
+          # still prints the right version, from the same cache. Only a
+          # real request leaves the machine.
+          #
+          # The decision lives in scripts/lib/check-registry.mjs with its
+          # own tests, not in this shell. Three review rounds on the inline
+          # version each found another way through -- a discarded body, an
+          # unfollowed redirect, a failing `pnpm config get` exiting 1 --
+          # and every one of them was untestable where it sat.
+          #
+          # The registry is passed as an ARGUMENT rather than read inside
+          # the script, which is what makes the `pnpm config get` failure
+          # reachable: `|| true` keeps `bash -e` from aborting the step
+          # with pnpm's own status, and an empty value is then just "no
+          # usable registry" -> exit 2, like any other refusal.
+          registry=$(pnpm config get registry) || true
+          node scripts/check-registry.mjs "$registry"
+
+          # `set +e` rather than `|| true`: pnpm outdated exits 1 whenever
+          # anything IS outdated, so its status has to be tolerated -- but
+          # `|| true` DISCARDS it, and a failure that produces no stdout
+          # (auth, config, an unreadable store) would then be
+          # indistinguishable from "nothing outdated". The status is
+          # captured and passed as a required argument; the checker refuses
+          # to call an empty file clean unless pnpm actually said so.
+          #
+          # Note what it does NOT cover, per the probe above: a registry
+          # failure never takes the empty-stdout path at all.
+          set +e
+          pnpm outdated --recursive --format json > /tmp/outdated.json
+          pnpm_status=$?
+          set -e
+          node scripts/check-outdated.mjs /tmp/outdated.json scripts/known-outdated-packages.txt "$pnpm_status"
