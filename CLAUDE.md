@@ -752,6 +752,19 @@ at `/api/semver`.
 The shell that remains is five lines and gathers only. `check-registry.mjs`
 exits 0 or 2, never 1, matching `check-outdated.mjs`'s codes.
 
+`scripts/check-registry.test.mjs` spawns the CLI for real against a throwaway
+HTTP server, because **the exit status is the only part the workflow actually
+consumes** — a library returning the right object while the CLI exits 0 anyway
+would pass every unit test and still let `pnpm outdated` run against a dead
+registry. Same split, same reason, as `check-outdated.test.mjs` beside it.
+
+**That test must spawn ASYNCHRONOUSLY, and the failure is deeply misleading.**
+The server runs in the test process, so a blocking `execFileSync` holds the
+event loop and the server never accepts the child's connection — every
+server-backed case then fails on the CLI's own 15-second timeout, which reads
+exactly like a broken probe rather than a deadlocked harness. Cost a real
+debugging round; `promisify(execFile)` is the fix.
+
 `scripts/dependency-freshness-workflow.test.mjs` pins what is still shell —
 that the preflight runs BEFORE `pnpm outdated` (a probe after the fact proves
 nothing about data already collected), that the registry is passed in with

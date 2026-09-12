@@ -344,6 +344,7 @@ jobs:
       # regression there would reach main unnoticed and first surface at
       # the next weekly run.
       - run: node --test scripts/lib/check-registry.test.mjs
+      - run: node --test scripts/check-registry.test.mjs
       - run: node --test scripts/dependency-freshness-workflow.test.mjs
       - run: node --test scripts/lib/pre-push-refs.test.mjs
       - run: node --test scripts/lib/ci-progress-comment.test.mjs
