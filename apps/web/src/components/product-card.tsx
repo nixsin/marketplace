@@ -83,6 +83,27 @@ export function ProductCard({
               sizes="(min-width: 640px) 192px, 100vw"
               className="object-cover"
               priority={priority}
+              // `priority` alone does NOT produce fetchpriority="high" on
+              // this version of Next, and that is the whole reason the LCP
+              // image was slow. Verified in the installed source rather
+              // than assumed (next@16.3.4,
+              // shared/lib/get-img-props.js): `fetchPriority` is passed
+              // straight through from the caller and nothing derives it
+              // from `priority`, which only clears `loading="lazy"` and
+              // requests a preload. The served HTML matched exactly that
+              // -- first card not lazy, no fetchpriority, no preload link.
+              //
+              // Left at the browser's default the image loses the request
+              // queue to scripts and stylesheets: production `/hi?page=2`
+              // measured `resourceLoadDelay` 485 ms for an SVG that then
+              // transferred in 147 ms and painted in 5 ms. The byte count
+              // was never the problem; the position in the queue was.
+              //
+              // `undefined` rather than "auto" for the other cards, so the
+              // attribute is simply absent on the ones that should stay
+              // out of the way -- setting it explicitly on every card
+              // would flatten the very distinction this makes.
+              fetchPriority={priority ? "high" : undefined}
               // Served straight from the CDN rather than proxied through the
               // optimizer on our origin -- see src/lib/image-loading.ts.
               unoptimized={shouldBypassOptimizer(product.imageUrl)}

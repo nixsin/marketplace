@@ -269,13 +269,6 @@ describe("ProductCard", () => {
     // Regression coverage for the LCP finding a live Lighthouse audit
     // caught on /hi?page=2 (see perf-budget.mjs's own comment): the
     // above-the-fold card on a direct page load must not be lazy-loaded.
-    // Only asserts on `loading` -- confirmed directly (via the real
-    // rendered outerHTML) that next/image sets fetchPriority as a DOM
-    // property in this Next version's React 19 render path, not as a
-    // static "fetchpriority" HTML attribute, so jsdom's attribute-based
-    // queries can't observe it the way a real browser would; that part is
-    // real-browser territory (see the Web e2e section's own jsdom-vs-
-    // real-browser distinction), not something a component test can cover.
     const { container } = render(
       <LocaleProvider initialLocale="en" initialMessages={en}>
         <ProductCard product={fullProduct} priority />
@@ -284,6 +277,37 @@ describe("ProductCard", () => {
     expect(container.querySelector("img")).not.toHaveAttribute(
       "loading",
       "lazy",
+    );
+  });
+
+  it("marks the priority image fetchpriority=high", () => {
+    // The OTHER half of the same finding, and the half that was missing.
+    // This assertion used to be absent, explained by a comment claiming
+    // next/image sets fetchPriority as a DOM property jsdom cannot see.
+    // The premise was wrong: production HTML carried no fetchpriority in
+    // any form, because on this Next version `priority` does not imply it
+    // -- it only clears `loading="lazy"`. So the test documented the bug
+    // as a testing limitation, which is the worst place for a bug to
+    // live. product-card.tsx now passes fetchPriority explicitly, and
+    // React renders it as a real attribute, which is why this can be
+    // asserted at all.
+    const { container } = render(
+      <LocaleProvider initialLocale="en" initialMessages={en}>
+        <ProductCard product={fullProduct} priority />
+      </LocaleProvider>,
+    );
+    expect(container.querySelector("img")).toHaveAttribute(
+      "fetchpriority",
+      "high",
+    );
+  });
+
+  it("leaves fetchpriority off every other card", () => {
+    // Not "auto" -- the attribute must be absent. Setting it on every
+    // card would flatten the distinction the priority card depends on.
+    const { container } = renderCard(fullProduct);
+    expect(container.querySelector("img")).not.toHaveAttribute(
+      "fetchpriority",
     );
   });
 });
