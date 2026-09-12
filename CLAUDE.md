@@ -703,6 +703,34 @@ cases. It deliberately does **not** cover a registry that dies mid-run — it
 converts the common case from "passes while checking stale data" into "refuses
 to answer".
 
+**The probe fetches package METADATA, not `/-/ping`** — a registry can serve
+a public ping while refusing metadata, and metadata is the request pnpm
+actually makes.
+
+**`pnpm view` is the obvious alternative and is strictly worse** — measured,
+because it looks like the more faithful probe: against a dead registry it
+still exits 0 and still prints the correct version, from the same cache.
+Only a raw request leaves the machine at all.
+
+**It logs the registry's ORIGIN, never the configured value.** A registry URL
+can carry userinfo (`https://user:pass@host/`), which would put a credential
+in a public workflow log; `URL.origin` drops it.
+
+**One limit is stated rather than papered over:** the probe is
+unauthenticated, so on a private registry it would be checking something
+pnpm's authenticated fetch does not. That fails closed here — a 401 fails the
+probe and exits 2 — and this repo has no `.npmrc` and no private registry, so
+there is no auth to get wrong today. Give the probe the same credentials the
+day one is introduced.
+
+`scripts/dependency-freshness-workflow.test.mjs` pins the shell itself, which
+nothing else can reach: that the probe runs BEFORE `pnpm outdated` (a probe
+after the fact proves nothing about data already collected), that it exits 2
+and never 1, that the diagnostic carries the sanitised origin, and that
+pnpm's status is still captured and passed. Each assertion was verified by
+re-introducing its regression. It runs in `test-ci-scripts` because this
+workflow only triggers on a schedule.
+
 Worth generalising: **"a failure produces no output" is an assumption to
 measure, not to state.** The comment in this very workflow asserted it, and
 was wrong for the single most likely failure it named.
