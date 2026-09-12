@@ -3027,6 +3027,114 @@ curling a real response. `test/static-caching.spec.ts` does exactly that, and
 also asserts the two things a broad `source` pattern would quietly break --
 hashed chunks keeping `immutable`, and page HTML still able to go stale.
 
+## `priority` on `next/image` does not set `fetchpriority`, and that was the LCP gap
+
+The whole Lighthouse performance deficit was one attribute. Measured against
+live production on 2026-09-09, mobile, simulated throttling:
+
+| Page | Score | Where the points went |
+|---|---|---|
+| `/en` | 97 | 3 lost across FCP/LCP, nothing actionable |
+| `/hi?page=2` | 88 | **12 of 12 lost points are LCP**; TBT, CLS and Speed Index score 1.00 |
+
+So the regression is LCP on a catalogue page, and nothing else. The LCP
+element is the first product card's image, and its phase breakdown says the
+bytes were never the problem:
+
+```
+timeToFirstByte        107 ms
+resourceLoadDelay      485 ms   <-- the whole gap
+resourceLoadDuration   147 ms
+elementRenderDelay       5 ms
+```
+
+**`priority` only clears `loading="lazy"`. It does not imply
+`fetchpriority="high"` on this Next version** — read out of the installed
+source rather than recalled, per `apps/web/AGENTS.md`: in
+`next@16.3.4`'s `shared/lib/get-img-props.js`, `fetchPriority` is
+destructured from the caller's props and returned untouched, and nothing
+anywhere derives it from `priority`. The served HTML agreed exactly: the
+first card carried no `loading="lazy"` (so `priority` *was* applied) and no
+`fetchpriority` and no preload link, while every other card was lazy.
+
+Left at the browser's default, an in-viewport image loses the request queue
+to scripts and stylesheets — 485 ms of waiting for an SVG that then
+transferred in 147 ms and painted in 5. `product-card.tsx` now passes
+`fetchPriority={priority ? "high" : undefined}` explicitly. `undefined`
+rather than `"auto"` for the rest: the attribute must be *absent* on the
+other cards, since setting it everywhere flattens the distinction the
+priority card depends on.
+
+**A test had already documented this bug as a testing limitation**, which is
+the part worth remembering. `product-card.spec.tsx` asserted only `loading`,
+under a comment explaining that next/image sets `fetchPriority` as a DOM
+property jsdom cannot observe. The premise was false — nothing was setting it
+in any form — and the comment made its absence read as expected. With the
+prop passed explicitly React renders a real `fetchpriority` attribute, and
+jsdom sees it fine; both directions are now asserted. A comment explaining
+why something cannot be tested deserves the same scepticism as the code.
+
+**The image origin needed a preconnect, and the optimizer bypass is why.**
+The document preconnects to `api.laxair.shop`; product images are served
+straight from `images.laxair.shop` by `shouldBypassOptimizer` (see
+`lib/image-loading.ts`), so the LCP request pays a full DNS + TCP + TLS
+handshake to a host the page has never spoken to. `blobOrigin()` lives beside
+that bypass deliberately — the hint exists *because* of it.
+
+**That second `<link>` deliberately has NO `crossOrigin`, and copying the
+API's attribute across would silently undo it.** Browsers keep a separate
+connection pool per origin *per CORS mode*, so a hint only helps if it
+matches the request that follows. The API hint is `anonymous` because
+`fetchProductsPaged` sends `credentials: "omit"`; the image request is a
+plain `<img src>` with no `crossorigin` attribute, so an anonymous preconnect
+would warm a pool nothing ever reuses — the cost of the handshake, none of
+the benefit. Verified in the built HTML, not assumed.
+
+**And it is NOT skipped when the two origins match.** A
+`BLOB_ORIGIN !== API_ORIGIN` guard looks like de-duplication and is the same
+mistake in reverse — two hints to one origin in two CORS modes are two
+different connections, so suppressing this one leaves the LCP element with
+nothing warmed. Written that way first and caught in review, one paragraph
+below a comment explaining why pools are per CORS mode.
+
+`blobOrigin()` returns `null` rather than throwing on an unset or relative
+value, for the same reason `getApiOrigin` does: it is read at module load,
+which for a layout is during static generation, so an invalid value would
+fail every page's build rather than one image.
+
+**A try/catch is not enough, because `new URL` succeeds on things that are
+not fetchable hosts and each fails differently.** `data:` and `javascript:`
+parse fine and have the *string* `"null"` as their origin — truthy, so it
+renders `<link rel="preconnect" href="null">` and sends the browser after a
+relative path called `null` on our own host. `ftp://host` returns a
+real-looking origin that cannot be preconnected at all. Neither throws.
+Verified directly, and the protocol is now checked against `http:`/`https:`.
+Both `http:` and `https:` are accepted deliberately: a local or staging blob
+host is a real configuration, and rejecting it would drop the hint in exactly
+the environment where someone is trying to observe it.
+
+### What is NOT the fix, having measured it
+
+**The `/` → `/en` redirect is not the score regression**, and it looked like
+it. Lighthouse's `redirects` audit reports 1,050–1,570 ms of estimated
+savings on the bare domain, which is a real wall-clock cost — the target
+depends on `Accept-Language` and `NEXT_LOCALE`, neither in any cache key, so
+`cf-cache-status` is `DYNAMIC` and it can never be edge-cached. But the
+composite score barely moves: `/` scored 92 while `/en` measured 91 and 97 on
+two consecutive runs, so the redirect sits inside the run-to-run spread this
+file already documents for the performance score. Removing it means
+`localePrefix: "as-needed"`, which changes every English URL and touches the
+sitemap, canonicals, hreflang, the Cloudflare rules keyed on locale-prefixed
+paths, and links already shared over WhatsApp. That is a URL-scheme decision
+to take on its own merits — latency, and getting the locale out of the path —
+not something to reach for as an LCP fix, because it is not one.
+
+**`/sitemap.xml` 500s and an SEO score of 92 are both CI-local artifacts**,
+checked before being reported as defects. Production answers both correctly
+(SEO 100/100), and the earlier readings were a cold API and a local-only
+condition respectively.
+
+
 ## Three measured performance trade-offs, priced
 
 Audited against live production at `e076f51` (2026-08-30). Each of these is a

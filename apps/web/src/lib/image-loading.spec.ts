@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { shouldBypassOptimizer } from "./image-loading";
+import { afterEach, describe, expect, it } from "vitest";
+import { blobOrigin, shouldBypassOptimizer } from "./image-loading";
 
 describe("shouldBypassOptimizer", () => {
   it("bypasses SVGs, which the optimizer cannot improve", () => {
@@ -42,5 +42,66 @@ describe("shouldBypassOptimizer", () => {
   it("is case-insensitive, since the extension is data we do not control", () => {
     expect(shouldBypassOptimizer("/products/X.SVG")).toBe(true);
     expect(shouldBypassOptimizer("/uploads/P.JPEG")).toBe(false);
+  });
+});
+
+describe("blobOrigin", () => {
+  const original = process.env.NEXT_PUBLIC_BLOB_BASE_URL;
+  afterEach(() => {
+    if (original === undefined) delete process.env.NEXT_PUBLIC_BLOB_BASE_URL;
+    else process.env.NEXT_PUBLIC_BLOB_BASE_URL = original;
+  });
+
+  it("reduces a configured base URL to its origin", () => {
+    // A preconnect target is an origin -- a path would be ignored, and a
+    // bucket-style base URL genuinely carries one.
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = "https://images.laxair.shop/bucket/media";
+    expect(blobOrigin()).toBe("https://images.laxair.shop");
+  });
+
+  it("returns null when storage is not configured", () => {
+    // Not "", which would render <link rel="preconnect" href=""> and make
+    // the browser resolve the hint against the current document.
+    for (const value of ["", undefined]) {
+      if (value === undefined) delete process.env.NEXT_PUBLIC_BLOB_BASE_URL;
+      else process.env.NEXT_PUBLIC_BLOB_BASE_URL = value;
+      expect(blobOrigin()).toBeNull();
+    }
+  });
+
+  it("refuses a scheme the browser cannot preconnect to", () => {
+    // None of these throw, so a try/catch does not catch them, and two of
+    // them are actively harmful rather than merely useless: `data:` and
+    // `javascript:` have the STRING "null" as their origin, which is
+    // truthy and renders <link rel="preconnect" href="null"> -- pointing
+    // the browser at a relative path on our own host. Caught in review.
+    for (const bad of [
+      "data:image/svg+xml,<svg/>",
+      "javascript:alert(1)",
+      "ftp://images.laxair.shop",
+    ]) {
+      process.env.NEXT_PUBLIC_BLOB_BASE_URL = bad;
+      expect(blobOrigin()).toBeNull();
+    }
+  });
+
+  it("accepts plain http, not only https", () => {
+    // A local or staging blob host is a real configuration, and rejecting
+    // it would silently drop the hint in exactly the environment where
+    // someone is trying to observe it.
+    process.env.NEXT_PUBLIC_BLOB_BASE_URL = "http://localhost:9000/bucket";
+    expect(blobOrigin()).toBe("http://localhost:9000");
+  });
+
+  it("returns null rather than THROWING on an unusable value", () => {
+    // Load-bearing: this is read at module load, which for the layout is
+    // during static generation, so throwing here fails every page's build
+    // rather than one image. A relative value also has no separate origin
+    // worth a hint, so null is the correct answer and not merely a safe
+    // one -- the same reasoning getApiOrigin records for the API hint.
+    for (const bad of ["/uploads", "images.laxair.shop", "not a url"]) {
+      process.env.NEXT_PUBLIC_BLOB_BASE_URL = bad;
+      expect(blobOrigin()).toBeNull();
+    }
   });
 });

@@ -44,3 +44,49 @@ export function shouldBypassOptimizer(src: string | null | undefined): boolean {
   // bypassing could serve a full-resolution original to a phone.
   return false;
 }
+
+/**
+ * The origin product images are actually fetched from, or null when blob
+ * storage is not configured (or is configured with an unusable value).
+ *
+ * Exists so the layout can preconnect to it. That hint is only worth
+ * anything BECAUSE of `shouldBypassOptimizer` above: once the browser
+ * stops proxying images through our own origin, the LCP image lives on a
+ * third-party host the document has never spoken to, so the request pays
+ * a fresh DNS + TCP + TLS handshake before a single byte moves. Measured
+ * on production `/hi?page=2`: `resourceLoadDelay` 485 ms against a
+ * `resourceLoadDuration` of 147 ms -- most of the wait was getting to the
+ * host, not transferring from it.
+ *
+ * `new URL()` rather than string handling, and the try/catch is
+ * load-bearing for the same reason it is on `getApiOrigin`: this runs at
+ * module load, which for a layout is during Next's static generation, so
+ * an unset or relative value would fail the whole build rather than one
+ * image. A relative value has no origin to preconnect to, so null is the
+ * right answer there and not merely a safe one.
+ *
+ * The protocol check is not defensive noise -- `new URL` succeeds on
+ * plenty of strings that are not fetchable hosts, and each fails in a
+ * DIFFERENT way. `data:` and `javascript:` parse fine and yield the
+ * STRING "null" as their origin, which is truthy and would render
+ * `<link rel="preconnect" href="null">`, sending the browser after a
+ * relative path called "null" on our own host. `ftp://host` returns a
+ * real-looking origin the browser cannot preconnect to at all. Both were
+ * verified rather than reasoned about, and neither is caught by a
+ * try/catch, because neither throws.
+ *
+ * Note this deliberately does NOT compare against our own origin. It has
+ * no site origin to compare with here, and an earlier version's comment
+ * claimed a same-origin check it did not perform -- caught in review.
+ */
+export function blobOrigin(): string | null {
+  const configured = process.env.NEXT_PUBLIC_BLOB_BASE_URL ?? "";
+  if (!configured) return null;
+  try {
+    const url = new URL(configured);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
