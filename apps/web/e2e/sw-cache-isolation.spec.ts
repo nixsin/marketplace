@@ -68,13 +68,43 @@ async function loadListingUnderWorker(page: Page) {
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null, {
     timeout: 15_000,
   });
-  const graphqlRequestPromise = page.waitForRequest(
-    (req) => new URL(req.url()).pathname === "/graphql",
+  // The RESPONSE, not merely the request: a background cache.put cannot
+  // start before the response exists, so waiting on the request alone
+  // would begin sampling too early to observe one.
+  const graphqlResponsePromise = page.waitForResponse(
+    (res) => new URL(res.url()).pathname === "/graphql",
   );
   await page.reload();
-  const graphqlRequest = await graphqlRequestPromise;
+  const graphqlResponse = await graphqlResponsePromise;
   await expect(page.locator('[data-slot="card"]').first()).toBeVisible();
-  return graphqlRequest.url();
+  return graphqlResponse.url();
+}
+
+/**
+ * Asserts NO /graphql entry appears at any point across a window.
+ *
+ * `expect.poll(...).toEqual([])` is the wrong tool here and silently
+ * passes against the exact regression this file guards: poll retries until
+ * the assertion SUCCEEDS, so an already-empty cache satisfies it on the
+ * first sample and stops. But a stale-while-revalidate worker writes from a
+ * background fetch that resolves AFTER the response was delivered -- so the
+ * cache is legitimately empty at t=0 and populated a moment later, and the
+ * test is long finished. Caught in review; the first version of this file
+ * had precisely that hole, under a comment claiming it did not.
+ *
+ * Sampling repeatedly and failing on the first non-empty observation is
+ * what actually covers the delayed write.
+ */
+async function assertGraphqlCacheStaysEmpty(page: Page, windowMs = 3_000) {
+  const deadline = Date.now() + windowMs;
+  for (;;) {
+    expect(
+      await graphqlCacheKeys(page),
+      "no /graphql response may ever be cached by the service worker",
+    ).toEqual([]);
+    if (Date.now() >= deadline) return;
+    await page.waitForTimeout(250);
+  }
 }
 
 async function assertNeverCached(page: Page, url: string, init: RequestInit) {
@@ -92,7 +122,15 @@ async function assertNeverCached(page: Page, url: string, init: RequestInit) {
   // vacuous -- a swallowed CORS/network failure would make a broken check
   // look like it works. Caught by a review on the previous version.
   expect(fetchOk, "synthetic request must succeed for this assertion to mean anything").toBe(true);
-  expect(await cacheHasEntry(page, url)).toBe(false);
+
+  // Sampled, not read once, for the delayed-write reason above: a
+  // background cache.put lands after the fetch has already resolved here.
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    expect(await cacheHasEntry(page, url), `must not be cached: ${url.slice(0, 80)}`).toBe(false);
+    if (Date.now() >= deadline) return;
+    await page.waitForTimeout(250);
+  }
 }
 
 test.describe("service worker caches navigations only", () => {
@@ -112,13 +150,7 @@ test.describe("service worker caches navigations only", () => {
     const realUrl = await loadListingUnderWorker(page);
     expect(new URL(realUrl).pathname).toBe("/graphql");
 
-    // Polled rather than read once: the old worker cached from a
-    // background revalidation fetch that completed AFTER the response was
-    // delivered, so a single immediate read could miss a regression that a
-    // moment later would be plainly visible.
-    await expect
-      .poll(() => graphqlCacheKeys(page), { timeout: 10_000 })
-      .toEqual([]);
+    await assertGraphqlCacheStaysEmpty(page);
   });
 
   test("caches no /graphql response in any shape a reintroduction might take", async ({ page }) => {
@@ -137,6 +169,6 @@ test.describe("service worker caches navigations only", () => {
       await assertNeverCached(page, url, { credentials: "omit" });
     }
 
-    await expect.poll(() => graphqlCacheKeys(page), { timeout: 5_000 }).toEqual([]);
+    await assertGraphqlCacheStaysEmpty(page, 2_000);
   });
 });
