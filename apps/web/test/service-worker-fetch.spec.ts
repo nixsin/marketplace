@@ -25,13 +25,6 @@ const SW_SOURCE = readFileSync(
   "utf8",
 );
 
-/** The allowlisted query, read out of the real source so it cannot drift. */
-function allowlistedQuery(): string {
-  const match = SW_SOURCE.match(/PUBLIC_GRAPHQL_QUERIES = new Set\(\[\s*"([^"]+)"/);
-  if (!match) throw new Error("could not find the allowlisted query in sw.js");
-  return match[1];
-}
-
 interface LoadedWorker {
   fetchHandler: (event: FakeFetchEvent) => void;
 }
@@ -77,12 +70,25 @@ function loadWorker(opts: {
   return { fetchHandler: fetchHandler as (event: FakeFetchEvent) => void };
 }
 
-/** A request shaped like the one src/lib/api.ts actually issues. */
-function graphqlRequest(overrides: Record<string, unknown> = {}) {
-  const url = `https://api.laxair.shop/graphql?query=${encodeURIComponent(allowlistedQuery())}`;
+/** A page navigation -- the one request kind the worker still intercepts. */
+function navigationRequest(overrides: Record<string, unknown> = {}) {
   return {
     method: "GET",
-    url,
+    url: "https://laxair.shop/en",
+    mode: "navigate",
+    credentials: "include",
+    headers: { has: () => false },
+    ...overrides,
+  };
+}
+
+/** A GraphQL read shaped exactly like the one src/lib/api.ts issues. */
+function graphqlRequest(overrides: Record<string, unknown> = {}) {
+  const query =
+    "query ProductsPaged($page: Int, $pageSize: Int) { productsPaged(page: $page, pageSize: $pageSize) { items { id } } }";
+  return {
+    method: "GET",
+    url: `https://api.laxair.shop/graphql?query=${encodeURIComponent(query)}`,
     mode: "cors",
     credentials: "omit",
     headers: { has: () => false },
@@ -113,7 +119,7 @@ describe("service worker fetch handling", () => {
       fetchImpl: () => Promise.reject(new Error("network down")),
     });
 
-    const responded = respond(worker, graphqlRequest());
+    const responded = respond(worker, navigationRequest());
     expect(responded, "the worker should have intercepted this request").toBeDefined();
     await expect(responded).rejects.toThrow("network down");
   });
@@ -127,7 +133,7 @@ describe("service worker fetch handling", () => {
       fetchImpl: () => Promise.reject(new Error("network down")),
     });
 
-    await expect(respond(worker, graphqlRequest())).resolves.toBe(cached);
+    await expect(respond(worker, navigationRequest())).resolves.toBe(cached);
   });
 
   it("delivers the network response even if writing it to the cache fails", async () => {
@@ -150,7 +156,7 @@ describe("service worker fetch handling", () => {
         cachePut: () => Promise.reject(new Error("QuotaExceededError")),
       });
 
-      await expect(respond(worker, graphqlRequest())).resolves.toBe(response);
+      await expect(respond(worker, navigationRequest())).resolves.toBe(response);
 
       await new Promise((resolve) => setTimeout(resolve, 10));
       expect(unhandled, "a rejected cache.put must not surface as unhandled").not.toHaveBeenCalled();
@@ -159,27 +165,66 @@ describe("service worker fetch handling", () => {
     }
   });
 
-  it("does not intercept a request carrying credentials", async () => {
-    // Not new behaviour, but it sits one line from the code being changed
-    // and is the check that keeps a per-user response out of a shared,
-    // identity-blind cache. Worth failing loudly if it is ever weakened.
+  it("NEVER intercepts a GraphQL read, whatever shape it arrives in", () => {
+    // The standing rule, pinned. This worker used to allowlist the exact
+    // ProductsPaged query text and serve it stale-while-revalidate, with
+    // careful credentials and Authorization checks guarding a cache that
+    // cannot partition by user identity. All of that is deleted: no API
+    // response is cached here at all, so there is nothing to guard.
+    //
+    // Asserted across the shapes the old allowlist reasoned about, so a
+    // reintroduction along ANY of those paths fails here rather than
+    // passing because it happened to pick a different one.
     const worker = loadWorker({
-      cached: undefined,
+      cached: { tag: "MUST NOT BE SERVED" },
       fetchImpl: () => Promise.reject(new Error("should never be called")),
     });
 
-    expect(respond(worker, graphqlRequest({ credentials: "include" }))).toBeUndefined();
+    for (const request of [
+      graphqlRequest(),
+      graphqlRequest({ credentials: "include" }),
+      graphqlRequest({ headers: { has: () => true } }),
+      graphqlRequest({
+        url: "https://api.laxair.shop/graphql?query=" + encodeURIComponent("{me{id}}"),
+      }),
+      graphqlRequest({ url: "https://laxair.shop/graphql?query=%7Bme%7Bid%7D%7D" }),
+    ]) {
+      expect(
+        respond(worker, request),
+        `the worker must not intercept ${String((request as { url: string }).url).slice(0, 60)}`,
+      ).toBeUndefined();
+    }
   });
 
-  it("does not intercept a query outside the allowlist", async () => {
+  it("intercepts NOTHING but navigations", () => {
+    // The complement of the rule above, stated as a property rather than a
+    // list: an image, a stylesheet and a same-origin data fetch are all
+    // left to the HTTP cache. Written this way so a future handler that
+    // widens beyond navigations fails here even for a kind nobody thought
+    // to enumerate.
     const worker = loadWorker({
-      cached: undefined,
+      cached: { tag: "MUST NOT BE SERVED" },
       fetchImpl: () => Promise.reject(new Error("should never be called")),
     });
 
-    const request = graphqlRequest({
-      url: "https://api.laxair.shop/graphql?query=" + encodeURIComponent("{me{id}}"),
+    for (const mode of ["cors", "no-cors", "same-origin"]) {
+      expect(
+        respond(worker, navigationRequest({ mode })),
+        `mode "${mode}" must not be intercepted`,
+      ).toBeUndefined();
+    }
+  });
+
+  it("still intercepts a real navigation, so the shell keeps working", () => {
+    // The other direction. Deleting API caching must not quietly delete
+    // the worker's actual job -- painting the shell instantly on a repeat
+    // visit, which is why this file exists on a free tier that spins down.
+    const cached = { tag: "SHELL" };
+    const worker = loadWorker({
+      cached,
+      fetchImpl: () => Promise.reject(new Error("network down")),
     });
-    expect(respond(worker, request)).toBeUndefined();
+
+    expect(respond(worker, navigationRequest())).toBeDefined();
   });
 });

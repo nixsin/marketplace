@@ -23,7 +23,19 @@ The first version of this shell/data split only solved half the problem: `produc
 - Verified with real browser Resource Timing data (not just curl): a reload shows `transferSize: 300` bytes against an actual `encodedBodySize` of ~2.5KB for the product data — the same 304 signature as the shell, confirming the browser is genuinely reusing cached product data rather than re-fetching it. Cross-origin Resource Timing values are zeroed by browsers for privacy by default; `Timing-Allow-Origin` is set explicitly so this is actually measurable, not just inferred.
 - Mutations (`requestOtp`, `completeOnboarding`, etc.) and any exploratory queries sent via POST are deliberately unaffected — this override only ever applies to GET.
 
-Caching this response at the service-worker layer required real care: Cache Storage matches by request, not by caller identity, so a naive "cache every GET to `/graphql`" rule would risk serving one user's authenticated response to another. `apps/web/public/sw.js` allowlists the exact canonical query text and independently checks both `credentials` and the `Authorization` header before caching — see [issue #78](https://github.com/nixsin/marketplace/issues/78) §3.6 and `apps/web/e2e/sw-cache-isolation.spec.ts` for the full reasoning and test coverage.
+**The service worker does NOT cache this response, or any API response — that is a standing rule** (2026-09-13). It caches page navigations and nothing else.
+
+It used to. `sw.js` allowlisted the exact canonical query text and independently checked `credentials` and the `Authorization` header, because Cache Storage matches by request rather than by caller identity and cannot partition by user. That guard was correct and is no longer needed, because there is nothing left to guard.
+
+Three reasons it moved out of that layer:
+
+- **It applied no age bound.** The only thing evicting an entry was a `CACHE_NAME` bump, i.e. a deploy. A returning visitor got whatever was in Cache Storage however old, one visit behind in perpetuity, and a reload could not fix it.
+- **It silently contradicted the response's own header.** The API sends `max-age=0, must-revalidate` precisely so "a reload always revalidates and nobody is stuck on a stale catalogue they cannot refresh" (`packages/config/src/index.js`). The worker overrode that for the one query it allowlisted, and nothing said so.
+- **Freshness became a three-way argument** between the header, the worker and the caller — with the worker silently winning.
+
+The browser's own HTTP cache does the same job with a bounded lifetime and no custom code, once the header asks for it. **Note the consequence, which is real**: at `max-age=0, must-revalidate` the HTTP cache cannot reuse a response without a conditional round trip (~52 ms measured, 0 bytes). Recovering the saved round trip means moving that header to something like `max-age=60, stale-while-revalidate=300` — bounded, standard, and a separate decision from this one.
+
+`apps/web/e2e/sw-cache-isolation.spec.ts` now pins the rule in both directions: navigations are cached, and no `/graphql` entry ever appears in Cache Storage — including for the exact query the app really sends, and for the shapes a reintroduction would most plausibly take.
 
 ## Minification & debugging prod
 
