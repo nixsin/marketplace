@@ -3047,7 +3047,7 @@ they can tolerate different things:
 
 | surface | policy | why |
 |---|---|---|
-| `products`, `productsPaged` | `public, max-age=60, s-maxage=60, must-revalidate` | a listing is how a buyer discovers what exists; a withdrawn item still showing, or a new one missing, is worse than the revalidation it costs |
+| `products`, `productsPaged` | `public, max-age=60, s-maxage=60, must-revalidate` | a listing is how a buyer discovers what exists; a withdrawn item still showing, or a new one missing, is worse than the revalidation it costs. **Asks** every cache not to serve stale — see the edge gap below for where that is honoured and where it is not |
 | `product` | `public, max-age=60, s-maxage=60, stale-while-revalidate=300` | a detail page is already about one known product, so painting instantly from a slightly old copy while a fresh one loads behind is the better trade |
 
 **The selection reads the SCHEMA fields off the PARSED OPERATION — not the

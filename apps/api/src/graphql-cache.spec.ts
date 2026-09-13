@@ -142,10 +142,19 @@ describe('rootFieldNames', () => {
 });
 
 describe('cachePolicyFor', () => {
-  it('never lets a LISTING be served stale', () => {
-    // A listing is how a buyer discovers what exists, so a withdrawn item
-    // still showing -- or a new one missing -- is worse than the
-    // revalidation round trip it costs.
+  it('emits a header FORBIDDING a listing from being served stale', () => {
+    // Note what this proves and what it does not, because the gap is real
+    // and naming it "never served stale" would overstate the guarantee:
+    // this asserts the emitted directives, and a cache that honours them
+    // will not serve stale. Cloudflare's rule currently sets
+    // disable_stale_while_updating = false and may serve stale regardless
+    // -- see CLAUDE.md. So the guarantee binds browsers today, not the
+    // edge. Raised in review, and the claim is corrected rather than the
+    // test deleted.
+    //
+    // The intent behind the directives: a listing is how a buyer
+    // discovers what exists, so a withdrawn item still showing -- or a
+    // new one missing -- is worse than the revalidation it costs.
     for (const field of ['productsPaged', 'products']) {
       const value = cachePolicyFor([field]);
       expect(value).toContain('must-revalidate');

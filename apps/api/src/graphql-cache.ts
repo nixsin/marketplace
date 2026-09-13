@@ -68,9 +68,19 @@ export const GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS =
 /**
  * Which cache policy a successful GraphQL response gets.
  *
- *   listing (`products`, `productsPaged`)  strict TTL, NEVER stale.
- *   detail  (`product`)                    TTL, stale served while it
- *                                          revalidates.
+ *   listing (`products`, `productsPaged`)  strict TTL; asks every cache
+ *                                          NOT to serve it stale.
+ *   detail  (`product`)                    TTL; authorises serving stale
+ *                                          while it revalidates.
+ *
+ * "Asks", not "guarantees", and the distinction is load-bearing rather
+ * than pedantic: this function emits a header. A cache that honours it
+ * will not serve a listing stale -- browsers do. Cloudflare's rule
+ * currently sets `disable_stale_while_updating = false` and may serve
+ * stale anyway, and it cannot distinguish the two queries because it
+ * matches on path and both are /graphql. See CLAUDE.md for the three
+ * options. Raised in review; the claim is corrected here rather than
+ * overstated.
  *
  * The split is a product decision about what each surface can tolerate. A
  * listing is how a buyer discovers what exists, so showing an item that
