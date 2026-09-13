@@ -1,5 +1,4 @@
 import { test, expect, type Page } from "@playwright/test";
-import { PRODUCTS_PAGED_QUERY } from "../src/lib/api";
 
 // Pins the standing rule in public/sw.js: the service worker caches PAGE
 // NAVIGATIONS and nothing else. No API response is cached there, ever.
@@ -24,8 +23,6 @@ import { PRODUCTS_PAGED_QUERY } from "../src/lib/api";
 // registered (playwright.config.ts's webServer is `pnpm build && pnpm
 // start`, and service-worker-registration.tsx only registers when
 // NODE_ENV === "production") -- genuine SW behaviour, not a simulation.
-
-const REAL_PRODUCTS_PAGED_QUERY = PRODUCTS_PAGED_QUERY;
 
 async function cacheHasEntry(page: Page, url: string) {
   return page.evaluate(async (url) => {
@@ -158,15 +155,30 @@ test.describe("service worker caches navigations only", () => {
     const origin = new URL(realUrl).origin;
     const q = (query: string) => `${origin}/graphql?query=${encodeURIComponent(query)}`;
 
-    // The real allowlisted query, an unauthenticated read, and a query
-    // merely NAMED like the allowlisted one while selecting other fields
-    // -- the last being the bypass a review caught in the allowlist era.
+    // `apollo-require-preflight` is REQUIRED on every one of these, and
+    // leaving it off is not a detail: Apollo Server's CSRF protection
+    // rejects a GET without a preflight-triggering header, so the fetch
+    // never reaches a real response and the cache assertion after it
+    // asserts nothing. Omitted in the first version of this file and
+    // caught by CI -- by the `fetchOk` guard inside assertNeverCached,
+    // which exists for exactly this and was itself added by an earlier
+    // review. It refused to let a vacuous assertion pass as a green test.
+    const init: RequestInit = {
+      headers: { "apollo-require-preflight": "true" },
+      credentials: "omit",
+    };
+
+    // The real request the app actually issued (query AND variables, taken
+    // from the browser rather than reconstructed), an unauthenticated
+    // read, and a query merely NAMED like the old allowlisted one while
+    // selecting other fields -- the last being the bypass a review caught
+    // in the allowlist era.
     for (const url of [
-      q(REAL_PRODUCTS_PAGED_QUERY),
+      realUrl,
       q("{__typename}"),
       q("query ProductsPaged { __typename }"),
     ]) {
-      await assertNeverCached(page, url, { credentials: "omit" });
+      await assertNeverCached(page, url, init);
     }
 
     await assertGraphqlCacheStaysEmpty(page, 2_000);
