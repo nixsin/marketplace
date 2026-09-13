@@ -236,6 +236,62 @@ export const STALE_WHILE_REVALIDATE_SECONDS = 300;
  * must-revalidate is kept alongside s-maxage because it constrains the
  * BROWSER, which s-maxage deliberately does not touch.
  */
+/**
+ * Cache-Control for a response that must NEVER be served stale.
+ *
+ * Reusable without asking for `maxAge` seconds; after that every cache --
+ * private and shared alike -- must revalidate before serving it again.
+ * There is deliberately no `stale-while-revalidate` and no
+ * `stale-if-error`: both exist to serve a known-outdated copy, which is
+ * the one thing this policy refuses.
+ *
+ * `must-revalidate` rather than `proxy-revalidate`, because the rule is
+ * meant to bind browsers too. `proxy-revalidate` exempts private caches,
+ * which would leave exactly the audience this is strictest for able to
+ * serve stale.
+ *
+ * NOTE the directive that is NOT here and cannot be: a CDN's own
+ * serve-stale behaviour is edge configuration, not a response header.
+ * Cloudflare's "always online" and stale-while-updating settings can still
+ * serve a stale copy regardless of what this says, so enforcing the rule
+ * end to end means the Terraform cache rules as well as this string.
+ */
+export function strictCacheControl(maxAge = SHARED_MAX_AGE_SECONDS) {
+  return [
+    "public",
+    `max-age=${maxAge}`,
+    `s-maxage=${maxAge}`,
+    "must-revalidate",
+  ].join(", ");
+}
+
+/**
+ * Cache-Control for a response that MAY be served stale while it refreshes.
+ *
+ * Fresh for `maxAge`; for `staleWhileRevalidate` seconds after that a
+ * cache may hand back the stale copy immediately and fetch a new one in
+ * the background, so the visitor never waits on revalidation.
+ *
+ * `must-revalidate` is deliberately ABSENT, and its absence is the whole
+ * policy rather than an oversight. The two directives contradict each
+ * other -- `must-revalidate` forbids serving a stale response, which is
+ * precisely what `stale-while-revalidate` authorises -- and a cache
+ * honouring both does the strict thing, silently making the SWR window
+ * dead weight. `publicCacheControl` below still ships both together, and
+ * that combination is why these two builders exist separately.
+ */
+export function staleWhileRevalidateCacheControl(
+  maxAge = SHARED_MAX_AGE_SECONDS,
+  staleWhileRevalidate = STALE_WHILE_REVALIDATE_SECONDS,
+) {
+  return [
+    "public",
+    `max-age=${maxAge}`,
+    `s-maxage=${maxAge}`,
+    `stale-while-revalidate=${staleWhileRevalidate}`,
+  ].join(", ");
+}
+
 export function publicCacheControl(
   sharedMaxAge = SHARED_MAX_AGE_SECONDS,
   staleWhileRevalidate = STALE_WHILE_REVALIDATE_SECONDS,

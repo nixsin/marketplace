@@ -2982,6 +2982,70 @@ prefetching on its own and mask a revert, and re-enabling prefetch costs
 nothing visible. Full audit of every `<Link>` and RSC path in
 [#223](https://github.com/nixsin/marketplace/issues/223).
 
+## Two cache policies for the API, chosen by what was resolved
+
+The listing and the product detail get DIFFERENT `Cache-Control`, because
+they can tolerate different things:
+
+| surface | policy | why |
+|---|---|---|
+| `products`, `productsPaged` | `public, max-age=60, s-maxage=60, must-revalidate` | a listing is how a buyer discovers what exists; a withdrawn item still showing, or a new one missing, is worse than the revalidation it costs |
+| `product` | `public, max-age=60, s-maxage=60, stale-while-revalidate=300` | a detail page is already about one known product, so painting instantly from a slightly old copy while a fresh one loads behind is the better trade |
+
+**The selection keys on the RESOLVED top-level field in `data`, never on the
+operation name in the query text.** An operation name is caller-controlled —
+a request can name anything `ProductsPaged` — and this repo has already been
+bitten by trusting one (see the service-worker section above). `data`'s keys
+are what the server actually executed and serialised, so they cannot be
+spoofed into selecting a weaker policy. `cachePolicyFor` in
+`apps/api/src/graphql-cache.ts` owns this.
+
+**It fails CLOSED toward strict.** An unrecognised field, an empty
+selection, an unparseable body — all get the never-stale policy. A new query
+silently inheriting permission to serve stale data is the failure being
+designed out; guessing wrong the other way costs one revalidation.
+
+**A request selecting BOTH gets strict.** One header governs the whole
+response, so `{ product, productsPaged }` cannot be allowed to serve the
+listing half stale. Every field must tolerate staleness, not merely one.
+
+**`must-revalidate` and `stale-while-revalidate` contradict each other**, and
+the old single policy shipped both. `must-revalidate` forbids serving a stale
+response; SWR authorises exactly that. A cache honouring both does the strict
+thing, silently making the SWR window dead weight. Splitting the policies is
+what resolved it — each is now internally coherent. `publicCacheControl`
+still emits both together and is **unchanged**, because `apps/web`'s locale
+shell uses it (`next.config.ts`); changing it would have moved the HTML
+policy too, which was not the ask. Whether the shell should follow the same
+split is open.
+
+**`max-age` went from 0 to 60**, reversing a documented choice. The old value
+existed so "a reload always revalidates and nobody is stuck on a stale
+catalogue they cannot refresh" — but at `max-age=0` a browser cannot reuse a
+response at all without a conditional round trip, measured on production at
+**52 ms for a 304 carrying zero bytes**. `must-revalidate` keeps the
+never-stale guarantee on the listing without paying that on every reuse.
+
+### The edge does NOT enforce the never-stale half, and one rule cannot
+
+Verified in `infra/terraform/cloudflare/main.tf`: `cache-public-graphql-gets`
+sets `serve_stale.disable_stale_while_updating = false`, so Cloudflare may
+serve a stale copy while revalidating **regardless of what the origin
+header says**. So "never stale" today binds browsers and any cache honouring
+`must-revalidate` — not the CDN.
+
+**And it cannot be fixed by flipping that flag**, which is the part worth
+knowing before someone tries: that rule matches on path, and both queries are
+`/graphql`. Setting it `true` would disable stale-serving for the *detail*
+query too — the one that wants it. A Cloudflare expression could in principle
+match on the query string, but the operation name in it is caller-controlled,
+which is the exact trust this design just moved away from.
+
+So the options, none of them free: accept the edge gap (today's state), split
+the queries onto distinct paths so a path-based rule can tell them apart, or
+put a Worker in front that reads the resolved response. Recorded rather than
+half-fixed.
+
 ## Catalogue images had no cache window at all
 
 Everything under `public/` gets Next's default `Cache-Control: public,

@@ -1,64 +1,9 @@
 import {
   GRAPHQL_SHARED_MAX_AGE_SECONDS,
   GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS,
-  graphqlCacheControl,
+  cachePolicyFor,
   isCacheableGraphqlResponse,
 } from './graphql-cache';
-
-describe('graphqlCacheControl', () => {
-  it('keeps the browser revalidating', () => {
-    // max-age=0 is for the PRIVATE cache. A user reloading must never be
-    // stuck with a stale catalogue they cannot refresh.
-    expect(graphqlCacheControl()).toContain('max-age=0');
-    expect(graphqlCacheControl()).toContain('must-revalidate');
-  });
-
-  it('lets shared caches serve without a round trip', () => {
-    // s-maxage applies to CDNs only and overrides max-age for them --
-    // this is the directive that removes the trans-Pacific hop.
-    expect(graphqlCacheControl()).toContain(
-      `s-maxage=${GRAPHQL_SHARED_MAX_AGE_SECONDS}`,
-    );
-  });
-
-  it('serves stale instantly while refreshing behind it', () => {
-    // The half that works TODAY: browsers honour SWR, so a repeat
-    // navigation renders from cache instead of blocking on the network,
-    // with no CDN involved.
-    expect(graphqlCacheControl()).toContain(
-      `stale-while-revalidate=${GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS}`,
-    );
-  });
-
-  it('allows a longer stale window than the fresh one', () => {
-    // Past s-maxage the data is stale but still far better than a
-    // spinner, and the refresh is off the critical path. If these ever
-    // invert, SWR stops doing anything.
-    expect(GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS).toBeGreaterThan(
-      GRAPHQL_SHARED_MAX_AGE_SECONDS,
-    );
-  });
-
-  it('bounds staleness, since there is no invalidation path yet', () => {
-    // Nothing purges the cache when a seller edits a listing, so
-    // s-maxage doubles as the worst-case staleness they would see.
-    // Raise it only once an invalidation hook exists.
-    expect(GRAPHQL_SHARED_MAX_AGE_SECONDS).toBeLessThanOrEqual(300);
-  });
-
-  it('is publicly cacheable', () => {
-    // Product data is a public catalogue. `private` would disable shared
-    // caching entirely and silently undo the point of this header.
-    expect(graphqlCacheControl()).toMatch(/^public,/);
-  });
-
-  it('accepts overrides for testing and future tuning', () => {
-    expect(graphqlCacheControl(30, 120)).toContain('s-maxage=30');
-    expect(graphqlCacheControl(30, 120)).toContain(
-      'stale-while-revalidate=120',
-    );
-  });
-});
 
 describe('isCacheableGraphqlResponse', () => {
   const ok = JSON.stringify({ data: { productsPaged: { items: [] } } });
@@ -153,5 +98,122 @@ describe('isCacheableGraphqlResponse', () => {
     expect(isCacheableGraphqlResponse(200, '{"data":{"product":null}}')).toBe(
       true,
     );
+  });
+});
+
+describe('cachePolicyFor', () => {
+  const body = (data: unknown) => JSON.stringify({ data });
+
+  it('never lets a LISTING be served stale', () => {
+    // A listing is how a buyer discovers what exists, so showing a
+    // withdrawn item -- or missing one just added -- is worse than the
+    // revalidation round trip it costs.
+    for (const field of ['productsPaged', 'products']) {
+      const value = cachePolicyFor(body({ [field]: {} }));
+      expect(value).toContain('must-revalidate');
+      expect(value).not.toContain('stale-while-revalidate');
+    }
+  });
+
+  it('lets a product DETAIL be served stale while it refreshes', () => {
+    const value = cachePolicyFor(body({ product: { id: 'x' } }));
+    expect(value).toContain('stale-while-revalidate');
+    expect(value).not.toContain('must-revalidate');
+  });
+
+  it('takes the STRICT policy when one request selects both', () => {
+    // One header governs the whole response, so a request selecting a
+    // detail alongside a listing cannot be allowed to serve the listing
+    // stale. Every field must tolerate staleness, not merely one.
+    const value = cachePolicyFor(
+      body({ product: { id: 'x' }, productsPaged: {} }),
+    );
+    expect(value).toContain('must-revalidate');
+    expect(value).not.toContain('stale-while-revalidate');
+  });
+
+  it('fails CLOSED for anything it does not recognise', () => {
+    // A new query silently inheriting permission to serve stale data is
+    // the failure being designed out. Guessing the other way costs one
+    // revalidation.
+    // Jest's expect takes no message argument (that is Vitest's API, and
+    // apps/api is Jest) -- so the shape under test goes in the assertion
+    // itself, which also makes a failure name the culprit rather than
+    // just the loop.
+    for (const data of [{ somethingNew: 1 }, {}, null]) {
+      expect({ data, policy: cachePolicyFor(body(data)) }).toEqual({
+        data,
+        policy: expect.stringContaining('must-revalidate'),
+      });
+    }
+  });
+
+  it('keys on the RESOLVED field, not the caller-supplied operation name', () => {
+    // An operation name is caller-controlled -- a request can name
+    // anything "ProductsPaged" -- and this repo has already been bitten by
+    // trusting one (public/sw.js's history). `data`'s keys are what the
+    // server actually executed, so they cannot be spoofed into selecting
+    // a weaker policy. Here the name says listing while the resolved
+    // field is a detail: the RESOLVED field must win.
+    const value = cachePolicyFor(
+      JSON.stringify({
+        data: { product: { id: 'x' } },
+        operationName: 'ProductsPaged',
+      }),
+    );
+    expect(value).toContain('stale-while-revalidate');
+  });
+
+  it('returns a policy rather than throwing on an unparseable body', () => {
+    // Unreachable in practice -- isCacheableGraphqlResponse has already
+    // parsed this exact body -- but a header choice throwing inside
+    // res.send would take the whole response with it.
+    expect(() => cachePolicyFor('{not json')).not.toThrow();
+    expect(cachePolicyFor('{not json')).toContain('must-revalidate');
+  });
+
+  it('accepts a Buffer body, which is what Express actually passes', () => {
+    const value = cachePolicyFor(
+      Buffer.from(body({ product: { id: 'x' } }), 'utf8'),
+    );
+    expect(value).toContain('stale-while-revalidate');
+  });
+});
+
+describe('cache policy TTLs', () => {
+  // The removed graphqlCacheControl block covered these, and the values
+  // still drive both policies through cachePolicyFor. Asserted against
+  // the exported constants rather than literals so tuning one actually
+  // moves the header -- a literal here would let the two drift while
+  // both looked tested.
+  it('uses the shared max-age on both policies', () => {
+    const listing = cachePolicyFor(
+      JSON.stringify({ data: { productsPaged: {} } }),
+    );
+    const detail = cachePolicyFor(
+      JSON.stringify({ data: { product: { id: 'x' } } }),
+    );
+    for (const value of [listing, detail]) {
+      expect(value).toContain(`s-maxage=${GRAPHQL_SHARED_MAX_AGE_SECONDS}`);
+      expect(value).toContain(`max-age=${GRAPHQL_SHARED_MAX_AGE_SECONDS}`);
+    }
+  });
+
+  it('bounds the stale window on the detail policy only', () => {
+    // Longer than the fresh window on purpose: past s-maxage the data is
+    // stale but still far better than a spinner, and the refresh happens
+    // off the critical path. Bounded because there is no invalidation
+    // path yet, so it doubles as worst-case staleness after a seller edit.
+    expect(GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS).toBeGreaterThan(
+      GRAPHQL_SHARED_MAX_AGE_SECONDS,
+    );
+    expect(
+      cachePolicyFor(JSON.stringify({ data: { product: { id: 'x' } } })),
+    ).toContain(
+      `stale-while-revalidate=${GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS}`,
+    );
+    expect(
+      cachePolicyFor(JSON.stringify({ data: { productsPaged: {} } })),
+    ).not.toContain('stale-while-revalidate');
   });
 });

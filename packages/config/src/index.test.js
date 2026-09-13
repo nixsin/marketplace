@@ -18,6 +18,8 @@ import {
   SHARED_MAX_AGE_SECONDS,
   STALE_WHILE_REVALIDATE_SECONDS,
   publicCacheControl,
+  strictCacheControl,
+  staleWhileRevalidateCacheControl,
   resolveApiKey,
   roleConfig,
 } from "./index.js";
@@ -751,4 +753,55 @@ describe("retryAfterHintMs", () => {
     const hint = retryAfterHintMs(now, now, WINDOW, () => 0.999);
     assert.ok(hint <= WINDOW + 2 * MINUTE, `${hint} exceeds the window`);
   });
+});
+
+test("strictCacheControl never authorises a stale response", () => {
+  // The property, not just the string: `stale-while-revalidate` and
+  // `stale-if-error` both exist to serve a known-outdated copy, which is
+  // the one thing this policy refuses. Asserted by absence so a future
+  // "harmless" addition fails here.
+  const value = strictCacheControl();
+  assert.equal(value, "public, max-age=60, s-maxage=60, must-revalidate");
+  assert.ok(!value.includes("stale-while-revalidate"));
+  assert.ok(!value.includes("stale-if-error"));
+});
+
+test("strictCacheControl binds private caches too, not only shared ones", () => {
+  // must-revalidate, NOT proxy-revalidate. The latter exempts private
+  // caches -- leaving browsers, the audience this is strictest for, free
+  // to serve stale.
+  const value = strictCacheControl();
+  assert.ok(value.includes("must-revalidate"));
+  assert.ok(!value.includes("proxy-revalidate"));
+});
+
+test("staleWhileRevalidateCacheControl omits must-revalidate, deliberately", () => {
+  // The absence IS the policy. must-revalidate forbids serving a stale
+  // response, which is exactly what stale-while-revalidate authorises, so
+  // a cache honouring both does the strict thing and the SWR window
+  // becomes dead weight. publicCacheControl still ships both together --
+  // which is why these builders exist separately from it.
+  const value = staleWhileRevalidateCacheControl();
+  assert.equal(value, "public, max-age=60, s-maxage=60, stale-while-revalidate=300");
+  assert.ok(!value.includes("must-revalidate"));
+});
+
+test("both policies let the BROWSER reuse without a round trip", () => {
+  // max-age must be non-zero in both. At max-age=0 a browser cannot reuse
+  // anything without a conditional request -- measured on production at
+  // 52ms for a 304 carrying zero bytes -- which is the cost this split
+  // exists to remove. publicCacheControl keeps max-age=0 for the HTML
+  // shell and is unchanged.
+  for (const value of [strictCacheControl(), staleWhileRevalidateCacheControl()]) {
+    assert.ok(!value.includes("max-age=0,"), `browser cannot reuse: ${value}`);
+  }
+  assert.ok(publicCacheControl().includes("max-age=0"));
+});
+
+test("both policies accept overrides for tuning and tests", () => {
+  assert.equal(strictCacheControl(30), "public, max-age=30, s-maxage=30, must-revalidate");
+  assert.equal(
+    staleWhileRevalidateCacheControl(30, 120),
+    "public, max-age=30, s-maxage=30, stale-while-revalidate=120",
+  );
 });

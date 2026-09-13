@@ -3,7 +3,10 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { bootstrapTestApp } from './helpers/bootstrap';
-import { graphqlCacheControl } from '../src/graphql-cache';
+import {
+  staleWhileRevalidateCacheControl,
+  strictCacheControl,
+} from '@medinstru/config';
 import { GRAPHQL_ERROR_CODES } from '@medinstru/config';
 
 function gql(app: INestApplication<App>) {
@@ -260,19 +263,54 @@ describe('GraphQL-over-GET caching (e2e)', () => {
     // header and its test cannot drift apart -- this assertion held a
     // stale literal and failed the moment s-maxage was added, which is
     // the right failure but the wrong reason to have to edit a test.
-    expect(res.headers['cache-control']).toBe(graphqlCacheControl());
+    //
+    // A LISTING gets the strict policy: this is how a buyer discovers
+    // what exists, so a withdrawn item still showing -- or a new one
+    // missing -- is worse than the revalidation it costs.
+    expect(res.headers['cache-control']).toBe(strictCacheControl());
 
     // The semantics, spelled out, because the string alone does not say
     // which cache each directive is for:
-    //   max-age=0    the browser -- always revalidates
-    //   s-maxage     shared caches only -- lets a CDN serve without a hop
-    //   SWR          serve stale instantly, refresh behind it
-    expect(res.headers['cache-control']).toContain('max-age=0');
+    //   max-age          the browser -- may reuse without a round trip
+    //   s-maxage         shared caches only -- a CDN serves without a hop
+    //   must-revalidate  nobody may serve this stale, once expired
+    expect(res.headers['cache-control']).toContain('must-revalidate');
     expect(res.headers['cache-control']).toContain('s-maxage=');
-    expect(res.headers['cache-control']).toContain('stale-while-revalidate=');
+    expect(res.headers['cache-control']).not.toContain(
+      'stale-while-revalidate',
+    );
+    expect(res.headers['cache-control']).not.toContain('max-age=0');
 
     expect(res.headers.etag).toBeTruthy();
     expect(res.body.data.productsPaged.items).toHaveLength(1);
+  });
+
+  it('answers a product DETAIL with the stale-while-revalidate policy', async () => {
+    // The other half of the split, over real HTTP rather than only in a
+    // unit test -- the header is chosen inside res.send from the resolved
+    // body, so a unit test of the selector alone cannot prove the wiring.
+    //
+    // A detail page is already about one known product, so painting it
+    // instantly from a slightly old copy while a fresh one loads behind
+    // is the better trade. The listing above is the opposite call.
+    // This block's own beforeEach already creates exactly one product;
+    // seeding another would be a second fixture describing the same thing.
+    const { id } = await prisma.product.findFirstOrThrow();
+    const res = await request(app.getHttpServer())
+      .get('/graphql')
+      .set('apollo-require-preflight', 'true')
+      .query({ query: `query { product(id: "${id}") { id name } }` })
+      .expect(200);
+
+    expect(res.body.data.product.id).toBe(id);
+    expect(res.headers['cache-control']).toBe(
+      staleWhileRevalidateCacheControl(),
+    );
+    expect(res.headers['cache-control']).toContain('stale-while-revalidate=');
+    // must-revalidate would forbid exactly what SWR authorises, and a
+    // cache honouring both does the strict thing -- making the window
+    // dead weight. Its absence IS the policy.
+    expect(res.headers['cache-control']).not.toContain('must-revalidate');
   });
 
   it('returns 304 on a conditional re-request with a matching ETag', async () => {
@@ -297,7 +335,7 @@ describe('GraphQL-over-GET caching (e2e)', () => {
     // Without this, a shared cache revalidating every s-maxage seconds
     // would be told `no-store` and drop the entry it just confirmed was
     // still fresh, turning cheap revalidation into a permanent miss.
-    expect(revalidated.headers['cache-control']).toBe(graphqlCacheControl());
+    expect(revalidated.headers['cache-control']).toBe(strictCacheControl());
   });
 
   it('does not override Cache-Control on POST — mutations/POST queries stay uncacheable', async () => {

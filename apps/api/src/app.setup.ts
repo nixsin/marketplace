@@ -2,10 +2,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import { CORRELATION_HEADERS } from './observability/correlation';
 import { validationException } from './validation-error';
-import {
-  graphqlCacheControl,
-  isCacheableGraphqlResponse,
-} from './graphql-cache';
+import { cachePolicyFor, isCacheableGraphqlResponse } from './graphql-cache';
 import { correlationMiddleware } from './observability/correlation.middleware';
 import { CorrelationExceptionFilter } from './observability/correlation-exception.filter';
 
@@ -129,9 +126,11 @@ export function configureApp(app: INestApplication): void {
         !res.headersSent &&
         isCacheableGraphqlResponse(res.statusCode, body)
       ) {
-        // s-maxage + stale-while-revalidate, not a bare max-age=0 -- see
-        // graphql-cache.ts for which directive serves which cache.
-        res.setHeader('Cache-Control', graphqlCacheControl());
+        // Two policies, chosen from what the response actually resolved:
+        // a listing must never be served stale, a product detail may be.
+        // See cachePolicyFor for why it keys on the resolved field rather
+        // than the caller's operation name.
+        res.setHeader('Cache-Control', cachePolicyFor(body));
       }
       return originalSend(body);
     } as typeof res.send;

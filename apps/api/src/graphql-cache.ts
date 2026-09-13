@@ -1,5 +1,6 @@
 import {
-  publicCacheControl,
+  staleWhileRevalidateCacheControl,
+  strictCacheControl,
   SHARED_MAX_AGE_SECONDS,
   STALE_WHILE_REVALIDATE_SECONDS,
 } from '@medinstru/config';
@@ -64,16 +65,73 @@ export const GRAPHQL_SHARED_MAX_AGE_SECONDS = SHARED_MAX_AGE_SECONDS;
 export const GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS =
   STALE_WHILE_REVALIDATE_SECONDS;
 
-/** The assembled header value. */
-export function graphqlCacheControl(
-  sharedMaxAge = GRAPHQL_SHARED_MAX_AGE_SECONDS,
-  staleWhileRevalidate = GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS,
-): string {
-  // Delegates rather than assembling its own string: apps/web sends the
-  // identical policy on the locale shell, and the two used to be a set of
-  // constants here and a hand-written literal there, reconciled only by a
-  // comment saying they matched.
-  return publicCacheControl(sharedMaxAge, staleWhileRevalidate);
+/**
+ * Which cache policy a successful GraphQL response gets.
+ *
+ * TWO POLICIES, CHOSEN BY WHAT WAS ACTUALLY RESOLVED:
+ *
+ *   listing (`products`, `productsPaged`)  strict TTL, NEVER stale.
+ *   detail  (`product`)                    TTL, stale served while it
+ *                                          revalidates.
+ *
+ * The split is a product decision about what each surface can tolerate. A
+ * listing is how a buyer discovers what exists, so showing an item that
+ * has been withdrawn -- or missing one just added -- is worse than the
+ * revalidation round trip it costs. A detail page is already about one
+ * known product, so painting it instantly from a slightly old copy while
+ * a fresh one loads behind is the better trade.
+ *
+ * KEYED ON THE RESOLVED TOP-LEVEL FIELD, not on the operation name in the
+ * query text, and that distinction is load-bearing. An operation name is
+ * caller-controlled -- a request can name anything "ProductsPaged" -- and
+ * this repo has already been bitten by trusting one (see public/sw.js's
+ * history). `data`'s keys are what the server actually executed and put in
+ * the response, so they cannot be spoofed into selecting a weaker policy.
+ *
+ * FAILS CLOSED TOWARD STRICT. Anything unrecognised -- a new query, a
+ * multi-field request, an empty selection -- gets the never-stale policy.
+ * A new query silently inheriting permission to serve stale data is the
+ * failure worth designing out; the cost of guessing wrong the other way
+ * is one revalidation.
+ */
+const STALE_TOLERANT_FIELDS = new Set(['product']);
+
+export function cachePolicyFor(body: unknown): string {
+  let data: Record<string, unknown> | undefined;
+  try {
+    const text =
+      typeof body === 'string' ? body : (body as Buffer).toString('utf8');
+    const parsed: unknown = JSON.parse(text);
+    const candidate = (parsed as { data?: unknown }).data;
+    if (
+      typeof candidate === 'object' &&
+      candidate !== null &&
+      !Array.isArray(candidate)
+    ) {
+      data = candidate as Record<string, unknown>;
+    }
+  } catch {
+    // Unreachable in practice: isCacheableGraphqlResponse has already
+    // parsed this exact body and returned true. Kept because this function
+    // must not be the thing that throws inside res.send -- a header choice
+    // failing would take the whole response with it.
+    return strictCacheControl();
+  }
+  if (data === undefined) return strictCacheControl();
+
+  const fields = Object.keys(data);
+  // EVERY field must tolerate staleness, not merely one of them: a single
+  // request can select both `product` and `productsPaged`, and one header
+  // governs the whole response. The strict half wins.
+  const allTolerant =
+    fields.length > 0 && fields.every((f) => STALE_TOLERANT_FIELDS.has(f));
+
+  return allTolerant
+    ? staleWhileRevalidateCacheControl(
+        GRAPHQL_SHARED_MAX_AGE_SECONDS,
+        GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS,
+      )
+    : strictCacheControl(GRAPHQL_SHARED_MAX_AGE_SECONDS);
 }
 
 /**

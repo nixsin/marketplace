@@ -24,6 +24,11 @@ export declare const BUILD_TIME: string;
 
 export declare const SHARED_MAX_AGE_SECONDS: number;
 export declare const STALE_WHILE_REVALIDATE_SECONDS: number;
+export declare function strictCacheControl(maxAge?: number): string;
+export declare function staleWhileRevalidateCacheControl(
+  maxAge?: number,
+  staleWhileRevalidate?: number,
+): string;
 export declare function publicCacheControl(
   sharedMaxAge?: number,
   staleWhileRevalidate?: number,
