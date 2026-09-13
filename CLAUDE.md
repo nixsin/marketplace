@@ -3050,13 +3050,38 @@ they can tolerate different things:
 | `products`, `productsPaged` | `public, max-age=60, s-maxage=60, must-revalidate` | a listing is how a buyer discovers what exists; a withdrawn item still showing, or a new one missing, is worse than the revalidation it costs |
 | `product` | `public, max-age=60, s-maxage=60, stale-while-revalidate=300` | a detail page is already about one known product, so painting instantly from a slightly old copy while a fresh one loads behind is the better trade |
 
-**The selection keys on the RESOLVED top-level field in `data`, never on the
-operation name in the query text.** An operation name is caller-controlled —
-a request can name anything `ProductsPaged` — and this repo has already been
-bitten by trusting one (see the service-worker section above). `data`'s keys
-are what the server actually executed and serialised, so they cannot be
-spoofed into selecting a weaker policy. `cachePolicyFor` in
-`apps/api/src/graphql-cache.ts` owns this.
+**The selection reads the SCHEMA fields off the PARSED OPERATION — not the
+operation name, and not the response body.** Both of the obvious sources are
+caller-controlled, and the second one is the trap:
+
+- An **operation name** is caller-controlled outright; a request can name
+  anything `ProductsPaged`. This repo has already been bitten by trusting one
+  (see the service-worker section above).
+- The **serialised `data` object is keyed by ALIAS**, not by schema field.
+  This was implemented that way first, under a comment asserting those keys
+  "cannot be spoofed." They can, and trivially:
+  `{ product: productsPaged(page: 1, pageSize: 2) { totalCount } }`
+  serialises under `data.product` and selected the stale-tolerant policy for
+  a listing — renaming a field defeated the whole strict policy. The reverse
+  aliased a real detail into the strict one. Caught in review before it
+  shipped.
+
+The parsed operation keeps `name` and `alias` as separate AST nodes, so an
+alias cannot change the answer. `rootFieldNames` in
+`apps/api/src/graphql-cache.ts` extracts them and
+`graphql-root-fields.plugin.ts` stashes them on the Express request from
+Apollo's `didResolveOperation` hook — after parse and validation, so the
+document is well-formed and the operation actually selected (a document may
+define several) has been picked.
+
+**That plugin is deliberately NOT typed as `ApolloServerPlugin`.**
+`@apollo/server` publishes ESM *and* CJS type declarations whose `HeaderMap`
+each carry a private `__identity` field, so the two are nominally
+incompatible and annotating with the copy that file resolves fails to
+satisfy the copy `ApolloDriverConfig` resolves — `Types have separate
+declarations of a private property '__identity'`. Local interfaces pin the
+shape without importing either copy; structural typing at the registration
+site is what actually matters.
 
 **It fails CLOSED toward strict.** An unrecognised field, an empty
 selection, an unparseable body — all get the never-stale policy. A new query

@@ -2,7 +2,11 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import { CORRELATION_HEADERS } from './observability/correlation';
 import { validationException } from './validation-error';
-import { cachePolicyFor, isCacheableGraphqlResponse } from './graphql-cache';
+import {
+  cachePolicyFor,
+  isCacheableGraphqlResponse,
+  ROOT_FIELDS_KEY,
+} from './graphql-cache';
 import { correlationMiddleware } from './observability/correlation.middleware';
 import { CorrelationExceptionFilter } from './observability/correlation-exception.filter';
 
@@ -130,7 +134,14 @@ export function configureApp(app: INestApplication): void {
         // a listing must never be served stale, a product detail may be.
         // See cachePolicyFor for why it keys on the resolved field rather
         // than the caller's operation name.
-        res.setHeader('Cache-Control', cachePolicyFor(body));
+        res.setHeader(
+          'Cache-Control',
+          cachePolicyFor(
+            (req as unknown as Record<string, string[] | null | undefined>)[
+              ROOT_FIELDS_KEY
+            ],
+          ),
+        );
       }
       return originalSend(body);
     } as typeof res.send;

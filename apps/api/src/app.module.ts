@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { join } from 'path';
+import { graphqlRootFieldsPlugin } from './graphql-root-fields.plugin';
 import { formatGraphqlError } from './graphql-error';
 import type { Request } from 'express';
 import { AppController } from './app.controller';
@@ -31,6 +32,10 @@ import { StorageModule } from './storage/storage.module';
       // Every error leaves through here with a standard code, and without
       // Nest's internals attached. See graphql-error.ts for both reasons.
       formatError: formatGraphqlError,
+      // Records the resolved schema fields so app.setup.ts can pick a
+      // cache policy from them rather than from the response body, whose
+      // keys are aliases and therefore caller-controlled.
+      plugins: [graphqlRootFieldsPlugin],
     }),
     PrismaModule,
     CacheModule,

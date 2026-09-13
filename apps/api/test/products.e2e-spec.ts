@@ -313,6 +313,36 @@ describe('GraphQL-over-GET caching (e2e)', () => {
     expect(res.headers['cache-control']).not.toContain('must-revalidate');
   });
 
+  it('cannot be aliased into the stale-tolerant policy', async () => {
+    // THE regression test for a bypass caught in review before it
+    // shipped. An earlier implementation picked the policy from the
+    // top-level keys of the serialised `data` object -- which are ALIASES,
+    // not schema fields. So this exact query, a listing aliased to
+    // `product`, serialised under `data.product` and would have been
+    // served with stale-while-revalidate: precisely what the strict
+    // listing policy exists to prevent, defeated by renaming a field.
+    //
+    // Only an end-to-end request proves the fix, because the field names
+    // now come from the parsed operation via an Apollo plugin -- a unit
+    // test of the selector alone cannot show the plugin is wired in.
+    const res = await request(app.getHttpServer())
+      .get('/graphql')
+      .set('apollo-require-preflight', 'true')
+      .query({
+        query:
+          'query { product: productsPaged(page: 1, pageSize: 2) { totalCount } }',
+      })
+      .expect(200);
+
+    // The alias really did land in the response -- otherwise this test
+    // would pass without exercising the bypass at all.
+    expect(res.body.data.product.totalCount).toBeGreaterThanOrEqual(0);
+    expect(res.headers['cache-control']).toBe(strictCacheControl());
+    expect(res.headers['cache-control']).not.toContain(
+      'stale-while-revalidate',
+    );
+  });
+
   it('returns 304 on a conditional re-request with a matching ETag', async () => {
     const first = await request(app.getHttpServer())
       .get('/graphql')

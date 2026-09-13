@@ -68,8 +68,6 @@ export const GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS =
 /**
  * Which cache policy a successful GraphQL response gets.
  *
- * TWO POLICIES, CHOSEN BY WHAT WAS ACTUALLY RESOLVED:
- *
  *   listing (`products`, `productsPaged`)  strict TTL, NEVER stale.
  *   detail  (`product`)                    TTL, stale served while it
  *                                          revalidates.
@@ -81,50 +79,65 @@ export const GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS =
  * known product, so painting it instantly from a slightly old copy while
  * a fresh one loads behind is the better trade.
  *
- * KEYED ON THE RESOLVED TOP-LEVEL FIELD, not on the operation name in the
- * query text, and that distinction is load-bearing. An operation name is
- * caller-controlled -- a request can name anything "ProductsPaged" -- and
- * this repo has already been bitten by trusting one (see public/sw.js's
- * history). `data`'s keys are what the server actually executed and put in
- * the response, so they cannot be spoofed into selecting a weaker policy.
+ * TAKES THE RESOLVED SCHEMA FIELDS, AND THAT IS THE WHOLE POINT. An
+ * earlier version read the top-level keys of the serialised `data` object
+ * and claimed they could not be spoofed. They can: GraphQL ALIASES become
+ * the response keys, so `{ product: productsPaged(...) }` serialises under
+ * `data.product` and would have selected the stale-tolerant policy for a
+ * listing -- exactly the bypass the strict policy exists to prevent. The
+ * reverse works too, aliasing a real detail into the strict policy.
+ * Caught in review before it shipped.
  *
- * FAILS CLOSED TOWARD STRICT. Anything unrecognised -- a new query, a
- * multi-field request, an empty selection -- gets the never-stale policy.
- * A new query silently inheriting permission to serve stale data is the
- * failure worth designing out; the cost of guessing wrong the other way
- * is one revalidation.
+ * `rootFieldNames` below reads the field names off the PARSED operation,
+ * where the schema field and the alias are separate nodes, so an alias
+ * cannot change the answer.
+ *
+ * FAILS CLOSED TOWARD STRICT. No fields, an unrecognised one, or an
+ * operation this cannot read (a root fragment spread) all get the
+ * never-stale policy. A new query silently inheriting permission to serve
+ * stale data is the failure worth designing out; the cost of guessing
+ * wrong the other way is one revalidation.
  */
 const STALE_TOLERANT_FIELDS = new Set(['product']);
 
-export function cachePolicyFor(body: unknown): string {
-  let data: Record<string, unknown> | undefined;
-  try {
-    const text =
-      typeof body === 'string' ? body : (body as Buffer).toString('utf8');
-    const parsed: unknown = JSON.parse(text);
-    const candidate = (parsed as { data?: unknown }).data;
-    if (
-      typeof candidate === 'object' &&
-      candidate !== null &&
-      !Array.isArray(candidate)
-    ) {
-      data = candidate as Record<string, unknown>;
-    }
-  } catch {
-    // Unreachable in practice: isCacheableGraphqlResponse has already
-    // parsed this exact body and returned true. Kept because this function
-    // must not be the thing that throws inside res.send -- a header choice
-    // failing would take the whole response with it.
-    return strictCacheControl();
-  }
-  if (data === undefined) return strictCacheControl();
+/** A root selection, narrowed to what this needs from graphql's AST. */
+interface RootSelection {
+  kind: string;
+  name?: { value?: string };
+}
 
-  const fields = Object.keys(data);
-  // EVERY field must tolerate staleness, not merely one of them: a single
-  // request can select both `product` and `productsPaged`, and one header
-  // governs the whole response. The strict half wins.
+/**
+ * The SCHEMA field names a root selection set resolves, ignoring aliases.
+ *
+ * Returns null when the answer cannot be known from the selection set
+ * alone -- a root `...fragmentSpread` or inline fragment, whose contents
+ * live elsewhere in the document. Null means strict, not "assume none".
+ */
+export function rootFieldNames(
+  selections: readonly RootSelection[] | undefined,
+): string[] | null {
+  if (!selections || selections.length === 0) return null;
+  const names: string[] = [];
+  for (const selection of selections) {
+    // `Field` carries `name` (the schema field) and, separately, `alias`.
+    // Reading `name` is what makes an alias unable to change the policy.
+    if (selection.kind !== 'Field') return null;
+    const name = selection.name?.value;
+    if (typeof name !== 'string' || name.length === 0) return null;
+    names.push(name);
+  }
+  return names;
+}
+
+/** The header value for a response that resolved these root fields. */
+export function cachePolicyFor(fields: string[] | null | undefined): string {
+  // EVERY field must tolerate staleness, not merely one: a single request
+  // can select both `product` and `productsPaged`, and one header governs
+  // the whole response. The strict half wins.
   const allTolerant =
-    fields.length > 0 && fields.every((f) => STALE_TOLERANT_FIELDS.has(f));
+    Array.isArray(fields) &&
+    fields.length > 0 &&
+    fields.every((f) => STALE_TOLERANT_FIELDS.has(f));
 
   return allTolerant
     ? staleWhileRevalidateCacheControl(
@@ -133,6 +146,16 @@ export function cachePolicyFor(body: unknown): string {
       )
     : strictCacheControl(GRAPHQL_SHARED_MAX_AGE_SECONDS);
 }
+
+/**
+ * Where the plugin stashes the resolved fields for the send-patch to read.
+ *
+ * On the Express request rather than a module-level map: the request is
+ * the thing both halves already share, and anything keyed globally would
+ * have to be cleaned up and could leak one request's policy into another
+ * under concurrency.
+ */
+export const ROOT_FIELDS_KEY = '__graphqlRootFields';
 
 /**
  * Whether a GraphQL GET response may be handed to a shared cache.
