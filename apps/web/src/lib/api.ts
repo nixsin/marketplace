@@ -16,12 +16,12 @@ import { reportApiFailure } from "./report-api-failure";
 // readable without paying that cost on every call.
 const minifyGql = (query: string) => query.replace(/\s+/g, " ").trim();
 
-// Exported solely so a test can compare it against public/sw.js's
-// allowlist. The service worker is a static file the browser loads
-// directly -- it cannot import anything -- so this exact string is
-// duplicated there by necessity, and the only way to keep the two honest
-// is to assert they match. See apps/web/test/sw-query-sync.spec.ts.
-export const PRODUCTS_PAGED_QUERY = minifyGql(`
+// Module-local. It was exported for one reason -- so a test could compare
+// it against the copy public/sw.js allowlisted, since a service worker is
+// a static file that cannot import anything and had to duplicate the
+// string. The worker no longer caches API responses at all, so there is no
+// second copy to keep honest and nothing outside this file needs it.
+const PRODUCTS_PAGED_QUERY = minifyGql(`
   query ProductsPaged($page: Int, $pageSize: Int) {
     productsPaged(page: $page, pageSize: $pageSize) {
       page

@@ -121,25 +121,6 @@ describe("gh CLI usage hazards", () => {
   });
 });
 
-describe("service worker / API query sync", () => {
-  test("sw.js's public allowlist matches api.ts's query byte-for-byte", () => {
-    // sw.js allowlists the exact canonical query TEXT, not an operation
-    // name (caller-controlled and trivially spoofed). Drift means the real
-    // request stops matching, or the allowlist stops describing what it
-    // claims to. Currently only caught by a full Playwright run.
-    const allowlisted = [...read("apps/web/public/sw.js").matchAll(/"(query ProductsPaged[^"]*)"/g)].map(
-      (m) => m[1],
-    );
-    assert.equal(allowlisted.length, 1, "expected exactly one allowlisted ProductsPaged query");
-
-    const raw = /const PRODUCTS_PAGED_QUERY = minifyGql\(`([\s\S]*?)`\)/.exec(
-      read("apps/web/src/lib/api.ts"),
-    );
-    assert.ok(raw, "could not locate PRODUCTS_PAGED_QUERY in api.ts");
-    assert.equal(allowlisted[0], raw[1].replace(/\s+/g, " ").trim());
-  });
-});
-
 // These activate on their own once packages/ exists, rather than failing on
 // a repo that has no workspace packages yet.
 describe("workspace packages", () => {
