@@ -2982,6 +2982,65 @@ prefetching on its own and mask a revert, and re-enabling prefetch costs
 nothing visible. Full audit of every `<Link>` and RSC path in
 [#223](https://github.com/nixsin/marketplace/issues/223).
 
+## The service worker caches navigations ONLY — no API response, ever
+
+A standing rule, not an omission waiting to be tidied up. `public/sw.js`
+intercepts `request.mode === "navigate"` and nothing else.
+
+It used to allowlist the exact `ProductsPaged` query text and serve it
+stale-while-revalidate, guarded by independent `credentials` and
+`Authorization` checks because **Cache Storage matches by request, not by
+who is asking** — it cannot partition by user identity. That guard was
+correct. It is also unnecessary once no API response is cached there at all,
+which is the stronger position: caching any `/graphql` GET is safe only while
+every such response is genuinely public, and that stopped being guaranteed
+the moment an authenticated query existed in the schema (`auth.resolver.ts`'s
+`me`, behind `JwtAuthGuard`). Nothing at the transport level prevents one
+being sent by GET — Apollo's GET support is not restricted to particular
+operations.
+
+**Three reasons it was the wrong layer, and the first is the one that bites:**
+
+- **No age bound existed.** Grepped to confirm: no `maxAge`, no `Date`
+  comparison, no TTL anywhere in the file. The only thing evicting an entry
+  was a `CACHE_NAME` bump — a deploy. A returning visitor was served whatever
+  Cache Storage held, however old, **one visit behind in perpetuity**, and a
+  reload could not fix it.
+- **It silently contradicted the response's own header.** The API sends
+  `max-age=0, must-revalidate` precisely so "a reload always revalidates and
+  nobody is stuck on a stale catalogue they cannot refresh"
+  (`packages/config/src/index.js`). The worker overrode that for the one
+  query it allowlisted, and nothing anywhere said so.
+- **Freshness became a three-way argument** — HTTP header, worker, caller —
+  with the worker winning invisibly.
+
+**The cost of removing it is real and is not hidden.** At `max-age=0,
+must-revalidate` the browser's HTTP cache cannot reuse a response without a
+conditional round trip: measured on production, `304` with 0 bytes but
+**52 ms**. The service worker was buying that round trip back. Recovering it
+means changing the header to something like `max-age=60,
+stale-while-revalidate=300`, which the browser honours natively with a
+*bounded* staleness and no custom code — a separate decision, deliberately
+not taken as a side effect of this one.
+
+**`CACHE_NAME` went to v3, and the bump does real work beyond convention.**
+Existing clients still hold `/graphql` entries under `medinstru-shell-v2`.
+The fetch handler no longer matches them, so they would never be served —
+but they would never be reclaimed either, sitting in every returning
+visitor's storage quota indefinitely. The activate handler deletes every key
+that is not `CACHE_NAME`, which is what actually clears them.
+
+Pinned in both directions. `test/service-worker-fetch.spec.ts` asserts the
+worker intercepts a navigation and refuses `/graphql` across every shape the
+old allowlist reasoned about — plain, with credentials, with an
+`Authorization` header, an unlisted query, and same-origin — so a
+reintroduction along any one of those paths fails rather than passing by
+picking a different one. `e2e/sw-cache-isolation.spec.ts` asserts against a
+real worker that navigations are cached and that **no `/graphql` key ever
+appears in Cache Storage**, including for the exact query the app really
+sends. `test/sw-query-sync.spec.ts` is deleted — it existed solely to keep
+the allowlist byte-identical to the app's query.
+
 ## Catalogue images had no cache window at all
 
 Everything under `public/` gets Next's default `Cache-Control: public,

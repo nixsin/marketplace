@@ -4,12 +4,46 @@
 // 30-50s wait. Stale-while-revalidate: serve whatever's cached immediately,
 // then fetch fresh in the background and update the cache for next time.
 //
-// Only two request kinds are worth this: same-origin page navigations (the
-// HTML shell) and GraphQL-over-GET reads (see src/lib/api.ts). Everything
-// else — content-hashed /_next/static/* assets, images — is left to the
-// browser's native HTTP cache, which Next already serves those with
-// long-lived immutable Cache-Control for; duplicating that here would just
-// be two caches doing the same job.
+// ONE request kind is worth this: same-origin page navigations (the HTML
+// shell). Everything else — content-hashed /_next/static/* assets, images —
+// is left to the browser's native HTTP cache, which Next already serves
+// those with long-lived immutable Cache-Control for; duplicating that here
+// would just be two caches doing the same job.
+//
+// API RESPONSES ARE DELIBERATELY NOT CACHED HERE, and that is a standing
+// rule rather than an omission to tidy up later. This worker used to
+// allowlist the exact ProductsPaged query text and serve it
+// stale-while-revalidate. It worked, and it was the wrong layer:
+//
+//   - It applied NO age bound. The only thing that evicted an entry was a
+//     CACHE_NAME bump, i.e. a deploy. A returning visitor was served
+//     whatever was in Cache Storage however old it was, one visit behind
+//     forever, and a reload could not fix it.
+//   - That silently contradicted the response's own header. The API sends
+//     `max-age=0, must-revalidate` precisely so "a reload always
+//     revalidates and nobody is stuck on a stale catalogue they cannot
+//     refresh" (packages/config/src/index.js). This worker overrode that
+//     for the one query it allowlisted, and nothing said so.
+//   - It made freshness a three-way argument between the HTTP header, this
+//     worker, and the caller — with this worker silently winning.
+//
+// And the safety argument is the strongest of the three, which is why the
+// allowlist had to be so careful in the first place: Cache Storage matches
+// by request, NOT by who is asking -- it does not partition by user
+// identity. Caching any /graphql GET is therefore only safe while every
+// such response is genuinely public, and that stopped being guaranteed the
+// moment an authenticated query existed in the schema (auth.resolver.ts's
+// `me`, behind JwtAuthGuard). Nothing at the transport level stops a future
+// GET from carrying one -- Apollo Server's GET support is not restricted to
+// particular operations. The old allowlist defended that with an exact
+// query-text match plus independent credentials and Authorization checks.
+// All of it was correct, and none of it is needed once no API response is
+// cached here at all.
+//
+// The browser's own HTTP cache can do the same job with a bounded lifetime
+// and no custom code, once the response header asks for it. Freshness
+// belongs to the header and the caller; user-identity partitioning belongs
+// to a cache that has one. Neither belongs here.
 //
 // Bump this when the caching *strategy* below changes, not for ordinary
 // content updates — those self-heal within one background fetch cycle.
@@ -31,7 +65,15 @@
 // no-store header now set on /sw.js in next.config.ts stops the edge from
 // pinning a stale header in the first place; this bump is what releases
 // the workers already holding one.
-const CACHE_NAME = "medinstru-shell-v2";
+// v3 (2026-09-13) removes API-response caching entirely -- see the standing
+// rule at the top. The bump is required twice over: the caching STRATEGY
+// changed, and existing clients still hold /graphql entries in
+// medinstru-shell-v2. Those entries would never be served again (the fetch
+// handler no longer matches them) but would never be reclaimed either, so
+// without this bump they sit in every returning visitor's Cache Storage
+// quota indefinitely. The activate handler deletes every key that is not
+// CACHE_NAME, which is what actually clears them.
+const CACHE_NAME = "medinstru-shell-v3";
 
 self.addEventListener("install", () => {
   self.skipWaiting();
@@ -90,80 +132,13 @@ async function staleWhileRevalidate(request) {
   return cached ?? networkFetch;
 }
 
-// Cache Storage matches by request, not by who's asking — it does not
-// partition entries by user identity. Caching every GET to /graphql by
-// pathname alone (the original design) is only safe as long as every such
-// response is genuinely public, which stopped being guaranteed the moment
-// an authenticated query (apps/api/src/auth/auth.resolver.ts's `me`,
-// guarded by JwtAuthGuard) existed in the schema — nothing at the
-// transport level stops a future GET from carrying it, since Apollo
-// Server's GET support isn't restricted to specific operations.
-//
-// An earlier version of this file allowlisted by *operation name*
-// (extracted from the query text) rather than the query itself — a real
-// review caught that this is trivially bypassable two ways: (1) a GraphQL
-// document can name multiple operations and select which one actually
-// runs via a separate `operationName` parameter, so trusting only the
-// first name in the text can be tricked into treating a request as public
-// when a *different* operation is what actually executes; (2) nothing
-// stops a request from simply naming an unrelated, sensitive query
-// "ProductsPaged" — the name is caller-controlled and says nothing about
-// which fields are actually selected. Checking only for an `Authorization`
-// header had the same shape of gap: it says nothing about cookie-carried
-// credentials.
-//
-// Fixed by two independent, positive checks instead: the exact,
-// canonical query *text* (not a name parsed out of it) against a fixed
-// allowlist, and requiring the request to have been made with
-// `credentials: "omit"` (src/lib/api.ts sets this explicitly) — asking
-// what the request itself declares, not trying to enumerate every
-// possible credential-carrying mechanism after the fact.
-
-// Exact, canonical query text for every operation confirmed public and
-// side-effect-free — not an operation name. Must stay byte-for-byte in
-// sync with src/lib/api.ts's PRODUCTS_PAGED_QUERY (after its own
-// whitespace minification); the e2e suite's "caches the real, allowlisted
-// product query" test exercises the real app's real request, so drift
-// here fails that test immediately rather than silently.
-const PUBLIC_GRAPHQL_QUERIES = new Set([
-  "query ProductsPaged($page: Int, $pageSize: Int) { productsPaged(page: $page, pageSize: $pageSize) { page pageSize totalCount totalPages items { id name brand category deviceClass certifications location description imageUrl updatedAt seller { name } } } }",
-]);
-
-function isPublicGraphqlRead(request, url) {
-  if (url.pathname !== "/graphql") return false;
-  // Two independent credential checks, not one instead of the other --
-  // `credentials` governs whether the browser attaches cookies; an
-  // `Authorization` header is a separate, explicit bearer token (this
-  // app's real auth guard is literally named JwtAuthGuard) that
-  // `credentials: "omit"` says nothing about either way. A request could
-  // set both `credentials: "omit"` and still carry a real bearer token --
-  // caught directly by this file's own e2e suite when an earlier version
-  // of this check dropped the Authorization check while adding the
-  // credentials one, instead of keeping both.
-  if (request.credentials !== "omit") return false;
-  if (request.headers.has("Authorization")) return false;
-  // A GraphQL document can name multiple operations and pick which one
-  // runs via this separate parameter -- this app never sends it, so
-  // requiring its absence costs nothing today and closes the whole
-  // multi-operation ambiguity class of bypass.
-  if (url.searchParams.has("operationName")) return false;
-  const query = url.searchParams.get("query");
-  return query !== null && PUBLIC_GRAPHQL_QUERIES.has(query.trim());
-}
-
 self.addEventListener("fetch", (event) => {
   const { request } = event;
   if (request.method !== "GET") return; // never cache mutations
 
-  const url = new URL(request.url);
-  const isNavigation = request.mode === "navigate";
-  // Matched on pathname alone (plus the safety checks above), not origin:
-  // NEXT_PUBLIC_API_URL is inlined into the client bundle at build time,
-  // and this is a static file that can't read it — but the API's GraphQL
-  // endpoint is always at /graphql regardless of which host serves it.
-  const isGraphqlRead = isPublicGraphqlRead(request, url);
-
-  if (isNavigation || isGraphqlRead) {
+  // Navigations only. Anything else -- API reads above all -- is left to
+  // the HTTP cache; see the standing rule at the top of this file.
+  if (request.mode === "navigate") {
     event.respondWith(staleWhileRevalidate(request));
   }
 });

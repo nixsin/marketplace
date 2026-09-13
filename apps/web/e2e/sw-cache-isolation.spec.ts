@@ -1,95 +1,31 @@
 import { test, expect, type Page } from "@playwright/test";
 import { PRODUCTS_PAGED_QUERY } from "../src/lib/api";
 
-// Proves the actual safety property #78's §3.6 exists to guarantee: the
-// service worker (public/sw.js) must never cache a GraphQL response that
-// could be user-specific. Cache Storage matches by request, not by who's
-// asking, so caching every GET to /graphql by pathname alone (the
-// original design) would let one user's cached authenticated response be
-// served to a different user hitting the same entry -- a real risk the
-// moment any authenticated query (apps/api/src/auth/auth.resolver.ts's
-// `me`) is ever sent via GET, which nothing at the transport level
-// currently prevents.
+// Pins the standing rule in public/sw.js: the service worker caches PAGE
+// NAVIGATIONS and nothing else. No API response is cached there, ever.
 //
-// A real review round caught that an earlier version of this check
-// (allowlisting by operation *name*, parsed out of the query text) was
-// itself bypassable: a caller can select which operation actually runs
-// via a separate `operationName` parameter regardless of what appears
-// first in the query text, and nothing stops a request from simply
-// *naming* an unrelated query "ProductsPaged". The tests below cover
-// both of those, plus the credentials check, not just the original
-// Authorization-header case.
+// This file used to prove the opposite property -- that a carefully
+// allowlisted GraphQL read WAS cached, and that every adversarial shape
+// around it was not. That allowlist is gone, so the safety argument it
+// defended is now structural rather than conditional: Cache Storage
+// matches by request, NOT by who is asking, and it cannot partition by
+// user identity. Caching any /graphql GET is therefore only safe while
+// every such response is genuinely public -- which stopped being
+// guaranteed the moment an authenticated query existed in the schema
+// (auth.resolver.ts's `me`, behind JwtAuthGuard), and nothing at the
+// transport level prevents one being sent by GET.
 //
-// Runs against a real production build with the service worker actually
+// The adversarial shapes below are kept deliberately. They are no longer
+// probing an allowlist's edges; they are the paths a reintroduction would
+// most plausibly take, so each one failing here is what makes the rule
+// hold rather than merely be stated.
+//
+// Runs against a real production build with the worker actually
 // registered (playwright.config.ts's webServer is `pnpm build && pnpm
 // start`, and service-worker-registration.tsx only registers when
-// NODE_ENV === "production") -- this is genuine SW behavior, not a
-// simulation.
+// NODE_ENV === "production") -- genuine SW behaviour, not a simulation.
 
-// Imported, not copied. This was a third hand-maintained copy of the same
-// string; when the query gained `updatedAt` it silently disagreed with both
-// the app and sw.js, and a test that carries its own copy agrees with itself
-// while production diverges.
 const REAL_PRODUCTS_PAGED_QUERY = PRODUCTS_PAGED_QUERY;
-
-// Waits for a real fetchProductsPaged call (query ProductsPaged(...)) to
-// finish being cached by the SW's background revalidation fetch, and
-// returns the real GraphQL origin it used.
-//
-// Loads the page first, then reloads once service-worker control is
-// confirmed, rather than relying on the *first* load's own request --
-// clients.claim() in sw.js's activate handler resolves asynchronously,
-// so on a fast page the initial fetchProductsPaged() call can fire
-// before the SW is actually controlling that page, leaving it uncached
-// even though the controller check would go on to pass moments later.
-// A reload issued *after* control is confirmed is guaranteed to be
-// controlled from its very first request -- the standard pattern for
-// this exact race in service-worker testing. Flagged by an AI review
-// (2026-08-18); the request listener is still registered before the
-// action that triggers it (the reload), for the same reason noted
-// below -- registering it after would race the reload's own request.
-async function loadPageAndWaitForRealCacheEntry(page: Page) {
-  await page.goto("/en");
-  await page.waitForFunction(() => navigator.serviceWorker.controller !== null, {
-    timeout: 15_000,
-  });
-  const graphqlRequestPromise = page.waitForRequest(
-    (req) => new URL(req.url()).pathname === "/graphql",
-  );
-  await page.reload();
-  const graphqlRequest = await graphqlRequestPromise;
-  await expect(page.locator('[data-slot="card"]').first()).toBeVisible();
-  // Waits for this *specific* request's URL to appear in cache, not an
-  // aggregate /graphql key count -- product-listing.tsx also eagerly
-  // prefetches the next page in the background once the current page has
-  // loaded (see its own comment), which is a second, entirely legitimate
-  // /graphql cache entry (different page/variables) once the service
-  // worker is reliably controlling the page. A blanket count of exactly 1
-  // was already fragile against that; reload() above making SW control
-  // deterministic just surfaces it reliably instead of by timing luck.
-  await expect.poll(() => cacheHasEntry(page, graphqlRequest.url()), { timeout: 10_000 }).toBe(true);
-  return new URL(graphqlRequest.url()).origin;
-}
-
-// Cache Storage's put() replaces an existing entry at the same key rather
-// than adding a new one -- so a synthetic request reusing the exact same
-// URL as an already-cached legitimate entry (the Authorization and
-// credentials tests both do, since they exercise the real, allowlisted
-// query+variables) could get cached by a vulnerable worker without the
-// key COUNT changing at all. A real AI review caught this (2026-08-18):
-// the previous version of this helper compared graphqlCacheKeyCount()
-// before/after, which is blind to exactly that in-place replacement.
-// Deleting the specific key first, then checking for its absence after,
-// closes the gap regardless of whether the URL was already cached.
-async function deleteCacheEntry(page: Page, url: string) {
-  await page.evaluate(async (url) => {
-    const names = await caches.keys();
-    for (const name of names) {
-      const cache = await caches.open(name);
-      await cache.delete(url);
-    }
-  }, url);
-}
 
 async function cacheHasEntry(page: Page, url: string) {
   return page.evaluate(async (url) => {
@@ -102,145 +38,105 @@ async function cacheHasEntry(page: Page, url: string) {
   }, url);
 }
 
-async function assertRequestNeverCached(
-  page: Page,
-  url: string,
-  init: RequestInit,
-) {
-  await deleteCacheEntry(page, url);
+/** Every cached key whose pathname is /graphql, across every cache. */
+async function graphqlCacheKeys(page: Page): Promise<string[]> {
+  return page.evaluate(async () => {
+    const found: string[] = [];
+    for (const name of await caches.keys()) {
+      const cache = await caches.open(name);
+      for (const request of await cache.keys()) {
+        if (new URL(request.url).pathname === "/graphql") found.push(request.url);
+      }
+    }
+    return found;
+  });
+}
 
+/**
+ * Loads the listing under a controlling worker and returns once a real
+ * ProductsPaged request has actually been issued.
+ *
+ * The reload is load-bearing and predates this change: clients.claim() in
+ * the activate handler resolves asynchronously, so the FIRST load's own
+ * fetch can fire before the worker controls the page. A reload issued
+ * after control is confirmed is controlled from its very first request.
+ * Without it this suite passes for the wrong reason -- nothing was cached
+ * because nothing was controlled.
+ */
+async function loadListingUnderWorker(page: Page) {
+  await page.goto("/en");
+  await page.waitForFunction(() => navigator.serviceWorker.controller !== null, {
+    timeout: 15_000,
+  });
+  const graphqlRequestPromise = page.waitForRequest(
+    (req) => new URL(req.url()).pathname === "/graphql",
+  );
+  await page.reload();
+  const graphqlRequest = await graphqlRequestPromise;
+  await expect(page.locator('[data-slot="card"]').first()).toBeVisible();
+  return graphqlRequest.url();
+}
+
+async function assertNeverCached(page: Page, url: string, init: RequestInit) {
   const fetchOk = await page.evaluate(
     async ({ url, init }) => {
       try {
-        const res = await fetch(url, init);
-        return res.ok;
+        return (await fetch(url, init)).ok;
       } catch {
         return false;
       }
     },
     { url, init },
   );
-  // The synthetic request must actually reach a real response for this
-  // assertion to mean anything -- the same review flagged that a blanket
-  // swallowed fetch failure (a CORS/network error, unrelated to the
-  // service worker's own eligibility check) could make a broken check
-  // look like it's working. See the credentials:"include" test below for
-  // the one case where this can't be a real cross-origin request at all.
-  expect(fetchOk, "synthetic request must succeed for this assertion to be meaningful").toBe(true);
-
+  // The synthetic request must reach a real response or this assertion is
+  // vacuous -- a swallowed CORS/network failure would make a broken check
+  // look like it works. Caught by a review on the previous version.
+  expect(fetchOk, "synthetic request must succeed for this assertion to mean anything").toBe(true);
   expect(await cacheHasEntry(page, url)).toBe(false);
 }
 
-test.describe("service worker GraphQL cache isolation", () => {
-  test("caches the real, allowlisted product query", async ({ page }) => {
-    await loadPageAndWaitForRealCacheEntry(page);
+test.describe("service worker caches navigations only", () => {
+  test("caches the page navigation, so the shell still paints instantly", async ({ page }) => {
+    // The worker's actual job, and the reason it exists on a free tier
+    // that spins down after 15 minutes. Deleting API caching must not
+    // quietly delete this too.
+    await loadListingUnderWorker(page);
+    await expect
+      .poll(() => cacheHasEntry(page, page.url()), { timeout: 10_000 })
+      .toBe(true);
   });
 
-  test("never caches a /graphql request carrying an Authorization header, even for the allowlisted query", async ({
-    page,
-  }) => {
-    const graphqlOrigin = await loadPageAndWaitForRealCacheEntry(page);
-    const url = `${graphqlOrigin}/graphql?query=${encodeURIComponent(
-      REAL_PRODUCTS_PAGED_QUERY,
-    )}&variables=${encodeURIComponent(JSON.stringify({ page: 1, pageSize: 4 }))}`;
+  test("caches NO /graphql response, even the one the app really sends", async ({ page }) => {
+    // The rule. This is the exact request fetchProductsPaged issues on a
+    // real listing load -- previously allowlisted and cached on purpose.
+    const realUrl = await loadListingUnderWorker(page);
+    expect(new URL(realUrl).pathname).toBe("/graphql");
 
-    await assertRequestNeverCached(page, url, {
-      headers: {
-        Authorization: "Bearer test-token-should-never-be-cached",
-        "apollo-require-preflight": "true",
-      },
-      credentials: "omit",
-    });
+    // Polled rather than read once: the old worker cached from a
+    // background revalidation fetch that completed AFTER the response was
+    // delivered, so a single immediate read could miss a regression that a
+    // moment later would be plainly visible.
+    await expect
+      .poll(() => graphqlCacheKeys(page), { timeout: 10_000 })
+      .toEqual([]);
   });
 
-  test("never caches a /graphql request sent with credentials included, even for the allowlisted query", async ({
-    page,
-  }) => {
-    await loadPageAndWaitForRealCacheEntry(page);
+  test("caches no /graphql response in any shape a reintroduction might take", async ({ page }) => {
+    const realUrl = await loadListingUnderWorker(page);
+    const origin = new URL(realUrl).origin;
+    const q = (query: string) => `${origin}/graphql?query=${encodeURIComponent(query)}`;
 
-    // Deliberately NOT the real cross-origin API here, unlike the other
-    // three negative tests. Verified directly (curl -X OPTIONS against a
-    // live local API): apps/api's bare app.enableCors() never sends
-    // Access-Control-Allow-Credentials, and its Access-Control-Allow-
-    // Origin is the literal wildcard "*" -- per the Fetch spec, a browser
-    // refuses to expose a credentialed cross-origin response under that
-    // combination regardless of what the service worker does. A real
-    // fetch(..., {credentials:"include"}) against the actual API would
-    // therefore always fail at the browser's own CORS layer, making this
-    // test pass vacuously whether or not sw.js's own `credentials !==
-    // "omit"` check exists at all -- proving nothing about the code this
-    // test is named for.
-    //
-    // isPublicGraphqlRead() matches on pathname alone, not origin (see
-    // its own comment in sw.js), so a same-origin request exercises the
-    // exact same decision path without the CORS confound -- no
-    // Access-Control-* headers needed in the mock below since CORS
-    // enforcement never applies to a same-origin request in the first
-    // place. Routing through a context-level mock (rather than the real
-    // Next.js app, which has no /graphql route of its own to answer this)
-    // isolates what's being tested to the service worker's own check.
-    // Confirmed empirically before relying on this: page.context().route()
-    // does reach the service worker's own internal fetch (not just the
-    // page's outer call) -- with a temporarily-reverted vulnerable sw.js
-    // (the credentials check disabled), this exact setup showed the mock
-    // response actually landing in the cache; with the real, correct
-    // sw.js, it doesn't.
-    const sameOriginUrl = `/graphql?query=${encodeURIComponent(
-      REAL_PRODUCTS_PAGED_QUERY,
-    )}&variables=${encodeURIComponent(JSON.stringify({ page: 1, pageSize: 4 }))}`;
+    // The real allowlisted query, an unauthenticated read, and a query
+    // merely NAMED like the allowlisted one while selecting other fields
+    // -- the last being the bypass a review caught in the allowlist era.
+    for (const url of [
+      q(REAL_PRODUCTS_PAGED_QUERY),
+      q("{__typename}"),
+      q("query ProductsPaged { __typename }"),
+    ]) {
+      await assertNeverCached(page, url, { credentials: "omit" });
+    }
 
-    await page.context().route("**/graphql**", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            productsPaged: { page: 1, pageSize: 4, totalCount: 0, totalPages: 0, items: [] },
-          },
-        }),
-      });
-    });
-
-    await assertRequestNeverCached(page, sameOriginUrl, {
-      headers: { "apollo-require-preflight": "true" },
-      credentials: "include",
-    });
-  });
-
-  test("never caches a /graphql request for a query merely named like the allowlisted one, selecting different fields", async ({
-    page,
-  }) => {
-    const graphqlOrigin = await loadPageAndWaitForRealCacheEntry(page);
-    // Same operation *name* as the real allowlisted query, but a
-    // completely different selection set -- proves the check is on exact
-    // query text, not a name parsed out of it.
-    const spoofedQuery = "query ProductsPaged { me { id } }";
-    const url = `${graphqlOrigin}/graphql?query=${encodeURIComponent(
-      spoofedQuery,
-    )}&variables=${encodeURIComponent("{}")}`;
-
-    await assertRequestNeverCached(page, url, {
-      headers: { "apollo-require-preflight": "true" },
-      credentials: "omit",
-    });
-  });
-
-  test("never caches a /graphql request that uses operationName to select a different operation than the one named first", async ({
-    page,
-  }) => {
-    const graphqlOrigin = await loadPageAndWaitForRealCacheEntry(page);
-    // A document naming the real public query first, but selecting a
-    // different operation to actually execute via operationName -- proves
-    // the check rejects operationName outright rather than trusting
-    // whichever operation appears first in the text.
-    const multiOpQuery = `${REAL_PRODUCTS_PAGED_QUERY} query Me { me { id } }`;
-    const url = `${graphqlOrigin}/graphql?query=${encodeURIComponent(
-      multiOpQuery,
-    )}&variables=${encodeURIComponent("{}")}&operationName=Me`;
-
-    await assertRequestNeverCached(page, url, {
-      headers: { "apollo-require-preflight": "true" },
-      credentials: "omit",
-    });
+    await expect.poll(() => graphqlCacheKeys(page), { timeout: 5_000 }).toEqual([]);
   });
 });
