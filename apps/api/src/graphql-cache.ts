@@ -1,5 +1,6 @@
 import {
-  publicCacheControl,
+  staleWhileRevalidateCacheControl,
+  strictCacheControl,
   SHARED_MAX_AGE_SECONDS,
   STALE_WHILE_REVALIDATE_SECONDS,
 } from '@medinstru/config';
@@ -64,17 +65,107 @@ export const GRAPHQL_SHARED_MAX_AGE_SECONDS = SHARED_MAX_AGE_SECONDS;
 export const GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS =
   STALE_WHILE_REVALIDATE_SECONDS;
 
-/** The assembled header value. */
-export function graphqlCacheControl(
-  sharedMaxAge = GRAPHQL_SHARED_MAX_AGE_SECONDS,
-  staleWhileRevalidate = GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS,
-): string {
-  // Delegates rather than assembling its own string: apps/web sends the
-  // identical policy on the locale shell, and the two used to be a set of
-  // constants here and a hand-written literal there, reconciled only by a
-  // comment saying they matched.
-  return publicCacheControl(sharedMaxAge, staleWhileRevalidate);
+/**
+ * Which cache policy a successful GraphQL response gets.
+ *
+ *   listing (`products`, `productsPaged`)  strict TTL; asks every cache
+ *                                          NOT to serve it stale.
+ *   detail  (`product`)                    TTL; authorises serving stale
+ *                                          while it revalidates.
+ *
+ * "Asks", not "guarantees", and the distinction is load-bearing rather
+ * than pedantic: this function emits a header. A cache that honours it
+ * will not serve a listing stale -- browsers do. Cloudflare's rule
+ * currently sets `disable_stale_while_updating = false` and may serve
+ * stale anyway, and it cannot distinguish the two queries because it
+ * matches on path and both are /graphql. See CLAUDE.md for the three
+ * options. Raised in review; the claim is corrected here rather than
+ * overstated.
+ *
+ * The split is a product decision about what each surface can tolerate. A
+ * listing is how a buyer discovers what exists, so showing an item that
+ * has been withdrawn -- or missing one just added -- is worse than the
+ * revalidation round trip it costs. A detail page is already about one
+ * known product, so painting it instantly from a slightly old copy while
+ * a fresh one loads behind is the better trade.
+ *
+ * TAKES THE RESOLVED SCHEMA FIELDS, AND THAT IS THE WHOLE POINT. An
+ * earlier version read the top-level keys of the serialised `data` object
+ * and claimed they could not be spoofed. They can: GraphQL ALIASES become
+ * the response keys, so `{ product: productsPaged(...) }` serialises under
+ * `data.product` and would have selected the stale-tolerant policy for a
+ * listing -- exactly the bypass the strict policy exists to prevent. The
+ * reverse works too, aliasing a real detail into the strict policy.
+ * Caught in review before it shipped.
+ *
+ * `rootFieldNames` below reads the field names off the PARSED operation,
+ * where the schema field and the alias are separate nodes, so an alias
+ * cannot change the answer.
+ *
+ * FAILS CLOSED TOWARD STRICT. No fields, an unrecognised one, or an
+ * operation this cannot read (a root fragment spread) all get the
+ * never-stale policy. A new query silently inheriting permission to serve
+ * stale data is the failure worth designing out; the cost of guessing
+ * wrong the other way is one revalidation.
+ */
+const STALE_TOLERANT_FIELDS = new Set(['product']);
+
+/** A root selection, narrowed to what this needs from graphql's AST. */
+interface RootSelection {
+  kind: string;
+  name?: { value?: string };
 }
+
+/**
+ * The SCHEMA field names a root selection set resolves, ignoring aliases.
+ *
+ * Returns null when the answer cannot be known from the selection set
+ * alone -- a root `...fragmentSpread` or inline fragment, whose contents
+ * live elsewhere in the document. Null means strict, not "assume none".
+ */
+export function rootFieldNames(
+  selections: readonly RootSelection[] | undefined,
+): string[] | null {
+  if (!selections || selections.length === 0) return null;
+  const names: string[] = [];
+  for (const selection of selections) {
+    // `Field` carries `name` (the schema field) and, separately, `alias`.
+    // Reading `name` is what makes an alias unable to change the policy.
+    if (selection.kind !== 'Field') return null;
+    const name = selection.name?.value;
+    if (typeof name !== 'string' || name.length === 0) return null;
+    names.push(name);
+  }
+  return names;
+}
+
+/** The header value for a response that resolved these root fields. */
+export function cachePolicyFor(fields: string[] | null | undefined): string {
+  // EVERY field must tolerate staleness, not merely one: a single request
+  // can select both `product` and `productsPaged`, and one header governs
+  // the whole response. The strict half wins.
+  const allTolerant =
+    Array.isArray(fields) &&
+    fields.length > 0 &&
+    fields.every((f) => STALE_TOLERANT_FIELDS.has(f));
+
+  return allTolerant
+    ? staleWhileRevalidateCacheControl(
+        GRAPHQL_SHARED_MAX_AGE_SECONDS,
+        GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS,
+      )
+    : strictCacheControl(GRAPHQL_SHARED_MAX_AGE_SECONDS);
+}
+
+/**
+ * Where the plugin stashes the resolved fields for the send-patch to read.
+ *
+ * On the Express request rather than a module-level map: the request is
+ * the thing both halves already share, and anything keyed globally would
+ * have to be cleaned up and could leak one request's policy into another
+ * under concurrency.
+ */
+export const ROOT_FIELDS_KEY = '__graphqlRootFields';
 
 /**
  * Whether a GraphQL GET response may be handed to a shared cache.

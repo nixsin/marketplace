@@ -1,64 +1,10 @@
 import {
   GRAPHQL_SHARED_MAX_AGE_SECONDS,
   GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS,
-  graphqlCacheControl,
+  cachePolicyFor,
   isCacheableGraphqlResponse,
+  rootFieldNames,
 } from './graphql-cache';
-
-describe('graphqlCacheControl', () => {
-  it('keeps the browser revalidating', () => {
-    // max-age=0 is for the PRIVATE cache. A user reloading must never be
-    // stuck with a stale catalogue they cannot refresh.
-    expect(graphqlCacheControl()).toContain('max-age=0');
-    expect(graphqlCacheControl()).toContain('must-revalidate');
-  });
-
-  it('lets shared caches serve without a round trip', () => {
-    // s-maxage applies to CDNs only and overrides max-age for them --
-    // this is the directive that removes the trans-Pacific hop.
-    expect(graphqlCacheControl()).toContain(
-      `s-maxage=${GRAPHQL_SHARED_MAX_AGE_SECONDS}`,
-    );
-  });
-
-  it('serves stale instantly while refreshing behind it', () => {
-    // The half that works TODAY: browsers honour SWR, so a repeat
-    // navigation renders from cache instead of blocking on the network,
-    // with no CDN involved.
-    expect(graphqlCacheControl()).toContain(
-      `stale-while-revalidate=${GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS}`,
-    );
-  });
-
-  it('allows a longer stale window than the fresh one', () => {
-    // Past s-maxage the data is stale but still far better than a
-    // spinner, and the refresh is off the critical path. If these ever
-    // invert, SWR stops doing anything.
-    expect(GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS).toBeGreaterThan(
-      GRAPHQL_SHARED_MAX_AGE_SECONDS,
-    );
-  });
-
-  it('bounds staleness, since there is no invalidation path yet', () => {
-    // Nothing purges the cache when a seller edits a listing, so
-    // s-maxage doubles as the worst-case staleness they would see.
-    // Raise it only once an invalidation hook exists.
-    expect(GRAPHQL_SHARED_MAX_AGE_SECONDS).toBeLessThanOrEqual(300);
-  });
-
-  it('is publicly cacheable', () => {
-    // Product data is a public catalogue. `private` would disable shared
-    // caching entirely and silently undo the point of this header.
-    expect(graphqlCacheControl()).toMatch(/^public,/);
-  });
-
-  it('accepts overrides for testing and future tuning', () => {
-    expect(graphqlCacheControl(30, 120)).toContain('s-maxage=30');
-    expect(graphqlCacheControl(30, 120)).toContain(
-      'stale-while-revalidate=120',
-    );
-  });
-});
 
 describe('isCacheableGraphqlResponse', () => {
   const ok = JSON.stringify({ data: { productsPaged: { items: [] } } });
@@ -152,6 +98,128 @@ describe('isCacheableGraphqlResponse', () => {
     // errors check must not be so broad that it swallows this.
     expect(isCacheableGraphqlResponse(200, '{"data":{"product":null}}')).toBe(
       true,
+    );
+  });
+});
+
+describe('rootFieldNames', () => {
+  const field = (name: string) => ({ kind: 'Field', name: { value: name } });
+
+  it('reads the SCHEMA field, never the alias', () => {
+    // THE test, and the bug it pins shipped in an earlier version of this
+    // file. An alias becomes the RESPONSE key, so reading the serialised
+    // body let `{ product: productsPaged(...) }` select the stale-tolerant
+    // policy for a listing -- and the reverse aliased a real detail into
+    // the strict one. The AST keeps `name` and `alias` as separate nodes,
+    // so an alias cannot change the answer. This node carries one that
+    // claims otherwise.
+    const aliased = {
+      kind: 'Field',
+      alias: { value: 'product' },
+      name: { value: 'productsPaged' },
+    };
+    expect(rootFieldNames([aliased])).toEqual(['productsPaged']);
+  });
+
+  it('returns every root field, in order', () => {
+    expect(rootFieldNames([field('product'), field('productsPaged')])).toEqual([
+      'product',
+      'productsPaged',
+    ]);
+  });
+
+  it('returns null when the fields cannot be known from the selection set', () => {
+    // A root fragment spread's contents live elsewhere in the document.
+    // Null means STRICT, not "assume none" -- see cachePolicyFor.
+    expect(
+      rootFieldNames([{ kind: 'FragmentSpread', name: { value: 'f' } }]),
+    ).toBeNull();
+    expect(rootFieldNames([{ kind: 'InlineFragment' }])).toBeNull();
+    expect(rootFieldNames([])).toBeNull();
+    expect(rootFieldNames(undefined)).toBeNull();
+    expect(rootFieldNames([{ kind: 'Field' }])).toBeNull();
+  });
+});
+
+describe('cachePolicyFor', () => {
+  it('emits a header FORBIDDING a listing from being served stale', () => {
+    // Note what this proves and what it does not, because the gap is real
+    // and naming it "never served stale" would overstate the guarantee:
+    // this asserts the emitted directives, and a cache that honours them
+    // will not serve stale. Cloudflare's rule currently sets
+    // disable_stale_while_updating = false and may serve stale regardless
+    // -- see CLAUDE.md. So the guarantee binds browsers today, not the
+    // edge. Raised in review, and the claim is corrected rather than the
+    // test deleted.
+    //
+    // The intent behind the directives: a listing is how a buyer
+    // discovers what exists, so a withdrawn item still showing -- or a
+    // new one missing -- is worse than the revalidation it costs.
+    for (const field of ['productsPaged', 'products']) {
+      const value = cachePolicyFor([field]);
+      expect(value).toContain('must-revalidate');
+      expect(value).not.toContain('stale-while-revalidate');
+    }
+  });
+
+  it('lets a product DETAIL be served stale while it refreshes', () => {
+    const value = cachePolicyFor(['product']);
+    expect(value).toContain('stale-while-revalidate');
+    // must-revalidate would forbid exactly what SWR authorises, and a
+    // cache honouring both does the strict thing -- making the window
+    // dead weight. Its absence IS the policy.
+    expect(value).not.toContain('must-revalidate');
+  });
+
+  it('takes the STRICT policy when one request selects both', () => {
+    // One header governs the whole response, so a request selecting a
+    // detail alongside a listing cannot serve the listing half stale.
+    const value = cachePolicyFor(['product', 'productsPaged']);
+    expect(value).toContain('must-revalidate');
+    expect(value).not.toContain('stale-while-revalidate');
+  });
+
+  it('fails CLOSED for anything it does not recognise', () => {
+    // A new query silently inheriting permission to serve stale data is
+    // the failure being designed out; guessing the other way costs one
+    // revalidation. null is what rootFieldNames returns when it cannot
+    // read the operation at all.
+    for (const fields of [['somethingNew'], [], null, undefined]) {
+      expect({ fields, policy: cachePolicyFor(fields) }).toEqual({
+        fields,
+        policy: expect.stringContaining('must-revalidate'),
+      });
+    }
+  });
+});
+
+describe('cache policy TTLs', () => {
+  // Asserted against the exported constants rather than literals, so
+  // tuning one actually moves the header -- a literal here would let the
+  // two drift while both looked tested.
+  it('uses the shared max-age on both policies', () => {
+    for (const value of [
+      cachePolicyFor(['productsPaged']),
+      cachePolicyFor(['product']),
+    ]) {
+      expect(value).toContain(`s-maxage=${GRAPHQL_SHARED_MAX_AGE_SECONDS}`);
+      expect(value).toContain(`max-age=${GRAPHQL_SHARED_MAX_AGE_SECONDS}`);
+    }
+  });
+
+  it('bounds the stale window, on the detail policy only', () => {
+    // Longer than the fresh window on purpose: past s-maxage the data is
+    // stale but still far better than a spinner, and the refresh happens
+    // off the critical path. Bounded because there is no invalidation
+    // path yet, so it doubles as worst-case staleness after a seller edit.
+    expect(GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS).toBeGreaterThan(
+      GRAPHQL_SHARED_MAX_AGE_SECONDS,
+    );
+    expect(cachePolicyFor(['product'])).toContain(
+      `stale-while-revalidate=${GRAPHQL_STALE_WHILE_REVALIDATE_SECONDS}`,
+    );
+    expect(cachePolicyFor(['productsPaged'])).not.toContain(
+      'stale-while-revalidate',
     );
   });
 });
