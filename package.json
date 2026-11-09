@@ -23,14 +23,14 @@
     "@eslint/js": "^9.39.5",
     "@medinstru/config": "workspace:*",
     "eslint": "^9.39.5",
-    "globals": "^17.12.0",
+    "globals": "^17.14.0",
     "husky": "^9.1.7",
-    "knip": "^6.34.0",
-    "lint-staged": "^17.4.1",
-    "openai": "^7.10.0",
-    "semver": "^7.8.5",
+    "knip": "^6.44.1",
+    "lint-staged": "^17.6.0",
+    "openai": "^7.53.0",
+    "semver": "^7.8.6",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.69.0"
+    "typescript-eslint": "^8.72.1"
   },
   "lint-staged": {
     "apps/api/**/*.ts": "pnpm --filter api exec eslint --fix",
